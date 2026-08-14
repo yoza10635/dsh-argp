@@ -11,6 +11,7 @@ v0.9 更新（2026-08-15）：新增 §9.11 设计决策记录——边获取分
 v1.0 修正（2026-08-15）：§9.11 措辞纠错（用户指正）——"强制引用提升逻辑有效性"（引用义务作为回答逻辑链的正则化器）**不能算被证伪**：实测测到的是服从率/边密度，与回答质量是两个不同变量；该假设至今未测，且本质上难以客观度量（主观判断/LLM-as-judge），列为开放问题而非已结论。
 v1.1 更新（2026-08-15）：外部实证吸收——新增 §1.2 四条可迁移实证锚点（E1 token 构成 83.9%/E2 masking≥summarization/E3 级联摘要 60% 事实销毁/E4 占位保留推理链有效）；据此修订：§8.3 主路径倒向占位改写、§10 spike 基线升级为 recency+占位、新增 §9.12 禁止摘要的摘要不变式。
 v1.2 更新（2026-08-15）：M1 开工实测回写——spike 1 PASS（挂载/触发/无干扰）；spike 2 PASS（surfaceOp 双路径 + 配对不变式，9 项判决全过）；§8.3 按实测修正：replace 节点原位插入、start/end 指认现存 surface 节点 seq、tool/result 单节点改写须克隆原 message 保 id 仅换 content；卡点 B-1 登记（占位改写无结构化元数据通道，见 blocker-log.md）。
+v1.3 更新（2026-08-15）：spike 3 PASS（recall 工具 + PromptSection 契约，5 项判决全过）——M1 三 spike 全部通过，核心可行性判决成立，spike 4（M2）解锁。实测补充两条装配语义：ctx.plugin 返回 cordis fiber 而非服务实例（实例由 Service 构造器注册在 ctx.<name>，且是代理对象——身份判定用 instanceof）；CompactionEngine 子类在 fiber 内访问 tools/systemPrompt 必须声明 static inject。无新卡点（blocker-log 维持 B-1 一条）。
 
 ## 1. 可行性结论（引用调研与实验证据）
 
@@ -295,12 +296,12 @@ Rules:
 - **ask 跨轮引用回归（新增，外部评审 P0-3）**：真 ask + 后续跨轮引用场景，验证豁免自动失效（pi fork 73 单测需确认覆盖此用例，缺失则移植时补）
 - **跨模型交叉（已实质完成）**：消融期已在本地小模型（t1/t6）与 DeepSeek（t8）交叉验证，服从率分层结论在 §9.8；迁移后复跑两模型即可
 
-里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。
+里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15），spike 4 解锁。**
 
-spike 计划（已提前开工，限定 M1；spike 1/2 已 PASS，见 argp-dsh 仓库）：
+spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-dsh 仓库）：
 1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
 2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
-3. recall 工具 + PromptSection 契约（半天）
+3. recall 工具 + PromptSection 契约（半天）——✅ PASS（5 项判决：引擎挂载为 ctx.compaction 且 recall_pruned 进 tools.schemas / argp-contract section 进 assembly 且动态 text 被求值 / 被遮蔽 seq 从 append-only 日志找回原文（含 tool-call 节点投影）、未剪与不存在 seq 正确未命中 / ctx.tools.execute 真实派发命中未命中语义正确 / 追加剪枝后 recall 立即可见）
 4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）
 
 全部通过 → 启动整体迁移；任一失败 → 重新评估停留 pi fork 的成本。
