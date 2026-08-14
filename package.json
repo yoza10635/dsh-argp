@@ -6,7 +6,8 @@
   "description": "ARGP pruning engine migrated to DeepSeek Harness as a compaction extension (M1 spike phase)",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "spike1": "node spike/01-mount.ts"
+    "spike1": "node spike/01-mount.ts",
+    "spike2": "node spike/02-surfaceop.ts"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

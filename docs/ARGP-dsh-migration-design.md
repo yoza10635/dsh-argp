@@ -1,7 +1,7 @@
 # ARGP → DeepSeek Harness 迁移设计稿（v1.0 详细实施版，源码复核 + 评审对照 + novelty 尽调）
 
 目标：仅凭本设计稿 + dsh 仓库即可完整实现迁移。设计部分自包含（算法、数据结构、契约文本全部内联）；引用仅出现在可行性论证处。
-状态：纸面设计，不实施。开工信号（三选二）：dsh 1.0 / 接口冻结声明 / 第三方 compaction 插件出现。
+状态：已提前开工（用户 2026-08-15 拍板，限定 M1 spike 范围，不等三选二信号；卡点攒 2~3 条打包向上建议）。原开工信号（三选二）：dsh 1.0 / 接口冻结声明 / 第三方 compaction 插件出现。
 v0.4 更新（2026-08-14）：对照 dsh 源码（0.1.0-rc.5，commit 47f9438）完成六项外部偏差报告复核——CompactionEngine / PromptSection / ctx.systemPrompt.section 均实际存在（命名误报）；config patches 是按顶层字段浅替换；llm 包名实际为 dsh-llm-pi-ai / dsh-llm-deepseek（不存在 dsh-deepseek-adapter）；surfaceOp 存在但仅限单连续区间 replace（无 delete）；breaking-changes 声明属实。§1/§8/§9/§10/§11 相应修订。
 v0.5 更新（2026-08-15）：对照针对原始设计（v1.0）的外部评审逐项交叉核验——P0-2 不适用（recall 机制已在 §6 完整定义）、P0-3 实现已防住（每轮动态复核，§4.5）；新增：领域定位（§1.1）、cites 失败保守语义（§4.7）、版本链悬垂引用权衡（§4.4）、重建幂等不变式（§9.9）、标注不可靠性缓解层级（§9.10）、长程/recall/ask 回归验收与里程碑隔离（§10）、回返主动提示（§11）。
 v0.6 更新（2026-08-15）：§1.1 novelty 尽调——对"用引用图决定遗忘顺序"做学术/工业/开源三维先行检索：未发现先例，novelty 成立；同时修正两处不实引用（NeurIPS 2025 SeqCV 实际是多智能体工作流依赖验证、ContextWeaver 未找到对应记忆论文）；补入最接近的遗忘排序工作（LUFY/MemoryBank/FSFM 均为打分排序、无依赖图）与开源实现活跃度。
@@ -10,6 +10,7 @@ v0.8 更新（2026-08-15）：子代理全文研读 ContextWeaver 原文——�
 v0.9 更新（2026-08-15）：新增 §9.11 设计决策记录——边获取分叉（辅助 LLM vs 自身声明）的脑测理由与实测归宿；架构已以"cites 是增强非前提"吸收边密度证伪结果。
 v1.0 修正（2026-08-15）：§9.11 措辞纠错（用户指正）——"强制引用提升逻辑有效性"（引用义务作为回答逻辑链的正则化器）**不能算被证伪**：实测测到的是服从率/边密度，与回答质量是两个不同变量；该假设至今未测，且本质上难以客观度量（主观判断/LLM-as-judge），列为开放问题而非已结论。
 v1.1 更新（2026-08-15）：外部实证吸收——新增 §1.2 四条可迁移实证锚点（E1 token 构成 83.9%/E2 masking≥summarization/E3 级联摘要 60% 事实销毁/E4 占位保留推理链有效）；据此修订：§8.3 主路径倒向占位改写、§10 spike 基线升级为 recency+占位、新增 §9.12 禁止摘要的摘要不变式。
+v1.2 更新（2026-08-15）：M1 开工实测回写——spike 1 PASS（挂载/触发/无干扰）；spike 2 PASS（surfaceOp 双路径 + 配对不变式，9 项判决全过）；§8.3 按实测修正：replace 节点原位插入、start/end 指认现存 surface 节点 seq、tool/result 单节点改写须克隆原 message 保 id 仅换 content；卡点 B-1 登记（占位改写无结构化元数据通道，见 blocker-log.md）。
 
 ## 1. 可行性结论（引用调研与实验证据）
 
@@ -254,7 +255,7 @@ Rules:
 ### 8.3 surfaceOp 已确认约束（源码 core/session/src/surface.ts）
 
 - 仅 user/message、assistant/message、tool/result 三类事件可进 surface；每个事件必须携带 surfaceOp 标记（`'append'` 或 `{op:'replace', start, end}`）
-- replace 是**单连续区间** → 替换为一个新节点；替换节点的 `sourceEventSeqs` 必须覆盖全部被遮蔽 seq；tool/result 的 replace 只允许改写单节点 content（head+marker+tail 式，同 compaction-tool-result-pruner）
+- replace 是**单连续区间** → 替换为一个新节点；替换节点的 `sourceEventSeqs` 必须覆盖全部被遮蔽 seq；tool/result 的 replace 只允许改写单节点 content（head+marker+tail 式，同 compaction-tool-result-pruner）。**spike 2 实测补充**：替换事件获新 seq（日志尾追加）但在 surface 上**原位插入**被替区间位置；start/end 指认现存 surface 节点的 seq（多次顺序 replace 可组合，二次指认不漂移）；tool/result 单节点改写受 `assertToolResultRewrite` 硬约束：须克隆原 message 保随机 id 仅换块内层 content（新建 message 即拒），且无结构化元数据通道（卡点 B-1）；user tombstone 覆写单 tool/result 节点不被 surface 层拦但必留孤儿 tool-call → **配对必须整对同剪，由 ARGP 剪除决策自保**（孤儿可被 deriveMessages 扫描检出）
 - **无 delete 操作**：纯删除不可行，每个被剪区间必须换出至少一个新节点（最小占位或摘要）
 - 因此 ARGP 散布式多点剪枝有两条实现路径（spike 2 判决主路径；外部实证先验 §1.2 E2/E4：masking≥summarization、占位保留推理链已被证明有效——**b) 占位路径为默认主路径**，a) 仅在节点数压力确证时启用，混合策略对应 E2 的"再省 7~11%"结论）：
   - a) 多段 replace：把被剪原子归并为极大连续 surface 区间，每段发一次 replace（区间两端必须 tool 配对平衡），替换节点承载 summary/catalog 内容；节点数真正下降
@@ -296,9 +297,9 @@ Rules:
 
 里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。
 
-spike 计划（开工信号满足后，约 2.5 天）：
-1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）
-2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）
+spike 计划（已提前开工，限定 M1；spike 1/2 已 PASS，见 argp-dsh 仓库）：
+1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
+2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
 3. recall 工具 + PromptSection 契约（半天）
 4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）
 
@@ -306,7 +307,7 @@ spike 计划（开工信号满足后，约 2.5 天）：
 
 ## 11. 开放问题
 
-1. surfaceOp 已确认仅单连续区间 replace、无 delete（§8.3）——待 spike 判决：多次 replace 单趟组合行为（含边界平衡）与逐节点占位改写哪条为主路径；外部实证先验已倒向占位（§1.2 E2/E4），但 dsh 侧节点数不减的实际代价（token 回收量 vs KV cache 失效）仍需 spike 2 实测确认；混合策略（大段 replace + 零星占位）也是候选
+1. surfaceOp 已确认仅单连续区间 replace、无 delete（§8.3）——spike 2 已判决：多次顺序 replace 可组合且指认不漂移；双路径均可行，占位主路径结论不变（§1.2 E2/E4 实证先验）；新发现问题：tool/result 占位改写无结构化元数据通道（卡点 B-1，待向上建议）
 2. dsh 节点是否允许自定义 metadata（cites/剪枝记录持久化位置）
 3. catalog tombstone 的注入形态：surface 是节点级遮蔽，tombstone 需作为新节点注入还是 PromptSection 附加
 4. compaction 事件与 ARGP 剪枝边界的一对一映射粒度（一次剪枝 = 一个事件是否足够承载 PruningRecord；多段 replace 时 checkpoint 源如何关联）
