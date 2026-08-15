@@ -297,13 +297,13 @@ Rules:
 - **ask 跨轮引用回归（新增，外部评审 P0-3）**：真 ask + 后续跨轮引用场景，验证豁免自动失效（pi fork 73 单测需确认覆盖此用例，缺失则移植时补）
 - **跨模型交叉（已实质完成）**：消融期已在本地小模型（t1/t6）与 DeepSeek（t8）交叉验证，服从率分层结论在 §9.8；迁移后复跑两模型即可
 
-里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15），spike 4 解锁。**
+里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15），spike 4 解锁；spike 5（t8 复刻建边版）G1–G6 + C7-cites 全 PASS（2026-08-16），M3 仅剩 t-long。**
 
 spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-dsh 仓库）：
 1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
 2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
 3. recall 工具 + PromptSection 契约（半天）——✅ PASS（5 项判决：引擎挂载为 ctx.compaction 且 recall_pruned 进 tools.schemas / argp-contract section 进 assembly 且动态 text 被求值 / 被遮蔽 seq 从 append-only 日志找回原文（含 tool-call 节点投影）、未剪与不存在 seq 正确未命中 / ctx.tools.execute 真实派发命中未命中语义正确 / 追加剪枝后 recall 立即可见）
-4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）——✅ 机制验证版 PASS（V1–V6 全过，产物 spike/out/04-t1-2026-08-15T05-00-41-774Z/；与定稿差距：无 LLM 建边/服从率样本未扩，属 M3 范围；撞出候选卡点 B-3）
+4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）——✅ 机制验证版 PASS（V1–V6 全过，产物 spike/out/04-t1-2026-08-15T05-00-41-774Z/；与定稿差距：无 LLM 建边/服从率样本未扩，属 M3 范围；撞出候选卡点 B-3）——spike 5 t8 复刻（ArgpGraphEngine 建边版 10240/7168，medium 档）✅ 全 PASS（2026-08-16，G1–G6：atoms U/A/R/X=12/13/2/4、语义边 2；2 事务均净减 shadowed 8 节点、首笔 47613→18184 chars；cites×剪枝交互 0 违例；0 孤儿；事务事件无错；probe expectAll 2/2 anyOf=pass；wall=1025s。C7-cites：实质轮服从 2/2、逐字引用全命中 → 本地新 SOTA 模型可启用 cites 义务。产物 spike/out/05-t8-2026-08-15T18-42-28-947Z/。实测修正：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 仅三类型，call 块内嵌 A）→ 引擎改组同剪（A 含 tool-call 块 + 应答 R 整组同剪）；cites 匹配 startsWith→includes；窗口 16384/8192→10240/7168 使事务频率成立；判决脚本 turn 映射须按文案匹配 + turn/start 定位（prompt 序号在重试轮错位，G6 曾误判 FAIL，05-rejudge.ts 重判通过））
 
 全部通过 → 启动整体迁移；任一失败 → 重新评估停留 pi fork 的成本。
 
