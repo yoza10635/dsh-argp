@@ -4,3 +4,4 @@ dist/
 *-out.txt
 .env
 sessions/
+spike/out/

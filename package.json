@@ -8,21 +8,28 @@
     "typecheck": "tsc --noEmit",
     "spike1": "node spike/01-mount.ts",
     "spike2": "node spike/02-surfaceop.ts",
-    "spike3": "node spike/03-recall.ts"
+    "spike3": "node spike/03-recall.ts",
+    "spike4a": "node spike/04a-adapter-smoke.ts",
+    "spike4": "node spike/04-t1.ts"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-agent-loop": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-agent-loop-testkit": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-agent-loop": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-agent-loop-testkit": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-bash-local": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
     "@deepseek-ai/dsh-compaction": "0.1.0-rc.6",
     "@deepseek-ai/dsh-compaction-basic": "0.1.0-rc.6",
     "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-pi-ai": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-shell-env": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-subprocess-local": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-token-meter": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-token-meter": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-tool-bash": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "typescript": "^5.5.0"
   }

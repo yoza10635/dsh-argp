@@ -12,6 +12,7 @@ v1.0 修正（2026-08-15）：§9.11 措辞纠错（用户指正）——"强制
 v1.1 更新（2026-08-15）：外部实证吸收——新增 §1.2 四条可迁移实证锚点（E1 token 构成 83.9%/E2 masking≥summarization/E3 级联摘要 60% 事实销毁/E4 占位保留推理链有效）；据此修订：§8.3 主路径倒向占位改写、§10 spike 基线升级为 recency+占位、新增 §9.12 禁止摘要的摘要不变式。
 v1.2 更新（2026-08-15）：M1 开工实测回写——spike 1 PASS（挂载/触发/无干扰）；spike 2 PASS（surfaceOp 双路径 + 配对不变式，9 项判决全过）；§8.3 按实测修正：replace 节点原位插入、start/end 指认现存 surface 节点 seq、tool/result 单节点改写须克隆原 message 保 id 仅换 content；卡点 B-1 登记（占位改写无结构化元数据通道，见 blocker-log.md）。
 v1.3 更新（2026-08-15）：spike 3 PASS（recall 工具 + PromptSection 契约，5 项判决全过）——M1 三 spike 全部通过，核心可行性判决成立，spike 4（M2）解锁。实测补充两条装配语义：ctx.plugin 返回 cordis fiber 而非服务实例（实例由 Service 构造器注册在 ctx.<name>，且是代理对象——身份判定用 instanceof）；CompactionEngine 子类在 fiber 内访问 tools/systemPrompt 必须声明 static inject。无新卡点（blocker-log 维持 B-1 一条）。
+v1.4 更新（2026-08-15）：spike 4（M2，t1 复刻）全 PASS——ArgpT1Engine（16K 窗口/0 LLM/占位主路径）V1–V6 六项判决全过（6 事务 shadowed 17 节点、配对不变式干净、U 载体保护 needle 未剪、事务括号完整、recall 命中 14658 chars、needle 三件套 3/3），新本地 SOTA 模型（Qwen3.8-27B）上机制验证成立。实测补充三条：①user/message 事件 data 形状为 { content, source, role, id }（无 turn/message 包裹字段）；②compaction/prune 事件不进 start/summary/end 不变式状态机，无 LLM 剪枝只能借 compaction/summary 语义进事务括号（候选卡点 B-3，已登记）；③微剪枝下限需求：reasoning-only 助手节点可见文本 0，剪了净增 tombstone 字符且白付 KV 失效代价（引擎加 minSpanChars=512）。spike 4a 冒烟判决 C = NOT replayed（llama-server 日志 f_keep=0.082 交叉验证）——历史 thinking 不进 prompt，引擎无需 thinking 剥离机制，reasoning 块不计入预算。C7 服从率基线初步分层：两 run 分别出现自发 recall 3 次与 0 次但答案均对（样本待扩）。
 
 ## 1. 可行性结论（引用调研与实验证据）
 
@@ -302,7 +303,7 @@ spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-
 1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
 2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
 3. recall 工具 + PromptSection 契约（半天）——✅ PASS（5 项判决：引擎挂载为 ctx.compaction 且 recall_pruned 进 tools.schemas / argp-contract section 进 assembly 且动态 text 被求值 / 被遮蔽 seq 从 append-only 日志找回原文（含 tool-call 节点投影）、未剪与不存在 seq 正确未命中 / ctx.tools.execute 真实派发命中未命中语义正确 / 追加剪枝后 recall 立即可见）
-4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）
+4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）——✅ 机制验证版 PASS（V1–V6 全过，产物 spike/out/04-t1-2026-08-15T05-00-41-774Z/；与定稿差距：无 LLM 建边/服从率样本未扩，属 M3 范围；撞出候选卡点 B-3）
 
 全部通过 → 启动整体迁移；任一失败 → 重新评估停留 pi fork 的成本。
 
