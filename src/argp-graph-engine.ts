@@ -161,6 +161,9 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
   readonly prunedNodeIndex = new Map<number, PrunedNodeInfo>()
+  /** 闭包生命周期剪除记录。 */
+  readonly closurePrunes: { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[] = []
+  private nextClosureId = 0
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -558,6 +561,112 @@ export class ArgpGraphEngine extends CompactionEngine {
     return dupIds
   }
 
+  /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
+  tryPruneClosures(
+    session: Session,
+    atoms: Atom[],
+    edges: SemanticEdge[],
+    inDegree: Map<number, number>,
+    askCover: Map<number, number>,
+    latestTurn: number,
+  ): CompactionResult | null {
+    const roots = atoms
+      .filter(a => a.type === 'U' && !askCover.has(a.id))
+      .sort((a, b) => a.seq - b.seq)
+    if (roots.length === 0) return null
+    const closureOf = new Map<number, string>()
+    const rootByClosure = new Map<string, Atom>()
+    for (let i = 0; i < roots.length; i += 1) {
+      const root = roots[i]
+      const nextRoot = roots[i + 1]
+      const id = 'closure-' + (this.nextClosureId++)
+      rootByClosure.set(id, root)
+      for (const a of atoms) {
+        if (a.type === 'U' && a.id !== root.id) continue
+        if (a.seq >= root.seq && (nextRoot === undefined || a.seq < nextRoot.seq)) {
+          closureOf.set(a.id, id)
+        }
+      }
+    }
+    // 计算每个闭包的 lastRefRound 和 inDegree
+    const lastRefByClosure = new Map<string, number>()
+    const inDegreeByClosure = new Map<string, number>()
+    const atomById = new Map(atoms.map(a => [a.id, a]))
+    for (const e of edges) {
+      const fromClosure = closureOf.get(e.from)
+      const toClosure = closureOf.get(e.to)
+      const from = atomById.get(e.from)
+      if (from !== undefined && toClosure !== undefined) {
+        const ref = from.turn
+        lastRefByClosure.set(toClosure, Math.max(lastRefByClosure.get(toClosure) ?? 0, ref))
+      }
+      if (fromClosure !== undefined && toClosure !== undefined && fromClosure !== toClosure) {
+        inDegreeByClosure.set(toClosure, (inDegreeByClosure.get(toClosure) ?? 0) + 1)
+      }
+    }
+    const k = 2
+    const candidates: { id: string; root: Atom; lastRef: number; seqs: number[] }[] = []
+    const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
+    for (const [id, root] of rootByClosure) {
+      if (root.seq === lastRootSeq) continue
+      const lastRef = lastRefByClosure.get(id) ?? 0
+      if (lastRef > latestTurn - k) continue
+      if ((inDegreeByClosure.get(id) ?? 0) > 0) continue
+      const seqs = atoms.filter(a => closureOf.get(a.id) === id).map(a => a.seq).sort((x, y) => x - y)
+      if (seqs.length === 0) continue
+      candidates.push({ id, root, lastRef, seqs })
+    }
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => a.lastRef - b.lastRef || a.root.seq - b.root.seq)
+    const chosen = candidates[0]
+    if (chosen === undefined) return null
+    const surfaceSeqs = session.surface.nodes
+    const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
+    const chosenSet = new Set(chosen.seqs)
+    const bySeq = new Map(atoms.map(a => [a.seq, a]))
+    const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
+    let current: number[] = []
+    for (const seq of surfaceSeqs) {
+      if (!chosenSet.has(seq)) {
+        if (current.length > 0) {
+          const intervalAtoms = current.map(s => bySeq.get(s)).filter((a): a is Atom => a !== undefined)
+          const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
+          intervals.push({ seqs: current, chars, atoms: intervalAtoms })
+          current = []
+        }
+        continue
+      }
+      current.push(seq)
+    }
+    if (current.length > 0) {
+      const intervalAtoms = current.map(s => bySeq.get(s)).filter((a): a is Atom => a !== undefined)
+      const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
+      intervals.push({ seqs: current, chars, atoms: intervalAtoms })
+    }
+    if (intervals.length === 0) return null
+    for (const iv of intervals) {
+      for (const a of iv.atoms) {
+        const citedBySeq = edges.filter(e => e.to === a.id).map(e => atoms[e.from]?.seq).filter((x): x is number => x !== undefined)
+        const firstLine = a.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+        this.prunedNodeIndex.set(a.seq, {
+          seq: a.seq,
+          type: a.type,
+          turn: a.turn,
+          firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
+          citedBySeq,
+        })
+      }
+    }
+    const result = this.pruneIntervals(session, intervals, 0, 0, false)
+    this.closurePrunes.push({
+      closureId: chosen.id,
+      rootSeq: chosen.root.seq,
+      prunedSeqs: chosen.seqs,
+      at: new Date().toISOString(),
+    })
+    return result
+  }
+
   /**
    * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
    * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
@@ -679,6 +788,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       const liveGroups = groups.filter(g => g.some(a => !pruned.has(a.id)))
       let candidateGroups = liveGroups.filter(g => isGroupCandidate(g, false))
       if (candidateGroups.length === 0) {
+        const closureResult = this.tryPruneClosures(session, atoms, edges, inDegree, askCoverage, latestTurn)
+        if (closureResult !== null) return closureResult
         candidateGroups = liveGroups.filter(g => isGroupCandidate(g, true)) // force_prune：忽略入度
         if (candidateGroups.length === 0) break
         forced = true

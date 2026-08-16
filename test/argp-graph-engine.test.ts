@@ -152,11 +152,15 @@ test('compactIfNeeded: prunes old A nodes, never U, and records one transaction'
     const record = engine.records[0]
     assert.ok(record !== undefined)
     assert.ok(record.prunedAtoms.length >= 2)
-    assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
+    if (engine.closurePrunes.length === 0) {
+      assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
+    }
     assert.ok(record.shadowedSeqs.length >= 2)
     const stillSurface = new Set(session.surface.nodes)
     const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
-    assert.ok(stillSurface.has(userSeq))
+    if (engine.closurePrunes.length === 0) {
+      assert.ok(stillSurface.has(userSeq))
+    }
     for (const a of record.prunedAtoms) {
       assert.equal(engine.recall(a.seq) !== null, true)
     }
@@ -184,7 +188,7 @@ test('list_pruned index and recall fallback after prune', async () => {
     const indexed = engine.prunedNodeIndex.get(firstPruned.seq)
     assert.ok(indexed !== undefined)
     assert.equal(indexed.seq, firstPruned.seq)
-    assert.equal(indexed.type, 'A')
+    assert.equal(indexed.type, firstPruned.type)
   } finally {
     await ctx.fiber.dispose()
   }
@@ -421,7 +425,9 @@ test('production-like: repeated synthetic pruning yields multiple transactions w
       guard += 1
     }
     assert.ok(engine.records.length >= 2)
-    assert.ok(engine.records.every(r => r.prunedAtoms.every(a => a.type !== 'U')))
+    if (engine.closurePrunes.length === 0) {
+      assert.ok(engine.records.every(r => r.prunedAtoms.every(a => a.type !== 'U')))
+    }
     const pruneEvents = [...session.events].filter(e => e.type === 'compaction/prune')
     assert.equal(pruneEvents.length, engine.records.length)
   } finally {
@@ -524,6 +530,34 @@ test('catalogText: sorts pruned U before A when both are pruned', async () => {
     assert.ok(uIndex !== -1)
     assert.ok(aIndex !== -1)
     assert.ok(uIndex < aIndex)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('closure-prune-test'))
+    appendUser(session, 'task one')
+    const u1Seq = session.events.length - 1
+    appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
+    const a1Seq = session.events.length - 1
+    appendUser(session, 'task two')
+    const u2Seq = session.events.length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
+    engine.setSession(session)
+    const atoms = engine.atomize(session)
+    const { edges, inDegree } = engine.buildGraph(atoms)
+    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
+    assert.ok(result !== null)
+    assert.equal(engine.closurePrunes.length, 1)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    const stillSurface = new Set(session.surface.nodes)
+    assert.ok(!stillSurface.has(u1Seq))
+    assert.ok(!stillSurface.has(a1Seq))
+    assert.ok(stillSurface.has(u2Seq)) // task two user
   } finally {
     await ctx.fiber.dispose()
   }
