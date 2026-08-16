@@ -276,6 +276,33 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.session = session
     this.shadowedSeqsOf(session) // setSession 时初始化一次；后续仅扫描新追加事件
   }
+
+  /** 生成上下文头部 catalog（设计稿 §5）：只列被剪 U/A，snippet 截断，≤maxItems 条。 */
+  catalogText(maxItems = 20, snippetChars = 70): string {
+    if (this.session === null) return ''
+    const shadowed = this.shadowedSeqsOf(this.session)
+    const lines: string[] = []
+    for (const seq of [...shadowed].sort((a, b) => a - b)) {
+      if (lines.length >= maxItems) break
+      const event = this.session.events[seq]
+      if (event === undefined) continue
+      const data = event.data as Record<string, unknown> | undefined
+      let type: AtomType
+      if (event.type === 'user/message') {
+        type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+      } else if (event.type === 'assistant/message') {
+        type = 'A'
+      } else {
+        continue // catalog 只列 U/A
+      }
+      const text = eventText(this.session, seq)
+      const snippet = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+      const clipped = snippet.length > snippetChars ? snippet.slice(0, snippetChars) + '…' : snippet
+      lines.push('[' + type + (data?.turn !== undefined ? data.turn : '') + '] ' + clipped)
+    }
+    if (lines.length === 0) return ''
+    return '[context] Compression removed ' + shadowed.size + ' earlier item(s) from the visible context:\n' + lines.join('\n')
+  }
   /**
    * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
    * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。

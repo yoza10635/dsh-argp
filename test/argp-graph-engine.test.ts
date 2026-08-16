@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine, eventText, extractCites, type Atom } from '../src/argp-graph-engine.ts'
 
@@ -363,6 +363,58 @@ test('version dedup: older duplicate A is pruned while newer copy stays eligible
     const record = engine.records[0]
     assert.ok(record !== undefined)
     assert.ok(record.prunedAtoms.some(a => a.seq === oldSeq))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+
+test('catalogText: renders pruned U/A items with context header', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('catalog-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const catalog = engine.catalogText()
+    assert.ok(catalog.includes('[context] Compression removed'))
+    assert.ok(catalog.includes('[A'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('compactRegion: balanced tool-call/result span can be pruned without orphan pair', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('pairing-region-test'))
+    appendUser(session, 'user anchor')
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({
+        source: { provider: 'test', model: 'test' },
+        content: [{ type: 'tool-call', id: 'call_1' as never, name: 'read_file', arguments: '{"path":"x"}' }],
+      }),
+    }, { surfaceOp: 'append' })
+    const aToolSeq = session.events.length - 1
+    session.append('tool/result', {
+      turn: 1,
+      step: 1,
+      message: createToolResultMessage({ callId: 'call_1' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
+    }, { surfaceOp: 'append' })
+    const rSeq = session.events.length - 1
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    const result = await engine.compactRegion(aToolSeq, rSeq, { session } as never)
+    assert.ok(result !== null)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.ok(record.prunedAtoms.some(a => a.seq === aToolSeq))
+    assert.ok(record.prunedAtoms.some(a => a.seq === rSeq))
   } finally {
     await ctx.fiber.dispose()
   }
