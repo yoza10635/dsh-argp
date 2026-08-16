@@ -71,3 +71,35 @@ R-ANSWER: INC-2-MARKER-22HQ
 - `spike/11-probe-high-out.txt`
 - `spike/06-tlong-disabled-rerun-out.txt`
 - `spike/06-tlong-high-rerun-out.txt`
+
+
+## 追加：fork 分叉探针矩阵（disabled 档，无需完整 50 轮）
+
+- 脚本：`spike/16-fork-probe.ts`
+- 方法：从 `06-tlong-disabled-rerun` 的 `events.jsonl` 取目标 probe 轮前最后一个 `turn/end` 为 seed，用 `ctx.agents.create({ seed })` fork 会话，只重放一个 probe 轮。
+- 成本：每个 cell 只有 1 个 probe 轮。
+- 修正说明：probe 5/6/7 的目标 chunk 因前插 probe 轮，需要减去 `PROBE_TURNS` 中早于该 needle 的 probe 数量；目标 chunk 依次为 2/5/8/11/15/20/25。
+
+### fork 矩阵结果（probes 2-7，每个 cell 5 repeats）
+
+| 变体 | 说明 | recall 触发 | R 正确 |
+|---|---|---|---|
+| v0 | 06-tlong 原文 | 1/12 (8%) | 0/12 (0%) |
+| v1 | 开头显式 call recall | 22/30 (73%) | 16/30 (53%) |
+| v4 | 格式后显式 call recall | 21/30 (70%) | 16/30 (53%) |
+| v5 | 逐步策略：逐个 recall placeholder 直到找到 chunk 首行 | **29/30 (97%)** | **28/30 (93%)** |
+| v6 | 显式 + 禁止猜测 | 18/18 (100%) | 12/18 (67%) |
+
+### 结论与改动
+
+1. v5 最优：recall 触发 29/30，R 正确 28/30（probes 2-7）。
+2. 已将 `spike/06-tlong.ts` 的 `probeText` 改为 v5 策略文案。
+3. 按用户要求，不再重跑完整 50 轮；disabled 档 L3 预期由 fork 矩阵推算为高概率 PASS（R 正确率约 93%，probe-1 原已通过）。
+4. 若后续需要正式 50 轮产物，再跑 `spike/06-tlong.ts` disabled 验证即可。
+
+## 诊断脚本清单
+
+- `spike/12-recall-trigger-probe.ts`：压缩场景 probe 文案探针。
+- `spike/13-tlong-probe1-recall-diag.ts`：1:1 复刻 06-tlong 前 N 轮到指定 probe。
+- `spike/15-fork-probe.ts`：fork 可行性实验。
+- `spike/16-fork-probe.ts`：fork 探针矩阵执行器。

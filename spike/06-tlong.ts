@@ -193,10 +193,12 @@ const setupText = 'We are starting a long-running archival session. From time to
 const fillerBody = (j: number): string =>
   'Use the read tool to read the entire file logs/chunk-' + j + '.md. After reading, reply with exactly one line and nothing else: the file name, a space, and its line count.'
 const probeText = (k: number): string =>
-  'Long-term memory check ' + k + '. Reply with exactly two lines and nothing else, in this format:\n'
+  'Long-term memory check ' + k + '. You need the first line of the chunk file that was read on the same turn as the archival note for node-' + k + '. That first line is not visible; recover it with recall_pruned before answering.\n'
+  + 'To recover, call recall_pruned for each placeholder seq you are unsure about, one at a time, until you find the tool result whose text starts with "chunk <n> telemetry export". Copy the exact INC-<n>-MARKER-<code> from that recovered text. Do not guess.\n'
+  + 'Reply with exactly two lines and nothing else, in this format:\n'
   + 'U-ANSWER: <the service token from my archival note for node-' + k + '>\n'
   + 'R-ANSWER: <the full incident reference marker from the first line of the chunk file you read on the same turn I gave you the archival note for node-' + k + '>\n'
-  + 'If you still cannot recover a value after trying recall_pruned, write NOT-RECOVERABLE on that line.'
+  + 'If after trying recall_pruned for all placeholders you still cannot recover it, write NOT-RECOVERABLE on that line.'
 
 type Item = { label: string; text: string; kind: 'setup' | 'filler' | 'probe'; probeK?: number; chunkIndex?: number; needleK?: number }
 const items: Item[] = [{ label: 'setup', text: setupText, kind: 'setup' }]
