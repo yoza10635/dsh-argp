@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine, eventText, extractCites, type Atom } from '../src/argp-graph-engine.ts'
+import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
@@ -464,6 +464,25 @@ test('explicit measureTokens: config function drives trigger decision', async ()
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null)
     assert.equal(engine.records.length, 1)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+
+test('edge levels: EDGE_WEIGHTS and buildGraph default supporting', async () => {
+  assert.equal(EDGE_WEIGHTS.critical, 10)
+  assert.equal(EDGE_WEIGHTS.supporting, 5)
+  assert.equal(EDGE_WEIGHTS.contextual, 2)
+  const { ctx, engine } = await makeEngine()
+  try {
+    const atoms: Atom[] = [
+      { id: 0, seq: 1, type: 'U', turn: 1, text: 'source', toolCallIds: [], cites: [], citesFailed: false },
+      { id: 1, seq: 2, type: 'A', turn: 2, text: 'answer', toolCallIds: [], cites: ['source'], citesFailed: false },
+    ]
+    const { edges } = engine.buildGraph(atoms)
+    assert.equal(edges.length, 1)
+    assert.equal(edges[0]?.level, 'supporting')
   } finally {
     await ctx.fiber.dispose()
   }

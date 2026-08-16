@@ -36,7 +36,9 @@ export interface Atom {
   citesFailed: boolean  // 仅 A：检测到 cites 尝试但解析失败 → 保守保护（§4.7）
 }
 
-export interface SemanticEdge { from: number; to: number; level: 'supporting' }
+export type EdgeLevel = 'critical' | 'supporting' | 'contextual'
+export interface SemanticEdge { from: number; to: number; level: EdgeLevel }
+export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2 }
 const LEVEL_ORDER: Record<string, number> = { isolated: 0, contextual: 1, supporting: 2, critical: 3 }
 
 export interface ArgpGraphConfig {
@@ -546,7 +548,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const selfImportance = (a: Atom): number => (a.type === 'A' ? 5 : a.type === 'U' ? 3 : 0)
     const eff = new Map(atoms.map(a => [a.id, selfImportance(a)]))
-    for (const e of edges) eff.set(e.to, Math.max(eff.get(e.to) ?? 0, 5)) // supporting 权重 5
+    for (const e of edges) eff.set(e.to, Math.max(eff.get(e.to) ?? 0, EDGE_WEIGHTS[e.level])) // 语义边权重
     const lastRef = new Map<number, number>()
     for (const e of edges) {
       const from = atoms[e.from]
