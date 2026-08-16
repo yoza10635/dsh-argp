@@ -15,7 +15,8 @@ export const DEEPSEEK_PROVIDER = 'deepseek-official'
 export const DEEPSEEK_MODEL = 'deepseek-v4-flash'
 
 const thinking = process.env['ARGP_DEEPSEEK_THINKING'] === 'enabled' ? 'enabled' as const : 'disabled' as const
-export const DEEPSEEK_REASONING_EFFORT = thinking === 'enabled' ? 'high' as const : 'off' as const
+const reasoning = process.env['ARGP_DEEPSEEK_REASONING'] ?? (thinking === 'enabled' ? 'high' as const : 'off' as const)
+export const DEEPSEEK_REASONING_EFFORT = reasoning as 'off' | 'low' | 'high' | 'max'
 
 export const DEEPSEEK_FLASH_CONFIG = {
   thinking,

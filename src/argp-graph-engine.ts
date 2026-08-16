@@ -407,13 +407,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     return total
   }
 
-  /** 测量当前上下文 token；优先 tokenMeter，否则退化为字符估算。 */
+  /** 测量当前上下文 token（当前退化为字符估算；tokenMeter 接入留待后续）。 */
   private measureTokens(session: Session): { contextTokens: number; surfaceTokens: number } {
-    const meter = (this.ctx as { tokenMeter?: { measure(s: Session): { totalTokens: number; surfaceTokens: number } } }).tokenMeter
-    if (meter !== undefined) {
-      const m = meter.measure(session)
-      return { contextTokens: m.totalTokens, surfaceTokens: m.surfaceTokens }
-    }
     const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
     return { contextTokens: surfaceTokens, surfaceTokens }
   }

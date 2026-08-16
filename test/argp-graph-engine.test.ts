@@ -291,25 +291,6 @@ test('reserveTokens: blocks pruning when contextTokens below effective threshold
   }
 })
 
-test('tokenMeter: uses ctx.tokenMeter.measure for trigger decision', async () => {
-  const { ctx, engine } = await makeEngine()
-  try {
-    ;(ctx as { tokenMeter?: unknown }).tokenMeter = {
-      measure: () => ({ totalTokens: 10000, surfaceTokens: 10000 }),
-    }
-    const session = Session.create(SessionId('token-meter-test'))
-    appendUser(session, 'user anchor')
-    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
-    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
-    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
-    engine.setSession(session)
-    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
-    assert.ok(result !== null)
-    assert.equal(engine.records.length, 1)
-  } finally {
-    await ctx.fiber.dispose()
-  }
-})
 
 test('ask-exempt U: covered ask U can be pruned when no cross refs', async () => {
   const { ctx, engine } = await makeEngine()
