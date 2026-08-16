@@ -11,7 +11,9 @@
     "spike3": "node spike/03-recall.ts",
     "spike4a": "node spike/04a-adapter-smoke.ts",
     "spike4": "node spike/04-t1.ts",
-    "spike5": "node spike/05-t8.ts"
+    "spike5": "node spike/05-t8.ts",
+    "spike6": "node spike/06-tlong.ts",
+    "spike7": "node spike/07-baseline.ts"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

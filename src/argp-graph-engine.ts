@@ -101,21 +101,21 @@ function eventText(session: Session, seq: number): string {
 }
 
 /** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
-export function extractCites(text: string): { body: string; cites: string[]; attempted: boolean } {
+export function extractCites(text: string): { body: string; cites: string[]; attempted: boolean; parseFailed: boolean } {
   const fence = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*$/)
   const bare = text.match(/(\{\s*"cites"\s*:[\s\S]*?\})\s*$/)
   const raw = fence?.[1] ?? bare?.[1]
   if (raw === undefined) {
-    return { body: text, cites: [], attempted: text.includes('"cites"') }
+    return { body: text, cites: [], attempted: text.includes('"cites"'), parseFailed: false }
   }
   try {
     const parsed = JSON.parse(raw) as { cites?: unknown }
     if (Array.isArray(parsed.cites) && parsed.cites.every(c => typeof c === 'string')) {
-      return { body: text.slice(0, text.length - (text.match(/(\{\s*"cites"[\s\S]*?\}\s*(?:```)?\s*)$/) ?? [''])[0].length).trimEnd(), cites: parsed.cites, attempted: true }
+      return { body: text.slice(0, text.length - (text.match(/(\{\s*"cites"[\s\S]*?\}\s*(?:```)?\s*)$/) ?? [''])[0].length).trimEnd(), cites: parsed.cites, attempted: true, parseFailed: false }
     }
-    return { body: text, cites: [], attempted: true } // JSON 合法但形状不对 → 解析失败，保守保护
+    return { body: text, cites: [], attempted: true, parseFailed: true } // JSON 合法但形状不对 → 解析失败，保守保护
   } catch {
-    return { body: text, cites: [], attempted: true }
+    return { body: text, cites: [], attempted: true, parseFailed: true }
   }
 }
 /** cites 服从率度量台账（C7-cites 判决用）。 */
@@ -224,14 +224,14 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
       if (event.type === 'assistant/message') {
         const raw = eventText(session, seq)
-        const { body, cites, attempted } = extractCites(raw)
+        const { body, cites, attempted, parseFailed } = extractCites(raw)
         const msg = (data as { message?: { content?: unknown[] } })?.message
         const content = Array.isArray(msg?.content) ? (msg?.content as { type: string; id?: string }[]) : []
         const toolCallIds = content.filter(b => b.type === 'tool-call' && typeof b.id === 'string').map(b => b.id as string)
         this.citeStats.aAtoms += 1
         if (cites.length > 0) this.citeStats.declared += cites.length
-        if (attempted && cites.length === 0) this.citeStats.failed += 1
-        atoms.push({ id: atoms.length, seq, type: 'A', turn, text: body, toolCallIds, cites, citesFailed: attempted && cites.length === 0 })
+        if (parseFailed) this.citeStats.failed += 1
+        atoms.push({ id: atoms.length, seq, type: 'A', turn, text: body, toolCallIds, cites, citesFailed: parseFailed })
         continue
       }
       if (event.type === 'tool/result') {

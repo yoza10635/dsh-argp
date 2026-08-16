@@ -297,13 +297,14 @@ Rules:
 - **ask 跨轮引用回归（新增，外部评审 P0-3）**：真 ask + 后续跨轮引用场景，验证豁免自动失效（pi fork 73 单测需确认覆盖此用例，缺失则移植时补）
 - **跨模型交叉（已实质完成）**：消融期已在本地小模型（t1/t6）与 DeepSeek（t8）交叉验证，服从率分层结论在 §9.8；迁移后复跑两模型即可
 
-里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15），spike 4 解锁；spike 5（t8 复刻建边版）G1–G6 + C7-cites 全 PASS（2026-08-16），M3 仅剩 t-long。**
+里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15）；spike 5（t8 复刻建边版）G1–G6 + C7-cites 全 PASS（2026-08-16）；spike 6 t-long 50 轮双跑（run-A + extractCites 修复后受控对照 run-B）L1/L2/L3 全 PASS（2026-08-16）→ M3 完成。**后续为发文增强项：spike 7 基线臂（dsh 原版 BasicCompactionEngine 同任务对照，脚本已备）。
 
 spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-dsh 仓库）：
 1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
 2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
 3. recall 工具 + PromptSection 契约（半天）——✅ PASS（5 项判决：引擎挂载为 ctx.compaction 且 recall_pruned 进 tools.schemas / argp-contract section 进 assembly 且动态 text 被求值 / 被遮蔽 seq 从 append-only 日志找回原文（含 tool-call 节点投影）、未剪与不存在 seq 正确未命中 / ctx.tools.execute 真实派发命中未命中语义正确 / 追加剪枝后 recall 立即可见）
 4. t1 复刻（headless + llama-server）对照 run-10；t8 复刻确认真剪枝路径（1 天）——✅ 机制验证版 PASS（V1–V6 全过，产物 spike/out/04-t1-2026-08-15T05-00-41-774Z/；与定稿差距：无 LLM 建边/服从率样本未扩，属 M3 范围；撞出候选卡点 B-3）——spike 5 t8 复刻（ArgpGraphEngine 建边版 10240/7168，medium 档）✅ 全 PASS（2026-08-16，G1–G6：atoms U/A/R/X=12/13/2/4、语义边 2；2 事务均净减 shadowed 8 节点、首笔 47613→18184 chars；cites×剪枝交互 0 违例；0 孤儿；事务事件无错；probe expectAll 2/2 anyOf=pass；wall=1025s。C7-cites：实质轮服从 2/2、逐字引用全命中 → 本地新 SOTA 模型可启用 cites 义务。产物 spike/out/05-t8-2026-08-15T18-42-28-947Z/。实测修正：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 仅三类型，call 块内嵌 A）→ 引擎改组同剪（A 含 tool-call 块 + 应答 R 整组同剪）；cites 匹配 startsWith→includes；窗口 16384/8192→10240/7168 使事务频率成立；判决脚本 turn 映射须按文案匹配 + turn/start 定位（prompt 序号在重试轮错位，G6 曾误判 FAIL，05-rejudge.ts 重判通过））
+5. t-long 长程误差曲线（spike 6，50 轮 medium 档）——✅ 双跑全 PASS（2026-08-16）。run-A（产物 spike/out/06-tlong-2026-08-15T19-28-31-109Z/）：50 轮完成、24 事务 shadowed 118、0 孤儿；U 7/7、R 7/7，误差曲线全平（边界 6→24 正确率恒 100%）；recall 21 调用命中 14；wall=3687s。run-B（extractCites 修复后受控对照，产物 spike/out/06-tlong-2026-08-16T06-39-26-665Z/）：35 事务 shadowed 119、0 孤儿；U 7/7、R 7/7（边界 5→35 曲线全平）；recall 36 调用命中 14；citeStats declared 13→227、failed 549→41；wall=4334s。归因：run-A 的 failed=549 系 extractCites 把合法空块 {"cites":[]} 误判 parseFailed → 保守保护挡候选；修复后候选池扩大（事务 24→35）、cites 声明回升使边保护生效。长程新形态（入开放问题 8）：run-B 后段 visible 稳态 31K→62K 爬升，现空剪（keptIntervals=0）+ 被引大块内容受保护
 
 全部通过 → 启动整体迁移；任一失败 → 重新评估停留 pi fork 的成本。
 
@@ -316,3 +317,4 @@ spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-
 5. 用户回返的主动检测（外部评审 P1-3）：新 U 与某墓碑根 U 相似度高时主动注入提示（"存在相关已剪内容，可 recall"）；当前依赖契约义务的自发 recall + catalog snippet 提示，主动注入是 phase2 扩展（需廉价关键词重叠或 embedding 检查）
 6. 引用义务的推理正则化效应（§9.11 理由②）：要求 cites vs 不要求时，回答的逻辑链是否更强——未被测过且本质难以客观度量（主观判断/LLM-as-judge 同样主观）；若未来想验证，只能接受主观评估的局限（如盲评配对比较），不作为迁移阻塞项
 7. 建边覆盖率保底（2026-08-15 讨论）：提案"要求回答至少直接引用问题一次"以保证每节点出度——判决不宜走契约层：①服从是概率非保证（强模型 t8 probe 轮也漏写）；②强制边无依赖信息且使最新 U 成 hub，与既有 latestU/新鲜度保护重复；③逐字引用耗 token 且诱导回显仿写，改写式复述又击穿文本匹配检测。候选形态：图构建器无条件加"回答→触发问题"架构先验边（覆盖率 100%、0 token、0 服从依赖，显式标记为先验边而非声明边），cites 维持细粒度增强；是否另测简化契约版待 spike 4 新模型服从率基线后定
+8. 长程可见量爬升与空剪（2026-08-16，spike 6 run-B 实测）：cites 边保护生效后，被引大块内容（filler 应答引用 chunk 内容）长期驻留 surface，visible 稳态从 31K 爬至 62K chars；候选组小而碎时整组剪除后区间 < minSpanChars（512）被放回 → 空剪（keptIntervals=0，本轮无事务但仍超阈）。不变式未破（62K 仍低于模型窗口，R 针 7/7 未受影响），但预算利用率下降。候选改进：①入度保护加新鲜度衰减（被引但久未再引的原子降级候选）；②minSpan 下限与组合并策略联动（碎组合并成大区间再剪）；③空剪时升格 force 通道。不阻塞 M3，入 phase2 改进清单
