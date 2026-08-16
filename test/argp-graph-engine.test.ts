@@ -562,3 +562,35 @@ test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async
     await ctx.fiber.dispose()
   }
 })
+
+test('closure lifecycle: dependent closure with incoming edge is not pruned first', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('closure-dependent-test'))
+    appendUser(session, 'task one')
+    const u1Seq = session.events.length - 1
+    appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
+    const a1Seq = session.events.length - 1
+    appendUser(session, 'task two')
+    const u2Seq = session.events.length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
+    const a2Seq = session.events.length - 1
+    engine.setSession(session)
+    const atoms = engine.atomize(session)
+    const a1 = atoms.find(a => a.seq === a1Seq)
+    const a2 = atoms.find(a => a.seq === a2Seq)
+    assert.ok(a1 !== undefined && a2 !== undefined)
+    const edges = [{ from: a1.id, to: a2.id, level: 'supporting' as const }]
+    const inDegree = new Map<number, number>([[a2.id, 1]])
+    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
+    assert.ok(result !== null)
+    assert.equal(engine.closurePrunes.length, 1)
+    assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq)
+    const stillSurface = new Set(session.surface.nodes)
+    assert.ok(stillSurface.has(u2Seq))
+    assert.ok(stillSurface.has(a2Seq))
+    assert.ok(!stillSurface.has(u1Seq))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
