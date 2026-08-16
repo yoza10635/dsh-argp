@@ -316,12 +316,14 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /** 生成上下文头部 catalog（设计稿 §5）：只列被剪 U/A，snippet 截断，≤maxItems 条。 */
-  catalogText(maxItems = 20, snippetChars = 70): string {
+  catalogText(maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
     if (this.session === null) return ''
     const shadowed = this.shadowedSeqsOf(this.session)
-    const lines: string[] = []
-    for (const seq of [...shadowed].sort((a, b) => a - b)) {
-      if (lines.length >= maxItems) break
+    const entries: { type: AtomType; turn: number; seq: number; snippet: string }[] = []
+    const charBudget = tokenBudget * this.charsPerToken
+    let usedChars = 0
+    for (const seq of shadowed) {
+      if (entries.length >= maxItems) break
       const event = this.session.events[seq]
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
@@ -336,8 +338,14 @@ export class ArgpGraphEngine extends CompactionEngine {
       const text = eventText(this.session, seq)
       const snippet = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
       const clipped = snippet.length > snippetChars ? snippet.slice(0, snippetChars) + '…' : snippet
-      lines.push('[' + type + (data?.turn !== undefined ? data.turn : '') + '] ' + clipped)
+      if (usedChars + clipped.length > charBudget && entries.length > 0) break
+      usedChars += clipped.length
+      const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
+      entries.push({ type, turn, seq, snippet: clipped })
     }
+    // U 排前，其余按 seq 升序
+    entries.sort((a, b) => (a.type === 'U' ? 0 : 1) - (b.type === 'U' ? 0 : 1) || a.seq - b.seq)
+    const lines = entries.map(e => '[' + e.type + (e.turn !== 0 ? e.turn : '') + '] ' + e.snippet)
     if (lines.length === 0) return ''
     return '[context] Compression removed ' + shadowed.size + ' earlier item(s) from the visible context:\n' + lines.join('\n')
   }
@@ -496,19 +504,35 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
-  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪。 */
+  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。 */
   private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): Set<number> {
     const dupIds = new Set<number>()
-    const seenA = new Map<string, Atom>()
     const issuerByCall = new Map<string, Atom>()
-    for (const a of atoms) if (a.type === 'A') for (const cid of a.toolCallIds) issuerByCall.set(cid, a)
+    const rByCall = new Map<string, Atom>()
+    for (const a of atoms) {
+      if (a.type !== 'A') continue
+      for (const cid of a.toolCallIds) issuerByCall.set(cid, a)
+    }
+    for (const r of atoms) {
+      if (r.type !== 'R' || r.toolCallIds[0] === undefined) continue
+      rByCall.set(r.toolCallIds[0], r)
+    }
+    const addPair = (a: Atom): void => {
+      if ((inDegree.get(a.id) ?? 0) !== 0) return
+      dupIds.add(a.id)
+      for (const cid of a.toolCallIds) {
+        const r = rByCall.get(cid)
+        if (r !== undefined && (inDegree.get(r.id) ?? 0) === 0) dupIds.add(r.id)
+      }
+    }
+    const seenA = new Map<string, Atom>()
     for (const a of atoms.filter(x => x.type === 'A')) {
       const key = a.text.trim()
       const existing = seenA.get(key)
       if (existing !== undefined) {
         const older = existing.turn < a.turn || (existing.turn === a.turn && existing.seq < a.seq) ? existing : a
         const newer = older === existing ? a : existing
-        if ((inDegree.get(older.id) ?? 0) === 0) dupIds.add(older.id)
+        if ((inDegree.get(older.id) ?? 0) === 0) addPair(older)
         seenA.set(key, newer)
       } else {
         seenA.set(key, a)
@@ -522,7 +546,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (existing !== undefined) {
         const older = existing.turn < r.turn || (existing.turn === r.turn && existing.seq < r.seq) ? existing : r
         const newer = older === existing ? r : existing
-        if ((inDegree.get(older.id) ?? 0) === 0) dupIds.add(older.id)
+        if ((inDegree.get(older.id) ?? 0) === 0) {
+          dupIds.add(older.id)
+          if (issuer !== undefined) addPair(issuer)
+        }
         seenR.set(key, newer)
       } else {
         seenR.set(key, r)

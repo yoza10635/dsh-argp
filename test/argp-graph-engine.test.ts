@@ -507,3 +507,24 @@ test('deterministic edges: A→R from matching toolCallIds', async () => {
     await ctx.fiber.dispose()
   }
 })
+
+test('catalogText: sorts pruned U before A when both are pruned', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('catalog-order-test'))
+    appendUser(session, 'What is the answer?')
+    appendAssistant(session, 'The answer is 42.\n{"cites":["What is the answer?"]}', 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const catalog = engine.catalogText()
+    const uIndex = catalog.indexOf('[U')
+    const aIndex = catalog.indexOf('[A')
+    assert.ok(uIndex !== -1)
+    assert.ok(aIndex !== -1)
+    assert.ok(uIndex < aIndex)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
