@@ -346,3 +346,24 @@ test('ask-exempt U: cross-reference invalidates exemption and keeps U', async ()
     await ctx.fiber.dispose()
   }
 })
+
+test('version dedup: older duplicate A is pruned while newer copy stays eligible', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('version-dedup-test'))
+    appendUser(session, 'user anchor')
+    const dupText = 'DUP:' + 'x'.repeat(30)
+    appendAssistant(session, dupText, 1)
+    const oldSeq = session.events.length - 1
+    appendAssistant(session, dupText, 2)
+    appendAssistant(session, 'A3:' + 'y'.repeat(300), 3)
+    appendAssistant(session, 'A4:' + 'z'.repeat(300), 4)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.ok(record.prunedAtoms.some(a => a.seq === oldSeq))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

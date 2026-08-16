@@ -391,6 +391,38 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
+  /** §4.4 简化版本链去重：相同 A/R 文本保留最新，旧副本标记为可剪。 */
+  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): Set<number> {
+    const dupIds = new Set<number>()
+    const seenA = new Map<string, Atom>()
+    for (const a of atoms.filter(x => x.type === 'A')) {
+      const key = a.text.trim()
+      const existing = seenA.get(key)
+      if (existing !== undefined) {
+        const older = existing.turn < a.turn || (existing.turn === a.turn && existing.seq < a.seq) ? existing : a
+        const newer = older === existing ? a : existing
+        if ((inDegree.get(older.id) ?? 0) === 0) dupIds.add(older.id)
+        seenA.set(key, newer)
+      } else {
+        seenA.set(key, a)
+      }
+    }
+    const seenR = new Map<string, Atom>()
+    for (const r of atoms.filter(x => x.type === 'R')) {
+      const key = r.text.trim()
+      const existing = seenR.get(key)
+      if (existing !== undefined) {
+        const older = existing.turn < r.turn || (existing.turn === r.turn && existing.seq < r.seq) ? existing : r
+        const newer = older === existing ? r : existing
+        if ((inDegree.get(older.id) ?? 0) === 0) dupIds.add(older.id)
+        seenR.set(key, newer)
+      } else {
+        seenR.set(key, r)
+      }
+    }
+    return dupIds
+  }
+
   /**
    * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
    * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
@@ -499,6 +531,11 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false)).length
     const pruned = new Map<number, Atom>()
+    const duplicateIds = this.findVersionDuplicates(atoms, inDegree)
+    for (const id of duplicateIds) {
+      const atom = atoms.find(a => a.id === id)
+      if (atom !== undefined) pruned.set(id, atom)
+    }
     let forced = false
     for (let pass = 0; pass < this.maxPasses; pass += 1) {
       const remaining = atoms.filter(a => !pruned.has(a.id))
