@@ -419,3 +419,31 @@ test('compactRegion: balanced tool-call/result span can be pruned without orphan
     await ctx.fiber.dispose()
   }
 })
+
+test('production-like: repeated synthetic pruning yields multiple transactions without pruning U', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('multi-tx-stress'))
+    appendUser(session, 'user anchor')
+    for (let i = 1; i <= 10; i += 1) {
+      appendAssistant(session, 'A' + i + ':' + String(i).repeat(300), i)
+    }
+    engine.setSession(session)
+    let turn = 10
+    let guard = 0
+    while (engine.records.length < 2 && guard < 10) {
+      const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+      if (result === null) {
+        turn += 1
+        appendAssistant(session, 'A' + turn + ':' + String(turn).repeat(300), turn)
+      }
+      guard += 1
+    }
+    assert.ok(engine.records.length >= 2)
+    assert.ok(engine.records.every(r => r.prunedAtoms.every(a => a.type !== 'U')))
+    const pruneEvents = [...session.events].filter(e => e.type === 'compaction/prune')
+    assert.equal(pruneEvents.length, engine.records.length)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
