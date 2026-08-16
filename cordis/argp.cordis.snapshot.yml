@@ -1,0 +1,14 @@
+# ARGP dsh 声明式挂载示例（P4）
+# 用法：在 dsh cordis snapshot 中 include 本文件，或按此结构 patch。
+# 注意：patch 是顶层字段浅替换；要禁用 compaction-basic，需要显式 disabled: true。
+include:
+  - id: compaction-basic
+    package: '@deepseek-ai/dsh-compaction-basic'
+    disabled: true
+  - id: argp-dsh
+    package: 'argp-dsh'
+    config:
+      windowTokens: 10240
+      retainTokens: 7168
+      maxPasses: 16
+      reserveTokens: 0
