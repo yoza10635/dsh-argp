@@ -75,6 +75,12 @@ const PROBE_VARIANTS: Record<string, (k: number) => string> = {
     + 'U-ANSWER: <the service token from my archival note for node-' + k + '>\n'
     + 'R-ANSWER: <the full incident reference marker from the first line of the chunk file you read on the same turn I gave you the archival note for node-' + k + '>\n'
     + 'If after trying recall_pruned you still cannot recover the exact marker, write NOT-RECOVERABLE on that line.',
+  v7: (k) => 'Long-term memory check ' + k + '. The first line of the chunk file that was read on the same turn as the archival note for node-' + k + ' is not visible.\n'
+    + 'First call list_pruned to list the pruned nodes. Find the tool-result seq whose first line starts with "chunk <n> telemetry export", then call recall_pruned with that seq to recover the full text before answering. Do not guess.\n'
+    + 'Reply with exactly two lines and nothing else, in this format:\n'
+    + 'U-ANSWER: <the service token from my archival note for node-' + k + '>\n'
+    + 'R-ANSWER: <the full incident reference marker from the first line of the chunk file you read on the same turn I gave you the archival note for node-' + k + '>\n'
+    + 'If after trying list_pruned and recall_pruned you still cannot recover it, write NOT-RECOVERABLE on that line.',
 }
 const probeText = PROBE_VARIANTS[variant]?.(probeIndex)
 if (probeText === undefined) throw new Error('unknown ARGP_PROBE_VARIANT: ' + variant)

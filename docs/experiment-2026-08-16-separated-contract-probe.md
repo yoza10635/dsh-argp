@@ -103,3 +103,27 @@ R-ANSWER: INC-2-MARKER-22HQ
 - `spike/13-tlong-probe1-recall-diag.ts`：1:1 复刻 06-tlong 前 N 轮到指定 probe。
 - `spike/15-fork-probe.ts`：fork 可行性实验。
 - `spike/16-fork-probe.ts`：fork 探针矩阵执行器。
+
+
+## 追加：list_pruned 工具与 v7 对比
+
+### 实现
+
+- `src/argp-graph-engine.ts` 新增 `list_pruned` 工具：
+  - 列出当前被剪节点：`seq/type/turn/firstLine preview/citedBySeq`
+  - 可选过滤：`turn`、`type`（A/R/U/X）、`keyword`
+  - `argp-contract` 系统提示改为“先用 list_pruned 找 seq，再 recall_pruned 取全文”
+- 新 probe 变体 v7：先 `list_pruned`，定位 `chunk <n> telemetry export` 的 R 节点 seq，再 `recall_pruned(seq)`。
+
+### fork 对比（probes 2-7，每个 cell 3 repeats，当前引擎）
+
+| 变体 | R 正确 | recall 触发 | 说明 |
+|---|---|---|---|
+| v5（当前引擎） | 17/18 (94%) | 15/18 (83%) | 保持“逐步 recall”策略 |
+| v7（list_pruned + recall） | 16/18 (89%) | 9/18 (50%) | list_pruned 调用 19 次；部分答案仅靠 preview，未走 recall |
+
+### 结论
+
+1. `list_pruned` 能显著减少盲猜 seq，模型会主动用 `keyword/type` 过滤。
+2. 但当前 preview 包含完整首行 marker，模型有时直接抄 preview，绕过 recall 全文。
+3. 因此正式 probe 文案仍保留 v5；`list_pruned` 作为辅助工具保留，若后续要强制 recall，应把 preview 截断到不含 marker 码，或只返回 `seq/type/turn/citedBy`。

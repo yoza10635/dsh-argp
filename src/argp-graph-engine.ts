@@ -117,6 +117,15 @@ export function extractCites(text: string): { body: string; cites: string[]; att
 /** cites 服从率度量台账（C7-cites 判决用）。 */
 export interface CiteStats { aAtoms: number; declared: number; resolved: number; ambiguous: number; failed: number }
 
+/** list_pruned 工具的剪枝节点目录条目。 */
+export interface PrunedNodeInfo {
+  seq: number
+  type: AtomType
+  turn: number
+  firstLine: string
+  citedBySeq: number[]
+}
+
 export class ArgpGraphEngine extends CompactionEngine {
   static inject = ['tools', 'systemPrompt']
 
@@ -132,6 +141,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly citeStats: CiteStats = { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 }
   /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
   lastEdges: SemanticEdge[] = []
+
+  /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
+  readonly prunedNodeIndex = new Map<number, PrunedNodeInfo>()
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -167,6 +179,57 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.tools.register(recallTool)
 
+    const listPrunedTool = defineTool({
+      name: 'list_pruned',
+      description: 'List pruned conversation nodes that are currently elided from visible context. Use this to find the seq you need before calling recall_pruned. Returns one line per pruned seq with seq, type, turn, first-line preview, and citedBy seqs when known. Optional filters: turn, type (A/R/U/X), keyword.',
+      parameters: {
+        turn: { type: 'integer', description: 'optional exact turn number filter' },
+        type: { type: 'string', description: 'optional node type filter: A (assistant), R (tool result), U (user), X (checkpoint)' },
+        keyword: { type: 'string', description: 'optional substring that must appear in the node text' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      execute: async (args): Promise<string> => {
+        if (this.session === null) return 'list_pruned: no session bound'
+        const shadowed = this.shadowedSeqsOf(this.session)
+        const filters = (args ?? {}) as { turn?: number; type?: string; keyword?: string }
+        const lines: string[] = []
+        const seqs = [...shadowed].sort((a, b) => a - b)
+        for (const seq of seqs) {
+          const event = this.session.events[seq]
+          if (event === undefined) continue
+          const data = event.data as Record<string, unknown> | undefined
+          const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
+          if (filters.turn !== undefined && turn !== filters.turn) continue
+          let type: AtomType
+          if (event.type === 'user/message') {
+            type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+          } else if (event.type === 'assistant/message') {
+            type = 'A'
+          } else if (event.type === 'tool/result') {
+            type = 'R'
+          } else {
+            type = 'X'
+          }
+          if (filters.type !== undefined && type !== filters.type) continue
+          const text = eventText(this.session, seq)
+          if (filters.keyword !== undefined && !text.includes(filters.keyword)) continue
+          const firstLine = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+          const preview = firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine
+          const indexed = this.prunedNodeIndex.get(seq)
+          const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
+            ? ' citedBy=' + indexed.citedBySeq.join(',')
+            : ''
+          lines.push('seq=' + seq + ' type=' + type + ' turn=' + turn + citedBy + ' first=' + preview)
+        }
+        if (lines.length === 0) return 'list_pruned: no pruned nodes match filters'
+        return lines.join('\n')
+      },
+    })
+    ctx.tools.register(listPrunedTool)
+
     // 压缩/恢复契约：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
     ctx.systemPrompt.section({
       name: 'argp-contract',
@@ -174,7 +237,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       text: () => 'Context compression (ARGP):\n'
         + 'Your visible context is a pruned view of the full conversation. Older parts may have been replaced by placeholders like [elided seq=N..M ...]; absence from the visible context does not mean it was never said.\n'
         + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-        + '- When your answer depends on an elided placeholder, call the recall_pruned tool with that placeholder seq before answering. Never reconstruct elided facts from memory.',
+        + '- When your answer depends on an elided placeholder, use list_pruned to find the right seq, then call recall_pruned(seq) to recover the full text before answering. Never reconstruct elided facts from memory.',
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
@@ -429,6 +492,22 @@ export class ArgpGraphEngine extends CompactionEngine {
     console.log('[argp-graph] prune decision: visible=' + visibleNow + ' groups=' + groups.length
       + ' softCandidates=' + softCandidateGroups + ' prunedAtoms=' + pruned.size + ' keptIntervals=' + kept.length + ' forced=' + forced)
     if (kept.length === 0) return null
+    for (const iv of kept) {
+      for (const a of iv.atoms) {
+        const citedBySeq = edges
+          .filter(e => e.to === a.id)
+          .map(e => atoms[e.from]?.seq)
+          .filter((x): x is number => x !== undefined)
+        const firstLine = a.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+        this.prunedNodeIndex.set(a.seq, {
+          seq: a.seq,
+          type: a.type,
+          turn: a.turn,
+          firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
+          citedBySeq,
+        })
+      }
+    }
     return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced)
   }
 
