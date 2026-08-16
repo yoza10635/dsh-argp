@@ -44,6 +44,8 @@ export interface ArgpT1Config {
   minSpanChars?: number
   /** 估算基准：英文 1 token 约 3.5 字符；触发与目标同基准（不变式 2）。 */
   charsPerToken?: number
+  /** 单次剪枝事务的最大贪心 pass 数（默认 8；机制验证档固定，生产档可按需调高）。 */
+  maxPasses?: number
 }
 
 /** 一次剪枝事务的观测记录（spike 断言直接读这里）。 */
@@ -124,6 +126,7 @@ export class ArgpT1Engine extends CompactionEngine {
   readonly recencyGuard: number
   readonly minSpanChars: number
   readonly charsPerToken: number
+  readonly maxPasses: number
 
   /** 全部剪枝事务记录（spike 断言直接读这里）。 */
   readonly records: PruneRecord[] = []
@@ -139,6 +142,7 @@ export class ArgpT1Engine extends CompactionEngine {
     this.recencyGuard = config.recencyGuard ?? 4
     this.minSpanChars = config.minSpanChars ?? 512
     this.charsPerToken = config.charsPerToken ?? 3.5
+    this.maxPasses = config.maxPasses ?? 8
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -217,7 +221,7 @@ export class ArgpT1Engine extends CompactionEngine {
     if (visibleChars(session) < thresholdChars) return null
 
     let last: CompactionResult | null = null
-    for (let pass = 0; pass < 8; pass += 1) {
+    for (let pass = 0; pass < this.maxPasses; pass += 1) {
       const span = this.selectOldestSpan(session)
       if (span === null) break
       last = this.pruneSpan(session, span)

@@ -26,6 +26,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 
 const failures: string[] = []
 const verdict = (name: string, ok: boolean, detail: string): void => {
@@ -72,6 +73,11 @@ process.env['ARGP_LOCAL_KEY'] = 'local-no-auth'
 
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-7 t-long archival persona' } })
+// B-4 装配修复：agent-loop-testkit 不挂 tokenMeter，basic 引擎 pre-step 中
+// this.ctx.tokenMeter.measure 抛 TypeError 且被静默 warn 吞掉 → 压力通道全程 0 事务。
+await ctx.plugin(TokenMeter)
+if (typeof ctx.tokenMeter?.measure !== 'function') throw new Error('spike 7: tokenMeter did not mount; BasicCompactionEngine pressure channel will be silent no-op')
+console.log('[diag] tokenMeter mounted ok')
 await ctx.plugin(AgentLoop, { agents: [] })
 await ctx.plugin(LlmPiAi, {
   providers: {

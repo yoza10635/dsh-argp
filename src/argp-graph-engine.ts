@@ -45,6 +45,8 @@ export interface ArgpGraphConfig {
   recencyGuard?: number   // 默认 4（surface 末尾 N 节点不参剪）
   minSpanChars?: number   // 默认 512（微剪枝下限）
   charsPerToken?: number  // 默认 3.5（触发与目标同基准）
+  /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
+  maxPasses?: number
 }
 
 export interface GraphPruneRecord {
@@ -63,20 +65,10 @@ export interface GraphPruneRecord {
   forced: boolean
 }
 
-/** 收集当前日志里全部被遮蔽的 surface seq（replace 事件 sourceEventSeqs 并集）。 */
-function shadowedSeqs(session: Session): Set<number> {
-  const shadowed = new Set<number>()
-  for (const event of session.events) {
-    const op = (event as { surfaceOp?: unknown }).surfaceOp
-    if (op !== undefined && op !== 'append') {
-      for (const seq of (event as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []) shadowed.add(seq)
-    }
-  }
-  return shadowed
-}
+
 
 /** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。 */
-function eventText(session: Session, seq: number): string {
+export function eventText(session: Session, seq: number): string {
   const event = session.events[seq]
   if (event === undefined) return ''
   const data = event.data as Record<string, unknown> | undefined
@@ -86,8 +78,12 @@ function eventText(session: Session, seq: number): string {
     parts.push('[tool-call ' + (d?.name ?? '?') + '(' + (typeof d?.arguments === 'string' ? d.arguments : JSON.stringify(d?.arguments ?? {})) + ')]')
     return parts.join('\n')
   }
-  const message = (data as { message?: { content?: unknown[] } } | undefined)?.message
-  const content = Array.isArray(message?.content) ? (message.content as { type: string; text?: string; name?: string; arguments?: unknown; content?: { type: string; text?: string }[] }[]) : []
+  // dsh event shapes differ by type: user/message carries content at data.content,
+  // assistant/message and tool/result carry it at data.message.content.
+  const rawContent = event.type === 'user/message'
+    ? (data as { content?: unknown[] } | undefined)?.content
+    : (data as { message?: { content?: unknown[] } } | undefined)?.message?.content
+  const content = Array.isArray(rawContent) ? (rawContent as { type: string; text?: string; name?: string; arguments?: unknown; content?: { type: string; text?: string }[] }[]) : []
   for (const block of content) {
     if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
     if (block.type === 'tool-call') {
@@ -129,6 +125,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly recencyGuard: number
   readonly minSpanChars: number
   readonly charsPerToken: number
+  readonly maxPasses: number
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -137,6 +134,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   lastEdges: SemanticEdge[] = []
 
   private session: Session | null = null
+  private shadowedSession: Session | null = null
+  private shadowedSet: Set<number> = new Set()
+  private shadowedScanned = 0
 
   constructor(ctx: Context, config: ArgpGraphConfig = {}) {
     super(ctx)
@@ -145,6 +145,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.recencyGuard = config.recencyGuard ?? 4
     this.minSpanChars = config.minSpanChars ?? 512
     this.charsPerToken = config.charsPerToken ?? 3.5
+    this.maxPasses = config.maxPasses ?? 16
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -157,7 +158,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       execute: async (args): Promise<string> => {
         const seq = (args as { seq?: number }).seq
         if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
-        const hit = shadowedSeqs(this.session).has(seq)
+        const hit = this.shadowedSeqsOf(this.session).has(seq)
         this.recallCalls.push({ seq, hit })
         if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
         const text = eventText(this.session, seq)
@@ -199,11 +200,35 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   setSession(session: Session): void {
     this.session = session
+    this.shadowedSeqsOf(session) // setSession 时初始化一次；后续仅扫描新追加事件
+  }
+  /**
+   * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
+   * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
+   */
+  private shadowedSeqsOf(session: Session): Set<number> {
+    if (this.shadowedSession !== session) {
+      this.shadowedSession = session
+      this.shadowedSet = new Set()
+      this.shadowedScanned = 0
+    }
+    for (let index = this.shadowedScanned; index < session.events.length; index += 1) {
+      const event = session.events[index]
+      if (event === undefined) continue
+      const op = (event as { surfaceOp?: unknown }).surfaceOp
+      if (op !== undefined && op !== 'append') {
+        for (const seq of (event as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []) {
+          this.shadowedSet.add(seq)
+        }
+      }
+    }
+    this.shadowedScanned = session.events.length
+    return this.shadowedSet
   }
 
   recall(seq: number): string | null {
     if (this.session === null) return null
-    if (!shadowedSeqs(this.session).has(seq)) return null
+    if (!this.shadowedSeqsOf(this.session).has(seq)) return null
     const text = eventText(this.session, seq)
     return text === '' ? null : text
   }
@@ -361,7 +386,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false)).length
     const pruned = new Map<number, Atom>()
     let forced = false
-    for (let pass = 0; pass < 16; pass += 1) {
+    for (let pass = 0; pass < this.maxPasses; pass += 1) {
       const remaining = atoms.filter(a => !pruned.has(a.id))
       const visible = remaining.reduce((sum, a) => sum + a.text.length, 0)
       if (visible <= retainChars) break
