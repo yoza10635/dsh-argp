@@ -261,10 +261,14 @@ export class ArgpGraphEngine extends CompactionEngine {
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
-      text: () => 'Context compression (ARGP):\n'
-        + 'Your visible context is a pruned view of the full conversation. Older parts may have been replaced by placeholders like [elided seq=N..M ...]; absence from the visible context does not mean it was never said.\n'
-        + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-        + '- When your answer depends on an elided placeholder, use list_pruned to find the right seq, then call recall_pruned(seq) to recover the full text before answering. Never reconstruct elided facts from memory.',
+      text: () => {
+        const base = 'Context compression (ARGP):\n'
+          + 'Your visible context is a pruned view of the full conversation. Older parts may have been replaced by placeholders like [elided seq=N..M ...]; absence from the visible context does not mean it was never said.\n'
+          + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
+          + '- When your answer depends on an elided placeholder, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct elided facts from memory.'
+        const catalog = this.catalogText(20, 70)
+        return catalog === '' ? base : base + '\n\n' + catalog
+      },
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
