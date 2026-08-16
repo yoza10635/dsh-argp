@@ -2,7 +2,7 @@
  * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
  *
  * 按设计稿 §3-§7 移植，机制验证版简化（差异记入台账）：
- *  - 无版本链去重（§4.4）、无 summarize 降级（§4.6.1，候选耗尽走 force_prune）、无 catalog（仅 recall）
+ *  - 无版本链去重（§4.4）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
  *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
  *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
  *    实测：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 三类），call 块内嵌在 assistant/message 里
@@ -51,6 +51,8 @@ export interface ArgpGraphConfig {
   reserveTokens?: number
   /** 可选显式 token 测量函数；不传则退化为字符估算。 */
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
+  /** 是否启用 summarize 降级。默认 false：本地单 slot 模型下 summarize 会破坏 KV cache，ARGP 走 force_prune。 */
+  enableSummarize?: boolean
 }
 
 export interface GraphPruneRecord {
@@ -143,6 +145,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly maxPasses: number
   readonly reserveTokens: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
+  readonly enableSummarize: boolean
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -169,6 +172,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.maxPasses = config.maxPasses ?? 16
     this.reserveTokens = config.reserveTokens ?? 0
     this.tokenMeterFn = config.measureTokens
+    this.enableSummarize = config.enableSummarize ?? false
 
     const recallTool = defineTool({
       name: 'recall_pruned',
