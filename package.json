@@ -16,7 +16,7 @@
     "spike7": "node spike/07-baseline.ts",
     "smoke": "node spike/dev-smoke.ts",
     "check": "npm run typecheck && npm run smoke",
-    "smoke:deepseek": "node spike/10a-deepseek-smoke.ts && node spike/10b-basic-deepseek-smoke.ts"
+    "smoke:deepseek": "node spike/10a-deepseek-smoke.ts && node spike/10b-basic-deepseek-smoke.ts && node spike/10d-argp-deepseek-smoke.ts"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

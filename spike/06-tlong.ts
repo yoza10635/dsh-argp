@@ -1,5 +1,5 @@
 /**
- * spike 6（M3）：t-long 长程误差曲线 × ArgpGraphEngine（50 轮，medium 档）
+ * spike 6（M3）：t-long 长程误差曲线 × ArgpGraphEngine（50 轮，DeepSeek v4-flash）
  *
  * 目标（设计稿 §10）：probe 准确率随剪枝边界数增长的误差累积曲线；真剪枝链长程稳定性。
  * 结构：setup 1 + filler 42 + probe 7（轮 14/20/26/32/38/44/50）= 50 轮。
@@ -22,7 +22,7 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
+import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER, DEEPSEEK_REASONING_EFFORT, mountDeepSeekFlash } from './deepseek.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -43,7 +43,7 @@ watchdog.unref()
 
 // ---------- 产物目录 ----------
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const outDir = path.join(import.meta.dirname, 'out', '06-tlong-' + stamp)
+const outDir = path.join(import.meta.dirname, 'out', '06-tlong-deepseek-' + stamp)
 const workDir = path.join(outDir, 'work')
 fs.mkdirSync(path.join(workDir, 'logs'), { recursive: true })
 
@@ -68,30 +68,11 @@ for (let i = 1; i <= chunkCount; i += 1) {
   fs.writeFileSync(path.join(workDir, 'logs', 'chunk-' + i + '.md'), makeChunk(i), 'utf8')
 }
 
-// ---------- 装配（同 spike 5：ArgpGraphEngine 10240/7168，maxTokens 不设限，思考档由服务端 medium 控） ----------
-process.env['ARGP_LOCAL_KEY'] = 'local-no-auth'
-
+// ---------- 装配：DeepSeek v4-flash + ArgpGraphEngine 10240/7168 ----------
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-6 t-long archival persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
-await ctx.plugin(LlmPiAi, {
-  providers: {
-    local: {
-      displayName: 'Local llama.cpp',
-      apiKeyEnv: 'ARGP_LOCAL_KEY',
-      api: 'openai-completions',
-      baseURL: 'http://localhost:8080/v1',
-      compat: { thinkingFormat: 'qwen' },
-      models: [{
-        id: 'Qwen3.8-27B',
-        name: 'Qwen3.8-27B (local SOTA)',
-        contextWindow: 196_608,
-        maxTokens: 65_536,
-        reasoningEfforts: { off: 'false', high: 'true' },
-      }],
-    },
-  },
-})
+await mountDeepSeekFlash(ctx)
 await ctx.plugin(ArgpGraphEngine, { windowTokens: 10_240, retainTokens: 7_168 })
 const engine = ctx.compaction as ArgpGraphEngine
 
@@ -116,9 +97,9 @@ ctx.tools.register(defineTool({
 }))
 
 const agent = ctx.agentLoop.create(SessionId('spike-6-tlong'), {
-  provider: 'local',
-  model: 'Qwen3.8-27B',
-  reasoningEffort: 'high',
+  provider: DEEPSEEK_PROVIDER,
+  model: DEEPSEEK_MODEL,
+  reasoningEffort: DEEPSEEK_REASONING_EFFORT,
 })
 engine.setSession(agent.session)
 
@@ -155,16 +136,16 @@ function waitForIdle(subject: Agent): Promise<void> {
   })
 }
 
-/** 探活：health + 单请求 PONG（重试前确认服务器可用，避免空重试）。 */
+/** 探活：DeepSeek API 单请求 PONG。 */
 async function serverProbe(): Promise<boolean> {
   try {
-    const health = await fetch('http://localhost:8080/health', { signal: AbortSignal.timeout(5_000) })
-    if (!health.ok) return false
-    const res = await fetch('http://localhost:8080/v1/chat/completions', {
+    const apiKey = process.env['DEEPSEEK_API_KEY']
+    if (apiKey === undefined || apiKey.length === 0) return false
+    const res = await fetch('https://api.deepseek.com/chat/completions', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(120_000),
-      body: JSON.stringify({ model: 'Qwen3.8-27B', messages: [{ role: 'user', content: 'Reply with exactly: PONG' }], max_tokens: -1 }),
+      body: JSON.stringify({ model: DEEPSEEK_MODEL, messages: [{ role: 'user', content: 'Reply with exactly: PONG' }], max_tokens: 8 }),
     })
     return res.ok
   } catch {
@@ -408,7 +389,7 @@ const surfaceChars = [...agent.session.surface.nodes].reduce((sum, seq) => {
 const result = {
   spike: '06-tlong',
   at: new Date().toISOString(),
-  model: 'local/Qwen3.8-27B',
+  model: 'deepseek-official/deepseek-v4-flash',
   windowTokens: 10_240,
   retainTokens: 7_168,
   wallSeconds: Math.round((Date.now() - startedAt) / 1000),
