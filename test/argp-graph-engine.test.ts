@@ -246,3 +246,30 @@ test('compactNow: selects oldest A/R block and prunes it without LLM', async () 
     await ctx.fiber.dispose()
   }
 })
+
+test('prune emits compaction/prune instead of compaction/summary', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('prune-event-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const events = [...session.events]
+    const pruneEvents = events.filter(e => e.type === 'compaction/prune')
+    const summaryEvents = events.filter(e => e.type === 'compaction/summary')
+    assert.equal(pruneEvents.length, 1)
+    assert.equal(summaryEvents.length, 0)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    const tombstoneSeq = record.intervals[0]?.tombstoneSeq
+    assert.ok(tombstoneSeq !== undefined)
+    const tombstone = events[tombstoneSeq]
+    assert.ok(tombstone !== undefined)
+    assert.ok(((tombstone as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []).includes(pruneEvents[0]?.seq ?? -1))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

@@ -610,15 +610,11 @@ export class ArgpGraphEngine extends CompactionEngine {
       const tombstones = intervals.map(iv => '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
         + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
         + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]')
-      // 无 LLM 剪枝借 summary 语义进事务括号（候选卡点 B-3）
-      const summaryEvent = session.append('compaction/summary', {
-        ...lifecycle,
-        summary: tombstones.map(text => ({ type: 'text', text })),
+      // 0-LLM 剪枝使用 compaction/prune shadow-price 事件（替代 summary）
+      const pruneEvent = session.append('compaction/prune', {
         shadowedRange: { start: first, end: last },
         shadowedSeqs: allSeqs,
         shadowedTokenCount,
-        provider: 'argp',
-        model: 'algorithmic-tombstone',
       })
       const intervalRecords: { start: number; end: number; tombstoneSeq: number }[] = []
       for (let i = 0; i < intervals.length; i += 1) {
@@ -632,7 +628,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           source: compactCheckpointSource(compactionId),
         }), {
           surfaceOp: { op: 'replace', start, end },
-          sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...iv.seqs],
+          sourceEventSeqs: [startEvent.seq, pruneEvent.seq, ...iv.seqs],
         })
         intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
       }
@@ -643,7 +639,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         compactionId,
         intervals: intervalRecords,
         startEventSeq: startEvent.seq,
-        summaryEventSeq: summaryEvent.seq,
+        summaryEventSeq: pruneEvent.seq,
         endEventSeq: endEvent.seq,
         shadowedSeqs: allSeqs,
         prunedAtoms: intervals.flatMap(iv => iv.atoms.map(a => ({ id: a.id, type: a.type, seq: a.seq }))),
@@ -656,7 +652,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       return {
         compactionId,
         startSeq: startEvent.seq,
-        summarySeq: summaryEvent.seq,
+        summarySeq: pruneEvent.seq,
         endSeq: endEvent.seq,
         summary: tombstones.map(text => ({ type: 'text', text })),
         shadowedRange: { start: first, end: last },
