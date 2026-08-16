@@ -323,7 +323,7 @@ function orphanReport(): string[] {
 const completedTurns = turnLog.filter(t => t.ok).length
 const orphans = orphanReport()
 const starts = events.filter(e => e.type === 'compaction/start').length
-const summaries = events.filter(e => e.type === 'compaction/summary').length
+const summaries = events.filter(e => e.type === 'compaction/summary' || e.type === 'compaction/prune').length
 const ends = events.filter(e => e.type === 'compaction/end')
 const endsWithError = ends.filter(e => (e.data as { error?: string }).error !== undefined).length
 const checkpointOk = engine.records.every(r => r.intervals.every(iv => {
