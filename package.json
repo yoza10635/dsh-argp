@@ -15,7 +15,8 @@
     "spike6": "node spike/06-tlong.ts",
     "spike7": "node spike/07-baseline.ts",
     "smoke": "node spike/dev-smoke.ts",
-    "check": "npm run typecheck && npm run smoke",
+    "test": "node --test test/*.test.ts",
+    "check": "npm run typecheck && npm run smoke && npm test",
     "smoke:deepseek": "node spike/10a-deepseek-smoke.ts && node spike/10b-basic-deepseek-smoke.ts && node spike/10d-argp-deepseek-smoke.ts",
     "spike8a": "node spike/08a-production-synthetic.ts"
   },

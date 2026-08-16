@@ -98,16 +98,18 @@ export function eventText(session: Session, seq: number): string {
 
 /** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
 export function extractCites(text: string): { body: string; cites: string[]; attempted: boolean; parseFailed: boolean } {
-  const fence = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*$/)
-  const bare = text.match(/(\{\s*"cites"\s*:[\s\S]*?\})\s*$/)
-  const raw = fence?.[1] ?? bare?.[1]
+  const fencedFull = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*$/)
+  const bareFull = text.match(/(\{\s*"cites"\s*:[\s\S]*?\})\s*$/)
+  const raw = fencedFull?.[1] ?? bareFull?.[1]
   if (raw === undefined) {
-    return { body: text, cites: [], attempted: text.includes('"cites"'), parseFailed: false }
+    const attempted = text.includes('"cites"')
+    return { body: text, cites: [], attempted, parseFailed: attempted }
   }
   try {
     const parsed = JSON.parse(raw) as { cites?: unknown }
     if (Array.isArray(parsed.cites) && parsed.cites.every(c => typeof c === 'string')) {
-      return { body: text.slice(0, text.length - (text.match(/(\{\s*"cites"[\s\S]*?\}\s*(?:```)?\s*)$/) ?? [''])[0].length).trimEnd(), cites: parsed.cites, attempted: true, parseFailed: false }
+      const stripped = (fencedFull?.[0] ?? bareFull?.[0] ?? '').length
+      return { body: text.slice(0, text.length - stripped).trimEnd(), cites: parsed.cites, attempted: true, parseFailed: false }
     }
     return { body: text, cites: [], attempted: true, parseFailed: true } // JSON 合法但形状不对 → 解析失败，保守保护
   } catch {
