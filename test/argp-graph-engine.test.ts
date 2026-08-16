@@ -594,3 +594,27 @@ test('closure lifecycle: dependent closure with incoming edge is not pruned firs
     await ctx.fiber.dispose()
   }
 })
+
+test('closure tombstone: includes closure id and root preview', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('closure-tombstone-test'))
+    appendUser(session, 'task one')
+    appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
+    appendUser(session, 'task two')
+    appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
+    engine.setSession(session)
+    const atoms = engine.atomize(session)
+    const { edges, inDegree } = engine.buildGraph(atoms)
+    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
+    assert.ok(result !== null)
+    const tombstone = [...session.events].find(e => e.type === 'user/message'
+      && (e.data as { content?: { type: string; text: string }[] }).content?.some(b => b.text.includes('[elided closure')))
+    assert.ok(tombstone !== undefined)
+    const text = (tombstone.data as { content: { type: string; text: string }[] }).content.map(b => b.text).join('')
+    assert.ok(text.includes('[elided closure'))
+    assert.ok(text.includes('task one'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

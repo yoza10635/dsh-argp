@@ -164,6 +164,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 闭包生命周期剪除记录。 */
   readonly closurePrunes: { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[] = []
   private nextClosureId = 0
+  private closureLastRecalled = new Map<string, number>()
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -196,6 +197,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         const hit = this.shadowedSeqsOf(this.session).has(seq)
         this.recallCalls.push({ seq, hit })
         if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
+        this.noteRecallHit(seq)
         const text = eventText(this.session, seq)
         return text === '' ? 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text' : text
       },
@@ -379,6 +381,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     hits.sort((a, b) => b.score - a.score || (a.type === 'U' ? -1 : b.type === 'U' ? 1 : a.seq - b.seq))
     const selected = hits.slice(0, maxResults)
+    for (const h of selected) this.noteRecallHit(h.seq)
     this.recallQueryCalls.push({ query, count: selected.length, hits: selected.length })
     if (selected.length === 0) return 'recall: no pruned nodes match query "' + query + '"'
     const lines = selected.map(h => '[' + h.type + (h.turn !== 0 ? h.turn : '') + '] ' + h.text)
@@ -561,6 +564,27 @@ export class ArgpGraphEngine extends CompactionEngine {
     return dupIds
   }
 
+  /** 当前会话最大 turn 号（用于 recall 回拉后的防抖窗口）。 */
+  private latestTurnOfSession(): number {
+    if (this.session === null) return 0
+    let max = 0
+    for (const e of this.session.events) {
+      const t = (e.data as { turn?: number } | undefined)?.turn
+      if (typeof t === 'number' && t > max) max = t
+    }
+    return max
+  }
+
+  /** recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。 */
+  private noteRecallHit(seq: number): void {
+    for (const c of this.closurePrunes) {
+      if (c.prunedSeqs.includes(seq)) {
+        this.closureLastRecalled.set(c.closureId, this.latestTurnOfSession())
+        break
+      }
+    }
+  }
+
   /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
   tryPruneClosures(
     session: Session,
@@ -609,6 +633,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
     for (const [id, root] of rootByClosure) {
       if (root.seq === lastRootSeq) continue
+      const lastRecalled = this.closureLastRecalled.get(id)
+      if (lastRecalled !== undefined && latestTurn - lastRecalled < k) continue
       const lastRef = lastRefByClosure.get(id) ?? 0
       if (lastRef > latestTurn - k) continue
       if ((inDegreeByClosure.get(id) ?? 0) > 0) continue
@@ -657,7 +683,9 @@ export class ArgpGraphEngine extends CompactionEngine {
         })
       }
     }
-    const result = this.pruneIntervals(session, intervals, 0, 0, false)
+    const rootPreview = chosen.root.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.id + ' root=' + rootPreview + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP closure lifecycle; recall_pruned(seq) retrieves original]')
+    const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstoneTexts)
     this.closurePrunes.push({
       closureId: chosen.id,
       rootSeq: chosen.root.seq,
@@ -922,6 +950,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     semanticEdges: number,
     candidateCount: number,
     forced: boolean,
+    tombstoneTexts?: string[],
   ): CompactionResult {
     const charsBefore = this.visibleChars(session)
     const openTurn = this.detectOpenTurn(session)
@@ -934,9 +963,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     const startEvent = session.append('compaction/start', lifecycle)
     try {
       const shadowedTokenCount = Math.ceil(intervals.reduce((s, iv) => s + iv.chars, 0) / this.charsPerToken)
-      const tombstones = intervals.map(iv => '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-        + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-        + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]')
+      const tombstones = tombstoneTexts !== undefined && tombstoneTexts.length === intervals.length
+        ? tombstoneTexts
+        : intervals.map(iv => '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+          + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
+          + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]')
       // 0-LLM 剪枝使用 compaction/prune shadow-price 事件（替代 summary）
       const pruneEvent = session.append('compaction/prune', {
         shadowedRange: { start: first, end: last },
