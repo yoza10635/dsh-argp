@@ -49,6 +49,8 @@ export interface ArgpGraphConfig {
   maxPasses?: number
   /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
   reserveTokens?: number
+  /** 可选显式 token 测量函数；不传则退化为字符估算。 */
+  measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
 }
 
 export interface GraphPruneRecord {
@@ -140,6 +142,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly charsPerToken: number
   readonly maxPasses: number
   readonly reserveTokens: number
+  readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -165,6 +168,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.charsPerToken = config.charsPerToken ?? 3.5
     this.maxPasses = config.maxPasses ?? 16
     this.reserveTokens = config.reserveTokens ?? 0
+    this.tokenMeterFn = config.measureTokens
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -467,6 +471,7 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 测量当前上下文 token（当前退化为字符估算；tokenMeter 接入留待后续）。 */
   private measureTokens(session: Session): { contextTokens: number; surfaceTokens: number } {
+    if (this.tokenMeterFn !== undefined) return this.tokenMeterFn(session)
     const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
