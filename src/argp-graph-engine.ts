@@ -38,6 +38,7 @@ export interface Atom {
 
 export type EdgeLevel = 'critical' | 'supporting' | 'contextual'
 export interface SemanticEdge { from: number; to: number; level: EdgeLevel }
+export interface DeterministicEdge { from: number; to: number }
 export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2 }
 const LEVEL_ORDER: Record<string, number> = { isolated: 0, contextual: 1, supporting: 2, critical: 3 }
 
@@ -155,6 +156,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly citeStats: CiteStats = { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 }
   /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
   lastEdges: SemanticEdge[] = []
+  /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
+  lastDeterministicEdges: DeterministicEdge[] = []
 
   /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
   readonly prunedNodeIndex = new Map<number, PrunedNodeInfo>()
@@ -444,8 +447,18 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 实测修正（spike 5 首跑）：原 startsWith 头部匹配边数归零——逐字引文起点常落在
    * 原子文本中段，改 includes 子串匹配（同“被动头部匹配陷阱”教训）。
    */
-  buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; inDegree: Map<number, number> } {
+  buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; deterministicEdges: DeterministicEdge[]; inDegree: Map<number, number> } {
     const edges: SemanticEdge[] = []
+    const deterministicEdges: DeterministicEdge[] = []
+    const rByCall = new Map<string, Atom>()
+    for (const r of atoms) if (r.type === 'R' && r.toolCallIds[0] !== undefined) rByCall.set(r.toolCallIds[0], r)
+    for (const a of atoms) {
+      if (a.type !== 'A') continue
+      for (const cid of a.toolCallIds) {
+        const r = rByCall.get(cid)
+        if (r !== undefined) deterministicEdges.push({ from: a.id, to: r.id })
+      }
+    }
     for (const a of atoms) {
       if (a.type !== 'A') continue
       for (const prefix of a.cites) {
@@ -464,9 +477,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     }
     this.lastEdges = edges
+    this.lastDeterministicEdges = deterministicEdges
     const inDegree = new Map<number, number>()
     for (const e of edges) inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1)
-    return { edges, inDegree }
+    return { edges, deterministicEdges, inDegree }
   }
   /** surface 可见字符总量（与 spike 4 同基准）。 */
   private visibleChars(session: Session): number {
@@ -541,7 +555,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
 
     const atoms = this.atomize(session)
-    const { edges, inDegree } = this.buildGraph(atoms)
+    const { edges, deterministicEdges, inDegree } = this.buildGraph(atoms)
     const surfaceSeqs = [...session.surface.nodes]
     const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
     const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)

@@ -487,3 +487,23 @@ test('edge levels: EDGE_WEIGHTS and buildGraph default supporting', async () => 
     await ctx.fiber.dispose()
   }
 })
+
+test('deterministic edges: A→R from matching toolCallIds', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const atoms: Atom[] = [
+      { id: 0, seq: 1, type: 'A', turn: 1, text: 'call', toolCallIds: ['call_1'], cites: [], citesFailed: false },
+      { id: 1, seq: 2, type: 'R', turn: 1, text: 'result', toolCallIds: ['call_1'], cites: [], citesFailed: false },
+      { id: 2, seq: 3, type: 'A', turn: 2, text: 'plain', toolCallIds: [], cites: [], citesFailed: false },
+    ]
+    const { edges, deterministicEdges, inDegree } = engine.buildGraph(atoms)
+    assert.equal(edges.length, 0)
+    assert.equal(deterministicEdges.length, 1)
+    assert.equal(deterministicEdges[0]?.from, 0)
+    assert.equal(deterministicEdges[0]?.to, 1)
+    assert.equal(engine.lastDeterministicEdges.length, 1)
+    assert.equal(inDegree.size, 0)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
