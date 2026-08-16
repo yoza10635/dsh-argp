@@ -189,3 +189,60 @@ test('list_pruned index and recall fallback after prune', async () => {
     await ctx.fiber.dispose()
   }
 })
+
+test('compactRegion: prunes a balanced A/R span and leaves U on surface', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('compact-region-test'))
+    appendUser(session, 'user anchor')
+    const a1Text = 'A1:' + 'x'.repeat(200)
+    appendAssistant(session, a1Text, 1)
+    const a1Seq = session.events.length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(200), 2)
+    const a2Seq = session.events.length - 1
+    appendAssistant(session, 'A3:' + 'z'.repeat(200), 3)
+    engine.setSession(session)
+    const result = await engine.compactRegion(a1Seq, a2Seq, { session } as never)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.equal(record.shadowedSeqs.includes(a1Seq), true)
+    assert.equal(record.shadowedSeqs.includes(a2Seq), true)
+    assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
+    const stillSurface = new Set(session.surface.nodes)
+    const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
+    assert.ok(stillSurface.has(userSeq))
+    assert.ok(!stillSurface.has(a1Seq))
+    assert.ok(!stillSurface.has(a2Seq))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('compactNow: selects oldest A/R block and prunes it without LLM', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('compact-now-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(200), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(200), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(200), 3)
+    engine.setSession(session)
+    const agent = {
+      session,
+      runMaintenance: async <T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> => fn(new AbortController().signal),
+    }
+    const result = await engine.compactNow(agent as never, new AbortController().signal)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
+    const stillSurface = new Set(session.surface.nodes)
+    const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
+    assert.ok(stillSurface.has(userSeq))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

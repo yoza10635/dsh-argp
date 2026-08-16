@@ -11,7 +11,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { CompactionEngine, CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
+import { CompactionEngine, CompactionId, compactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
 import type {
   CompactionAgentContext,
   CompactionResult,
@@ -514,14 +514,78 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   override async compactNow(
-    _agent: ManualCompactAgentContext,
-    _signal: AbortSignal,
+    agent: ManualCompactAgentContext,
+    signal: AbortSignal,
   ): Promise<CompactionResult | null> {
-    throw new Error('argp-graph: compactNow not implemented in spike 5 (mechanism validation)')
+    if (this.session === null) this.session = agent.session
+    signal.throwIfAborted()
+    const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
+      const opSignal = AbortSignal.any([signal, agentSignal])
+      opSignal.throwIfAborted()
+      const range = this.selectManualRange(agent.session)
+      if (range === null) return null
+      return this.compactRegion(range.start, range.end, agent, opSignal)
+    }
+    if (typeof agent.runMaintenance === 'function') {
+      return agent.runMaintenance(run)
+    }
+    return run(signal)
   }
 
-  override async compactRegion(): Promise<CompactionResult> {
-    throw new Error('argp-graph: compactRegion not implemented in spike 5 (mechanism validation)')
+  override async compactRegion(
+    start: number,
+    end: number,
+    agent: CompactionAgentContext,
+    signal?: AbortSignal,
+  ): Promise<CompactionResult> {
+    if (this.session === null) this.session = agent.session
+    signal?.throwIfAborted()
+    const session = agent.session
+    const nodes = session.surface.nodes
+    const startIdx = nodes.indexOf(start)
+    const endIdx = nodes.indexOf(end)
+    if (startIdx === -1) throw new Error('compactRegion: start seq ' + start + ' not found in surface')
+    if (endIdx === -1) throw new Error('compactRegion: end seq ' + end + ' not found in surface')
+    if (startIdx > endIdx) throw new Error('compactRegion: start seq ' + start + ' is after end seq ' + end + ' on the surface')
+    if (!toolPairingBalancedBefore(session, nodes[startIdx])) throw new Error('compactRegion: start seq ' + start + ' is not a balanced boundary')
+    if (!toolPairingBalancedAfter(session, nodes[endIdx])) throw new Error('compactRegion: end seq ' + end + ' is not a balanced boundary')
+
+    const shadowedSeqs = nodes.slice(startIdx, endIdx + 1)
+    const atoms = this.atomize(session)
+    const bySeq = new Map(atoms.map(a => [a.seq, a]))
+    const intervalAtoms = shadowedSeqs.map(seq => bySeq.get(seq)).filter((a): a is Atom => a !== undefined)
+    if (intervalAtoms.some(a => a.type === 'U' || a.type === 'X')) {
+      throw new Error('compactRegion: ARGP never prunes U/X nodes; choose a span without U/X')
+    }
+    if (intervalAtoms.length === 0) {
+      throw new Error('compactRegion: selected span contains no prunable A/R atoms')
+    }
+    const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
+    const interval = { seqs: shadowedSeqs, chars, atoms: intervalAtoms }
+    return this.pruneIntervals(session, [interval], 0, 0, true)
+  }
+
+  /** 为手动 compactNow 选择一个确定性的最老 A/R 连续块。 */
+  private selectManualRange(session: Session): { start: number; end: number } | null {
+    const surfaceSeqs = session.surface.nodes
+    const atoms = this.atomize(session)
+    const bySeq = new Map(atoms.map(a => [a.seq, a]))
+    const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
+    const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
+    let start: number | null = null
+    let end = -1
+    for (let i = 0; i < surfaceSeqs.length; i += 1) {
+      const seq = surfaceSeqs[i]
+      const atom = bySeq.get(seq)
+      if (atom === undefined || atom.type === 'U' || atom.type === 'X' || atom.turn >= latestTurn || i >= recencyCut) {
+        if (start !== null) break
+        continue
+      }
+      if (start === null) start = seq
+      end = seq
+    }
+    if (start === null) return null
+    return { start, end }
   }
 
   /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。 */
