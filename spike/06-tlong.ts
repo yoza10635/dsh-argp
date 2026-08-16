@@ -41,9 +41,16 @@ const watchdog = setTimeout(() => {
 }, 180 * 60 * 1000)
 watchdog.unref()
 
+// 预算档环境开关：spike 8 生产档用 100000/33000/256，原 t-long 档为默认 10240/7168/16。
+const runName = process.env['ARGP_RUN_NAME'] ?? '06-tlong-deepseek'
+const windowTokens = Number(process.env['ARGP_WINDOW_TOKENS'] ?? 10_240)
+const retainTokens = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 7_168)
+const maxPasses = Number(process.env['ARGP_MAX_PASSES'] ?? 16)
+const minBoundaries = Number(process.env['ARGP_MIN_BOUNDARIES'] ?? 10)
+
 // ---------- 产物目录 ----------
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-const outDir = path.join(import.meta.dirname, 'out', '06-tlong-deepseek-' + stamp)
+const outDir = path.join(import.meta.dirname, 'out', runName + '-' + stamp)
 const workDir = path.join(outDir, 'work')
 fs.mkdirSync(path.join(workDir, 'logs'), { recursive: true })
 
@@ -73,7 +80,7 @@ const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-6 t-long archival persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
 await mountDeepSeekFlash(ctx)
-await ctx.plugin(ArgpGraphEngine, { windowTokens: 10_240, retainTokens: 7_168 })
+await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses })
 const engine = ctx.compaction as ArgpGraphEngine
 
 const sandbox = (rel: string): string => {
@@ -321,7 +328,7 @@ const checkpointOk = engine.records.every(r => r.intervals.every(iv => {
   const event = agent.session.events[iv.tombstoneSeq] as { data: { source: { kind: string; plugin?: string } } }
   return event?.data.source.kind === 'plugin' && event.data.source.plugin === 'compact'
 }))
-verdict('L1-long-run-stable', !aborted && completedTurns === items.length && engine.records.length >= 10
+verdict('L1-long-run-stable', !aborted && completedTurns === items.length && engine.records.length >= minBoundaries
   && orphans.length === 0 && starts === engine.records.length && summaries === engine.records.length
   && ends.length === engine.records.length && endsWithError === 0 && checkpointOk,
   'turns=' + completedTurns + '/' + items.length + (aborted ? ' (aborted)' : '')
@@ -387,11 +394,13 @@ const surfaceChars = [...agent.session.surface.nodes].reduce((sum, seq) => {
   return sum + (ev === undefined ? 0 : eventRawText(ev).length)
 }, 0)
 const result = {
-  spike: '06-tlong',
+  spike: runName,
   at: new Date().toISOString(),
   model: 'deepseek-official/deepseek-v4-flash',
-  windowTokens: 10_240,
-  retainTokens: 7_168,
+  windowTokens,
+  retainTokens,
+  maxPasses,
+  minBoundaries,
   wallSeconds: Math.round((Date.now() - startedAt) / 1000),
   turnsPlanned: items.length,
   turnsCompleted: completedTurns,
