@@ -149,7 +149,7 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const recallTool = defineTool({
       name: 'recall_pruned',
-      description: 'Retrieve the original content of a pruned conversation node by its log seq. Pruned content stays in the append-only log; use this instead of guessing.',
+      description: 'Retrieve the original text of pruned conversation nodes. Call only when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from visible context. Pass one placeholder seq per call. Pruned content stays in the append-only log; never guess it.',
       parameters: { seq: { type: 'integer', description: 'log seq of the pruned node, shown in the placeholder' } },
       output: {
         schema: { type: 'string' },
@@ -167,21 +167,26 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.tools.register(recallTool)
 
-    // 定稿契约（设计稿 §7 全文，含 cites 义务）；order 150：工具指引 100-199 段
+    // 压缩/恢复契约：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
       text: () => 'Context compression (ARGP):\n'
-        + 'Your conversation context is managed under a compression budget. Older parts of the conversation may be compressed or removed at any time.\n\n'
-        + 'Rules:\n'
+        + 'Your visible context is a pruned view of the full conversation. Older parts may have been replaced by placeholders like [elided seq=N..M ...]; absence from the visible context does not mean it was never said.\n'
         + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-        + '- Your visible context is a pruned view: earlier parts of the conversation may have been removed by compression, so absence from the visible context does not mean it was never said. When the user refers to something discussed earlier (values, instructions, facts) that you cannot find in the visible context, ALWAYS call the recall_pruned tool with the seq shown in the placeholder first — never conclude it was never provided without recalling.\n'
-        + '- Citation declaration: at the end of every substantive reply, append ONE JSON block listing the earlier context items your reply depends on, each identified by quoting its opening words:\n'
+        + '- When your answer depends on an elided placeholder, call the recall_pruned tool with that placeholder seq before answering. Never reconstruct elided facts from memory.',
+    })
+
+    // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
+    ctx.systemPrompt.section({
+      name: 'argp-cites',
+      order: 151,
+      text: () => 'Citation declaration (ARGP):\n'
+        + 'If your final reply used one or more earlier visible items, append ONE JSON block at the end of your final text, after your complete answer:\n'
         + '{"cites":["the gateway release passes. Neither","Here is the incident-window data"]}\n'
-        + '  - Each entry copies verbatim the first roughly 10-20 words of one earlier item (a user message, a tool result, or one of your earlier replies) that your reply actually used.\n'
-        + '  - Only cite items you genuinely depended on (facts, conclusions, instructions). If there are none, output {"cites":[]}.\n'
-        + '  - Never invent a quote: every entry must appear word-for-word in your visible context.\n'
-        + '  - The reply body before the block stays plain text. The block may be wrapped in a ```json code fence. Output nothing after it.',
+        + '- Each entry must copy verbatim the first 10-20 words of one earlier item you actually used.\n'
+        + '- Only cite items you genuinely depended on. If none, omit the block entirely.\n'
+        + '- The block belongs in the final reply body only, never in reasoning. Output nothing after it.',
     })
 
     ctx.on('agent/pre-step', async ({ agent, signal }, next): Promise<PreStepDecision> => {
