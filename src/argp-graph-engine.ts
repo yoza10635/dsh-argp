@@ -165,6 +165,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly closurePrunes: { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[] = []
   private nextClosureId = 0
   private closureLastRecalled = new Map<string, number>()
+  private recallCallsThisTurn = 0
+  private recallCharsUsed = 0
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -194,12 +196,15 @@ export class ArgpGraphEngine extends CompactionEngine {
       execute: async (args): Promise<string> => {
         const seq = (args as { seq?: number }).seq
         if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
+        if (this.recallCallsThisTurn >= 3) return 'recall_pruned: per-turn budget exceeded (3 calls)'
+        this.recallCallsThisTurn += 1
         const hit = this.shadowedSeqsOf(this.session).has(seq)
         this.recallCalls.push({ seq, hit })
         if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
         this.noteRecallHit(seq)
         const text = eventText(this.session, seq)
-        return text === '' ? 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text' : text
+        if (text === '') return 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text'
+        return this.budgetRecallText(text)
       },
     })
     ctx.tools.register(recallTool)
@@ -268,9 +273,11 @@ export class ArgpGraphEngine extends CompactionEngine {
       },
       execute: async (args): Promise<string> => {
         if (this.session === null) return 'recall: no session bound'
+        if (this.recallCallsThisTurn >= 3) return 'recall: per-turn budget exceeded (3 calls)'
+        this.recallCallsThisTurn += 1
         const query = (args as { query?: string }).query ?? ''
         const maxResults = (args as { maxResults?: number }).maxResults ?? 5
-        return this.recallQuery(query, maxResults)
+        return this.budgetRecallText(this.recallQuery(query, maxResults))
       },
     })
     ctx.tools.register(recallQueryTool)
@@ -301,6 +308,9 @@ export class ArgpGraphEngine extends CompactionEngine {
         + '- The block belongs in the final reply body only, never in reasoning. Output nothing after it.',
     })
 
+    ctx.on('session/event', (_session, event) => {
+      if (event.type === 'turn/start') this.recallCallsThisTurn = 0
+    })
     ctx.on('agent/pre-step', async ({ agent, signal }, next): Promise<PreStepDecision> => {
       if (this.session === null) this.session = agent.session
       if (!signal.aborted) {
@@ -583,6 +593,19 @@ export class ArgpGraphEngine extends CompactionEngine {
         break
       }
     }
+  }
+
+  /** recall 预算：单次结果与累计结果都按窗口比例截断。 */
+  private budgetRecallText(text: string): string {
+    const perCallLimit = Math.floor(this.windowTokens * 0.05 * this.charsPerToken)
+    const totalLimit = Math.floor(this.windowTokens * 0.10 * this.charsPerToken)
+    let allowed = Math.min(perCallLimit, Math.max(0, totalLimit - this.recallCharsUsed))
+    let result = text
+    if (result.length > allowed) {
+      result = result.slice(0, allowed) + '…(truncated)'
+    }
+    this.recallCharsUsed += result.length
+    return result
   }
 
   /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
