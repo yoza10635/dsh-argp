@@ -496,10 +496,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
-  /** §4.4 简化版本链去重：相同 A/R 文本保留最新，旧副本标记为可剪。 */
+  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪。 */
   private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): Set<number> {
     const dupIds = new Set<number>()
     const seenA = new Map<string, Atom>()
+    const issuerByCall = new Map<string, Atom>()
+    for (const a of atoms) if (a.type === 'A') for (const cid of a.toolCallIds) issuerByCall.set(cid, a)
     for (const a of atoms.filter(x => x.type === 'A')) {
       const key = a.text.trim()
       const existing = seenA.get(key)
@@ -514,7 +516,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const seenR = new Map<string, Atom>()
     for (const r of atoms.filter(x => x.type === 'R')) {
-      const key = r.text.trim()
+      const issuer = r.toolCallIds[0] !== undefined ? issuerByCall.get(r.toolCallIds[0]) : undefined
+      const key = (issuer?.text ?? r.text).trim()
       const existing = seenR.get(key)
       if (existing !== undefined) {
         const older = existing.turn < r.turn || (existing.turn === r.turn && existing.seq < r.seq) ? existing : r
