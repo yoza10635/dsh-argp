@@ -143,6 +143,7 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
+  readonly recallQueryCalls: { query: string; count: number; hits: number }[] = []
   readonly citeStats: CiteStats = { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 }
   /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
   lastEdges: SemanticEdge[] = []
@@ -236,6 +237,26 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.tools.register(listPrunedTool)
 
+    const recallQueryTool = defineTool({
+      name: 'recall',
+      description: 'Search pruned conversation nodes by content query and return matching original text. Use when you know roughly what was said but not the exact seq. Prefer list_pruned when you can identify by turn/type, and recall_pruned(seq) when you already know the seq.',
+      parameters: {
+        query: { type: 'string', description: 'keywords or substring to search in pruned content' },
+        maxResults: { type: 'integer', description: 'optional maximum number of matches to return (default 5)' },
+      },
+      output: {
+        schema: { type: 'string' },
+        render: (_args, value) => [{ type: 'text', text: value }],
+      },
+      execute: async (args): Promise<string> => {
+        if (this.session === null) return 'recall: no session bound'
+        const query = (args as { query?: string }).query ?? ''
+        const maxResults = (args as { maxResults?: number }).maxResults ?? 5
+        return this.recallQuery(query, maxResults)
+      },
+    })
+    ctx.tools.register(recallQueryTool)
+
     // 压缩/恢复契约：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
     ctx.systemPrompt.section({
       name: 'argp-contract',
@@ -303,6 +324,39 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (lines.length === 0) return ''
     return '[context] Compression removed ' + shadowed.size + ' earlier item(s) from the visible context:\n' + lines.join('\n')
   }
+  /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。 */
+  recallQuery(query: string, maxResults = 5): string {
+    if (this.session === null) return 'recall: no session bound'
+    const shadowed = this.shadowedSeqsOf(this.session)
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+    interface Hit { seq: number; score: number; text: string; type: AtomType; turn: number }
+    const hits: Hit[] = []
+    for (const seq of shadowed) {
+      const event = this.session.events[seq]
+      if (event === undefined) continue
+      const data = event.data as Record<string, unknown> | undefined
+      const text = eventText(this.session, seq)
+      if (text === '') continue
+      const lower = text.toLowerCase()
+      let score = 0
+      for (const term of terms) if (lower.includes(term)) score += 1
+      if (score === 0) continue
+      let type: AtomType
+      if (event.type === 'user/message') type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+      else if (event.type === 'assistant/message') type = 'A'
+      else if (event.type === 'tool/result') type = 'R'
+      else type = 'X'
+      const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
+      hits.push({ seq, score, text, type, turn })
+    }
+    hits.sort((a, b) => b.score - a.score || (a.type === 'U' ? -1 : b.type === 'U' ? 1 : a.seq - b.seq))
+    const selected = hits.slice(0, maxResults)
+    this.recallQueryCalls.push({ query, count: selected.length, hits: selected.length })
+    if (selected.length === 0) return 'recall: no pruned nodes match query "' + query + '"'
+    const lines = selected.map(h => '[' + h.type + (h.turn !== 0 ? h.turn : '') + '] ' + h.text)
+    return 'Recalled ' + selected.length + ' pruned atom(s) for "' + query + '":\n' + lines.join('\n')
+  }
+
   /**
    * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
    * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。

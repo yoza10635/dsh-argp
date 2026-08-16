@@ -428,3 +428,24 @@ test('production-like: repeated synthetic pruning yields multiple transactions w
     await ctx.fiber.dispose()
   }
 })
+
+test('recallQuery: searches pruned content by keywords and records stats', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('recall-query-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const result = engine.recallQuery('A1', 5)
+    assert.ok(result.includes('Recalled'))
+    assert.ok(result.includes('A1'))
+    assert.ok(engine.recallQueryCalls.length >= 1)
+    const noHit = engine.recallQuery('definitely-not-present', 5)
+    assert.ok(noHit.includes('no pruned nodes match'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
