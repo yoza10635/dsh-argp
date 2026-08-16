@@ -56,6 +56,8 @@ export interface ArgpGraphConfig {
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   /** 是否启用 summarize 降级。默认 false：本地单 slot 模型下 summarize 会破坏 KV cache，ARGP 走 force_prune。 */
   enableSummarize?: boolean
+  /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
+  degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail'
 }
 
 export interface GraphPruneRecord {
@@ -149,6 +151,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly reserveTokens: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   readonly enableSummarize: boolean
+  readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -184,6 +187,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.reserveTokens = config.reserveTokens ?? 0
     this.tokenMeterFn = config.measureTokens
     this.enableSummarize = config.enableSummarize ?? false
+    this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -608,6 +612,16 @@ export class ArgpGraphEngine extends CompactionEngine {
     return result
   }
 
+  /** P3：summarize 末环占位。当前未实现，默认返回 null 以继续 force_prune。 */
+  private summarizeCriticalChain(
+    _session: Session,
+    _atoms: Atom[],
+    _edges: SemanticEdge[],
+    _latestTurn: number,
+  ): CompactionResult | null {
+    return null
+  }
+
   /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
   tryPruneClosures(
     session: Session,
@@ -841,6 +855,11 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (candidateGroups.length === 0) {
         const closureResult = this.tryPruneClosures(session, atoms, edges, inDegree, askCoverage, latestTurn)
         if (closureResult !== null) return closureResult
+        if (this.degradationStrategy === 'fail') return null
+        if (this.degradationStrategy === 'summarize' && this.enableSummarize) {
+          const summarizeResult = this.summarizeCriticalChain(session, atoms, edges, latestTurn)
+          if (summarizeResult !== null) return summarizeResult
+        }
         candidateGroups = liveGroups.filter(g => isGroupCandidate(g, true)) // force_prune：忽略入度
         if (candidateGroups.length === 0) break
         forced = true
