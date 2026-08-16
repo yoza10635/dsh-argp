@@ -432,6 +432,19 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (from !== undefined) lastRef.set(e.to, Math.max(lastRef.get(e.to) ?? 0, from.turn))
     }
     const touchesSemantic = new Set(edges.flatMap(e => [e.from, e.to]))
+    // ask-exempt U 动态覆盖：U 后首个 A 若对它有 supporting 边，则视为被覆盖；后续跨轮引用会使其失效。
+    const askCoverage = new Map<number, number>()
+    for (const u of atoms.filter(a => a.type === 'U')) {
+      const text = u.text.trim()
+      const looksAsk = text.endsWith('?') || /\bask\b/i.test(text) || /\bwhat\b/i.test(text)
+      if (!looksAsk) continue
+      const firstA = atoms
+        .filter(a => a.type === 'A' && a.turn >= u.turn && a.seq > u.seq)
+        .sort((a, b) => a.seq - b.seq)[0]
+      if (firstA !== undefined && edges.some(e => e.from === firstA.id && e.to === u.id)) {
+        askCoverage.set(u.id, firstA.id)
+      }
+    }
     // 成对同剪组（配对自保，修正版）：dsh surface 无 tool/call 节点，call 块内嵌在 A 里。
     // 剪 R 不带走发出它的 A → 孤儿 call；剪含 call 的 A 不带走应答 R → 孤儿 result；两者都致 API 400。
     // 故：A（含 tool-call）+ 应答其全部 call 的 R 成组，同进同退。
@@ -458,6 +471,17 @@ export class ArgpGraphEngine extends CompactionEngine {
       groupOf.set(a.id, gid)
     }
     const isAtomCandidate = (a: Atom, allowInDegree: boolean): boolean => {
+      if (a.type === 'U') {
+        const coverer = askCoverage.get(a.id)
+        if (coverer === undefined) return false
+        const pos = position.get(a.seq)
+        if (pos === undefined || pos >= recencyCut) return false
+        if (a.turn >= latestTurn) return false
+        // 动态复核：所有保留入边都必须来自覆盖者，否则豁免失效
+        const incoming = edges.filter(e => e.to === a.id)
+        if (incoming.length === 0 || incoming.some(e => e.from !== coverer)) return false
+        return true
+      }
       if (a.type !== 'A' && a.type !== 'R') return false
       const pos = position.get(a.seq)
       if (pos === undefined || pos >= recencyCut) return false

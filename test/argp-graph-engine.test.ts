@@ -310,3 +310,39 @@ test('tokenMeter: uses ctx.tokenMeter.measure for trigger decision', async () =>
     await ctx.fiber.dispose()
   }
 })
+
+test('ask-exempt U: covered ask U can be pruned when no cross refs', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('ask-covered-test'))
+    appendUser(session, 'What is the answer?')
+    appendAssistant(session, 'The answer is 42.\n{"cites":["What is the answer?"]}', 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.ok(record.prunedAtoms.some(a => a.type === 'U'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('ask-exempt U: cross-reference invalidates exemption and keeps U', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('ask-cross-ref-test'))
+    appendUser(session, 'What is the answer?')
+    appendAssistant(session, 'The answer is 42.\n{"cites":["What is the answer?"]}', 1)
+    appendAssistant(session, 'Another answer.\n{"cites":["What is the answer?"]}', 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    assert.equal(record.prunedAtoms.some(a => a.type === 'U'), false)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
