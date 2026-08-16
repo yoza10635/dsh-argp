@@ -47,6 +47,8 @@ export interface ArgpGraphConfig {
   charsPerToken?: number  // 默认 3.5（触发与目标同基准）
   /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
   maxPasses?: number
+  /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
+  reserveTokens?: number
 }
 
 export interface GraphPruneRecord {
@@ -137,6 +139,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly minSpanChars: number
   readonly charsPerToken: number
   readonly maxPasses: number
+  readonly reserveTokens: number
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -160,6 +163,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.minSpanChars = config.minSpanChars ?? 512
     this.charsPerToken = config.charsPerToken ?? 3.5
     this.maxPasses = config.maxPasses ?? 16
+    this.reserveTokens = config.reserveTokens ?? 0
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -376,6 +380,17 @@ export class ArgpGraphEngine extends CompactionEngine {
     return total
   }
 
+  /** 测量当前上下文 token；优先 tokenMeter，否则退化为字符估算。 */
+  private measureTokens(session: Session): { contextTokens: number; surfaceTokens: number } {
+    const meter = (this.ctx as { tokenMeter?: { measure(s: Session): { totalTokens: number; surfaceTokens: number } } }).tokenMeter
+    if (meter !== undefined) {
+      const m = meter.measure(session)
+      return { contextTokens: m.totalTokens, surfaceTokens: m.surfaceTokens }
+    }
+    const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
+    return { contextTokens: surfaceTokens, surfaceTokens }
+  }
+
   /**
    * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
    * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
@@ -389,11 +404,16 @@ export class ArgpGraphEngine extends CompactionEngine {
   ): Promise<CompactionResult | null> {
     const session = agent.session
     if (this.session === null) this.session = session
-    const thresholdChars = this.windowTokens * this.charsPerToken
+    const thresholdTokens = this.windowTokens - this.reserveTokens
+    if (thresholdTokens <= 0) {
+      console.log('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
+      return null
+    }
     const retainChars = this.retainTokens * this.charsPerToken
     const visibleNow = this.visibleChars(session)
-    if (visibleNow < thresholdChars) {
-      console.log('[argp-graph] pressure check: visible=' + visibleNow + ' < threshold=' + thresholdChars + ', skip')
+    const measurement = this.measureTokens(session)
+    if (measurement.contextTokens < thresholdTokens) {
+      console.log('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' < threshold=' + thresholdTokens + ', skip')
       return null
     }
 

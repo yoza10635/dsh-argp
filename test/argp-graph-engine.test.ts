@@ -273,3 +273,40 @@ test('prune emits compaction/prune instead of compaction/summary', async () => {
     await ctx.fiber.dispose()
   }
 })
+
+test('reserveTokens: blocks pruning when contextTokens below effective threshold', async () => {
+  const { ctx, engine } = await makeEngine({ reserveTokens: 1000 })
+  try {
+    const session = Session.create(SessionId('reserve-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.equal(result, null)
+    assert.equal(engine.records.length, 0)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('tokenMeter: uses ctx.tokenMeter.measure for trigger decision', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    ;(ctx as { tokenMeter?: unknown }).tokenMeter = {
+      measure: () => ({ totalTokens: 10000, surfaceTokens: 10000 }),
+    }
+    const session = Session.create(SessionId('token-meter-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
