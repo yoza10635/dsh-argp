@@ -60,7 +60,7 @@ Key validation runs (all artifacts are local-only; scripts are committed):
 | Baseline (compaction-basic) | `node spike/07-baseline.ts` | Same task with the stock summarizer for contrast |
 | Synthetic 0-LLM | `npm run spike8a` | 28-atom single-transaction pruning with zero LLM calls |
 
-Experiment results and claims are recorded in [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md) and the publication ledger in [`docs/publication-plan.md`](docs/publication-plan.md); every number carries its artifact path.
+Experiment results and claims are recorded in [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md); every number carries its artifact path.
 
 ## Known platform gaps (feedback to dsh)
 

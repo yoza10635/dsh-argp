@@ -8,3 +8,6 @@ spike/out/
 
 # 内部开发文档（开源排除）
 docs/handoff-*.md
+docs/publication-plan.md
+blocker-log.md
+run-baseline.bat
