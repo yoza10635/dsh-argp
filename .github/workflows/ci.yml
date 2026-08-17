@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Smoke (pure-module check, no model)
+        run: npm run smoke
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build lib/
+        run: npm run build
+
+      # 产物型仓库契约：lib/ 提交进 git（市场 clone 直接用），src 变更必须同步提交 lib/
+      - name: Verify lib/ is in sync with src/
+        run: git diff --exit-code lib/
+
+      # 提交信息规范（conventional commits），见 CONTRIBUTING.md
+      - name: Check commit message conventions (push only)
+        if: github.event_name == 'push'
+        run: |
+          BASE="${{ github.event.before }}"
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "first push; skip commit message check"
+            exit 0
+          fi
+          node scripts/check-commit-msg.mjs "$BASE..HEAD"
