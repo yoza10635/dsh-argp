@@ -42,9 +42,33 @@ export interface DeterministicEdge { from: number; to: number }
 export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2 }
 const LEVEL_ORDER: Record<string, number> = { isolated: 0, contextual: 1, supporting: 2, critical: 3 }
 
+/** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
+export function scaleBudgets(
+  contextWindow: number | undefined,
+  opts: { windowRatio?: number; retainRatio?: number; explicitWindow?: number; explicitRetain?: number; fallbackWindow?: number; fallbackRetain?: number },
+): { windowTokens: number; retainTokens: number } {
+  const windowRatio = opts.windowRatio ?? 0.8
+  const retainRatio = opts.retainRatio ?? 0.2
+  if (opts.explicitWindow !== undefined && opts.explicitRetain !== undefined) {
+    return { windowTokens: opts.explicitWindow, retainTokens: opts.explicitRetain }
+  }
+  if (contextWindow === undefined || contextWindow <= 0) {
+    return { windowTokens: opts.fallbackWindow ?? 16_384, retainTokens: opts.fallbackRetain ?? 8_192 }
+  }
+  const windowTokens = opts.explicitWindow ?? Math.floor(contextWindow * windowRatio)
+  const retainTokens = opts.explicitRetain ?? Math.floor(windowTokens * retainRatio)
+  return { windowTokens, retainTokens }
+}
+
 export interface ArgpGraphConfig {
-  windowTokens?: number   // 默认 16384
-  retainTokens?: number   // 默认 8192
+  /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
+  windowTokens?: number
+  /** 保留目标（token）。不传时默认 = 触发线 × retainRatio（默认 0.2，压缩率 1/5）。 */
+  retainTokens?: number
+  /** 触发线占上下文比例（默认 0.8；仅当 windowTokens 未显式指定时生效）。 */
+  windowRatio?: number
+  /** 保留目标占触发线比例（默认 0.2；仅当 retainTokens 未显式指定时生效）。 */
+  retainRatio?: number
   recencyGuard?: number   // 默认 4（surface 末尾 N 节点不参剪）
   minSpanChars?: number   // 默认 512（微剪枝下限）
   charsPerToken?: number  // 默认 3.5（触发与目标同基准）
@@ -151,6 +175,14 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   readonly windowTokens: number
   readonly retainTokens: number
+  readonly windowRatio: number
+  readonly retainRatio: number
+  /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
+  private readonly explicitWindowTokens: boolean
+  /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
+  private readonly explicitRetainTokens: boolean
+  /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
+  private resolvedWindowTokens = 16_384
   readonly recencyGuard: number
   readonly minSpanChars: number
   readonly charsPerToken: number
@@ -189,8 +221,14 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   constructor(ctx: Context, config: ArgpGraphConfig = {}) {
     super(ctx)
+    // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
+    // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。
     this.windowTokens = config.windowTokens ?? 16_384
     this.retainTokens = config.retainTokens ?? 8_192
+    this.explicitWindowTokens = config.windowTokens !== undefined
+    this.explicitRetainTokens = config.retainTokens !== undefined
+    this.windowRatio = config.windowRatio ?? 0.8
+    this.retainRatio = config.retainRatio ?? 0.2
     this.recencyGuard = config.recencyGuard ?? 4
     this.minSpanChars = config.minSpanChars ?? 512
     this.charsPerToken = config.charsPerToken ?? 3.5
@@ -622,10 +660,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
   }
 
-  /** recall 预算：单次结果与累计结果都按窗口比例截断。 */
+  /** recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。 */
   private budgetRecallText(text: string): string {
-    const perCallLimit = Math.floor(this.windowTokens * 0.05 * this.charsPerToken)
-    const totalLimit = Math.floor(this.windowTokens * 0.10 * this.charsPerToken)
+    const perCallLimit = Math.floor(this.resolvedWindowTokens * 0.05 * this.charsPerToken)
+    const totalLimit = Math.floor(this.resolvedWindowTokens * 0.10 * this.charsPerToken)
     let allowed = Math.min(perCallLimit, Math.max(0, totalLimit - this.recallCharsUsed))
     let result = text
     if (result.length > allowed) {
@@ -757,6 +795,44 @@ export class ArgpGraphEngine extends CompactionEngine {
     return result
   }
 
+/**
+ * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
+ *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
+ *  上下文容量由其他插件（模型适配器声明）决定，本引擎不硬编码。
+ *  解析失败（无 llm 服务/无 contextWindow）时回退静态默认并告警。
+ */
+  private async resolveScaledBudgets(
+    agent: CompactionAgentContext,
+  ): Promise<{ windowTokens: number; retainTokens: number }> {
+    const explicitWindow = this.explicitWindowTokens ? this.windowTokens : undefined
+    const explicitRetain = this.explicitRetainTokens ? this.retainTokens : undefined
+    let contextWindow: number | undefined
+    try {
+      const provider = agent.options?.provider
+      const model = agent.options?.model
+      const llm = (this as unknown as { ctx: Context }).ctx.get('llm') as
+        | { resolveModelInfo?: (p: string, m: string, s: AbortSignal) => Promise<{ context?: { contextWindow?: number } }> }
+        | undefined
+      if (llm?.resolveModelInfo !== undefined && provider !== undefined && model !== undefined) {
+        const info = await llm.resolveModelInfo(provider, model, new AbortController().signal)
+        contextWindow = info.context?.contextWindow
+      }
+    } catch {
+      contextWindow = undefined
+    }
+    const scaled = scaleBudgets(contextWindow, {
+      explicitWindow, explicitRetain,
+      windowRatio: this.windowRatio, retainRatio: this.retainRatio,
+      fallbackWindow: this.windowTokens, fallbackRetain: this.retainTokens,
+    })
+    this.resolvedWindowTokens = scaled.windowTokens
+    if (contextWindow === undefined || contextWindow <= 0) {
+      console.warn('[argp-graph] contextWindow unavailable; falling back to static defaults '
+        + `(window=${this.windowTokens}, retain=${this.retainTokens})`)
+    }
+    return scaled
+  }
+
   /**
    * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
    * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
@@ -770,12 +846,13 @@ export class ArgpGraphEngine extends CompactionEngine {
   ): Promise<CompactionResult | null> {
     const session = agent.session
     if (this.session === null) this.session = session
-    const thresholdTokens = this.windowTokens - this.reserveTokens
+    const { windowTokens, retainTokens } = await this.resolveScaledBudgets(agent)
+    const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) {
       console.log('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
       return null
     }
-    const retainChars = this.retainTokens * this.charsPerToken
+    const retainChars = retainTokens * this.charsPerToken
     const visibleNow = this.visibleChars(session)
     const measurement = this.measureTokens(session)
     if (measurement.contextTokens < thresholdTokens) {
