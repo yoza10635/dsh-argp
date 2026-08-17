@@ -23,11 +23,31 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER, DEEPSEEK_REASONING_EFFORT, mountDeepSeekFlash } from './deepseek.ts'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 const sortMode = (process.env['ARGP_SORT_MODE'] ?? 'legacy') as 'legacy' | 'density' | 'density-chain'
+// 模型源：deepseek（默认）| qwen-local（127.0.0.1:8080，llama.cpp）
+const modelSource = process.env['ARGP_MODEL_SOURCE'] ?? 'deepseek'
+
+async function mountModel(ctx: Context): Promise<{ provider: string; model: string; reasoning: 'off' | 'low' | 'high' | 'max' }> {
+  if (modelSource === 'qwen-local') {
+    const base = process.env['QWEN_BASE'] ?? 'http://127.0.0.1:8080/v1'
+    const model = 'Qwen3.8-27B'
+    process.env['DEEPSEEK_API_KEY'] = process.env['DEEPSEEK_API_KEY'] ?? 'dummy-local'
+    await ctx.plugin(LlmDeepSeek, {
+      thinking: 'disabled',
+      reasoningEffort: 'off',
+      baseURL: base,
+      models: [{ id: model, name: model, contextWindow: 196_608 }],
+    })
+    return { provider: 'deepseek-official', model, reasoning: 'off' }
+  }
+  await mountDeepSeekFlash(ctx)
+  return { provider: DEEPSEEK_PROVIDER, model: DEEPSEEK_MODEL, reasoning: DEEPSEEK_REASONING_EFFORT }
+}
 
 let ctx: Context
 function waitForIdle(subject: Agent): Promise<void> {
@@ -93,7 +113,7 @@ async function run(): Promise<void> {
   ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-19 sort-mode probe' } })
   await ctx.plugin(AgentLoop, { agents: [] })
-  await mountDeepSeekFlash(ctx)
+  const { provider, model, reasoning } = await mountModel(ctx)
   await ctx.plugin(ArgpGraphEngine, {
     windowTokens: 3_500,    // 触发：估算上下文 ≥ 3.5K
     retainTokens: 1_200,    // 压缩到 ≤ 1.2K（必须剪掉大部分 → 两种排序差异显现）
@@ -103,10 +123,10 @@ async function run(): Promise<void> {
     sortMode,
   })
   const engine = ctx.compaction as ArgpGraphEngine
-  const agent = ctx.agentLoop.create(SessionId('spike-19-sort-' + sortMode), {
-    provider: DEEPSEEK_PROVIDER,
-    model: DEEPSEEK_MODEL,
-    reasoningEffort: DEEPSEEK_REASONING_EFFORT,
+  const agent = ctx.agentLoop.create(SessionId('spike-19-sort-' + sortMode + '-' + modelSource), {
+    provider,
+    model,
+    reasoningEffort: reasoning,
   })
   engine.setSession(agent.session)
   const session = agent.session
