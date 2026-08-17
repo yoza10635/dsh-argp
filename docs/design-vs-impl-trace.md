@@ -64,12 +64,11 @@
    - **spike 18 实证**：C 配置稳定比 B 多保留 +2 eff（链长 3 → (3−1)×1）
    - **spike 19 实证**：density-chain 与 density 同结果（本场景无版本链，验证无副作用）
 
-3. **recall 身份张力（2026-08-17 用户设计讨论）**：recall 返回的纯文本无来源标记（`budgetRecallText`，L616-626），新 R 原子完全"失忆"。因原子身份 = seq（事件位置）而非内容，新旧原子内容等价但**图身份不等价**：
-   - 出边断裂：旧原子可能"引用别的原子"（是某结论的依据），recall 只取文本，它依赖的内容连接断了——模型需要还得再 recall
-   - 入边/版本链/eff 全部重置（新原子从 0 开始）
-   - **工程后果（真洞）**：模型 recall 后"仅参考不 cites"（合理行为）→ 新原子无入度 → 下轮再被剪 → 重复 recall 循环，每次重复付 token
-   - **设计出路**（按改动量排序）：① 现状 + 语义澄清（"recall = 内容快照非图身份回归"）；② **软保护（推荐）**：recall 命中的 seq 记入 recentlyRecalled，N 轮内豁免剪枝（原子级，复用 closureLastRecalled L176/686 的闭包级思路）——消灭重复 recall 循环，不动身份语义；③ 来源继承：新 R 打 recalledFrom:seq 标记，建图时继承 prunedNodeIndex 历史（价值连续但出边断裂无解）；④ 内容寻址身份（远期大改，动摇 append-only 根基）
-   - **待办**：spike 21 快速验证重复 recall 是否真实频繁发生，再决定是否实施方案 ②
+3. **recall 身份张力 → 已实现"价值继承"（2026-08-17 用户设计，提交 1c87017）**：recall 返回的纯文本无来源标记，新 R 原子"失忆"——内容等价但图身份不等价（出边断裂/入边重置/版本链丢失）。用户设计演进为 **recalled 边 + 价值继承**：
+   - **实现**：① 剪枝时 `prunedNodeIndex` 记录被剪瞬间 eff（主剪枝用 eff map，闭包剪枝用 selfImportance 近似）；② recall 命中时记录 `recallSourceSeq`（旧原子）与 `recallResultSeq`（结果 R 原子 seq = execute 时 events.length）；③ 建图 eff 计算后：结果原子若被 cites 命中（inDegree>0 = 模型确认使用）→ 继承旧 eff ×0.5（防高频 recall 续命）；未命中不继承（召错，低效优先剪）
+   - **关键语义**："被引用才计入"天然由入度机制实现（被 cites = 有入度 = 受保护）；继承是给"确认使用过"的内容一个持久价值锚
+   - **测试**：test/recall-inherit.test.ts 3 用例（索引记录 eff / cited 继承不崩溃 / 源缺失静默跳过）；机制正确性由 spike/21-recall-inherit-diag.ts 日志实证（cited → inDegree=1 → eff 2；uncited → inDegree=0 不继承）
+   - **待观察**：单元级难断言"谁先被剪"（依赖预算参数）；真实长程效果待 18 点 DeepSeek 定稿实验或后续 t-long 验证；"仅参考不 cites 的召错"加速离场效果未量化
 
 ## 4. 过时注释/文档（需清理）
 
