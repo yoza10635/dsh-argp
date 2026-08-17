@@ -2,6 +2,10 @@
 
 # dsh-argp — 0-LLM Deterministic Context Compaction for DeepSeek Harness
 
+[![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that compresses conversation context **without any LLM calls**: instead of rewriting history into a summary, it selectively forgets.
 
 - **0 LLM in the compression phase** — pure graph rules, deterministic and convergent.

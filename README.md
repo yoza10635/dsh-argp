@@ -2,6 +2,10 @@
 
 # dsh-argp — DeepSeek Harness 的 0-LLM 确定性上下文压缩引擎
 
+[![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用图剪枝）是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方 `CompactionEngine`，**压缩阶段零 LLM 调用**：不把历史重写为摘要，而是选择性遗忘。
 
 - **压缩阶段 0 次 LLM 调用**——纯图规则，确定性、可收敛
