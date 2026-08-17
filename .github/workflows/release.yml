@@ -1,0 +1,40 @@
+name: Release
+
+# tag 驱动发布：push v* 标签 → 校验 → 自动生成 GitHub Release
+# npm publish 暂缓（等待 npm 账号），当前只分发 GitHub Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Quality gate
+        run: npm run check
+
+      - name: Build lib/
+        run: npm run build
+
+      # 发布前强制产物一致：lib/ 必须是当前 src/ 的真实产物
+      - name: Verify lib/ is in sync with src/
+        run: git diff --exit-code lib/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
