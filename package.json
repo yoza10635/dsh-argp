@@ -1,11 +1,11 @@
 {
   "name": "argp-dsh",
   "version": "0.1.0",
-  "private": true,
   "main": "src/index.ts",
   "exports": "./src/index.ts",
   "type": "module",
-  "description": "ARGP pruning engine migrated to DeepSeek Harness as a compaction extension (M1 spike phase)",
+  "description": "ARGP (Atomic Reference Graph Pruning): a 0-LLM deterministic context-compaction engine for DeepSeek Harness (dsh), mounted as a third-party CompactionEngine.",
+  "license": "MIT",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "spike1": "node spike/01-mount.ts",
@@ -21,6 +21,13 @@
     "check": "npm run typecheck && npm run smoke && npm test",
     "smoke:deepseek": "node spike/10a-deepseek-smoke.ts && node spike/10b-basic-deepseek-smoke.ts && node spike/10d-argp-deepseek-smoke.ts",
     "spike8a": "node spike/08a-production-synthetic.ts"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-compaction": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.6"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
