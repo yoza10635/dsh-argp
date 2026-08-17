@@ -1,0 +1,28 @@
+#!/bin/sh
+# pre-push: 本地质量门禁——推送前挡坏提交。
+# 安装: git config core.hooksPath .githooks
+# 职责: 1) npm run check（typecheck + smoke + test） 2) 提交信息规范检查
+
+echo "[pre-push] npm run check ..."
+npm run check 2>&1 | tail -30
+CHECK_EXIT=${PIPESTATUS[0]}
+if [ "$CHECK_EXIT" -ne 0 ]; then
+  echo "[pre-push] FAILED: npm run check 未通过，拒绝推送"
+  exit 1
+fi
+
+# 提交信息规范检查：对本次推送涉及的提交逐个校验（conventional commits）
+# stdin 每行: <local ref> <local sha> <remote ref> <remote sha>
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  if [ "$LOCAL_REF" = "(delete)" ]; then
+    continue
+  fi
+  if [ "$REMOTE_SHA" = "0000000000000000000000000000000000000000" ]; then
+    # 新分支首次推送：只查 HEAD
+    node scripts/check-commit-msg.mjs "$LOCAL_SHA~1..$LOCAL_SHA" 2>/dev/null || true
+  else
+    node scripts/check-commit-msg.mjs "$REMOTE_SHA..$LOCAL_SHA" || exit 1
+  fi
+done
+
+echo "[pre-push] ok"
