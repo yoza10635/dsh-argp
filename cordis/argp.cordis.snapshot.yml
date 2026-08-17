@@ -5,8 +5,8 @@ include:
   - id: compaction-basic
     package: '@deepseek-ai/dsh-compaction-basic'
     disabled: true
-  - id: argp-dsh
-    package: 'argp-dsh'
+  - id: dsh-argp
+    package: 'dsh-argp'
     config:
       windowTokens: 10240
       retainTokens: 7168

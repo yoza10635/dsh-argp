@@ -1,5 +1,5 @@
 /**
- * Shared DeepSeek v4-flash test mount for argp-dsh spikes.
+ * Shared DeepSeek v4-flash test mount for dsh-argp spikes.
  *
  * The spike harness (mountAgentLoopTestDependencies) does not mount the
  * dsh credentials service, so this helper loads DEEPSEEK_API_KEY from the

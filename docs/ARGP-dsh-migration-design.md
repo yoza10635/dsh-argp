@@ -299,7 +299,7 @@ Rules:
 
 里程碑隔离（采纳外部评审 P1-1，映射到 spike）：M1 = spike 1+2+3（引擎挂载 + 剪枝路径 + recall/契约）→ 核心可行性判决；M2 = spike 4 的 t1 复刻；M3 = t8/t-long 真剪枝复刻。**M1 不达标 → M2/M3 不启动**，把"方案整体不可行"的风险隔离在最小内核上。**M1 已全部 PASS（2026-08-15）；spike 5（t8 复刻建边版）G1–G6 + C7-cites 全 PASS（2026-08-16）；spike 6 t-long 50 轮双跑（run-A + extractCites 修复后受控对照 run-B）L1/L2/L3 全 PASS（2026-08-16）→ M3 完成。**后续为发文增强项：spike 7 基线臂（dsh 原版 BasicCompactionEngine 同任务对照，脚本已备）。
 
-spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 argp-dsh 仓库）：
+spike 计划（已提前开工，限定 M1；spike 1/2/3 均已 PASS，见 dsh-argp 仓库）：
 1. 最小 CompactionEngine：compactIfNeeded 空转 + 日志，验证挂载与生命周期（半天）——✅ PASS（挂载为 ctx.compaction / pre-step 压力钩子触发 / 空转不干扰轮次）
 2. surfaceOp 剪枝路径验证：按 §8.3 两条路径（多段连续区间 replace vs 逐节点占位改写）各构造最小场景；**配对不变式检查**（遮蔽带 tool_calls 的 assistant 节点后重建请求，确认无孤儿 tool 消息，用 toolPairingBalancedBefore/After）；确认 token 回收量与 KV cache 失效代价（半天，关键判别）——✅ PASS（9 项判决：双路径均可行、不配对剪枝被孤儿扫描/配对 throw 检出、单次剪枝回收约 24% 字符量；撞出卡点 B-1）
 3. recall 工具 + PromptSection 契约（半天）——✅ PASS（5 项判决：引擎挂载为 ctx.compaction 且 recall_pruned 进 tools.schemas / argp-contract section 进 assembly 且动态 text 被求值 / 被遮蔽 seq 从 append-only 日志找回原文（含 tool-call 节点投影）、未剪与不存在 seq 正确未命中 / ctx.tools.execute 真实派发命中未命中语义正确 / 追加剪枝后 recall 立即可见）

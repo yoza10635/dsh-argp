@@ -2,7 +2,7 @@
  * P4 声明式挂载实例化验证 v2：boot web profile 树 + 提供 tools/systemPrompt stub，
  * 使 argp 引擎的 inject 依赖满足，确认 ctx.compaction 是 ArgpGraphEngine。
  *
- * 运行：cd deepseek-harness && node --import tsx/esm D:/workspace/ARGP/argp-dsh/spike/22-declarative-mount-check.ts
+ * 运行：cd deepseek-harness && node --import tsx/esm D:/workspace/ARGP/dsh-argp/spike/22-declarative-mount-check.ts
  */
 import { boot } from '@deepseek-ai/dsh-app-boot'
 import { readFileSync } from 'node:fs'

@@ -47,7 +47,7 @@
 3. ⬜ WebUI 真会话验证：`dsh web` 已能启动（HTTP 200 :3080）且 profile patch 已挂 argp；**真会话触发剪枝/recall 全流程待人工对话验证**（需要模型可用）
 
 **退出判据**：`dsh` 命令声明式加载 ARGP 插件跑通一个真会话，事件流含完整事务括号——**已部分达成**（实例化验证通过，真会话待人工）。
-**已知注意**：web profile 的 node_modules/argp-dsh 是 file: 复制——本地引擎改动后需 `dsh plugin --profile web add file:...` 重装同步；patch 的 `insert:` 是新增 entry 语法（直接给 `id+name` 会报 "entry not found"，因为 patch 只改已加载 entry）。
+**已知注意**：web profile 的 node_modules/dsh-argp 是 file: 复制——本地引擎改动后需 `dsh plugin --profile web add file:...` 重装同步；patch 的 `insert:` 是新增 entry 语法（直接给 `id+name` 会报 "entry not found"，因为 patch 只改已加载 entry）。
 
 ## P5. 证据补充与发文
 
