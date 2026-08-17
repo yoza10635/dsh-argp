@@ -1,8 +1,8 @@
 /**
  * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
  *
- * 按设计稿 §3-§7 移植，机制验证版简化（差异记入台账）：
- *  - 无版本链去重（§4.4）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
+ * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 docs/design-vs-impl-trace.md）：
+ *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
  *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
  *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
  *    实测：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 三类），call 块内嵌在 assistant/message 里
@@ -760,6 +760,10 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const atoms = this.atomize(session)
     const { edges, deterministicEdges, inDegree } = this.buildGraph(atoms)
+    // 动态有效入度（§5.4 反向拓扑链式解锁）：每 pass 从"未被剪原子的边"重推，
+    // 剪除引用方后其出边消失 → 目标入度递减。多引用场景（A/C/D 都引用 B）下
+    // B 须等全部引用方被剪才解锁，天然正确；重复 cites 也按边数逐条减。
+    let curInDegree = inDegree
     const surfaceSeqs = [...session.surface.nodes]
     const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
     const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
@@ -828,7 +832,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (pos === undefined || pos >= recencyCut) return false
       if (a.turn >= latestTurn) return false
       if (a.citesFailed) return false
-      if (!allowInDegree && (inDegree.get(a.id) ?? 0) > 0) return false
+      if (!allowInDegree && (curInDegree.get(a.id) ?? 0) > 0) return false
       return true
     }
     const isGroupCandidate = (g: Atom[], allowInDegree: boolean): boolean =>
@@ -847,6 +851,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     let forced = false
     for (let pass = 0; pass < this.maxPasses; pass += 1) {
+      // 每 pass 重推有效入度：已剪原子的出边不再计入目标入度（链式解锁）
+      curInDegree = new Map<number, number>()
+      for (const e of edges) {
+        if (pruned.has(e.from)) continue
+        curInDegree.set(e.to, (curInDegree.get(e.to) ?? 0) + 1)
+      }
       const remaining = atoms.filter(a => !pruned.has(a.id))
       const visible = remaining.reduce((sum, a) => sum + a.text.length, 0)
       if (visible <= retainChars) break
