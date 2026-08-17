@@ -52,7 +52,7 @@
 
 1. ✅ 同压力档基线重跑（B-4 已修：显式挂 TokenMeter）——2026-08-17 已完成：50/50 轮、117 compaction / 85 error、U 0/7、R 0/7（产物 `spike/out/07-baseline-deepseek-2026-08-17T01-55-34-648Z/`，记录见 experiment-2026-08-16-separated-contract-probe.md 追加）
 2. 公开基准 pilot（LongMemEval 子抽样，待拍板）
-3. 卡点向上建议打包（B-1/B-3/B-4 已凑足）
+3. ✅ 卡点向上建议打包（B-1/B-3/B-4）——2026-08-17 已提交 `docs/dsh-api-feedback-2026-08-17.md`，待 dsh 响应
 4. 母表更新 + 能力数据速查固化
 
 **纪律**：每个实验跑完当场登记台账（数字必带产物位置）；受控对照期间不中途调参；短实验结论不外推长程。
