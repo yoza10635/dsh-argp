@@ -1,8 +1,10 @@
 {
   "name": "dsh-argp",
   "version": "0.2.0",
-  "main": "src/index.ts",
-  "exports": "./src/index.ts",
+  "main": "./lib/index.js",
+  "exports": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "files": ["lib", "cordis/argp.cordis.patch.yml"],
   "type": "module",
   "description": "ARGP (Atomic Reference Graph Pruning): a 0-LLM deterministic context-compaction engine for DeepSeek Harness (dsh), mounted as a third-party CompactionEngine.",
   "license": "MIT",
@@ -10,7 +12,15 @@
     "type": "git",
     "url": "https://github.com/yoza10635/dsh-argp.git"
   },
+  "dsh": {
+    "plugin": true,
+    "kind": "server",
+    "bundle": {
+      "patch": "./cordis/argp.cordis.patch.yml"
+    }
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "spike1": "node spike/01-mount.ts",
     "spike2": "node spike/02-surfaceop.ts",
