@@ -146,3 +146,45 @@ R-ANSWER: INC-2-MARKER-22HQ
 
 - 已提供 `cordis/argp.cordis.snapshot.yml` 与 `docs/dsh-argp-mount-example.md`
 - 真实 `dsh` 命令验证仍待环境（当前无 dsh CLI）
+
+## 追加：160K 主流场景三档定稿对比（2026-08-17）
+
+### 背景
+
+用户要求用主流上下文档（~200K 上限 → 160K 触发线）做对称对比，并明确基线只有触发线、无目标线（摘要不可控是基线固有属性）。此前研究档（10K/7.2K）的"ARGP 更便宜"叙事在主流档是否成立需要实证。三组全部同任务（600 行 chunk × 50 轮 t-long，ARGP_CHUNK_LINES=600）、同触发线（200K × 0.8 = 160K）；差异只在引擎与思考档。
+
+### 三组配置
+
+| 组 | 引擎 | 思考档 | 目标线 | 产物 |
+|---|---|---|---|---|
+| ARGP A 档 | ArgpGraphEngine | high（thinking enabled） | 32K（精确兑现） | `spike/out/scan-32k-2026-08-17T04-33-59-195Z/` |
+| 基线 disabled | BasicCompactionEngine | disabled | 建议 32K（不可控） | `spike/out/07-baseline-deepseek-2026-08-17T04-44-03-384Z/` |
+| 基线 high 定稿 | BasicCompactionEngine | **high** + `maxTokens=32768` | 建议 32K（不可控） | `spike/out/07-baseline-deepseek-2026-08-17T10-05-07-507Z/` |
+
+注：基线 disabled 档的 maxTokens 为默认 8192；基线 high 定稿显式设 32768（B-5 修复验证）。ARGP 是 0-LLM 剪枝，不受 maxTokens 影响。
+
+### 结果对比
+
+| 指标 | ARGP A 档 | 基线 disabled | 基线 high 定稿 |
+|---|---|---|---|
+| 事务 / error | **4 / 0** | 25 / 16（64%） | 30 / **23（77%）** |
+| U 达成 | 7/7 | **4/7**（含 NOT-RECOVERABLE） | 7/7 |
+| R 达成 | **7/7**（5/7 经 recall） | 0/7 | 0/7（NOT-RECOVERABLE） |
+| 压缩目标兑现 | 32K **精确** | 建议 32K → 67K | 建议 32K → 67K |
+| 调用次数 | 112 | 104 | 99 |
+| 总成本（空闲价） | **¥2.695** | ¥3.19 | ¥3.087 |
+| wall | 378s | 227s | 631s |
+
+### 关键结论
+
+1. **error 根因实锤：不是 maxTokens，是空流**。基线 high 定稿 23 笔 error **全部"区间内 0 usage"**——`ctx.llm.stream()` 返回空流（0 chunk、无计费）。此前 B-5 诊断（reasoning 吃满 8192 → text=0）只在默认 8192 档成立；32768 下空流依旧 → **dsh 摘要调用在 high 档的系统性不可靠 = 引擎固有（空流 + 误报 "no text summary content"），配置无法修复**。disabled 档 16/25 error 同机制（usage=0），与 maxTokens 无关。
+2. **主流档叙事定稿：达成度 > 成本**。三组成本差很小（¥2.70-3.19，最多 1.18×），但 R 达成 ARGP 7/7 vs 基线两档均 0/7（needle 全毁、不可找回）。"ARGP 更便宜"仅研究档（10K）成立（¥0.355 vs ¥0.911）；**主流档的卖点 = "同成本下达成度碾压 + 压缩率精确兑现（32K vs 67K）+ 0 error"**。
+3. **思考档对基线 U 达成有改善但救不了 R**：high 档 U 从 4/7 → 7/7，但 R 仍 0/7——摘要把 needle 语义压没了，与思考档无关，是"重写即丢失"的固有属性。
+4. **口径纪律**：三组成本为 2026-08-17 涨价后空闲价（v4-flash miss ¥1.5/M、hit ¥0.05/M、output ¥4.5/M），产物运行于北京 18-19 点（非高峰）；成本核算脚本 `.tmp/cost-audit.mjs`（换产物目录可重算）。
+
+### 附带发现：ARGP 侧新机制（同日实现）
+
+- 排序模式 `sortMode`（legacy/density/density-chain，spike 19 三模式对照：legacy 剪 4 fact 靠 recall、density 0 fact 直读）
+- recall 价值继承（被 cites 的 recall 原子继承旧 eff ×0.5，提交 1c87017）
+- 均默认 legacy 行为不变，27+3 测试全绿；与 160K 对比无直接关联，单独验证
+
