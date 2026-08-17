@@ -26,6 +26,17 @@ Summarizer-based compaction (e.g. `compaction-basic`) rewrites history with an L
 
 Design details, invariants, and implementation-vs-design deviations are tracked in [`docs/`](docs/).
 
+## Model requirement (edge density is tied to instruction following)
+
+Semantic edges come from the `{"cites": [...]}` declarations the model emits per the prompt contract during conversation — **edge density is a direct function of the model's instruction-following capability**:
+
+- **Strong instruction following**: cites are declared as contracted → the citation graph reflects real dependencies → high pruning selectivity
+- **Weak instruction following**: under-declaration (sparse graph, deterministic edges only) or erratic declaration (over-dense graph) → lower pruning selectivity and changed transaction shape
+
+Measured contrast (50-turn t-long, same engine and parameters): DeepSeek v4-flash (high) declared 0 cites, ~34–35 atoms per transaction (sparse graph); Qwen3.8-27B declared 547, only ~4 atoms per transaction across 37 transactions (dense graph) — **the same engine shows different pruning shapes on different models**, yet L1/L2/L3 invariants pass on both.
+
+Implication: pairing with a model that follows instructions well is recommended; on weaker models compaction stays safe (0-LLM determinism + `U`-anchor protection + `recall` fallback hold on any model), only the selectivity benefit is reduced.
+
 ## Install & mount
 
 ### Declarative CLI mount (verified)
