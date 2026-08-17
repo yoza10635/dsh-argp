@@ -1,3 +1,5 @@
+English | [中文](README.zh.md)
+
 # ARGP — 0-LLM Deterministic Context Compaction for DeepSeek Harness
 
 ARGP (**A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that compresses conversation context **without any LLM calls**: instead of rewriting history into a summary, it selectively forgets.
