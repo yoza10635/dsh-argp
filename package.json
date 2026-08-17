@@ -22,6 +22,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "release": "npm publish && git tag v$(node -p \"require('./package.json').version\") && git push origin main --tags",
     "spike1": "node spike/01-mount.ts",
     "spike2": "node spike/02-surfaceop.ts",
     "spike3": "node spike/03-recall.ts",
