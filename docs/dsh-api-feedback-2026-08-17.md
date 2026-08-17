@@ -60,6 +60,25 @@ ARGP 是以"0-LLM 确定性占位改写"为核心形态的 CompactionEngine 后�
 
 ---
 
+## B-5：摘要调用间歇性空流（2026-08-17 定稿实验实证，优先级：高）
+
+**现象**：`ctx.llm.stream()` 在高思考档（reasoningEffort=high）返回空流——0 chunk、0 usage、误报 `"summarization produced no text summary content"`。160K 主流档 50 轮实测（`spike/out/07-baseline-deepseek-2026-08-17T10-05-07-507Z/`）：30 笔事务中 **23 笔 error（77%），全部为区间内 0 usage 的空流**。
+
+**关键证据（排除 maxTokens 假设）**：
+- B-5 初诊（`.tmp/diag-thinking.mjs`）显示默认 maxTokens=8192 下 reasoning 需 ~13.5K tokens → text=0，建议 maxTokens≥32K
+- **定稿实验将 maxTokens 设 32768 后，77% error 依旧**——23 笔全为空流（0 usage），与 maxTokens 无关
+- 间歇性：同一 turn 内连续两次调用一空一正常（turn 10：ERR 0 usage → OK output=1823 / cacheRead=152960），前缀缓存一致（99.7% 命中）→ **排除上下文大小因素，疑似流式连接竞态**（连接建立/读取时序）
+- 引擎行为：error 后自动重试（同 turn 内连续触发压力检查），重试耗尽静默放弃、流程不中断（L1 50/50 仍 PASS），但上下文不收缩持续膨胀
+
+**影响**：摘要引擎（compaction-basic）在 high 思考档系统性不可靠，error 不产生 usage 但浪费重试轮；第三方引擎若依赖 stream 也会撞上。
+
+**建议变更**（任选）：
+1. stream 空流（0 chunk）增加重试或明确告警（当前静默吞掉、误报 no text）
+2. 摘要调用允许降级为非流式（一次性返回），绕开流式竞态
+3. 或至少在 error 时区分"空流"与"内容为空"，避免误报误导诊断
+
+---
+
 ## 汇总
 
 | # | 主题 | 优先级 | 现状绕过 | 建议变更 |
@@ -67,7 +86,8 @@ ARGP 是以"0-LLM 确定性占位改写"为核心形态的 CompactionEngine 后�
 | B-1 | tool/result 替换无结构化元数据通道 | 中 | 旁路索引靠 seq 关联 | 替换事件 meta 通道 / 放行附加字段 |
 | B-3 | compaction/prune 游离于事务状态机 | 中 | 借 summary 语义 + 伪字段 | prune 入状态机 / 新增 tombstone 事件 |
 | B-4 | testkit 缺 tokenMeter 致 Basic 引擎静默失效 | 高 | 显式挂 TokenMeter | testkit 补装配 / warn 提升为可观测 |
+| B-5 | 摘要调用间歇性空流（maxTokens 修复无效） | 高 | 重试耗尽静默放弃 | stream 空流重试/告警 / 降级非流式 |
 
-**期望**：dsh 团队评估上述三条中哪些适合进入 rc 系列；任何一条如需更多复现细节或配合验证，ARGP 侧可提供（含离线事件流重放材料）。
+**期望**：dsh 团队评估上述四条中哪些适合进入 rc 系列；任何一条如需更多复现细节或配合验证，ARGP 侧可提供（含离线事件流重放材料）。
 
 **联系方式**：通过 ARGP 仓库（dsh-argp）issue 或本建议书回传均可。
