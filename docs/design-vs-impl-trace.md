@@ -64,6 +64,13 @@
    - **spike 18 实证**：C 配置稳定比 B 多保留 +2 eff（链长 3 → (3−1)×1）
    - **spike 19 实证**：density-chain 与 density 同结果（本场景无版本链，验证无副作用）
 
+3. **recall 身份张力（2026-08-17 用户设计讨论）**：recall 返回的纯文本无来源标记（`budgetRecallText`，L616-626），新 R 原子完全"失忆"。因原子身份 = seq（事件位置）而非内容，新旧原子内容等价但**图身份不等价**：
+   - 出边断裂：旧原子可能"引用别的原子"（是某结论的依据），recall 只取文本，它依赖的内容连接断了——模型需要还得再 recall
+   - 入边/版本链/eff 全部重置（新原子从 0 开始）
+   - **工程后果（真洞）**：模型 recall 后"仅参考不 cites"（合理行为）→ 新原子无入度 → 下轮再被剪 → 重复 recall 循环，每次重复付 token
+   - **设计出路**（按改动量排序）：① 现状 + 语义澄清（"recall = 内容快照非图身份回归"）；② **软保护（推荐）**：recall 命中的 seq 记入 recentlyRecalled，N 轮内豁免剪枝（原子级，复用 closureLastRecalled L176/686 的闭包级思路）——消灭重复 recall 循环，不动身份语义；③ 来源继承：新 R 打 recalledFrom:seq 标记，建图时继承 prunedNodeIndex 历史（价值连续但出边断裂无解）；④ 内容寻址身份（远期大改，动摇 append-only 根基）
+   - **待办**：spike 21 快速验证重复 recall 是否真实频繁发生，再决定是否实施方案 ②
+
 ## 4. 过时注释/文档（需清理）
 
 - `src/argp-graph-engine.ts` L5 文件头注释"无版本链去重（§4.4）"——**过时**：findVersionDuplicates 已实现（P1.4 提交 29f5ea2），注释未更新。

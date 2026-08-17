@@ -22,7 +22,8 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER, DEEPSEEK_REASONING_EFFORT, mountDeepSeekFlash } from './deepseek.ts'
+import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER, DEEPSEEK_REASONING_EFFORT } from './deepseek.ts'
+import { mountModel } from './model-mount.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -58,10 +59,11 @@ fs.mkdirSync(path.join(workDir, 'logs'), { recursive: true })
 const code = (n: number): string => ((n * 48_271) % 1_679_616).toString(36).toUpperCase().padStart(4, '0')
 const uToken = (k: number): string => 'TK-' + code(k * 7 + 3)
 
-// filler 语料：首行埋 R 针（唯一 marker），其余为遥测噪声（每片约 14.7K chars）
+// filler 语料：首行埋 R 针（唯一 marker），其余为遥测噪声（每片约 14.7K chars @150 行；600 行 ≈ 17K tokens/轮，用于 160K 触发档）
+const chunkLines = Number(process.env['ARGP_CHUNK_LINES'] ?? 150)
 function makeChunk(i: number): string {
   const lines: string[] = ['chunk ' + i + ' telemetry export — incident ref INC-' + i + '-MARKER-' + code(i)]
-  for (let n = 0; n < 150; n += 1) {
+  for (let n = 0; n < chunkLines; n += 1) {
     lines.push('2026-07-' + String(10 + (i % 20)) + '-' + String(((n % 28) + 1)).padStart(2, '0')
       + 'T' + String(n % 24).padStart(2, '0') + ':' + String((n * 7 + i) % 60).padStart(2, '0') + ':00Z '
       + 'level=' + (n % 13 === 0 ? 'WARN' : 'INFO') + ' svc=ingest-' + ((n % 7) + 1)
@@ -75,11 +77,11 @@ for (let i = 1; i <= chunkCount; i += 1) {
   fs.writeFileSync(path.join(workDir, 'logs', 'chunk-' + i + '.md'), makeChunk(i), 'utf8')
 }
 
-// ---------- 装配：DeepSeek v4-flash + ArgpGraphEngine 10240/7168 ----------
+// ---------- 装配：模型（ARGP_MODEL_SOURCE 切换 deepseek / qwen-local）+ ArgpGraphEngine ----------
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-6 t-long archival persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
-await mountDeepSeekFlash(ctx)
+const modelMount = await mountModel(ctx)
 await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses })
 const engine = ctx.compaction as ArgpGraphEngine
 
@@ -104,9 +106,9 @@ ctx.tools.register(defineTool({
 }))
 
 const agent = ctx.agentLoop.create(SessionId('spike-6-tlong'), {
-  provider: DEEPSEEK_PROVIDER,
-  model: DEEPSEEK_MODEL,
-  reasoningEffort: DEEPSEEK_REASONING_EFFORT,
+  provider: modelMount.provider,
+  model: modelMount.model,
+  reasoningEffort: modelMount.reasoning,
 })
 engine.setSession(agent.session)
 
@@ -143,16 +145,19 @@ function waitForIdle(subject: Agent): Promise<void> {
   })
 }
 
-/** 探活：DeepSeek API 单请求 PONG。 */
+/** 探活：当前模型单请求 PONG（本地模式探 llama.cpp 端点）。 */
 async function serverProbe(): Promise<boolean> {
   try {
     const apiKey = process.env['DEEPSEEK_API_KEY']
     if (apiKey === undefined || apiKey.length === 0) return false
-    const res = await fetch('https://api.deepseek.com/chat/completions', {
+    const endpoint = modelMount.reasoning === 'off' && process.env['ARGP_MODEL_SOURCE'] === 'qwen-local'
+      ? (process.env['QWEN_BASE'] ?? 'http://127.0.0.1:8080/v1') + '/chat/completions'
+      : 'https://api.deepseek.com/chat/completions'
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(120_000),
-      body: JSON.stringify({ model: DEEPSEEK_MODEL, messages: [{ role: 'user', content: 'Reply with exactly: PONG' }], max_tokens: 8 }),
+      body: JSON.stringify({ model: modelMount.model, messages: [{ role: 'user', content: 'Reply with exactly: PONG' }], max_tokens: 8 }),
     })
     return res.ok
   } catch {
