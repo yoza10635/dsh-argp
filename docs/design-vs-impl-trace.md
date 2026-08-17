@@ -78,7 +78,7 @@
 
 ## 5. 状态小结
 
-- 完整实现：确定性边 / lastRefRound / recall+预算 / list_pruned / 配对自保 / 微剪枝下限 / maxPasses
+- 完整实现：确定性边 / lastRefRound / recall+预算 / list_pruned / 配对自保 / 微剪枝下限 / maxPasses / **比例预算（contextWindow×0.8 触发、×0.2 保留，2026-08-18）**
 - 简化实现（有意适配）：原子类型（无 T）、cites 建边（仅 supporting）、askCover 启发式、降级链（summarize 关）、版本去重（全等）、闭包分区（无游离池）
 - 未实现（有意降级/未排期）：头脑风暴模式、summarize-critical、closureDisposition（memory/tips）、auto_backfill
 - 已确认缺口 → **已修复**：静态入度不递减（§5.4 反向拓扑链式解锁缺失，见 §2-1，2026-08-17）
@@ -91,3 +91,5 @@
    - **恢复精度**：剪枝以原子为粒度操作 + prunedNodeIndex 按 seq 寻址 → recall 精确到单个原子；摘要以块为粒度重写 → 恢复粒度是块、成本高
    - **恢复频率**：剪得准（如 density）→ recall 触发少（spike 19：legacy 2 次 vs density 0 次）；剪枝越好兜底用得越少
    - 对外叙事禁止说"剪枝使判断错代价低"；正确表述："**0-LLM 剪枝（可控压缩率）+ recall 精确兜底**的组合优势"，且可恢复性本身是平台级能力（呼应 B-1 建议书：结构化元数据通道正是给所有引擎接 recall 的 seam）
+
+3. **预算比例驱动（2026-08-18 用户定调）**：默认 `windowTokens = contextWindow × 0.8`（80% 触发）、`retainTokens = windowTokens × 0.2`（压缩率 1/5）——**上下文容量由模型适配器声明提供（其他插件），引擎不硬编码**；换模型自动适配，需自定义可显式覆盖（`windowRatio`/`retainRatio`/显式 windowTokens/retainTokens）。实现：`scaleBudgets` 纯函数 + `resolveScaledBudgets` 运行时经 `ctx.llm.resolveModelInfo` 取 contextWindow（失败回退静态默认）；recall 预算同步用解析后窗口。与 compaction-basic 的 thresholdRatio/retainRatio 机制同构（官方先例），但 ARGP 的压缩率精确兑现是其差异点。
