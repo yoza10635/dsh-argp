@@ -127,3 +127,22 @@ R-ANSWER: INC-2-MARKER-22HQ
 1. `list_pruned` 能显著减少盲猜 seq，模型会主动用 `keyword/type` 过滤。
 2. 但当前 preview 包含完整首行 marker，模型有时直接抄 preview，绕过 recall 全文。
 3. 因此正式 probe 文案仍保留 v5；`list_pruned` 作为辅助工具保留，若后续要强制 recall，应把 preview 截断到不含 marker 码，或只返回 `seq/type/turn/citedBy`。
+
+## 追加：P2 生产档真跑 + P5 基线重跑（2026-08-17）
+
+### P2 生产档回归（closure lifecycle 后）
+
+- 命令：`spike/06-tlong.ts`，high，100000/33000/maxPasses=256
+- 产物：`spike/out/08-production-closure-2026-08-17T01-51-51-015Z/`
+- 结果：L1/L2/L3 全 PASS；U 7/7，R 7/7；2 笔事务；wall=185s
+
+### P5 基线重跑（BasicCompactionEngine，TokenMeter 已修复）
+
+- 产物：`spike/out/07-baseline-deepseek-2026-08-17T01-55-34-648Z/`
+- 结果：50/50 轮完成；117 次 compaction，85 次 error；U 0/7，R 0/7
+- 与 ARGP 对照：ARGP high U 7/7、R 7/7；基线 U/R 全 0
+
+### P4 声明式挂载
+
+- 已提供 `cordis/argp.cordis.snapshot.yml` 与 `docs/dsh-argp-mount-example.md`
+- 真实 `dsh` 命令验证仍待环境（当前无 dsh CLI）
