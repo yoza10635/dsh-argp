@@ -1,74 +1,106 @@
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-# ARGP — 0-LLM Deterministic Context Compaction for DeepSeek Harness
+# dsh-argp — DeepSeek Harness 的 0-LLM 确定性上下文压缩引擎
 
-ARGP (**A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that compresses conversation context **without any LLM calls**: instead of rewriting history into a summary, it selectively forgets.
+dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用图剪枝）是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方 `CompactionEngine`，**压缩阶段零 LLM 调用**：不把历史重写为摘要，而是选择性遗忘。
 
-- **0 LLM in the compression phase** — pure graph rules, deterministic and convergent.
-- **Selective forgetting, not rewriting** — pruned content stays in the append-only session log and is retrievable via a built-in `recall_pruned` tool.
-- **Engine-agnostic seam** — mounted as a drop-in replacement for `compaction-basic` through the standard `CompactionEngine` interface.
+- **压缩阶段 0 次 LLM 调用**——纯图规则，确定性、可收敛
+- **选择性遗忘而非重写**——被剪内容留在 append-only 会话日志，可通过内置 `recall_pruned` / `recall` 工具取回
+- **引擎无关的接缝**——通过标准 `CompactionEngine` 接口挂载，作为 `compaction-basic` 的替代后端
+- **压缩率精确兑现**——实测 200K 上下文 → 160K 触发 → 32K 保留，输出大小可控
 
-> Status: research/validation stage. The full pipeline (mount → prune → recall, transaction invariants) is validated on dsh `0.1.0-rc.6` with DeepSeek v4-flash (see [Reproduce](#reproduce)). Declarative production mounting (P4) is in progress.
+> 状态：研究/验证阶段。全链路（挂载 → 剪枝 → recall，事务不变式）已在 dsh `0.1.0-rc.6` + DeepSeek v4-flash 上完成 50 轮验证；声明式生产挂载已验证（`dsh plugin` CLI 加载）。
 
-## Why
+## 为什么
 
-Summarizer-based compaction (e.g. `compaction-basic`) rewrites history with an LLM at compression time: cost scales with context, information is lossy, and compression ratio is not controllable. ARGP takes the opposite route: dependencies are captured structurally while the conversation happens (a small per-turn annotation), and compaction only *evicts* atoms in reverse topological order of the citation graph — every atom's token count is known, pruning is deterministic, and the degradation chain converges to budget.
+摘要式压缩（如 `compaction-basic`）在压缩时调用 LLM 重写历史：成本随上下文线性放大、信息有损、压缩率不可控。ARGP 走相反路线：依赖关系在对话发生时以结构化方式沉淀（每轮小额标注），压缩时只按引用图的反向拓扑序"摘除"原子——每个原子 token 数已知、剪枝确定性、降级链收敛到预算。
 
-## Core mechanics
+## 核心机制
 
-1. **Atomization** — history is decomposed into atoms (user / assistant / tool-result). dsh's surface has no standalone tool/call nodes, so call blocks live inside assistant atoms.
-2. **Graph building** — deterministic edges (assistant → its tool results, via `toolCallId`) plus semantic edges from citation prefixes the assistant declares in its output (`{"cites": [...]}`).
-3. **Topological pruning** — repeatedly evict atoms with in-degree 0, ordered by edge level → effective importance → last-reference round. Citations to a pruned atom unlock it (dynamic effective in-degree, per pass). `U` (user) atoms and tombstones are never pruned.
-4. **Closure lifecycle** — completed task closures (roots anchored on task-type user atoms) can be evicted whole, with tombstones that feed the recall index.
-5. **Recall** — `recall_pruned(seq)` retrieves pruned atoms from the log; `list_pruned` shows the pruned-node index. Budget: ≤3 calls/turn, ≤5% window per call, ≤10% total.
-6. **Version dedup** — exact-duplicate assistant atoms / same-issuer tool results are pruned in pairs (simplified form of the design's θ=0.8 chain dedup).
+1. **原子化**——历史拆分为原子（用户输入 / Agent 输出 / 工具结果）。dsh surface 无独立 tool/call 节点，call 块内嵌在 assistant 原子内。
+2. **建图**——确定性边（assistant → 其工具结果，经 `toolCallId`）+ 语义边（assistant 输出中声明的引用前缀 `{"cites": [...]}`）。
+3. **拓扑剪枝**——反复摘除入度为 0 的原子，排序键：边等级 → 有效重要性 → 最近引用轮次。被剪引用方的出边随之消失，目标入度递减解锁（每 pass 动态有效入度）。`U`（用户）原子与墓碑永不参剪。
+4. **闭包生命周期**——已完成任务的闭包（以任务型 U 原子为根锚）可整体摘除，墓碑进入 recall 索引。
+5. **recall**——`recall_pruned(seq)` 从日志取回被剪原子；`list_pruned` 展示剪枝目录。预算：每轮 ≤3 次、单次 ≤5% window、累计 ≤10%。
+6. **版本去重**——完全重复的 assistant 原子 / 同 issuer 的工具结果成对剪除（设计稿 θ=0.8 版本链去重的简化形态）。
 
-Design details, invariants, and implementation-vs-design deviations are tracked in [`docs/`](docs/).
+设计细节、不变式与设计↔实现差异见 [`docs/`](docs/)。
 
-## Repository layout
+## 安装与挂载
 
-| Path | Content |
-|---|---|
-| `src/argp-graph-engine.ts` | Main engine (graph build, pruning, closure lifecycle, recall/list tools) |
-| `src/argp-t1-engine.ts` | Earlier single-transaction validation engine |
-| `src/recall-engine.ts` / `src/probe-engine.ts` | Recall / probe helpers |
-| `test/` | Node test suite (`argp-graph-engine.test.ts`, `chain-unlock.test.ts`) |
-| `spike/` | Repro/validation scripts (each `node spike/NN-*.ts` is self-contained) |
-| `docs/` | Design (v1.0), migration design, roadmap, experiment records, design↔impl trace |
+### CLI 声明式挂载（已验证）
 
-## Quick start
+```bash
+dsh plugin --profile <name> add dsh-argp
+```
+
+然后在 profile 的 `cordis.patch.yml` 中插入引擎并禁用 stock 摘要器：
+
+```yaml
+- id: compaction-basic
+  disabled: true
+- insert:
+    - id: dsh-argp
+      name: dsh-argp
+      config: { maxPasses: 16 }   # 预算默认按比例驱动，无需硬编码
+```
+
+启动后 `ctx.compaction` 即为 ARGP 引擎。
+
+### 预算比例驱动（默认）
+
+- `windowTokens = contextWindow × 0.8`（上下文 80% 触发）
+- `retainTokens = windowTokens × 0.2`（压缩率 1/5）
+
+上下文容量读自模型适配器声明，换模型自动适配；需要时也可显式覆盖（见 [config](src/argp-graph-engine.ts)）。
+
+### 本地开发
 
 ```bash
 npm install
-npm run check        # typecheck + local smoke + unit tests
+npm run check        # typecheck + 本地 smoke + 单元测试
 ```
 
-DeepSeek-backed validation requires a dsh API credential (standard dsh credential location) and runs:
+DeepSeek 实测需要 dsh 标准凭据：
 
 ```bash
-npm run smoke:deepseek   # 10a + 10b + 10d single-turn smokes
+npm run smoke:deepseek   # 10a + 10b + 10d 单轮冒烟
 ```
 
-## Reproduce
+## 验证结果
 
-Key validation runs (all artifacts are local-only; scripts are committed):
+DeepSeek v4-flash，50 轮 t-long 任务；完整数字与产物路径见 [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md)。
 
-| Run | Command | What it validates |
+| 指标 | dsh-argp | compaction-basic（同任务 high 档） |
 |---|---|---|
-| 50-turn t-long (high thinking) | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 invariants, 7/7 anchors, 7/7 needles via recall |
-| Production-scale | `ARGP_DEEPSEEK_THINKING=enabled ARGP_WINDOW_TOKENS=100000 ARGP_RETAIN_TOKENS=33000 ARGP_MAX_PASSES=256 node spike/06-tlong.ts` | Large-transaction pruning (34–35 atoms per transaction) |
-| Baseline (compaction-basic) | `node spike/07-baseline.ts` | Same task with the stock summarizer for contrast |
-| Synthetic 0-LLM | `npm run spike8a` | 28-atom single-transaction pruning with zero LLM calls |
+| 预算模式 | 比例驱动（200K → 160K 触发 → 32K 保留） | 固定 32K 意图，不可控 |
+| 事务 / error | 4 / 0 | 30 / 23（77%，全为空流） |
+| U 锚点保留 | 7/7 | 7/7 |
+| needle 找回 | 7/7（5/7 经 recall） | 0/7（不可找回） |
+| 压缩目标兑现 | 精确（32K） | 实际 67K（失控） |
+| 成本（空闲价） | ¥2.695 | ¥3.087 |
 
-Experiment results and claims are recorded in [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md); every number carries its artifact path.
+研究档对照：dsh-argp ¥0.355（U 7/7 R 7/7）vs `compaction-basic` ¥0.911（U 0/7 R 0/7）。
 
-## Known platform gaps (feedback to dsh)
+## 复现
 
-Developing a non-LLM compaction backend surfaced three extensibility gaps in the compaction seam. Details and repro scripts in [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md):
+| 实验 | 命令 | 验证内容 |
+|---|---|---|
+| 50 轮 t-long（high 思考档） | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 不变式、7/7 锚点、7/7 needle 经 recall 找回 |
+| 160K 主流档 | `ARGP_CONTEXT_WINDOW=200000 ARGP_CHUNK_LINES=600 node spike/06-tlong.ts` | 压缩率精确兑现、比例预算 |
+| 基线对照（compaction-basic） | `node spike/07-baseline.ts` | 同任务下 stock 摘要器对照 |
+| 合成 0-LLM | `npm run spike8a` | 28 原子单事务、零 LLM 调用 |
 
-1. **No structured metadata channel on tool/result replacement** — placeholders must clone the original message and may only swap content.
-2. **`compaction/prune` is outside the transaction invariant state machine** — no native event type for algorithmic eviction; third-party engines must borrow `summary` semantics with pseudo fields.
-3. **Headless test assembly silently disables the pressure path** — `mountAgentLoopTestDependencies` does not register `tokenMeter`, and the pre-step catch swallows the error.
+每个数字都带产物路径（见实验记录文档）。
+
+## 平台缺口反馈（给 dsh）
+
+开发非 LLM 压缩后端暴露了 compaction 接缝的四处扩展性缺口，细节与复现脚本见 [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md)：
+
+1. **tool/result 替换无结构化元数据通道**——占位必须克隆原 message，只能改 content。
+2. **`compaction/prune` 游离于事务不变式状态机**——算法剪枝没有原生事件类型，第三方引擎只能借 `summary` 语义 + 填伪字段。
+3. **headless 测试装配静默失效**——`mountAgentLoopTestDependencies` 不注册 `tokenMeter`，pre-step 的 catch 吞掉错误。
+4. **摘要调用间歇性空流（B-5）**——high 思考档 77% 事务空流失败，`maxTokens=32768` 无效，疑似流式连接竞态。
 
 ## License
 

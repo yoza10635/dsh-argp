@@ -1,0 +1,107 @@
+[中文](README.md) | English
+
+# dsh-argp — 0-LLM Deterministic Context Compaction for DeepSeek Harness
+
+dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that compresses conversation context **without any LLM calls**: instead of rewriting history into a summary, it selectively forgets.
+
+- **0 LLM in the compression phase** — pure graph rules, deterministic and convergent.
+- **Selective forgetting, not rewriting** — pruned content stays in the append-only session log and is retrievable via built-in `recall_pruned` / `recall` tools.
+- **Engine-agnostic seam** — mounted as a drop-in replacement for `compaction-basic` through the standard `CompactionEngine` interface.
+- **Exact compression ratio** — measured 200K context → 160K trigger → 32K retained; output size is controlled.
+
+> Status: research/validation stage. The full pipeline (mount → prune → recall, transaction invariants) is validated on dsh `0.1.0-rc.6` with DeepSeek v4-flash over 50-turn runs; declarative production mounting is verified (loaded via the `dsh plugin` CLI).
+
+## Why
+
+Summarizer-based compaction (e.g. `compaction-basic`) rewrites history with an LLM at compression time: cost scales with context, information is lossy, and compression ratio is not controllable. ARGP takes the opposite route: dependencies are captured structurally while the conversation happens (a small per-turn annotation), and compaction only *evicts* atoms in reverse topological order of the citation graph — every atom's token count is known, pruning is deterministic, and the degradation chain converges to budget.
+
+## Core mechanics
+
+1. **Atomization** — history is decomposed into atoms (user / assistant / tool-result). dsh's surface has no standalone tool/call nodes, so call blocks live inside assistant atoms.
+2. **Graph building** — deterministic edges (assistant → its tool results, via `toolCallId`) plus semantic edges from citation prefixes the assistant declares in its output (`{"cites": [...]}`).
+3. **Topological pruning** — repeatedly evict atoms with in-degree 0, ordered by edge level → effective importance → last-reference round. Citations to a pruned atom unlock it (dynamic effective in-degree, per pass). `U` (user) atoms and tombstones are never pruned.
+4. **Closure lifecycle** — completed task closures (roots anchored on task-type user atoms) can be evicted whole, with tombstones that feed the recall index.
+5. **Recall** — `recall_pruned(seq)` retrieves pruned atoms from the log; `list_pruned` shows the pruned-node index. Budget: ≤3 calls/turn, ≤5% window per call, ≤10% total.
+6. **Version dedup** — exact-duplicate assistant atoms / same-issuer tool results are pruned in pairs (simplified form of the design's θ=0.8 chain dedup).
+
+Design details, invariants, and implementation-vs-design deviations are tracked in [`docs/`](docs/).
+
+## Install & mount
+
+### Declarative CLI mount (verified)
+
+```bash
+dsh plugin --profile <name> add dsh-argp
+```
+
+Then insert the engine and disable the stock summarizer in the profile's `cordis.patch.yml`:
+
+```yaml
+- id: compaction-basic
+  disabled: true
+- insert:
+    - id: dsh-argp
+      name: dsh-argp
+      config: { maxPasses: 16 }   # budgets are ratio-driven by default
+```
+
+After boot, `ctx.compaction` is the ARGP engine.
+
+### Ratio-driven budgets (default)
+
+- `windowTokens = contextWindow × 0.8` (trigger at 80% of context)
+- `retainTokens = windowTokens × 0.2` (1/5 compression ratio)
+
+The context capacity comes from the model adapter declaration and adapts automatically when the model changes; explicit overrides are also supported (see [config](src/argp-graph-engine.ts)).
+
+### Local development
+
+```bash
+npm install
+npm run check        # typecheck + local smoke + unit tests
+```
+
+DeepSeek-backed validation requires a dsh API credential (standard dsh credential location):
+
+```bash
+npm run smoke:deepseek   # 10a + 10b + 10d single-turn smokes
+```
+
+## Validation
+
+DeepSeek v4-flash, 50-turn t-long task; full numbers with artifact paths in [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md).
+
+| Metric | dsh-argp | compaction-basic (high, same task) |
+|---|---|---|
+| budget mode | ratio-driven (200K → 160K trigger → 32K retain) | fixed 32K intent, uncontrolled |
+| transactions / errors | 4 / 0 | 30 / 23 (77%, empty streams) |
+| U anchors preserved | 7/7 | 7/7 |
+| needles recovered | 7/7 (5/7 via recall) | 0/7 (unrecoverable) |
+| compression target | exact (32K) | 67K actual (uncontrolled) |
+| cost (idle pricing) | ¥2.695 | ¥3.087 |
+
+Research-scale comparison: dsh-argp ¥0.355 (U 7/7 R 7/7) vs `compaction-basic` ¥0.911 (U 0/7 R 0/7).
+
+## Reproduce
+
+| Run | Command | What it validates |
+|---|---|---|
+| 50-turn t-long (high thinking) | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 invariants, 7/7 anchors, 7/7 needles via recall |
+| 160K mainline | `ARGP_CONTEXT_WINDOW=200000 ARGP_CHUNK_LINES=600 node spike/06-tlong.ts` | Exact compression ratio, ratio-driven budgets |
+| Baseline (compaction-basic) | `node spike/07-baseline.ts` | Same task with the stock summarizer for contrast |
+| Synthetic 0-LLM | `npm run spike8a` | 28-atom single-transaction pruning with zero LLM calls |
+
+Every number carries its artifact path (see the experiment record).
+
+## Known platform gaps (feedback to dsh)
+
+Developing a non-LLM compaction backend surfaced four extensibility gaps in the compaction seam. Details and repro scripts in [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md):
+
+1. **No structured metadata channel on tool/result replacement** — placeholders must clone the original message and may only swap content.
+2. **`compaction/prune` is outside the transaction invariant state machine** — no native event type for algorithmic eviction; third-party engines must borrow `summary` semantics with pseudo fields.
+3. **Headless test assembly silently disables the pressure path** — `mountAgentLoopTestDependencies` does not register `tokenMeter`, and the pre-step catch swallows the error.
+4. **Intermittent empty streams on summarizer calls (B-5)** — 77% of transactions failed with empty streams under high thinking effort; `maxTokens=32768` does not help; likely a streaming connection race.
+
+## License
+
+MIT
