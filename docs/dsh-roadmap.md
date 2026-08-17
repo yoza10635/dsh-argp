@@ -34,16 +34,16 @@
 
 ## P3. 降级链补全 + 生产硬化
 
-1. summarize-critical 作为**末环**恢复（默认关，config 开关；闭包剪除在前）——降级链 lifecycle→summarize→force→fail 闭合
-2. recall 预算闸门（每轮 ≤3 次 / 单次 ≤5% window / 累计 ≤10% / truncated 标注）——先拿 P2 生产档的 recall 用量数据定必要性再上
-3. askCover 动态复核回归用例（P0-3 失败模式：跨轮引用到达 → 豁免失效）
+1. ✅ summarize-critical 作为**末环**（默认关，config 开关；闭包剪除在前）——降级链 lifecycle→summarize→force→fail 闭合
+2. ✅ recall 预算闸门（每轮 ≤3 次 / 单次 ≤5% window / 累计 ≤10% / truncated 标注）——2026-08-17 已实现
+3. ⬜ askCover 动态复核回归用例（P0-3 失败模式：跨轮引用到达 → 豁免失效）——实现已有（askCoverage 动态复核），回归用例未单独建档
 
-**退出判据**：降级链四态各有单测/重放用例；recall 闸门（若上）有实测用量依据登记台账。
+**退出判据**：降级链四态各有单测/重放用例；recall 闸门（若上）有实测用量依据登记台账——**基本达成**（recall 闸门实现 + 实测用量见 experiment 记录）。
 
 ## P4. 声明式生产挂载（迁移本体）
 
 1. ✅ cordis-plugin-include + patches overlay——**2026-08-17 验证通过**：`dsh plugin --profile <name> add file:...` 安装 + `cordis.patch.yml` 用 `insert:` 挂 argp + `disabled: true` 关 compaction-basic；`--dump-config` 组合正确
-2. ✅ 作为 dsh 插件被声明式加载——**spike/22-declarative-mount-check.ts 实例化验证通过**：boot web profile 树后 `ctx.compaction.constructor === ArgpGraphEngine`（非 Basic）；TS 源入口 `src/index.ts` 由 tsx loader 正常解析（`main` 保持 TS 源，cordis 加载器支持）
+2. ✅ 作为 dsh 插件被声明式加载——**spike/22-declarative-mount-check.ts 实例化验证通过**：boot web profile 树后 `ctx.compaction.constructor === ArgpGraphEngine`（非 Basic）；**2026-08-18 已升级产物型**：`main → lib/index.js`（tsc 构建，tsconfig.build.json），市场契约 dsh.bundle.patch 就绪
 3. ⬜ WebUI 真会话验证：`dsh web` 已能启动（HTTP 200 :3080）且 profile patch 已挂 argp；**真会话触发剪枝/recall 全流程待人工对话验证**（需要模型可用）
 
 **退出判据**：`dsh` 命令声明式加载 ARGP 插件跑通一个真会话，事件流含完整事务括号——**已部分达成**（实例化验证通过，真会话待人工）。
@@ -52,9 +52,11 @@
 ## P5. 证据补充与发文
 
 1. ✅ 同压力档基线重跑（B-4 已修：显式挂 TokenMeter）——2026-08-17 已完成：50/50 轮、117 compaction / 85 error、U 0/7、R 0/7（产物 `spike/out/07-baseline-deepseek-2026-08-17T01-55-34-648Z/`，记录见 experiment-2026-08-16-separated-contract-probe.md 追加）
-2. 公开基准 pilot（LongMemEval 子抽样，待拍板）
-3. ✅ 卡点向上建议打包（B-1/B-3/B-4）——2026-08-17 已提交 `docs/dsh-api-feedback-2026-08-17.md`，待 dsh 响应
-4. 母表更新 + 能力数据速查固化
+2. ✅ **160K 主流档三档定稿（2026-08-17）**——ARGP A（¥2.695 U7/7 R7/7 精确 32K）vs 基线 disabled（¥3.19 U4/7 R0/7）vs 基线 high（¥3.087 U7/7 R0/7 23 error 空流）；反事实证明成本优势鲁棒（详见 experiment 记录 + publication-plan 台账）
+3. ⬜ 公开基准 pilot（LongMemEval 子抽样，待拍板）
+4. ✅ 卡点向上建议打包（B-1/B-3/B-4/**B-5**）——2026-08-17 已提交 `docs/dsh-api-feedback-2026-08-17.md`（B-5 空流实证：maxTokens=32768 无效，23 error 全 0 usage）
+5. ✅ **插件分享帖已发布**（2026-08-18 凌晨，Discussion #2876，Show Your Plugins! 中文帖）；README 中文主文档 + 英文版；市场识别层合规（STANDARD.md，cordis-plugin 产物型）
+6. 母表更新 + 能力数据速查固化——**基本完成**（publication-plan.md 台账已登记今日全部实验）
 
 **纪律**：每个实验跑完当场登记台账（数字必带产物位置）；受控对照期间不中途调参；短实验结论不外推长程。
 
