@@ -24,7 +24,9 @@ export const DEEPSEEK_FLASH_CONFIG = {
   models: [{
     id: DEEPSEEK_MODEL,
     name: 'DeepSeek-V4-Flash',
-    contextWindow: 128_000,
+    // 适配器声明的上下文容量；BasicCompactionEngine 触发线 = contextWindow × thresholdRatio。
+    // 160K 主流场景档设 ARGP_CONTEXT_WINDOW=200000（×0.8=160K 触发）。
+    contextWindow: Number(process.env['ARGP_CONTEXT_WINDOW'] ?? 128_000),
   }],
 }
 

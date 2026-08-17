@@ -50,10 +50,11 @@ fs.mkdirSync(path.join(workDir, 'logs'), { recursive: true })
 const code = (n: number): string => ((n * 48_271) % 1_679_616).toString(36).toUpperCase().padStart(4, '0')
 const uToken = (k: number): string => 'TK-' + code(k * 7 + 3)
 
-// filler 语料与 spike 6 逐字一致（每片约 14.7K chars，首行埋 R 针）
+// filler 语料与 spike 6 逐字一致（首行埋 R 针；150 行 ≈14.7K chars，600 行 ≈17K tokens/轮）
+const chunkLines = Number(process.env['ARGP_CHUNK_LINES'] ?? 150)
 function makeChunk(i: number): string {
   const lines: string[] = ['chunk ' + i + ' telemetry export — incident ref INC-' + i + '-MARKER-' + code(i)]
-  for (let n = 0; n < 150; n += 1) {
+  for (let n = 0; n < chunkLines; n += 1) {
     lines.push('2026-07-' + String(10 + (i % 20)) + '-' + String(((n % 28) + 1)).padStart(2, '0')
       + 'T' + String(n % 24).padStart(2, '0') + ':' + String((n * 7 + i) % 60).padStart(2, '0') + ':00Z '
       + 'level=' + (n % 13 === 0 ? 'WARN' : 'INFO') + ' svc=ingest-' + ((n % 7) + 1)
@@ -77,13 +78,17 @@ if (typeof ctx.tokenMeter?.measure !== 'function') throw new Error('spike 7: tok
 console.log('[diag] tokenMeter mounted ok')
 await ctx.plugin(AgentLoop, { agents: [] })
 await mountDeepSeekFlash(ctx)
-// 压力对齐 ARGP 臂：threshold = 128000 × 0.08 = 10240 tokens；retain 7168 同值
+// 压力对齐 ARGP 160K 主流档：contextWindow=200000（ARGP_CONTEXT_WINDOW）× 0.8 = 160K 触发；
+// retainTokens=32000 为摘要目标建议（摘要引擎不保证兑现——不可控是基线固有属性）
+// B-5 修复验证：maxTokens 默认 8192 对 thinking 模型必失败（reasoning 需 ~13.5K）；
+// 设 ARGP_BASELINE_MAX_TOKENS=32768 可验证修复。
 await ctx.plugin(BasicCompactionEngine, {
+  maxTokens: Number(process.env['ARGP_BASELINE_MAX_TOKENS'] ?? 8192),
   modelPolicies: [{
     provider: DEEPSEEK_PROVIDER,
     model: DEEPSEEK_MODEL,
-    thresholdRatio: 0.08,
-    retainTokens: 7_168,
+    thresholdRatio: 0.8,
+    retainTokens: 32_000,
   }],
 })
 
@@ -203,7 +208,8 @@ const probeText = (k: number): string =>
 type Item = { label: string; text: string; kind: 'setup' | 'filler' | 'probe'; probeK?: number; chunkIndex?: number; needleK?: number }
 const items: Item[] = [{ label: 'setup', text: setupText, kind: 'setup' }]
 let fillerIdx = 0
-for (let turn = 2; turn <= 50; turn += 1) {
+const maxTurns = Number(process.env['ARGP_MAX_TURNS'] ?? 50)
+for (let turn = 2; turn <= maxTurns; turn += 1) {
   const probePos = PROBE_TURNS.indexOf(turn)
   if (probePos >= 0) {
     const k = probePos + 1
@@ -399,7 +405,7 @@ const result = {
   at: new Date().toISOString(),
   engine: 'BasicCompactionEngine (dsh stock)',
   model: 'deepseek-official/deepseek-v4-flash',
-  pressureConfig: { thresholdRatio: 0.08, retainTokens: 7_168, contextWindow: 128_000 },
+  pressureConfig: { thresholdRatio: 0.8, retainTokens: 32_000, contextWindow: Number(process.env['ARGP_CONTEXT_WINDOW'] ?? 128_000) },
   wallSeconds: Math.round((Date.now() - startedAt) / 1000),
   turnsPlanned: items.length,
   turnsCompleted: completedTurns,
