@@ -142,6 +142,8 @@ export interface PrunedNodeInfo {
   turn: number
   firstLine: string
   citedBySeq: number[]
+  /** 被剪瞬间的有效重要性（recall 价值继承的来源，§3-3）。 */
+  eff: number
 }
 
 export class ArgpGraphEngine extends CompactionEngine {
@@ -163,6 +165,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly recallCalls: { seq: number; hit: boolean }[] = []
   readonly recallQueryCalls: { query: string; count: number; hits: number }[] = []
   readonly citeStats: CiteStats = { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 }
+  /** §3-3 recall 价值继承：最近一次 recall 的旧原子 seq 与结果 R 原子 seq（建图时用）。 */
+  private recallSourceSeq = -1
+  private recallResultSeq = -1
   /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
   lastEdges: SemanticEdge[] = []
   /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
@@ -215,7 +220,12 @@ export class ArgpGraphEngine extends CompactionEngine {
         this.noteRecallHit(seq)
         const text = eventText(this.session, seq)
         if (text === '') return 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text'
-        return this.budgetRecallText(text)
+        const result = this.budgetRecallText(text)
+        // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
+        // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
+        this.recallSourceSeq = seq
+        this.recallResultSeq = this.session.events.length
+        return result
       },
     })
     ctx.tools.register(recallTool)
@@ -730,6 +740,8 @@ export class ArgpGraphEngine extends CompactionEngine {
           turn: a.turn,
           firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
           citedBySeq,
+          // 闭包剪枝没有 eff map；用 selfImportance 近似（A=5/U=3/R=0）
+          eff: a.type === 'A' ? 5 : a.type === 'U' ? 3 : 0,
         })
       }
     }
@@ -784,6 +796,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     const selfImportance = (a: Atom): number => (a.type === 'A' ? 5 : a.type === 'U' ? 3 : 0)
     const eff = new Map(atoms.map(a => [a.id, selfImportance(a)]))
     for (const e of edges) eff.set(e.to, Math.max(eff.get(e.to) ?? 0, EDGE_WEIGHTS[e.level])) // 语义边权重
+    // §3-3 recall 价值继承：recall 结果原子若被 cites 命中（入度>0 = 模型确认使用），
+    // 继承旧原子的被剪 eff（×0.5 衰减）。继承一旦触发即"永久"生效于本轮排序——
+    // 不依赖当前入度（链式解锁可能剪掉 cites 方后使入度归零，但继承的价值仍应保留，
+    // 避免"模型刚确认使用的内容因引用方先被剪而立刻被剪"）。
+    if (this.recallResultSeq >= 0 && this.recallSourceSeq >= 0) {
+      const recallAtom = atoms.find(a => a.seq === this.recallResultSeq)
+      const source = this.prunedNodeIndex.get(this.recallSourceSeq)
+      if (recallAtom !== undefined && source !== undefined && (inDegree.get(recallAtom.id) ?? 0) > 0) {
+        const inherited = Math.floor(source.eff * 0.5)
+        eff.set(recallAtom.id, Math.max(eff.get(recallAtom.id) ?? 0, inherited))
+      }
+    }
     const lastRef = new Map<number, number>()
     for (const e of edges) {
       const from = atoms[e.from]
@@ -936,6 +960,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           turn: a.turn,
           firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
           citedBySeq,
+          eff: eff.get(a.id) ?? 0,
         })
       }
     }
