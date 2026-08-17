@@ -58,6 +58,11 @@ export interface ArgpGraphConfig {
   enableSummarize?: boolean
   /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
   degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  /** 排序模式（spike 18 提案，默认 legacy 保持现状）：
+   *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积）
+   *  density：eff 同档内 token 降序（大 token 先剪，单位 token 重要性）
+   *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
+  sortMode?: 'legacy' | 'density' | 'density-chain'
 }
 
 export interface GraphPruneRecord {
@@ -152,6 +157,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   readonly enableSummarize: boolean
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  readonly sortMode: 'legacy' | 'density' | 'density-chain'
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -188,6 +194,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.tokenMeterFn = config.measureTokens
     this.enableSummarize = config.enableSummarize ?? false
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
+    this.sortMode = config.sortMode ?? 'legacy'
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -524,9 +531,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
-  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。 */
-  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): Set<number> {
+  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。
+   *  返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长（出现次数），供 density-chain 排序叠加 eff。 */
+  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number> } {
     const dupIds = new Set<number>()
+    const chainLen = new Map<number, number>()
     const issuerByCall = new Map<string, Atom>()
     const rByCall = new Map<string, Atom>()
     for (const a of atoms) {
@@ -545,37 +554,41 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (r !== undefined && (inDegree.get(r.id) ?? 0) === 0) dupIds.add(r.id)
       }
     }
-    const seenA = new Map<string, Atom>()
+    const seenA = new Map<string, { atom: Atom; count: number }>()
     for (const a of atoms.filter(x => x.type === 'A')) {
       const key = a.text.trim()
       const existing = seenA.get(key)
       if (existing !== undefined) {
-        const older = existing.turn < a.turn || (existing.turn === a.turn && existing.seq < a.seq) ? existing : a
-        const newer = older === existing ? a : existing
+        const older = existing.atom.turn < a.turn || (existing.atom.turn === a.turn && existing.atom.seq < a.seq) ? existing.atom : a
+        const newer = older === existing.atom ? a : existing.atom
         if ((inDegree.get(older.id) ?? 0) === 0) addPair(older)
-        seenA.set(key, newer)
+        const count = existing.count + 1
+        chainLen.set(newer.id, count)
+        seenA.set(key, { atom: newer, count })
       } else {
-        seenA.set(key, a)
+        seenA.set(key, { atom: a, count: 1 })
       }
     }
-    const seenR = new Map<string, Atom>()
+    const seenR = new Map<string, { atom: Atom; count: number }>()
     for (const r of atoms.filter(x => x.type === 'R')) {
       const issuer = r.toolCallIds[0] !== undefined ? issuerByCall.get(r.toolCallIds[0]) : undefined
       const key = (issuer?.text ?? r.text).trim()
       const existing = seenR.get(key)
       if (existing !== undefined) {
-        const older = existing.turn < r.turn || (existing.turn === r.turn && existing.seq < r.seq) ? existing : r
-        const newer = older === existing ? r : existing
+        const older = existing.atom.turn < r.turn || (existing.atom.turn === r.turn && existing.atom.seq < r.seq) ? existing.atom : r
+        const newer = older === existing.atom ? r : existing.atom
         if ((inDegree.get(older.id) ?? 0) === 0) {
           dupIds.add(older.id)
           if (issuer !== undefined) addPair(issuer)
         }
-        seenR.set(key, newer)
+        const count = existing.count + 1
+        chainLen.set(newer.id, count)
+        seenR.set(key, { atom: newer, count })
       } else {
-        seenR.set(key, r)
+        seenR.set(key, { atom: r, count: 1 })
       }
     }
-    return dupIds
+    return { dupIds, chainLen }
   }
 
   /** 当前会话最大 turn 号（用于 recall 回拉后的防抖窗口）。 */
@@ -837,17 +850,26 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const isGroupCandidate = (g: Atom[], allowInDegree: boolean): boolean =>
       g.every(a => isAtomCandidate(a, allowInDegree))
-    const sortKey = (a: Atom): string => {
-      const lvl = touchesSemantic.has(a.id) ? LEVEL_ORDER.supporting : LEVEL_ORDER.isolated
-      return [lvl, eff.get(a.id) ?? 0, lastRef.get(a.id) ?? 0, a.seq].map(n => String(n).padStart(10, '0')).join('|')
-    }
 
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false)).length
     const pruned = new Map<number, Atom>()
-    const duplicateIds = this.findVersionDuplicates(atoms, inDegree)
+    const { dupIds: duplicateIds, chainLen } = this.findVersionDuplicates(atoms, inDegree)
     for (const id of duplicateIds) {
       const atom = atoms.find(a => a.id === id)
       if (atom !== undefined) pruned.set(id, atom)
+    }
+    // 排序键（§4.5 + spike 18 提案）：默认 legacy = [lvl, eff, lastRef, seq]；
+    // density = eff 同档内 token 降序（大 token 先剪）；density-chain = density + 链代表 eff 叠加。
+    const sortKey = (a: Atom): string => {
+      const lvl = touchesSemantic.has(a.id) ? LEVEL_ORDER.supporting : LEVEL_ORDER.isolated
+      const effV = eff.get(a.id) ?? 0
+      if (this.sortMode === 'legacy') {
+        return [lvl, effV, lastRef.get(a.id) ?? 0, a.seq].map(n => String(n).padStart(10, '0')).join('|')
+      }
+      const chainBonus = this.sortMode === 'density-chain' ? (chainLen.get(a.id) ?? 1) - 1 : 0
+      // density/density-chain：token 降序（负数入键，大 token 数值小排前）
+      const tokNeg = -Math.ceil(a.text.length / this.charsPerToken)
+      return [lvl, effV + chainBonus, tokNeg, lastRef.get(a.id) ?? 0, a.seq].map(n => String(n).padStart(10, '0')).join('|')
     }
     let forced = false
     for (let pass = 0; pass < this.maxPasses; pass += 1) {
