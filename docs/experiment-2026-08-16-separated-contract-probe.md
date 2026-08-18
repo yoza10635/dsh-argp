@@ -193,3 +193,26 @@ R-ANSWER: INC-2-MARKER-22HQ
 - recall 价值继承（被 cites 的 recall 原子继承旧 eff ×0.5，提交 1c87017）
 - 均默认 legacy 行为不变，27+3 测试全绿；与 160K 对比无直接关联，单独验证
 
+
+---
+
+## cites 声明率根因与修复（2026-08-18 追加）
+
+**问题**：DeepSeek v4-flash 50 轮 cites declared=0（语义边全缺失），而 Qwen3.8-27B declared=547——同引擎不同模型表现迥异。
+
+**根因一（任务指令压制）**：t-long 的 filler 指令写有 `"reply with exactly one line and nothing else"`——**"nothing else" 与 cites 契约直接冲突**。重放实验（spike/24-cites-replay.ts，提取 turn 1-3 真实上下文 + 6 模板变体 ×2-5 次）实证：指令放开后模型立刻输出 cites 块（2/2）。
+
+**根因二（模型训练差异）**：放开指令后模型输出多为空数组 `{"cites":[]}`；且 **DeepSeek 系统提示词优先级 < 用户指令**（"nothing else" 压住声明），**Qwen 反之**（无视指令照常声明，probe 轮格式输出后仍追加 cites）。**系统 vs 用户提示词冲突时的取舍由模型训练决定**——prompt 模板优化天花板 ≤40%（6 模板无一稳定 >40%）。
+
+**修复**（提交 a172f3a）：
+1. spike/06 fillerBody 去掉 "nothing else"（改为"若依赖早期上下文则附加 citation block"）
+2. 引擎 cites 契约升级为 V4 措辞（"读了工具结果并作答 = 必须引用该结果"，spike/24 中唯一成功引用 tool result 的模板）
+3. spike/06 参数化 `ARGP_MAX_TURNS`
+
+**10 轮重跑验证**（产物 `spike/out/06-tlong-v4-cites10-2026-08-18T04-44-49-193Z`）：cites declared **0 → 17**（aAtoms=39，声明率 **43.6%**），resolved **17/17（100%）**（0 ambiguous / 0 failed）；7 事务 0 error，L1 10/10 PASS。L2/L3 0/0（10 轮无 probe 轮，PROBE_TURNS 自 14 起，预期）。
+
+**结论**：
+- "nothing else" 是 cites=0 的**放大器**（可修）；模型训练是**声明率上限**（43.6%，不可靠 prompt 突破）
+- **声明即建边**（解析 100%）——模型愿意声明时引擎解析完全可靠
+- 引擎侧兜底推断（工具复用/文本重叠）仍是让 DeepSeek 档产生稳定语义边的长期路径
+- 对外表述：0-LLM 是压缩阶段特性；cites 声明率依赖模型；零建边不影响其他剪枝机制（确定性边 + eff + U 锚点 + lastRef + density 全部独立工作，DeepSeek 50 轮全 PASS 即证据）
