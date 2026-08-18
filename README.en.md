@@ -38,7 +38,9 @@ Semantic edges come from the `{"cites": [...]}` declarations the model emits per
 - **Strong instruction following**: cites are declared as contracted → the citation graph reflects real dependencies → high pruning selectivity
 - **Weak instruction following**: under-declaration (sparse graph, deterministic edges only) or erratic declaration (over-dense graph) → lower pruning selectivity and changed transaction shape
 
-Measured contrast (50-turn t-long, same engine and parameters): DeepSeek v4-flash (high) declared 0 cites, ~34–35 atoms per transaction (sparse graph); Qwen3.8-27B declared 547, only ~4 atoms per transaction across 37 transactions (dense graph) — **the same engine shows different pruning shapes on different models**, yet L1/L2/L3 invariants pass on both.
+Measured contrast (50-turn t-long, same engine and parameters, **same task prompt**): DeepSeek v4-flash (high) declared 0 cites, ~34–35 atoms per transaction (sparse graph); Qwen3.8-27B declared 547, only ~4 atoms per transaction across 37 transactions (dense graph) — **the same engine shows different pruning shapes on different models**, yet L1/L2/L3 invariants pass on both.
+
+A key model difference (measured): the t-long task prompt itself says "reply with exactly one line and nothing else" (which conflicts with the citation contract). **DeepSeek v4-flash ranks the system prompt below user instructions** — "nothing else" suppresses its cites declarations (declared=0); **Qwen3.8-27B ranks the system prompt above user instructions** — even when told "nothing else", it still appends cites after its reply (declared=547). **Which side wins when system and user prompts conflict is determined by model training, not by prompt wording** — this is the deeper cause of edge-density differences, and prompt-template tuning has a hard ceiling on compliance (measured ≤40% across templates).
 
 Implication: pairing with a model that follows instructions well is recommended; on weaker models compaction stays safe (0-LLM determinism + `U`-anchor protection + `recall` fallback hold on any model), only the selectivity benefit is reduced.
 

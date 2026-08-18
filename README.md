@@ -38,7 +38,9 @@ dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用�
 - **遵循能力强**：按契约声明 cites → 引用图反映真实依赖 → 剪枝选择性高
 - **遵循能力弱**：漏声明（图稀疏，只剩确定性边）或乱声明（图过密）→ 剪枝选择性下降，事务形态改变
 
-实测对照（50 轮 t-long，同引擎同参数）：DeepSeek v4-flash（high 档）cites declared=0、每笔事务剪 34–35 原子（稀疏图）；Qwen3.8-27B declared=547、每笔事务只剪 4 原子、37 笔事务（密集图）——**同一引擎在不同模型上呈现不同剪枝形态**，但两者 L1/L2/L3 不变式均 PASS。
+实测对照（50 轮 t-long，同引擎同参数、**同任务指令**）：DeepSeek v4-flash（high 档）cites declared=0、每笔事务剪 34–35 原子（稀疏图）；Qwen3.8-27B declared=547、每笔事务只剪 4 原子、37 笔事务（密集图）——**同一引擎在不同模型上呈现不同剪枝形态**，但两者 L1/L2/L3 不变式均 PASS。
+
+一个关键的模型差异（实测）：t-long 任务指令本身写有 "reply with exactly one line and nothing else"（与 cites 契约存在冲突），**DeepSeek v4-flash 的系统提示词优先级低于用户指令**——"nothing else" 压住了 cites 声明（declared=0）；**Qwen3.8-27B 则系统提示词优先级高于用户指令**——即使指令说 "nothing else"，它仍在回复后追加 cites 声明（declared=547）。**系统提示词与用户指令冲突时的取舍，由模型训练决定，而非提示词措辞**——这是建边密度差异的深层原因，prompt 模板优化对服从率的提升存在天花板（实测各模板 ≤40%）。
 
 约束含义：建议搭配指令遵循能力强的模型使用；弱模型下压缩依然安全（0-LLM 确定性 + `U` 锚点保护 + `recall` 兜底在任何模型上成立），只是选择性收益降低。
 
