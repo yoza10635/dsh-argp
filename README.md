@@ -1,14 +1,15 @@
 [English](README.en.md) | 中文
 
-# dsh-argp — DeepSeek Harness 的 0-LLM 确定性上下文压缩引擎
+# dsh-argp — 基于逻辑链的原子引用图剪枝式上下文压缩引擎
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用图剪枝）是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方 `CompactionEngine`，**压缩阶段零 LLM 调用**：不把历史重写为摘要，而是选择性遗忘。
+dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用图剪枝）是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方 `CompactionEngine`：**基于逻辑链（引用依赖拓扑）的原子级选择性遗忘**——历史中"被依赖"的内容按引用图保留，"孤立"内容按反向拓扑序摘除，压缩阶段零 LLM 调用，不把历史重写为摘要。
 
 - **压缩阶段 0 次 LLM 调用**——纯图规则，确定性、可收敛
+- **基于逻辑链决策**——剪枝依据是引用依赖拓扑（"谁被依赖"），不是新旧位置或模型偏好
 - **选择性遗忘而非重写**——被剪内容留在 append-only 会话日志，可通过内置 `recall_pruned` / `recall` 工具取回
 - **引擎无关的接缝**——通过标准 `CompactionEngine` 接口挂载，作为 `compaction-basic` 的替代后端
 - **压缩率精确兑现**——实测 200K 上下文 → 160K 触发 → 32K 保留，输出大小可控

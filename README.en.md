@@ -1,14 +1,15 @@
 [中文](README.md) | English
 
-# dsh-argp — 0-LLM Deterministic Context Compaction for DeepSeek Harness
+# dsh-argp — Logical-Chain Atomic Reference-Graph Pruning Compaction Engine
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that compresses conversation context **without any LLM calls**: instead of rewriting history into a summary, it selectively forgets.
+dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that performs **selective forgetting driven by the logical chain (reference-dependency topology)**: atoms that are *depended on* are kept per the citation graph, while *isolated* atoms are evicted in reverse topological order — **without any LLM calls**, instead of rewriting history into a summary.
 
 - **0 LLM in the compression phase** — pure graph rules, deterministic and convergent.
+- **Decided by the logical chain** — pruning follows reference-dependency topology ("what is depended on"), not recency or model preference.
 - **Selective forgetting, not rewriting** — pruned content stays in the append-only session log and is retrievable via built-in `recall_pruned` / `recall` tools.
 - **Engine-agnostic seam** — mounted as a drop-in replacement for `compaction-basic` through the standard `CompactionEngine` interface.
 - **Exact compression ratio** — measured 200K context → 160K trigger → 32K retained; output size is controlled.

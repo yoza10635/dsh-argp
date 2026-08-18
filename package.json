@@ -6,7 +6,7 @@
   "types": "./lib/index.d.ts",
   "files": ["lib", "cordis/argp.cordis.patch.yml"],
   "type": "module",
-  "description": "ARGP (Atomic Reference Graph Pruning): a 0-LLM deterministic context-compaction engine for DeepSeek Harness (dsh), mounted as a third-party CompactionEngine.",
+  "description": "ARGP (Atomic Reference Graph Pruning): a logical-chain context-compaction engine for DeepSeek Harness (dsh) — reference-dependency pruning with zero LLM calls, mounted as a third-party CompactionEngine.",
   "license": "MIT",
   "repository": {
     "type": "git",
