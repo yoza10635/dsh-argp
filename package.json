@@ -4,7 +4,7 @@
   "main": "./lib/index.js",
   "exports": "./lib/index.js",
   "types": "./lib/index.d.ts",
-  "files": ["lib", "cordis/argp.cordis.patch.yml"],
+  "files": ["lib", "cordis/argp.cordis.patch.yml", "cordis.patch.yml"],
   "type": "module",
   "description": "ARGP (Atomic Reference Graph Pruning): a logical-chain context-compaction engine for DeepSeek Harness (dsh) — reference-dependency pruning with zero LLM calls, mounted as a third-party CompactionEngine.",
   "license": "MIT",
@@ -16,7 +16,7 @@
     "plugin": true,
     "kind": "server",
     "bundle": {
-      "patch": "./cordis/argp.cordis.patch.yml"
+      "patch": "./cordis.patch.yml"
     }
   },
   "scripts": {
