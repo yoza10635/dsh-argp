@@ -356,15 +356,19 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
+    // V4 措辞（spike/24 实测）：明示"读了工具结果并作答 = 必须引用该结果"，
+    // 比旧版"if used ... append"的被动式显著提升 t-long 类任务下的声明率。
     ctx.systemPrompt.section({
       name: 'argp-cites',
       order: 151,
       text: () => 'Citation declaration (ARGP):\n'
-        + 'If your final reply used one or more earlier visible items, append ONE JSON block at the end of your final text, after your complete answer:\n'
-        + '{"cites":["the gateway release passes. Neither","Here is the incident-window data"]}\n'
-        + '- Each entry must copy verbatim the first 10-20 words of one earlier item you actually used.\n'
-        + '- Only cite items you genuinely depended on. If none, omit the block entirely.\n'
-        + '- The block belongs in the final reply body only, never in reasoning. Output nothing after it.',
+        + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
+        + 'Append ONE JSON block to the end of your final reply:\n'
+        + '{"cites":["..."]}\n'
+        + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
+        + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
+        + '- If your reply used nothing from earlier items, write {"cites":[]}.\n'
+        + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
     })
 
     ctx.on('session/event', (_session, event) => {

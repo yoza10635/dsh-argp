@@ -191,12 +191,13 @@ async function runTurn(text: string): Promise<boolean> {
   return false
 }
 
-// ---------- 任务编排：setup 1 + filler 42 + probe 7（轮 14/20/26/32/38/44/50）= 50 轮 ----------
-const PROBE_TURNS = [14, 20, 26, 32, 38, 44, 50]
+// ---------- 任务编排：setup 1 + filler N + probe（默认 50 轮；可用 ARGP_MAX_TURNS 截短） ----------
+const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 50)
+const PROBE_TURNS = [14, 20, 26, 32, 38, 44, 50].filter(t => t <= MAX_TURNS)
 const NEEDLE_TURNS = [3, 6, 9, 12, 17, 23, 29] // 全局轮号，均为 filler 轮；probe k 针对 needle k
 const setupText = 'We are starting a long-running archival session. From time to time I will hand you archival notes containing the service token of a node — keep them in mind. On most turns I will ask you to read a log file and report its line count; those are routine work. Occasionally I will send a long-term memory check; for those, follow the exact answer format given in the check itself. Work carefully.'
 const fillerBody = (j: number): string =>
-  'Use the read tool to read the entire file logs/chunk-' + j + '.md. After reading, reply with exactly one line and nothing else: the file name, a space, and its line count.'
+  'Use the read tool to read the entire file logs/chunk-' + j + '.md. After reading, reply with the file name, a space, and its line count. If your reply depends on earlier context (the file content, the instruction, an archival note), append the ARGP citation block as instructed.'
 const probeText = (k: number): string =>
   'Long-term memory check ' + k + '. You need the first line of the chunk file that was read on the same turn as the archival note for node-' + k + '. That first line is not visible; recover it with recall_pruned before answering.\n'
   + 'To recover, call recall_pruned for each placeholder seq you are unsure about, one at a time, until you find the tool result whose text starts with "chunk <n> telemetry export". Copy the exact INC-<n>-MARKER-<code> from that recovered text. Do not guess.\n'
@@ -208,7 +209,7 @@ const probeText = (k: number): string =>
 type Item = { label: string; text: string; kind: 'setup' | 'filler' | 'probe'; probeK?: number; chunkIndex?: number; needleK?: number }
 const items: Item[] = [{ label: 'setup', text: setupText, kind: 'setup' }]
 let fillerIdx = 0
-for (let turn = 2; turn <= 50; turn += 1) {
+for (let turn = 2; turn <= MAX_TURNS; turn += 1) {
   const probePos = PROBE_TURNS.indexOf(turn)
   if (probePos >= 0) {
     const k = probePos + 1
