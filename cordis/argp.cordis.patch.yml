@@ -1,9 +1,0 @@
-# dsh-argp bundle patch — installed by the DSH plugin marketplace (dsh.bundle.patch).
-# Disables the stock summarizer and mounts the 0-LLM ARGP engine.
-- id: compaction-basic
-  disabled: true
-- insert:
-    - id: dsh-argp
-      name: dsh-argp
-      config:
-        maxPasses: 16

@@ -1,13 +1,25 @@
 # ARGP dsh 声明式挂载示例（P4）
 
-当前仓库已提供最小插件入口：
-- `src/index.ts` 导出 `ArgpGraphEngine`
-- `package.json` 的 `main` / `exports` 指向 `src/index.ts`
+仓库根目录提供最终可用的挂载补丁 `cordis.patch.yml`（`package.json` 的 `dsh.bundle.patch` 指向它，市场安装时自动注册到 profile）：
 
-声明式挂载参考 `cordis/argp.cordis.snapshot.yml`：
+```yaml
+- id: compaction-basic
+  disabled: true
+- insert:
+    - id: dsh-argp
+      name: dsh-argp
+      config: { maxPasses: 16 }
+```
 
-1. 禁用 `compaction-basic`
-2. 插入 `dsh-argp` 包
-3. 传入 ARGP 配置（windowTokens / retainTokens / maxPasses / reserveTokens）
+## 要点
 
-真实 `dsh` 命令验证仍未执行（需要本地模型/GPU 或 DeepSeek 真会话），这是 P4 的待验证项。
+- `disabled: true` 关闭 dsh 自带的摘要压缩引擎（`compaction-basic`），由 ARGP 接管。
+- `insert:` 是新增 entry 的正确语法——patch 顶层数组按 `id` 匹配**已加载**的 entry，新增必须用 `insert`（直接给 `id`+`name` 会报 "entry not found"）。
+- 预算默认**比例驱动**：`windowTokens = contextWindow × 0.8`、`retainTokens = windowTokens × 0.2`，上下文容量由模型适配器（其他插件）声明提供；需要显式覆盖时在 `config` 里写 `windowTokens` / `retainTokens`。
+
+## 验证（2026-08-17 实测通过）
+
+1. `dsh plugin --profile <name> add file:<本仓库路径>` 安装（或市场收录后 `add <包名>`）
+2. `dsh --profile <name> --dump-config` → 确认 `compaction-basic` 已禁用、`dsh-argp` 已插入
+3. 实例化检查：boot 后 `ctx.compaction.constructor === ArgpGraphEngine`（`spike/22-declarative-mount-check.ts`）
+4. WebUI 可正常启动（`dsh web`，端口 3080），真会话剪枝/recall 流程待实际对话验证
