@@ -44,6 +44,8 @@ A key model difference (measured): the t-long task prompt itself says "reply wit
 
 Implication: pairing with a model that follows instructions well is recommended; on weaker models compaction stays safe (0-LLM determinism + `U`-anchor protection + `recall` fallback hold on any model), only the selectivity benefit is reduced.
 
+**An important guarantee: even with zero edges for the entire session (cites declared=0, the semantic-reference layer entirely absent), all other pruning-priority mechanisms keep working normally.** Semantic edges are only an *enhancement signal* for compaction decisions, not a requirement — the core pruning paths (deterministic-edge pairing, `eff` importance ranking, `U`-anchor never-pruned, lastRef recency, density ordering, closure lifecycle, version-chain dedup) all operate independently of cites declarations. The DeepSeek v4-flash run (declared=0, 50 turns) is full evidence of this guarantee: L1/L2/L3 all pass, exact compression ratio, recall fallback intact — **with the cross-turn logical chain absent, the engine degrades to "deterministic edges + position/importance ordering" ordinary pruning: fully functional, only the selectivity gain disappears**.
+
 ## Install & mount
 
 ### Declarative CLI mount (verified)
