@@ -93,6 +93,17 @@ export interface GraphPruneRecord {
 }
 /** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。 */
 export declare function eventText(session: Session, seq: number): string;
+/**
+ * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
+ * 避免它残留在 surface 而被 UI 直接渲染。仅改写最后一个 text 块；保留 model/provider/
+ * replay 等元数据；将 cites 存入 data.argpCites，以便后续 compaction 经 atomize 重建
+ * 引用图（文本被剥离后 extractCites 取不到 cites）。幂等：已剥离节点（含 argpCites）
+ * 再次进入时直接跳过，无重入循环。
+ */
+export declare function stripTrailingCitesIfNeeded(session: Session, event: {
+    seq: number;
+    data?: Record<string, unknown>;
+}): void;
 /** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
 export declare function extractCites(text: string): {
     body: string;
