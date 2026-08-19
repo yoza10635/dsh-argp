@@ -7,4 +7,4 @@
       name: dsh-argp
       config:
         maxPasses: 256
-        turnGuard: 2
+        recencyGuard: 10
