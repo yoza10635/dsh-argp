@@ -70,8 +70,9 @@ export interface ArgpGraphConfig {
   /** 保留目标占触发线比例（默认 0.2；仅当 retainTokens 未显式指定时生效）。 */
   retainRatio?: number
   recencyGuard?: number   // 默认 4（surface 末尾 N 节点不参剪）
-  minSpanChars?: number   // 默认 512（微剪枝下限）
-  charsPerToken?: number  // 默认 3.5（触发与目标同基准）
+  turnGuard?: number      // 默认 2（最近 N 个 turn 的原子不参剪；独立于 recencyGuard）
+  minSpanChars?: number   // 默认 0（微剪枝下限；>0 会放回小区间，易导致连续压缩）
+  charsPerToken?: number  // 默认 3.5（触发与目标同基准；tokenMeter 可用时不再使用）
   /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
   maxPasses?: number
   /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
@@ -184,6 +185,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
   private resolvedWindowTokens = 16_384
   readonly recencyGuard: number
+  readonly turnGuard: number
   readonly minSpanChars: number
   readonly charsPerToken: number
   readonly maxPasses: number
@@ -192,6 +194,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly enableSummarize: boolean
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
   readonly sortMode: 'legacy' | 'density' | 'density-chain'
+  /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
+  private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
 
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean }[] = []
@@ -230,6 +234,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.windowRatio = config.windowRatio ?? 0.8
     this.retainRatio = config.retainRatio ?? 0.2
     this.recencyGuard = config.recencyGuard ?? 4
+    // turnGuard：最近 N 个完整 turn 不参剪。真会话中一个 turn 常有多个 surface 节点
+    //（user / assistant-tool-call / tool-result / assistant-text），recencyGuard 只按节点
+    // 位置保护可能截断当前轮，turnGuard 提供更自然的"最近 N 轮对话"语义保护。
+    // 默认 1（等价于原 `a.turn >= latestTurn` 行为），真会话配置可提高到 2。
+    this.turnGuard = config.turnGuard ?? 1
     // 微剪枝下限默认 0：大上下文下若保留 >0 阈值，小于该值的剪枝区间会被放回，
     // 导致可见量始终高于 retain 目标，触发连续压缩循环。如需启用请显式传入。
     this.minSpanChars = config.minSpanChars ?? 0
@@ -237,6 +246,13 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.maxPasses = config.maxPasses ?? 16
     this.reserveTokens = config.reserveTokens ?? 0
     this.tokenMeterFn = config.measureTokens
+    // tokenMeter 不作为 required inject（避免测试/最小化组合缺少该服务时构造失败），
+    // 运行时尝试从 ctx 获取；真会话中 dsh-token-meter 已挂载即可使用。
+    try {
+      this.tokenMeter = (ctx as any).tokenMeter ?? (ctx as any).get?.('tokenMeter')
+    } catch {
+      this.tokenMeter = undefined
+    }
     this.enableSummarize = config.enableSummarize ?? false
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
     this.sortMode = config.sortMode ?? 'legacy'
@@ -578,8 +594,17 @@ export class ArgpGraphEngine extends CompactionEngine {
     return total
   }
 
-  /** 测量当前上下文 token（当前退化为字符估算；tokenMeter 接入留待后续）。 */
+  /** 测量当前上下文 token。真会话优先用 dsh tokenMeter；否则用配置函数；否则字符估算。 */
   private measureTokens(session: Session): { contextTokens: number; surfaceTokens: number } {
+    if (this.tokenMeter !== undefined) {
+      try {
+        const m = this.tokenMeter.measure(session)
+        return { contextTokens: m.totalTokens, surfaceTokens: m.surfaceTokens }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        console.warn('[argp-graph] tokenMeter.measure failed, falling back: ' + message)
+      }
+    }
     if (this.tokenMeterFn !== undefined) return this.tokenMeterFn(session)
     const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
     return { contextTokens: surfaceTokens, surfaceTokens }
@@ -805,7 +830,8 @@ export class ArgpGraphEngine extends CompactionEngine {
  * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
  *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
  *  上下文容量由其他插件（模型适配器声明）决定，本引擎不硬编码。
- *  解析失败（无 llm 服务/无 contextWindow）时回退静态默认并告警。
+ *  解析顺序：1) session.requestContext()（request/context 事件，真会话最可靠）；
+ *           2) llm.resolveModelInfo(provider, model)；3) 静态默认值。
  */
   private async resolveScaledBudgets(
     agent: CompactionAgentContext,
@@ -813,18 +839,30 @@ export class ArgpGraphEngine extends CompactionEngine {
     const explicitWindow = this.explicitWindowTokens ? this.windowTokens : undefined
     const explicitRetain = this.explicitRetainTokens ? this.retainTokens : undefined
     let contextWindow: number | undefined
+    // 1) 真会话中 request/context 事件会写入 session.requestContext()，优先读取。
     try {
-      const provider = agent.options?.provider
-      const model = agent.options?.model
-      const llm = (this as unknown as { ctx: Context }).ctx.get('llm') as
-        | { resolveModelInfo?: (p: string, m: string, s: AbortSignal) => Promise<{ context?: { contextWindow?: number } }> }
-        | undefined
-      if (llm?.resolveModelInfo !== undefined && provider !== undefined && model !== undefined) {
-        const info = await llm.resolveModelInfo(provider, model, new AbortController().signal)
-        contextWindow = info.context?.contextWindow
+      const reqCtx = (agent.session as unknown as { requestContext?: () => { contextWindow?: number } | undefined }).requestContext?.()
+      if (reqCtx?.contextWindow !== undefined && reqCtx.contextWindow > 0) {
+        contextWindow = reqCtx.contextWindow
       }
     } catch {
       contextWindow = undefined
+    }
+    // 2) fallback 到 llm.resolveModelInfo（旧路径/测试路径）。
+    if (contextWindow === undefined) {
+      try {
+        const provider = agent.options?.provider
+        const model = agent.options?.model
+        const llm = (this as unknown as { ctx: Context }).ctx.get('llm') as
+          | { resolveModelInfo?: (p: string, m: string, s: AbortSignal) => Promise<{ context?: { contextWindow?: number } }> }
+          | undefined
+        if (llm?.resolveModelInfo !== undefined && provider !== undefined && model !== undefined) {
+          const info = await llm.resolveModelInfo(provider, model, new AbortController().signal)
+          contextWindow = info.context?.contextWindow
+        }
+      } catch {
+        contextWindow = undefined
+      }
     }
     const scaled = scaleBudgets(contextWindow, {
       explicitWindow, explicitRetain,
@@ -941,7 +979,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (coverer === undefined) return false
         const pos = position.get(a.seq)
         if (pos === undefined || pos >= recencyCut) return false
-        if (a.turn >= latestTurn) return false
+        if (a.turn > latestTurn - this.turnGuard) return false
         // 动态复核：所有保留入边都必须来自覆盖者，否则豁免失效
         const incoming = edges.filter(e => e.to === a.id)
         if (incoming.length === 0 || incoming.some(e => e.from !== coverer)) return false
@@ -950,7 +988,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (a.type !== 'A' && a.type !== 'R') return false
       const pos = position.get(a.seq)
       if (pos === undefined || pos >= recencyCut) return false
-      if (a.turn >= latestTurn) return false
+      if (a.turn > latestTurn - this.turnGuard) return false
       if (a.citesFailed) return false
       if (!allowInDegree && (curInDegree.get(a.id) ?? 0) > 0) return false
       return true
@@ -1118,7 +1156,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     for (let i = 0; i < surfaceSeqs.length; i += 1) {
       const seq = surfaceSeqs[i]
       const atom = bySeq.get(seq)
-      if (atom === undefined || atom.type === 'U' || atom.type === 'X' || atom.turn >= latestTurn || i >= recencyCut) {
+      if (atom === undefined || atom.type === 'U' || atom.type === 'X' || atom.turn > latestTurn - this.turnGuard || i >= recencyCut) {
         if (start !== null) break
         continue
       }

@@ -46,6 +46,7 @@ export interface ArgpGraphConfig {
     /** 保留目标占触发线比例（默认 0.2；仅当 retainTokens 未显式指定时生效）。 */
     retainRatio?: number;
     recencyGuard?: number;
+    turnGuard?: number;
     minSpanChars?: number;
     charsPerToken?: number;
     /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
@@ -130,6 +131,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
     private resolvedWindowTokens;
     readonly recencyGuard: number;
+    readonly turnGuard: number;
     readonly minSpanChars: number;
     readonly charsPerToken: number;
     readonly maxPasses: number;
@@ -141,6 +143,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly enableSummarize: boolean;
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     readonly sortMode: 'legacy' | 'density' | 'density-chain';
+    /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
+    private readonly tokenMeter;
     readonly records: GraphPruneRecord[];
     readonly recallCalls: {
         seq: number;
@@ -203,7 +207,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     };
     /** surface 可见字符总量（与 spike 4 同基准）。 */
     private visibleChars;
-    /** 测量当前上下文 token（当前退化为字符估算；tokenMeter 接入留待后续）。 */
+    /** 测量当前上下文 token。真会话优先用 dsh tokenMeter；否则用配置函数；否则字符估算。 */
     private measureTokens;
     /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。
      *  返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长（出现次数），供 density-chain 排序叠加 eff。 */
@@ -222,7 +226,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
      *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
      *  上下文容量由其他插件（模型适配器声明）决定，本引擎不硬编码。
-     *  解析失败（无 llm 服务/无 contextWindow）时回退静态默认并告警。
+     *  解析顺序：1) session.requestContext()（request/context 事件，真会话最可靠）；
+     *           2) llm.resolveModelInfo(provider, model)；3) 静态默认值。
      */
     private resolveScaledBudgets;
     /**
