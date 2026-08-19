@@ -2,10 +2,13 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
-## [Unreleased]
+## [0.2.5] - 2026-08-19
 
-### Fixed
-- **UI cites 残留（空块）根因修正 + 契约 V5**：dsh 核心的人类转录（Web UI）固定取 append 起源事件，surface replace 副本 model-only（core `session/surface.ts`："replacement copies stay model-only"；客户端 assistant-step 节点只匹配 `isAppendSurfaceEvent`）——原 strip 机制只治理模型侧 surface，永远改不到 UI 显示（本会话日志实证：原始事件含 `{"cites":[]}`，剥离替换事件正常落盘且 `argpCites` 保留，UI 仍显示原文）。cites 契约 V4→V5：空引用时**完全不输出 block**（V4 "write {\"cites\":[]}" 废止；`Append ONE JSON block…` 限定为 "depends on at least one earlier item" 时）。空块对引用图零信息（无入边、不计 declared），引擎对"无块"本就是常态（设计稿 §4.7），无回归；非空 block 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）。strip 注释同步修正（原"避免 UI 渲染"表述不成立）
+### Added
+- **context-overflow 溢出恢复**：模型请求返回 400 `exceed_context_size_error` 时自动强制剪枝并重发请求——`agent/request-error` 钩子按稳定错误码 `CONTEXT_WINDOW_EXCEEDED` 识别（不写死 token 数），`compactIfNeeded(agent, 'context-overflow')` 跳过 pressure 门槛强制压缩（估算可能低估实际请求），surface 换代后返回 `{kind:'retry'}` 让 agent loop 从替换后的 surface 重发同一任务请求。恢复路径 **0 次新增 LLM 调用**（纯算法剪枝，对比原生 summarize 恢复的 1 次摘要请求，无新增失败面）。`maxOverflowRetries` 默认 1（对齐 compaction-basic），成功应答 / agent idle 时重置计数。回归测试 `test/context-overflow.test.ts`
+
+### Changed
+- cites 契约 V5：空引用时**完全不输出 block**（V4 的 `{"cites":[]}` 废止）；记录 UI 转录 append-origin 根因（Web UI 人类转录取 append 起源事件、surface replace 副本 model-only，服务端 strip 改不到 UI 显示——UI 层过滤需客户端 seam，见建议书候选 B-7）
 
 ## [0.2.4] - 2026-08-19
 
