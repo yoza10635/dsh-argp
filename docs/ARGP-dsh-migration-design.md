@@ -13,6 +13,7 @@ v1.1 更新（2026-08-15）：外部实证吸收——新增 §1.2 四条可迁�
 v1.2 更新（2026-08-15）：M1 开工实测回写——spike 1 PASS（挂载/触发/无干扰）；spike 2 PASS（surfaceOp 双路径 + 配对不变式，9 项判决全过）；§8.3 按实测修正：replace 节点原位插入、start/end 指认现存 surface 节点 seq、tool/result 单节点改写须克隆原 message 保 id 仅换 content；卡点 B-1 登记（占位改写无结构化元数据通道，见 blocker-log.md）。
 v1.3 更新（2026-08-15）：spike 3 PASS（recall 工具 + PromptSection 契约，5 项判决全过）——M1 三 spike 全部通过，核心可行性判决成立，spike 4（M2）解锁。实测补充两条装配语义：ctx.plugin 返回 cordis fiber 而非服务实例（实例由 Service 构造器注册在 ctx.<name>，且是代理对象——身份判定用 instanceof）；CompactionEngine 子类在 fiber 内访问 tools/systemPrompt 必须声明 static inject。无新卡点（blocker-log 维持 B-1 一条）。
 v1.4 更新（2026-08-15）：spike 4（M2，t1 复刻）全 PASS——ArgpT1Engine（16K 窗口/0 LLM/占位主路径）V1–V6 六项判决全过（6 事务 shadowed 17 节点、配对不变式干净、U 载体保护 needle 未剪、事务括号完整、recall 命中 14658 chars、needle 三件套 3/3），新本地 SOTA 模型（Qwen3.8-27B）上机制验证成立。实测补充三条：①user/message 事件 data 形状为 { content, source, role, id }（无 turn/message 包裹字段）；②compaction/prune 事件不进 start/summary/end 不变式状态机，无 LLM 剪枝只能借 compaction/summary 语义进事务括号（候选卡点 B-3，已登记）；③微剪枝下限需求：reasoning-only 助手节点可见文本 0，剪了净增 tombstone 字符且白付 KV 失效代价（引擎加 minSpanChars=512）。spike 4a 冒烟判决 C = NOT replayed（llama-server 日志 f_keep=0.082 交叉验证）——历史 thinking 不进 prompt，引擎无需 thinking 剥离机制，reasoning 块不计入预算。C7 服从率基线初步分层：两 run 分别出现自发 recall 3 次与 0 次但答案均对（样本待扩）。
+v1.5 更新（2026-08-19）：UI cites 残留根因修正 + 契约 V5。①认知修正：dsh 核心的人类转录（Web UI）**固定取 append 起源事件**，surface replace 副本是 model-only（core session surface.ts 注释："Append-origin events are that transcript's durable source material; replacement copies stay model-only"；客户端 assistant-step 节点定义只匹配 `isAppendSurfaceEvent`）——因此 §8.3/strip 机制"避免残留 surface 而被 UI 渲染"的假设不成立：strip 只治理模型侧 surface，**永远改不到 UI 显示**（本会话日志实证：原始事件 seq 287 含 `{"cites":[]}`，剥离替换事件 seq 288 正常落盘且 argpCites 存根保留，UI 仍显示 287 的原文）。②契约 V5：空引用时"完全不输出 block"（V4 的"write {\"cites\":[]}"废止）——空块对引用图零信息（无入边、不计 declared），只能在源头不产出；引擎对"无块"本就是常态（§4.7），无回归。③非空 block 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）；若要 UI 也不显示，只能走客户端插件展示层过滤（侵入 shell 内部）或上游改人类转录取数规则（read-only，不可行），均不推荐。
 
 ## 1. 可行性结论（引用调研与实验证据）
 
@@ -233,6 +234,8 @@ Rules:
   - Never invent a quote: every entry must appear word-for-word in your visible context.
   - The reply body before the block stays plain text. The block may be wrapped in a ```json code fence. Output nothing after it.
 ```
+
+> **V5 修订（2026-08-19，实现现状以此为准）**：cites 义务已拆分为独立 PromptSection `argp-cites`（order 151），措辞升级 V4（"读了工具结果并作答 = 必须引用该结果"，spike/24 实测声明率 0→43.6%）后于 2026-08-19 再升 V5：上引文 "If there are none, output {\"cites\":[]}" 改为 **"If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block."**，且 "Append ONE JSON block…" 限定为 "When your reply depends on at least one earlier item"。理由见 v1.5 更新（UI 人类转录取 append 原文，空块只能在源头不产出）。
 
 动态求值规则（保持契约与真实可用机制一致，顺序重要）：
 1. recall 关闭 → 先摘除 recall 句（"When the user refers to something discussed earlier … without recalling." 整句）

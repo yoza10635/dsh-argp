@@ -2,6 +2,11 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [Unreleased]
+
+### Fixed
+- **UI cites 残留（空块）根因修正 + 契约 V5**：dsh 核心的人类转录（Web UI）固定取 append 起源事件，surface replace 副本 model-only（core `session/surface.ts`："replacement copies stay model-only"；客户端 assistant-step 节点只匹配 `isAppendSurfaceEvent`）——原 strip 机制只治理模型侧 surface，永远改不到 UI 显示（本会话日志实证：原始事件含 `{"cites":[]}`，剥离替换事件正常落盘且 `argpCites` 保留，UI 仍显示原文）。cites 契约 V4→V5：空引用时**完全不输出 block**（V4 "write {\"cites\":[]}" 废止；`Append ONE JSON block…` 限定为 "depends on at least one earlier item" 时）。空块对引用图零信息（无入边、不计 declared），引擎对"无块"本就是常态（设计稿 §4.7），无回归；非空 block 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）。strip 注释同步修正（原"避免 UI 渲染"表述不成立）
+
 ## [0.2.4] - 2026-08-19
 
 P1–P7 审计修复全量落地 + 依赖升级 rc.7 + npm 首发。
