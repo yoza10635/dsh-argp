@@ -1,10 +1,12 @@
 # dsh-argp bundle patch — installed by the DSH plugin marketplace (dsh.bundle.patch).
-# Disables the stock summarizer and mounts the 0-LLM ARGP engine.
+# Disables the stock summarizer and tunes the ARGP engine entry.
+#
+# IMPORTANT: do NOT `insert` dsh-argp here. The bundle include already registers
+# id=dsh-argp (entry id = package name); inserting a second one crashes the loader
+# with "duplicate loader entry id: dsh-argp" (vendor/include EntryGroup.update).
 - id: compaction-basic
   disabled: true
-- insert:
-    - id: dsh-argp
-      name: dsh-argp
-      config:
-        maxPasses: 256
-        recencyGuard: 10
+- id: dsh-argp
+  config:
+    maxPasses: 256
+    recencyGuard: 10

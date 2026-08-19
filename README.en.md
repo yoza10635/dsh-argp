@@ -52,7 +52,7 @@ Implication: pairing with a model that follows instructions well is recommended;
 
 ### Declarative CLI mount (verified)
 
-Install from the **npm registry** (currently `v0.2.4`):
+Install from the **npm registry** (currently `v0.2.5`):
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
@@ -70,16 +70,16 @@ Alternative: install the same version straight from GitHub (source checkout, no 
 dsh plugin --profile <name> add github:yoza10635/dsh-argp
 ```
 
-Then insert the engine and disable the stock summarizer in the profile's `cordis.patch.yml`:
+Then disable the stock summarizer and tune the engine in the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: compaction-basic
   disabled: true
-- insert:
-    - id: dsh-argp
-      name: dsh-argp
-      config: { maxPasses: 16 }   # budgets are ratio-driven by default
+- id: dsh-argp
+  config: { maxPasses: 16 }   # budgets are ratio-driven by default
 ```
+
+> ⚠️ Do NOT `insert` dsh-argp: after `dsh plugin add`, dsh already includes the package in the profile layer (entry id = package name). Inserting a second entry with the same id crashes the loader with `duplicate loader entry id: dsh-argp`. A plain `dsh-argp` entry in the patch only overrides its config.
 
 After boot, `ctx.compaction` is the ARGP engine.
 
