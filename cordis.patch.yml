@@ -6,4 +6,4 @@
     - id: dsh-argp
       name: dsh-argp
       config:
-        maxPasses: 16
+        maxPasses: 256
