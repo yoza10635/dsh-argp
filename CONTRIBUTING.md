@@ -60,17 +60,17 @@ git config core.hooksPath .githooks
 
 ## 发布流程
 
-发布节奏为**手动 tag 驱动**（tag 推送自动触发 CI 中的 Release job，生成 GitHub Release）：
+发布节奏为**手动 tag 驱动**（tag 推送自动触发 CI 中的 Release job，生成 GitHub Release），同步发布 npm：
 
 ```bash
-npm version patch   # 或 minor / major；自动 bump package.json
-npm run build
-git add -A && git commit -m "build: bump to vX.Y.Z"
+npm version patch   # 或 minor / major；自动 bump package.json 并打 tag vX.Y.Z
+npm run build       # lib/ 必须与 src/ 一致（Release job 会校验）
 git push origin main
-git push origin vX.Y.Z   # 触发 release
+git push origin vX.Y.Z    # 触发 GitHub Release（自动跑 check + build + lib 一致性校验）
+npm publish               # 发布 npm registry（prepublishOnly 自动跑 typecheck + test + build）
 ```
 
-> npm publish 暂缓（等待 npm 账号），当前通过 GitHub Release 分发。
+> npm 账号 `yoza10635`（与 GitHub 同名）。认证 token（Granular Access Token：All packages + Bypass 2FA）保存在**用户级 `~/.npmrc`**，不进 git（项目级 `.npmrc` 只含 registry 行）。tag 已存在的版本直接 `npm publish` 即可，无需重新打 tag。
 
 ## 实验纪律（ARGP 特有）
 
