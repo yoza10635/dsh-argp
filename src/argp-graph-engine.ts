@@ -18,10 +18,10 @@ import type {
   CompactionTrigger,
   ManualCompactAgentContext,
 } from '@deepseek-ai/dsh-compaction'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
@@ -100,6 +100,12 @@ export interface ArgpGraphConfig {
    * 注意：本项影响 turnGuard 与闭包保护窗口的判定，口径变更需在实验台账标注。
    */
   turnBasis?: 'semantic' | 'all'
+  /**
+   * 上下文溢出恢复的最大重试次数（context-overflow trigger，默认 1，对齐官方
+   * compaction-basic 的 maxOverflowRetries）。每次「模型请求 400 exceed_context_size
+   * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
+   */
+  maxOverflowRetries?: number
 }
 
 export interface GraphPruneRecord {
@@ -151,10 +157,15 @@ export function eventText(session: Session, seq: number): string {
 
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
- * 避免它残留在 surface 而被 UI 直接渲染。仅改写最后一个 text 块；保留 model/provider/
- * replay 等元数据；将 cites 存入 data.argpCites，以便后续 compaction 经 atomize 重建
- * 引用图（文本被剥离后 extractCites 取不到 cites）。幂等：已剥离节点（含 argpCites）
- * 再次进入时直接跳过，无重入循环。
+ * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
+ * 注意（2026-08 修正认知）：Web UI 的人类转录按 dsh 核心设计固定取 append 起源
+ * 事件，replace 副本是 model-only（core session surface.ts："replacement copies
+ * stay model-only"），因此本剥离**不影响 UI 显示**。UI 侧残留的治理在源头：
+ * cites 契约 V5 规定空引用时不产出任何 block（空块对引用图零信息）；非空 block
+ * 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）。仅改写最后一个 text 块；
+ * 保留 model/provider/replay 等元数据；将 cites 存入 data.argpCites，以便后续
+ * compaction 经 atomize 重建引用图（文本被剥离后 extractCites 取不到 cites）。
+ * 幂等：已剥离节点（含 argpCites）再次进入时直接跳过，无重入循环。
  */
 export function stripTrailingCitesIfNeeded(session: Session, event: { seq: number; data?: Record<string, unknown> }): void {
   const data = event.data
@@ -243,6 +254,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
   readonly sortMode: 'legacy' | 'density' | 'density-chain'
   readonly turnBasis: 'semantic' | 'all'
+  readonly maxOverflowRetries: number
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
 
@@ -267,6 +279,10 @@ export class ArgpGraphEngine extends CompactionEngine {
   private closureLastRecalled = new Map<number, number>()
   private recallCallsThisTurn = 0
   private recallCharsUsed = 0
+  /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
+  private readonly overflowRetries = new WeakMap<Agent, number>()
+  /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
+  private readonly overflowAgents = new WeakMap<Session, Agent>()
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -307,6 +323,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
     this.sortMode = config.sortMode ?? 'legacy'
     this.turnBasis = config.turnBasis ?? 'semantic'
+    this.maxOverflowRetries = config.maxOverflowRetries ?? 1
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -475,23 +492,35 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
     // V4 措辞（spike/24 实测）：明示"读了工具结果并作答 = 必须引用该结果"，
     // 比旧版"if used ... append"的被动式显著提升 t-long 类任务下的声明率。
+    // V5 措辞（2026-08 修 UI 残留）：空引用时"完全不输出 block"而非写 {"cites":[]}。
+    // 原因：dsh 核心的人类转录固定取 append 起源事件（replace 副本 model-only，
+    // 见 core session surface.ts "replacement copies stay model-only"），surface
+    // 剥离永远改不到 UI 显示；空块对引用图零信息（无入边），只能在源头不产出。
+    // 引擎侧对"无块"本就是常态（§4.7），citeStats 对空/无块均不计 declared。
     ctx.systemPrompt.section({
       name: 'argp-cites',
       order: 151,
       text: () => 'Citation declaration (ARGP):\n'
         + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
-        + 'Append ONE JSON block to the end of your final reply:\n'
+        + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
         + '{"cites":["..."]}\n'
         + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
         + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
-        + '- If your reply used nothing from earlier items, write {"cites":[]}.\n'
+        + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
         + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
     })
 
     ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/start') this.recallCallsThisTurn = 0
+      // 一次成功的模型应答 = 溢出恢复序列的终结点：重置该 agent 的重试计数，
+      // 即使工具调用让同一 turn 继续（对齐 compaction-basic 的 overflowAgents 模式）。
+      if (event.type === 'assistant/message') {
+        const agent = this.overflowAgents.get(session)
+        if (agent !== undefined) this.overflowRetries.delete(agent)
+      }
       // 流式闭环后立刻剥离尾部 {"cites":[...]} JSON（ARGP 引用协议产物），
-      // 避免它残留在 surface 而被 UI 直接渲染。完全在 dsh-argp 插件内完成，不改官方插件。
+      // 使其不残留在模型可见 surface 上（UI 人类转录取 append 原文，不受影响；
+      // 空块由契约 V5 在源头不产出）。完全在 dsh-argp 插件内完成，不改官方插件。
       const seq = (event as { seq?: unknown }).seq
       if (event.type === 'assistant/message' && typeof seq === 'number') {
         // 延迟到本次事件发射结束后执行，避免在读/写 surface 的中途改写 surface（重入安全）
@@ -500,6 +529,48 @@ export class ArgpGraphEngine extends CompactionEngine {
           try { stripTrailingCitesIfNeeded(session, ev) } catch { /* 不阻断主流程 */ }
         })
       }
+    })
+    ctx.on('agent/status', ({ agent, status }) => {
+      if (status === 'idle') this.overflowRetries.delete(agent)
+    })
+    // 上下文溢出恢复（官方机制，与 compaction-basic 同构）：模型请求返回
+    // 400 exceed_context_size_error（稳定错误码 CONTEXT_WINDOW_EXCEEDED，不写死
+    // token 数）时，强制剪枝并把请求重发出去。识别靠 LlmFailure.code ——
+    // provider 特定错误（DeepSeek 的 {"type":"exceed_context_size_error"}）由
+    // dsh-llm 适配器归一化到该稳定码。
+    ctx.on('agent/request-error', async (
+      { agent, failure, signal },
+      next,
+    ): Promise<RequestErrorAction> => {
+      if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
+      this.overflowAgents.set(agent.session, agent)
+      const retries = this.overflowRetries.get(agent) ?? 0
+      if (retries >= this.maxOverflowRetries) return next()
+      const generation = agent.session.surface.replaceGeneration
+      let result: CompactionResult | null
+      try {
+        result = await this.compactIfNeeded(agent, 'context-overflow', signal)
+      } catch (recoveryError: unknown) {
+        const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+        // 剪枝可能在 summarize 之类后续阶段抛错前已落地（模型无关的确定性占位
+        // 替换）。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
+        if (!signal.aborted && agent.session.surface.replaceGeneration > generation) {
+          ctx.logger.warn(`argp-graph overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
+          this.overflowRetries.set(agent, retries + 1)
+          return { kind: 'retry' }
+        }
+        ctx.logger.warn(`argp-graph overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
+        return next()
+      }
+      if (signal.aborted || agent.session.surface.replaceGeneration <= generation) return next()
+      if (result !== null) {
+        ctx.logger.info(
+          `argp-graph context-overflow recovery: shadowed ${result.shadowedSeqs.length} surface nodes `
+          + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
+        )
+      }
+      this.overflowRetries.set(agent, retries + 1)
+      return { kind: 'retry' }
     })
     ctx.on('agent/pre-step', async ({ agent, signal }, next): Promise<PreStepDecision> => {
       if (this.session === null) this.session = agent.session
@@ -1071,10 +1142,15 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
    * 排序键（§4.5）：最低关联语义级别升 → effective_importance 升 → lastRefRound 升 → seq 升。
    * 候选耗尽仍超预算 → force_prune（忽略入度，§4.6.2）。
+   *
+   * trigger='context-overflow'（官方溢出恢复，见 agent/request-error 钩子）：
+   * 模型请求已被 provider 确认超出上下文（400 exceed_context_size_error）——估算量
+   * 可能与实际请求偏差（估算低于触发线但请求已撞墙），此时**跳过 pressure 门槛强制
+   * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
    */
   override async compactIfNeeded(
     agent: CompactionAgentContext,
-    _trigger: CompactionTrigger,
+    trigger: CompactionTrigger,
     _signal: AbortSignal,
   ): Promise<CompactionResult | null> {
     const session = agent.session
@@ -1088,7 +1164,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const retainChars = retainTokens * this.charsPerToken
     const visibleNow = this.visibleChars(session)
     const measurement = this.measureTokens(session)
-    if (measurement.contextTokens < thresholdTokens) {
+    if (trigger !== 'context-overflow' && measurement.contextTokens < thresholdTokens) {
       console.log('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' < threshold=' + thresholdTokens + ', skip')
       return null
     }

@@ -78,6 +78,12 @@ export interface ArgpGraphConfig {
      * 注意：本项影响 turnGuard 与闭包保护窗口的判定，口径变更需在实验台账标注。
      */
     turnBasis?: 'semantic' | 'all';
+    /**
+     * 上下文溢出恢复的最大重试次数（context-overflow trigger，默认 1，对齐官方
+     * compaction-basic 的 maxOverflowRetries）。每次「模型请求 400 exceed_context_size
+     * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
+     */
+    maxOverflowRetries?: number;
 }
 export interface GraphPruneRecord {
     at: string;
@@ -106,10 +112,15 @@ export interface GraphPruneRecord {
 export declare function eventText(session: Session, seq: number): string;
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
- * 避免它残留在 surface 而被 UI 直接渲染。仅改写最后一个 text 块；保留 model/provider/
- * replay 等元数据；将 cites 存入 data.argpCites，以便后续 compaction 经 atomize 重建
- * 引用图（文本被剥离后 extractCites 取不到 cites）。幂等：已剥离节点（含 argpCites）
- * 再次进入时直接跳过，无重入循环。
+ * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
+ * 注意（2026-08 修正认知）：Web UI 的人类转录按 dsh 核心设计固定取 append 起源
+ * 事件，replace 副本是 model-only（core session surface.ts："replacement copies
+ * stay model-only"），因此本剥离**不影响 UI 显示**。UI 侧残留的治理在源头：
+ * cites 契约 V5 规定空引用时不产出任何 block（空块对引用图零信息）；非空 block
+ * 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）。仅改写最后一个 text 块；
+ * 保留 model/provider/replay 等元数据；将 cites 存入 data.argpCites，以便后续
+ * compaction 经 atomize 重建引用图（文本被剥离后 extractCites 取不到 cites）。
+ * 幂等：已剥离节点（含 argpCites）再次进入时直接跳过，无重入循环。
  */
 export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     seq: number;
@@ -166,6 +177,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     readonly sortMode: 'legacy' | 'density' | 'density-chain';
     readonly turnBasis: 'semantic' | 'all';
+    readonly maxOverflowRetries: number;
     /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
     private readonly tokenMeter;
     readonly records: GraphPruneRecord[];
@@ -201,6 +213,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private closureLastRecalled;
     private recallCallsThisTurn;
     private recallCharsUsed;
+    /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
+    private readonly overflowRetries;
+    /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
+    private readonly overflowAgents;
     private session;
     private shadowedSession;
     private shadowedSet;
@@ -300,8 +316,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
      * 排序键（§4.5）：最低关联语义级别升 → effective_importance 升 → lastRefRound 升 → seq 升。
      * 候选耗尽仍超预算 → force_prune（忽略入度，§4.6.2）。
+     *
+     * trigger='context-overflow'（官方溢出恢复，见 agent/request-error 钩子）：
+     * 模型请求已被 provider 确认超出上下文（400 exceed_context_size_error）——估算量
+     * 可能与实际请求偏差（估算低于触发线但请求已撞墙），此时**跳过 pressure 门槛强制
+     * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
      */
-    compactIfNeeded(agent: CompactionAgentContext, _trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
+    compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
     /** 为手动 compactNow 选择一个确定性的最老 A/R 连续块。 */
