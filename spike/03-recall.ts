@@ -97,16 +97,24 @@ engine.setSession(session)
     + '; recall(1)=' + missKept + '; recall(99)=' + missVoid)
 }
 
-// ---------- 判决 D：ctx.tools.execute 真实派发 ----------
+// ---------- 判决 D：ctx.tools.execute 真实派发（P1 修复 (b) 后语义翻转） ----------
 {
   const exec = { signal: new AbortController().signal, callId: CallId('spike-3-hit'), name: 'recall_pruned', arguments: { seq: 3 } }
   const hitResult = await ctx.tools.execute(exec)
   const hitText = hitResult.content[0]?.type === 'text' ? hitResult.content[0].text : ''
   const missResult = await ctx.tools.execute({ signal: new AbortController().signal, callId: CallId('spike-3-miss'), name: 'recall_pruned', arguments: { seq: 99 } })
   const missText = missResult.content[0]?.type === 'text' ? missResult.content[0].text : ''
-  const ok = !hitResult.isError && hitText.includes('NEEDLE-FACT-7749') && missText.includes('not a pruned node')
+  // (b)：hit 带 state=shadowed 标签；越界才是 miss（旧断言 'not a pruned node' 已翻转）
+  const liveResult = await ctx.tools.execute({ signal: new AbortController().signal, callId: CallId('spike-3-live'), name: 'recall_pruned', arguments: { seq: 1 } })
+  const liveText = liveResult.content[0]?.type === 'text' ? liveResult.content[0].text : ''
+  const ok = !hitResult.isError && hitText.includes('NEEDLE-FACT-7749') && hitText.includes('state=shadowed')
+    && missText.includes('out of range')
+    && !liveResult.isError && liveText.includes('state=live') && liveText.includes('what did the probe find?')
   verdict('D-tool-dispatch', ok, 'hit isError=' + hitResult.isError + ', text 含 needle=' + hitText.includes('NEEDLE-FACT-7749')
-    + '; miss text="' + missText + '"; engine.recallCalls=' + JSON.stringify(engine.recallCalls))
+    + ', state=shadowed=' + hitText.includes('state=shadowed')
+    + '; miss text="' + missText + '"'
+    + '; live text 含 state=live=' + liveText.includes('state=live') + ', 含原文=' + liveText.includes('what did the probe find?')
+    + '; engine.recallCalls=' + JSON.stringify(engine.recallCalls))
 }
 
 // ---------- 判决 E：追加剪枝后 recall 立即可见 ----------

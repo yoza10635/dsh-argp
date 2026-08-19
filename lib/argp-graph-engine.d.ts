@@ -2,6 +2,8 @@ import type { Context } from '@deepseek-ai/cordis';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
+import type { NodeState as NodeStateLabel } from './log-access.js';
+export type { NodeState, LogRow, LogRowType } from './log-access.js';
 export type AtomType = 'U' | 'A' | 'R' | 'X';
 export interface Atom {
     id: number;
@@ -67,6 +69,15 @@ export interface ArgpGraphConfig {
      *  density：eff 同档内 token 降序（大 token 先剪，单位 token 重要性）
      *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
     sortMode?: 'legacy' | 'density' | 'density-chain';
+    /**
+     * latestTurn 口径（P4 修复）：
+     *  semantic（默认）：只算真实 U/A/R 活动的 turn；注入型 X 节点（system-reminder、
+     *    ARGP 自己的 tombstone）不推进轮次计数，避免"注入撑大 latestTurn → 闭包保护
+     *    窗口 latestTurn-k 被抬高 → 本应受保护的旧闭包被提前剪"。
+     *  all：旧口径，把 X 一并算进 latestTurn（既往实验数据基线；对照实验需显式指定）。
+     * 注意：本项影响 turnGuard 与闭包保护窗口的判定，口径变更需在实验台账标注。
+     */
+    turnBasis?: 'semantic' | 'all';
 }
 export interface GraphPruneRecord {
     at: string;
@@ -154,12 +165,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly enableSummarize: boolean;
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     readonly sortMode: 'legacy' | 'density' | 'density-chain';
+    readonly turnBasis: 'semantic' | 'all';
     /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
     private readonly tokenMeter;
     readonly records: GraphPruneRecord[];
     readonly recallCalls: {
         seq: number;
         hit: boolean;
+        state?: NodeStateLabel;
     }[];
     readonly recallQueryCalls: {
         query: string;
@@ -184,6 +197,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         at: string;
     }[];
     private nextClosureId;
+    /** 闭包最近一次被 recall 回拉的轮次；key = rootSeq（跨 pass 稳定，见 P2 修复注释）。 */
     private closureLastRecalled;
     private recallCallsThisTurn;
     private recallCharsUsed;
@@ -202,7 +216,24 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
      */
     private shadowedSeqsOf;
+    /**
+     * 程序化 recall（RecallHandle 语义）：**仅**命中被遮蔽节点，未命中返回 null。
+     * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（spike/11/12/13/16 的
+     * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
+     * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
+     * 程序化的全日志入口是 recallAnyState()。
+     */
     recall(seq: number): string | null;
+    /**
+     * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
+     * 不要求节点属于 pruned 集合。越界返回 null。
+     */
+    recallAnyState(seq: number): {
+        text: string;
+        state: NodeStateLabel;
+    } | null;
+    /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。 */
+    nodeState(seq: number): NodeStateLabel | null;
     /** 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。 */
     atomize(session: Session): Atom[];
     /**
@@ -223,11 +254,34 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。
      *  返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长（出现次数），供 density-chain 排序叠加 eff。 */
     private findVersionDuplicates;
-    /** 当前会话最大 turn 号（用于 recall 回拉后的防抖窗口）。 */
+    /**
+     * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
+     *
+     * P4 修复：旧实现遍历 **全部 events** 取 max，把 turn/start、注入型 system-reminder
+     * 等非 surface 事件也算进来，与 compactIfNeeded / tryPruneClosures 用的
+     * "atoms（surface 节点）最大 turn" 口径不一致 —— 同一个防抖判定两端基准不同。
+     * 现统一为 surface 节点口径；turnBasis='semantic'（默认）时进一步排除注入型 X 节点，
+     * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
+     */
+    latestTurnOf(session: Session): number;
     private latestTurnOfSession;
-    /** recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。 */
+    /**
+     * recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。
+     *
+     * P2 修复：防抖 key 从 closureId 改为 rootSeq。closureId 由 `nextClosureId++` 生成，
+     * tryPruneClosures 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
+     * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
+     * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
+     */
     private noteRecallHit;
-    /** recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。 */
+    /**
+     * recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。
+     *
+     * P7 修复：recallCharsUsed 原本只增不减、全会话无 reset —— 累计触顶后 allowed=0，
+     * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
+     *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
+     *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+     */
     private budgetRecallText;
     /** P3：summarize 末环占位。当前未实现，默认返回 null 以继续 force_prune。 */
     private summarizeCriticalChain;

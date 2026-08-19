@@ -22,6 +22,9 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog } from './log-access.js'
+import type { NodeState as NodeStateLabel } from './log-access.js'
+export type { NodeState, LogRow, LogRowType } from './log-access.js'
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -88,6 +91,15 @@ export interface ArgpGraphConfig {
    *  density：eff 同档内 token 降序（大 token 先剪，单位 token 重要性）
    *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
   sortMode?: 'legacy' | 'density' | 'density-chain'
+  /**
+   * latestTurn 口径（P4 修复）：
+   *  semantic（默认）：只算真实 U/A/R 活动的 turn；注入型 X 节点（system-reminder、
+   *    ARGP 自己的 tombstone）不推进轮次计数，避免"注入撑大 latestTurn → 闭包保护
+   *    窗口 latestTurn-k 被抬高 → 本应受保护的旧闭包被提前剪"。
+   *  all：旧口径，把 X 一并算进 latestTurn（既往实验数据基线；对照实验需显式指定）。
+   * 注意：本项影响 turnGuard 与闭包保护窗口的判定，口径变更需在实验台账标注。
+   */
+  turnBasis?: 'semantic' | 'all'
 }
 
 export interface GraphPruneRecord {
@@ -230,11 +242,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly enableSummarize: boolean
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
   readonly sortMode: 'legacy' | 'density' | 'density-chain'
+  readonly turnBasis: 'semantic' | 'all'
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
 
   readonly records: GraphPruneRecord[] = []
-  readonly recallCalls: { seq: number; hit: boolean }[] = []
+  readonly recallCalls: { seq: number; hit: boolean; state?: NodeStateLabel }[] = []
   readonly recallQueryCalls: { query: string; count: number; hits: number }[] = []
   readonly citeStats: CiteStats = { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 }
   /** §3-3 recall 价值继承：最近一次 recall 的旧原子 seq 与结果 R 原子 seq（建图时用）。 */
@@ -250,7 +263,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 闭包生命周期剪除记录。 */
   readonly closurePrunes: { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[] = []
   private nextClosureId = 0
-  private closureLastRecalled = new Map<string, number>()
+  /** 闭包最近一次被 recall 回拉的轮次；key = rootSeq（跨 pass 稳定，见 P2 修复注释）。 */
+  private closureLastRecalled = new Map<number, number>()
   private recallCallsThisTurn = 0
   private recallCharsUsed = 0
 
@@ -292,11 +306,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.enableSummarize = config.enableSummarize ?? false
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
     this.sortMode = config.sortMode ?? 'legacy'
+    this.turnBasis = config.turnBasis ?? 'semantic'
 
     const recallTool = defineTool({
       name: 'recall_pruned',
-      description: 'Retrieve the original text of pruned conversation nodes. Call only when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from visible context. Pass one placeholder seq per call. Pruned content stays in the append-only log; never guess it.',
-      parameters: { seq: { type: 'integer', description: 'log seq of the pruned node, shown in the placeholder' } },
+      description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context. Call it when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from the visible context. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use list_pruned (including its fromSeq/toSeq range mode) when you do not know the seq.',
+      parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
       output: {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
@@ -306,13 +321,15 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
         if (this.recallCallsThisTurn >= 3) return 'recall_pruned: per-turn budget exceeded (3 calls)'
         this.recallCallsThisTurn += 1
-        const hit = this.shadowedSeqsOf(this.session).has(seq)
-        this.recallCalls.push({ seq, hit })
-        if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
+        // P1 修复 (b)：不再用 shadowedSeqsOf 门控。数据路径本来就是全日志级的
+        // （eventText 直接索引 session.events[seq]），只有越界才算失败；返回值带状态标签，
+        // 使掉出可见上下文但未被 ARGP 替换的节点（适配器窗口丢弃 / 从不进 surface）也可召回。
+        const shadowed = this.shadowedSeqsOf(this.session)
+        const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
+        this.recallCalls.push({ seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined })
+        if (!outcome.ok) return formatRecallOutcome('recall_pruned', seq, outcome)
         this.noteRecallHit(seq)
-        const text = eventText(this.session, seq)
-        if (text === '') return 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text'
-        const result = this.budgetRecallText(text)
+        const result = formatRecallOutcome('recall_pruned', seq, outcome, text => this.budgetRecallText(text))
         // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
         // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
         this.recallSourceSeq = seq
@@ -324,11 +341,14 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const listPrunedTool = defineTool({
       name: 'list_pruned',
-      description: 'List pruned conversation nodes that are currently elided from visible context. Use this to find the seq you need before calling recall_pruned. Returns one line per pruned seq with seq, type, turn, first-line preview, and citedBy seqs when known. Optional filters: turn, type (A/R/U/X), keyword.',
+      description: 'List conversation nodes that are no longer in your visible context, so you can find the seq to pass to recall_pruned. Default mode lists nodes pruned by ARGP. Range mode (pass fromSeq/toSeq) scans the raw append-only log over that seq window and reports every node with text, including nodes that are still on the surface but may have fallen outside the model render window — use it when a placeholder does not mention the seq you need. Each line carries seq, type, turn, state (shadowed/live/off-surface) and a first-line preview. Optional filters: turn, type (A/R/U/X/T), keyword, limit.',
       parameters: {
         turn: { type: 'integer', description: 'optional exact turn number filter' },
-        type: { type: 'string', description: 'optional node type filter: A (assistant), R (tool result), U (user), X (checkpoint)' },
+        type: { type: 'string', description: 'optional node type filter: A (assistant), R (tool result), U (user), X (checkpoint), T (tool call, range mode only)' },
         keyword: { type: 'string', description: 'optional substring that must appear in the node text' },
+        fromSeq: { type: 'integer', description: 'optional range-mode start seq (inclusive); enables raw-log scanning instead of the pruned-only list' },
+        toSeq: { type: 'integer', description: 'optional range-mode end seq (inclusive); defaults to the newest event when only fromSeq is given' },
+        limit: { type: 'integer', description: 'optional maximum number of lines to return (default 50 in range mode, capped at 200)' },
       },
       output: {
         schema: { type: 'string' },
@@ -337,7 +357,45 @@ export class ArgpGraphEngine extends CompactionEngine {
       execute: async (args): Promise<string> => {
         if (this.session === null) return 'list_pruned: no session bound'
         const shadowed = this.shadowedSeqsOf(this.session)
-        const filters = (args ?? {}) as { turn?: number; type?: string; keyword?: string }
+        const filters = (args ?? {}) as {
+          turn?: number
+          type?: string
+          keyword?: string
+          fromSeq?: number
+          toSeq?: number
+          limit?: number
+        }
+        // P1 修复 (b) 的另一半：区间模式 = 发现原语。去门控只解决"知道 seq 就能取"，
+        // 掉出渲染窗口的 live 节点没有 tombstone 也不带 seq，模型需要能按区间查全日志补集。
+        if (filters.fromSeq !== undefined || filters.toSeq !== undefined) {
+          const total = this.session.events.length
+          const limit = Math.max(1, Math.min(200, filters.limit ?? 50))
+          const range = queryLogRange(this.session, {
+            fromSeq: filters.fromSeq ?? 0,
+            toSeq: filters.toSeq ?? total - 1,
+            turn: filters.turn,
+            type: filters.type,
+            keyword: filters.keyword,
+            limit,
+          }, s => shadowed.has(s), eventText)
+          if (range.rows.length === 0) {
+            return 'list_pruned (range mode): no node with text in seq '
+              + (filters.fromSeq ?? 0) + '..' + (filters.toSeq ?? total - 1) + ' matches the filters'
+          }
+          const header = 'list_pruned (range mode): ' + range.rows.length + ' node(s) in seq '
+            + (filters.fromSeq ?? 0) + '..' + (filters.toSeq ?? total - 1)
+            + ' (log has ' + total + ' events; state=shadowed means ARGP pruned it, '
+            + 'live means still on the surface, off-surface means log-only)'
+            + (range.truncated ? '; output capped at limit=' + limit + ', narrow the range or raise limit' : '')
+          const rangeLines = range.rows.map(row => {
+            const indexed = this.prunedNodeIndex.get(row.seq)
+            const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
+              ? ' citedBy=' + indexed.citedBySeq.join(',')
+              : ''
+            return formatLogRow(row, citedBy)
+          })
+          return header + '\n' + rangeLines.join('\n')
+        }
         const lines: string[] = []
         const seqs = [...shadowed].sort((a, b) => a - b)
         for (const seq of seqs) {
@@ -365,9 +423,13 @@ export class ArgpGraphEngine extends CompactionEngine {
           const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
             ? ' citedBy=' + indexed.citedBySeq.join(',')
             : ''
-          lines.push('seq=' + seq + ' type=' + type + ' turn=' + turn + citedBy + ' first=' + preview)
+          lines.push('seq=' + seq + ' type=' + type + ' turn=' + turn + ' state=shadowed' + citedBy + ' first=' + preview)
         }
-        if (lines.length === 0) return 'list_pruned: no pruned nodes match filters'
+        if (lines.length === 0) {
+          return 'list_pruned: no pruned node matches the filters. '
+            + 'If the content you need was never replaced by a placeholder, retry with range mode '
+            + '(fromSeq/toSeq) to scan the raw log window.'
+        }
         return lines.join('\n')
       },
     })
@@ -375,9 +437,9 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const recallQueryTool = defineTool({
       name: 'recall',
-      description: 'Search pruned conversation nodes by content query and return matching original text. Use when you know roughly what was said but not the exact seq. Prefer list_pruned when you can identify by turn/type, and recall_pruned(seq) when you already know the seq.',
+      description: 'Search nodes that are no longer in your visible context by content query and return matching original text. Use when you know roughly what was said but not the exact seq. Prefer list_pruned when you can identify by turn/type or by seq range, and recall_pruned(seq) when you already know the seq.',
       parameters: {
-        query: { type: 'string', description: 'keywords or substring to search in pruned content' },
+        query: { type: 'string', description: 'keywords or substring to search in content that left the visible context' },
         maxResults: { type: 'integer', description: 'optional maximum number of matches to return (default 5)' },
       },
       output: {
@@ -401,9 +463,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       order: 150,
       text: () => {
         const base = 'Context compression (ARGP):\n'
-          + 'Your visible context is a pruned view of the full conversation. Older parts may have been replaced by placeholders like [elided seq=N..M ...]; absence from the visible context does not mean it was never said.\n'
+          + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders like [elided seq=N..M ...], or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
           + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-          + '- When your answer depends on an elided placeholder, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct elided facts from memory.'
+          + '- When your answer depends on content that is no longer in visible context, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct missing facts from memory.\n'
+          + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.'
         const catalog = this.catalogText(20, 70)
         return catalog === '' ? base : base + '\n\n' + catalog
       },
@@ -549,11 +612,37 @@ export class ArgpGraphEngine extends CompactionEngine {
     return this.shadowedSet
   }
 
+  /**
+   * 程序化 recall（RecallHandle 语义）：**仅**命中被遮蔽节点，未命中返回 null。
+   * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（spike/11/12/13/16 的
+   * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
+   * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
+   * 程序化的全日志入口是 recallAnyState()。
+   */
   recall(seq: number): string | null {
     if (this.session === null) return null
     if (!this.shadowedSeqsOf(this.session).has(seq)) return null
     const text = eventText(this.session, seq)
     return text === '' ? null : text
+  }
+
+  /**
+   * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
+   * 不要求节点属于 pruned 集合。越界返回 null。
+   */
+  recallAnyState(seq: number): { text: string; state: NodeStateLabel } | null {
+    if (this.session === null) return null
+    const shadowed = this.shadowedSeqsOf(this.session)
+    const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
+    if (!outcome.ok) return null
+    return { text: outcome.text, state: outcome.state }
+  }
+
+  /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。 */
+  nodeState(seq: number): NodeStateLabel | null {
+    if (this.session === null) return null
+    const shadowed = this.shadowedSeqsOf(this.session)
+    return nodeStateOf(this.session, seq, s => shadowed.has(s))
   }
 
   /** 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。 */
@@ -720,35 +809,76 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { dupIds, chainLen }
   }
 
-  /** 当前会话最大 turn 号（用于 recall 回拉后的防抖窗口）。 */
-  private latestTurnOfSession(): number {
-    if (this.session === null) return 0
+  /**
+   * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
+   *
+   * P4 修复：旧实现遍历 **全部 events** 取 max，把 turn/start、注入型 system-reminder
+   * 等非 surface 事件也算进来，与 compactIfNeeded / tryPruneClosures 用的
+   * "atoms（surface 节点）最大 turn" 口径不一致 —— 同一个防抖判定两端基准不同。
+   * 现统一为 surface 节点口径；turnBasis='semantic'（默认）时进一步排除注入型 X 节点，
+   * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
+   */
+  latestTurnOf(session: Session): number {
     let max = 0
-    for (const e of this.session.events) {
-      const t = (e.data as { turn?: number } | undefined)?.turn
+    for (const seq of session.surface.nodes) {
+      const event = session.events[seq]
+      if (event === undefined) continue
+      const data = event.data as Record<string, unknown> | undefined
+      if (this.turnBasis === 'semantic' && event.type === 'user/message'
+        && (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin') {
+        continue // 注入型 X（system-reminder / ARGP tombstone）不推进语义轮次
+      }
+      const t = data?.turn
       if (typeof t === 'number' && t > max) max = t
     }
     return max
   }
 
-  /** recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。 */
+  private latestTurnOfSession(): number {
+    if (this.session === null) return 0
+    return this.latestTurnOf(this.session)
+  }
+
+  /**
+   * recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。
+   *
+   * P2 修复：防抖 key 从 closureId 改为 rootSeq。closureId 由 `nextClosureId++` 生成，
+   * tryPruneClosures 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
+   * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
+   * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
+   */
   private noteRecallHit(seq: number): void {
     for (const c of this.closurePrunes) {
       if (c.prunedSeqs.includes(seq)) {
-        this.closureLastRecalled.set(c.closureId, this.latestTurnOfSession())
+        this.closureLastRecalled.set(c.rootSeq, this.latestTurnOfSession())
         break
       }
     }
   }
 
-  /** recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。 */
+  /**
+   * recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。
+   *
+   * P7 修复：recallCharsUsed 原本只增不减、全会话无 reset —— 累计触顶后 allowed=0，
+   * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
+   *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
+   *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+   */
   private budgetRecallText(text: string): string {
     const perCallLimit = Math.floor(this.resolvedWindowTokens * 0.05 * this.charsPerToken)
     const totalLimit = Math.floor(this.resolvedWindowTokens * 0.10 * this.charsPerToken)
-    let allowed = Math.min(perCallLimit, Math.max(0, totalLimit - this.recallCharsUsed))
+    const remaining = Math.max(0, totalLimit - this.recallCharsUsed)
+    if (remaining === 0) {
+      return '(recall text budget exhausted: ' + this.recallCharsUsed + '/' + totalLimit
+        + ' chars used since the last compaction. Nothing was returned — this is a budget limit, '
+        + 'not missing data. The budget resets on the next compaction; narrow the request or retry later.)'
+    }
+    const allowed = Math.min(perCallLimit, remaining)
     let result = text
     if (result.length > allowed) {
-      result = result.slice(0, allowed) + '…(truncated)'
+      result = result.slice(0, allowed) + '…(truncated at ' + allowed + ' chars; recall budget '
+        + (this.recallCharsUsed + allowed) + '/' + totalLimit
+        + ' chars used since the last compaction, resets on the next one)'
     }
     this.recallCharsUsed += result.length
     return result
@@ -812,7 +942,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
     for (const [id, root] of rootByClosure) {
       if (root.seq === lastRootSeq) continue
-      const lastRecalled = this.closureLastRecalled.get(id)
+      // P2：按 rootSeq 查防抖（closureId 每 pass 重发，跨 pass 不可比）
+      const lastRecalled = this.closureLastRecalled.get(root.seq)
       if (lastRecalled !== undefined && latestTurn - lastRecalled < k) continue
       const lastRef = lastRefByClosure.get(id) ?? 0
       if (lastRef > latestTurn - k) continue
@@ -865,7 +996,15 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     }
     const rootPreview = chosen.root.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.id + ' root=' + rootPreview + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP closure lifecycle; recall_pruned(seq) retrieves original]')
+    // P3/P6：tombstone 必须自带 seq 区间（否则 tombstone-within-tombstone 两跳后 seq 信息
+    // 彻底丢失，模型无法 recall），并给出「本区间 K / 闭包合计 N」消歧 —— 同一闭包跨多个
+    // 区间时各 tombstone 的计数都是局部准确值，缺少 N 会让模型误判数据脏。
+    const closureTotal = chosen.seqs.length
+    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.id
+      + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+      + ': ' + iv.seqs.length + ' of ' + closureTotal + ' surface nodes in this closure'
+      + ' pruned by ARGP closure lifecycle; root=' + rootPreview
+      + '; recall_pruned(seq) retrieves original]')
     const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstoneTexts)
     this.closurePrunes.push({
       closureId: chosen.id,
@@ -1184,7 +1323,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     const bySeq = new Map(atoms.map(a => [a.seq, a]))
     const intervalAtoms = shadowedSeqs.map(seq => bySeq.get(seq)).filter((a): a is Atom => a !== undefined)
     if (intervalAtoms.some(a => a.type === 'U' || a.type === 'X')) {
-      throw new Error('compactRegion: ARGP never prunes U/X nodes; choose a span without U/X')
+      // P5：措辞 scoped 到手动入口。自动闭包生命周期（tryPruneClosures）确实会连 root U
+      // （task-init）与 X checkpoint 一起剪除；"ARGP never prunes U/X" 只对本手动入口成立。
+      throw new Error('compactRegion (manual) does not prune U/X spans; choose a span without U/X, '
+        + 'or let the automatic closure lifecycle retire those nodes together with their closure')
     }
     if (intervalAtoms.length === 0) {
       throw new Error('compactRegion: selected span contains no prunable A/R atoms')
@@ -1281,6 +1423,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         charsAfter,
         forced,
       })
+      // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）
+      this.recallCharsUsed = 0
       return {
         compactionId,
         startSeq: startEvent.seq,

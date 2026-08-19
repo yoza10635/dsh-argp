@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
+import type { NodeState } from './log-access.js';
 export interface ArgpT1Config {
     /** 压力阈值（默认 16384 token）：surface 可见估算量超过即触发剪枝。 */
     windowTokens?: number;
@@ -43,6 +44,7 @@ export declare class ArgpT1Engine extends CompactionEngine {
     readonly recallCalls: {
         seq: number;
         hit: boolean;
+        state?: NodeState;
     }[];
     private session;
     constructor(ctx: Context, config?: ArgpT1Config);

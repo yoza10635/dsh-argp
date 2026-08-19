@@ -32,6 +32,8 @@ import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { formatRecallOutcome, recallFromLog } from './log-access.js'
+import type { NodeState } from './log-access.js'
 
 export interface ArgpT1Config {
   /** 压力阈值（默认 16384 token）：surface 可见估算量超过即触发剪枝。 */
@@ -131,7 +133,7 @@ export class ArgpT1Engine extends CompactionEngine {
   /** 全部剪枝事务记录（spike 断言直接读这里）。 */
   readonly records: PruneRecord[] = []
   /** recall_pruned 调用台账（服从率基线度量用）。 */
-  readonly recallCalls: { seq: number; hit: boolean }[] = []
+  readonly recallCalls: { seq: number; hit: boolean; state?: NodeState }[] = []
 
   private session: Session | null = null
 
@@ -146,8 +148,8 @@ export class ArgpT1Engine extends CompactionEngine {
 
     const recallTool = defineTool({
       name: 'recall_pruned',
-      description: 'Retrieve the original content of a pruned conversation node by its log seq. Pruned content stays in the append-only log; use this instead of guessing.',
-      parameters: { seq: { type: 'integer', description: 'log seq of the pruned node, shown in the placeholder' } },
+      description: 'Retrieve the original content of any conversation node by its log seq, whether or not it is still in visible context. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface]. Everything ever said stays in the append-only log; use this instead of guessing.',
+      parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
       output: {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
@@ -155,11 +157,11 @@ export class ArgpT1Engine extends CompactionEngine {
       execute: async (args): Promise<string> => {
         const seq = (args as { seq?: number }).seq
         if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
-        const hit = shadowedSeqs(this.session).has(seq)
-        this.recallCalls.push({ seq, hit })
-        if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
-        const text = eventText(this.session, seq)
-        return text === '' ? 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text' : text
+        // P1 修复 (b)：去掉 shadowedSeqs 门控，只有越界才算失败（与 argp-graph-engine 同构）
+        const shadowed = shadowedSeqs(this.session)
+        const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
+        this.recallCalls.push({ seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined })
+        return formatRecallOutcome('recall_pruned', seq, outcome)
       },
     })
     ctx.tools.register(recallTool)

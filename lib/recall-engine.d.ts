@@ -11,6 +11,7 @@ import type { CompactionResult, CompactionTrigger } from '@deepseek-ai/dsh-compa
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { Context } from '@deepseek-ai/cordis';
+import type { NodeState } from './log-access.js';
 export interface RecallHandle {
     /** 注入/替换 recall 服务的 session（append-only 日志引用，剪枝后自动可见）。 */
     setSession(session: Session): void;
@@ -23,6 +24,7 @@ export declare class ArgpRecallEngine extends CompactionEngine {
     readonly recallCalls: {
         seq: number;
         hit: boolean;
+        state?: NodeState;
     }[];
     constructor(ctx: Context);
     setSession(session: Session): void;

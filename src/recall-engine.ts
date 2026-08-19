@@ -13,6 +13,8 @@ import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
+import { formatRecallOutcome, recallFromLog } from './log-access.js'
+import type { NodeState } from './log-access.js'
 
 export interface RecallHandle {
   /** 注入/替换 recall 服务的 session（append-only 日志引用，剪枝后自动可见）。 */
@@ -61,15 +63,15 @@ export class ArgpRecallEngine extends CompactionEngine {
   static inject = ['tools', 'systemPrompt']
 
   private session: Session | null = null
-  readonly recallCalls: { seq: number; hit: boolean }[] = []
+  readonly recallCalls: { seq: number; hit: boolean; state?: NodeState }[] = []
 
   constructor(ctx: Context) {
     super(ctx)
 
     const recallTool = defineTool({
       name: 'recall_pruned',
-      description: 'Retrieve the original content of a pruned conversation node by its log seq. Pruned content stays in the append-only log; use this instead of guessing.',
-      parameters: { seq: { type: 'integer', description: 'log seq of the pruned node, shown in the placeholder' } },
+      description: 'Retrieve the original content of any conversation node by its log seq, whether or not it is still in visible context. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface]. Everything ever said stays in the append-only log; use this instead of guessing.',
+      parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
       output: {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
@@ -77,11 +79,11 @@ export class ArgpRecallEngine extends CompactionEngine {
       execute: async (args): Promise<string> => {
         const seq = (args as { seq?: number }).seq
         if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
-        const hit = shadowedSeqs(this.session).has(seq)
-        this.recallCalls.push({ seq, hit })
-        if (!hit) return 'recall_pruned: seq ' + seq + ' is not a pruned node'
-        const text = eventText(this.session, seq)
-        return text === '' ? 'recall_pruned: seq ' + seq + ' recovered but carries no model-visible text' : text
+        // P1 修复 (b)：去掉 shadowedSeqs 门控，只有越界才算失败（与 argp-graph-engine 同构）
+        const shadowed = shadowedSeqs(this.session)
+        const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
+        this.recallCalls.push({ seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined })
+        return formatRecallOutcome('recall_pruned', seq, outcome)
       },
     })
     ctx.tools.register(recallTool)
@@ -90,8 +92,8 @@ export class ArgpRecallEngine extends CompactionEngine {
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
-      text: () => 'ARGP contract: some history nodes are pruned to placeholders like [elided seq=N ...]. '
-        + 'When your answer depends on elided content, call recall_pruned with that seq first — never reconstruct elided facts from memory.',
+      text: () => 'ARGP contract: some history nodes are no longer in visible context — replaced by placeholders like [elided seq=N ...], or dropped from the render window with no placeholder at all. '
+        + 'When your answer depends on such content, call recall_pruned with that seq first (it works on any seq in the log) — never reconstruct missing facts from memory.',
     })
 
     // 契约义务（§4.5 动态复核的最小代理）：每步前若有剪枝则日志可查

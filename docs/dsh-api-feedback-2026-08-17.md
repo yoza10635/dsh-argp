@@ -79,6 +79,22 @@ ARGP 是以"0-LLM 确定性占位改写"为核心形态的 CompactionEngine 后�
 
 ---
 
+## B-6：surface 窗口丢弃无痕迹，窗口边界对压缩引擎不可见（2026-08-19 追加，优先级：高）
+
+**现象**：非 shadowed（live surface）节点在模型可见窗口内消失后**不留任何痕迹**——无占位、无 seq、无计数；压缩引擎与模型都无法发现它曾存在。live 节点掉出渲染/请求窗口发生在 **surface fold 之后、适配器组装请求时**（按 contextWindow 截断最旧 surface 消息），`session.events` 与 `surface.nodes` 中节点仍然完好——因此**会话日志级取证无法观测这一丢落**（对事件流重放完全透明，正是"无痕迹"的实锤）。模型对已丢内容无 seq 可查，recall 原语又只认"被替换过的 pruned 节点"，于是表现为：内容确实说过、模型确实看不到、任何召回入口都拒答。压缩契约里的 "never guess"（缺失内容不得臆造）在窗口边界内不可执行——模型不知道去查，查了也查不到。
+
+**取证路径（需适配器级证据）**：对比 `Session.deriveMessages()` 投影输出与实际发给模型的请求（或在请求头里查 `[context] removed N` 类摘要头），即可得到被窗口丢落的 live seq 列表。注意：会话 jsonl 里出现的"tombstone 区间包含某 seq 但该 seq 不在遮蔽集合"现象，通常是 tool/call 等非 surface 事件被区间数值误覆盖（非本问题证据），立案时勿引用。
+
+**影响**：① 模型侧不可发现、不可召回 → 长会话中早期 live 内容静默丢失，与 recall 契约（never guess）冲突；② 压缩引擎与适配器各持一份"可见性账目"（引擎知 shadowed 集、适配器知窗口切分线），互不可见，无法协同计算真补集；③ 现有回避手段（插件侧全日志 recall 升级）只能解决"知道 seq 就能取"，解决不了"模型怎么知道被丢的 seq"。
+
+**建议的 API 变更**（二选一）：
+1. 渲染/请求层对每个被丢节点留一个带 seq 的占位（与现有 `[context] removed N` 头同构，按节点粒度）——对模型最鲁棒，顺带解决"tombstone 无 seq 导致两跳后不可召回"；
+2. 或最小 API：把可见窗口边界（首个可见 seq / 被丢 seq 区间）通过 surface 事件或引擎输入暴露给 CompactionEngine——引擎已知 shadowed 集，只差 dsh 侧的窗口切分线，拿到后即可精确操作"真补集"。
+
+**与 B-1 联动**：占位若带结构化 meta（B-1 通道），seq/state 无需编码进文本，tombstone 文本可回归纯人类可读。
+
+---
+
 ## 汇总
 
 | # | 主题 | 优先级 | 现状绕过 | 建议变更 |
@@ -87,7 +103,8 @@ ARGP 是以"0-LLM 确定性占位改写"为核心形态的 CompactionEngine 后�
 | B-3 | compaction/prune 游离于事务状态机 | 中 | 借 summary 语义 + 伪字段 | prune 入状态机 / 新增 tombstone 事件 |
 | B-4 | testkit 缺 tokenMeter 致 Basic 引擎静默失效 | 高 | 显式挂 TokenMeter | testkit 补装配 / warn 提升为可观测 |
 | B-5 | 摘要调用间歇性空流（maxTokens 修复无效） | 高 | 重试耗尽静默放弃 | stream 空流重试/告警 / 降级非流式 |
+| B-6 | surface 窗口丢弃无痕迹、边界对引擎不可见 | 高 | 插件侧全日志 recall 升级（只能解"知道 seq 能取"） | 被丢节点带 seq 占位 / 暴露窗口边界 |
 
-**期望**：dsh 团队评估上述四条中哪些适合进入 rc 系列；任何一条如需更多复现细节或配合验证，ARGP 侧可提供（含离线事件流重放材料）。
+**期望**：dsh 团队评估上述五条中哪些适合进入 rc 系列；任何一条如需更多复现细节或配合验证，ARGP 侧可提供（含离线事件流重放材料）。
 
 **联系方式**：通过 ARGP 仓库（dsh-argp）issue 或本建议书回传均可。
