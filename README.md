@@ -14,7 +14,7 @@ dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用�
 - **引擎无关的接缝**——通过标准 `CompactionEngine` 接口挂载，作为 `compaction-basic` 的替代后端
 - **压缩率精确兑现**——实测 200K 上下文 → 160K 触发 → 32K 保留，输出大小可控
 
-> 状态：研究/验证阶段。全链路（挂载 → 剪枝 → recall，事务不变式）已在 dsh `0.1.0-rc.6` + DeepSeek v4-flash 上完成 50 轮验证；声明式生产挂载已验证（`dsh plugin` CLI 加载）。
+> 状态：研究/验证阶段。全链路（挂载 → 剪枝 → recall，事务不变式）已在 dsh `0.1.0-rc.7` + DeepSeek v4-flash 上完成 50 轮验证；声明式生产挂载已验证（`dsh plugin` CLI 加载）。
 
 ## 为什么
 
@@ -52,8 +52,22 @@ dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用�
 
 ### CLI 声明式挂载（已验证）
 
+从 **npm registry** 安装（当前 `v0.2.4`）：
+
 ```bash
 dsh plugin --profile <name> add dsh-argp
+```
+
+升级到最新版（`dsh plugin` 是 pnpm 转发器，`update` 直接拉取 npm registry 新版）：
+
+```bash
+dsh plugin --profile <name> update dsh-argp
+```
+
+备选：从 GitHub 安装同一版本（源码直达，不经 npm）：
+
+```bash
+dsh plugin --profile <name> add github:yoza10635/dsh-argp
 ```
 
 然后在 profile 的 `cordis.patch.yml` 中插入引擎并禁用 stock 摘要器：

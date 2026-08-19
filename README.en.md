@@ -14,7 +14,7 @@ dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-part
 - **Engine-agnostic seam** — mounted as a drop-in replacement for `compaction-basic` through the standard `CompactionEngine` interface.
 - **Exact compression ratio** — measured 200K context → 160K trigger → 32K retained; output size is controlled.
 
-> Status: research/validation stage. The full pipeline (mount → prune → recall, transaction invariants) is validated on dsh `0.1.0-rc.6` with DeepSeek v4-flash over 50-turn runs; declarative production mounting is verified (loaded via the `dsh plugin` CLI).
+> Status: research/validation stage. The full pipeline (mount → prune → recall, transaction invariants) is validated on dsh `0.1.0-rc.7` with DeepSeek v4-flash over 50-turn runs; declarative production mounting is verified (loaded via the `dsh plugin` CLI).
 
 ## Why
 
@@ -52,8 +52,22 @@ Implication: pairing with a model that follows instructions well is recommended;
 
 ### Declarative CLI mount (verified)
 
+Install from the **npm registry** (currently `v0.2.4`):
+
 ```bash
 dsh plugin --profile <name> add dsh-argp
+```
+
+Upgrade to the latest version (`dsh plugin` is a pnpm forwarder, so `update` pulls the new release straight from the npm registry):
+
+```bash
+dsh plugin --profile <name> update dsh-argp
+```
+
+Alternative: install the same version straight from GitHub (source checkout, no npm):
+
+```bash
+dsh plugin --profile <name> add github:yoza10635/dsh-argp
 ```
 
 Then insert the engine and disable the stock summarizer in the profile's `cordis.patch.yml`:
