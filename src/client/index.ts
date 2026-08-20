@@ -36,14 +36,22 @@ interface AssistantDisplaySeam {
 
 /** Structural root context the cordis loader provides to apply. */
 interface ArgpClientContext {
-  assistantDisplay: AssistantDisplaySeam
+  /** cordis 可选服务获取：不触发 proxy 的 "without inject" 检查。 */
+  get<T>(name: string): T | undefined
 }
 
-/** Services this bundle requires before apply runs. */
-export const inject = ['assistantDisplay']
-
+/**
+ * Graceful degradation: no static inject — the cordis client refuses to read a
+ * same-fiber self-registered service during apply ("cannot get property
+ * without inject"), and even a guarded `ctx.assistantDisplay?.x` access trips
+ * the proxy check. Resolve the seam via `ctx.get()` (returns undefined for
+ * absent services, no throw) and skip silently when the host does not
+ * provide it.
+ */
 export function apply(ctx: ArgpClientContext): void {
-  ctx.assistantDisplay.register((blocks) => {
+  const display = ctx.get<AssistantDisplaySeam>('assistantDisplay')
+  if (display?.register === undefined) return
+  display.register((blocks) => {
     // Only the trailing text block can carry the protocol marker.
     let lastText = -1
     for (let i = blocks.length - 1; i >= 0; i -= 1) {
