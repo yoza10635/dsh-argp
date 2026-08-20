@@ -2,6 +2,11 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [0.2.8] - 2026-08-20
+
+### Fixed
+- **客户端加载失败（发布级 hotfix）**：`dsh.client.inject` 误把包名 `@deepseek-ai/dsh-client-ui-conversation` 当服务名声明 → web shell 去加载 npm latest（0.0.1-rc.1 旧包，无 `assistantDisplay` seam）→ apply 报 `cannot get property "assistantDisplay" without inject`。修复：`inject` 置空（对齐官方 client 包惯例，如 connection）；服务依赖由 `src/client/index.ts` 的 static `inject: ['assistantDisplay']` 声明，seam 由宿主 rc.7 的 ui-conversation 提供。
+
 ## [0.2.7] - 2026-08-20
 
 ### Added
