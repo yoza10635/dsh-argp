@@ -1,12 +1,20 @@
 # dsh-argp bundle patch — installed by the DSH plugin marketplace (dsh.bundle.patch).
-# Disables the stock summarizer and tunes the ARGP engine entry.
+# Disables the stock summarizer and mounts the 0-LLM ARGP engine.
 #
-# IMPORTANT: do NOT `insert` dsh-argp here. The bundle include already registers
-# id=dsh-argp (entry id = package name); inserting a second one crashes the loader
-# with "duplicate loader entry id: dsh-argp" (vendor/include EntryGroup.update).
+# WHY `insert`: a bundle include applies this patch but does NOT create an
+# entry for the package itself (verified against vendor/loader + apps/cli
+# profile-boot). `insert` is the only thing that registers id=dsh-argp.
+# A plain modify row (`- id: dsh-argp ...`) silently no-ops with
+# "patch: entry dsh-argp not found" and the engine never mounts.
+#
+# DUPLICATE HAZARD (v0.2.6): if the profile's own cordis.patch.yml ALSO
+# inserts id=dsh-argp, the loader crashes with "duplicate loader entry id".
+# Profile layer must only tune config (modify), never insert again.
 - id: compaction-basic
   disabled: true
-- id: dsh-argp
-  config:
-    maxPasses: 256
-    recencyGuard: 10
+- insert:
+    - id: dsh-argp
+      name: dsh-argp
+      config:
+        maxPasses: 256
+        recencyGuard: 10

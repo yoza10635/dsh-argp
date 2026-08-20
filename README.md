@@ -79,7 +79,7 @@ dsh plugin --profile <name> add github:yoza10635/dsh-argp
   config: { maxPasses: 16 }   # 预算默认按比例驱动，无需硬编码
 ```
 
-> ⚠️ 不要用 `insert` 挂载 dsh-argp：`dsh plugin add` 后 dsh 已把包自动 include 进 profile 层（entry id = 包名），再 `insert` 同名 entry 会让 loader 报 `duplicate loader entry id: dsh-argp` 启动失败。patch 里对 `dsh-argp` 的普通条目只做配置覆盖。
+> ⚠️ **挂载由包的 bundle patch（`cordis.patch.yml`）负责**：它用 `insert` 创建 `id=dsh-argp` entry（bundle include 只应用 patch、不创建 entry——`dsh plugin add` 后无须也不应在 profile 层再 `insert`，否则报 `duplicate loader entry id`）。profile 层对 `dsh-argp` 的普通条目只做配置覆盖（modify）。
 
 启动后 `ctx.compaction` 即为 ARGP 引擎。
 

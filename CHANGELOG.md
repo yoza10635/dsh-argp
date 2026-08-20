@@ -2,6 +2,11 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [Unreleased]
+
+### Fixed
+- **引擎不挂载（发布级 bug，v0.2.6–v0.2.8）**：`cordis.patch.yml` 的 `- id: dsh-argp` 普通条目（modify）**不创建 entry**——bundle include 只应用包的 patch、不为包本身建 entry（entry 只能由 patch 的 `insert` 创建，实测 vendor/loader + apps/cli profile-boot）。v0.2.6 修 duplicate 时把 `insert` 改成 modify → **没有任何代码创建 dsh-argp entry → 引擎从不挂载**（`ctx.compaction` 仍是 stock；cites 契约 PromptSection 不进系统提示，Qwen3.8-27B 真会话 cites 服从率 0/18 实锤）。修复：包 patch 恢复 `insert`（创建 entry）；profile 层只做 modify 覆盖（勿重复 insert，否则 duplicate）。README 双语安装段同步更正。
+
 ## [0.2.8] - 2026-08-20
 
 ### Fixed

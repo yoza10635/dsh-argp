@@ -79,7 +79,7 @@ Then disable the stock summarizer and tune the engine in the profile's `cordis.p
   config: { maxPasses: 16 }   # budgets are ratio-driven by default
 ```
 
-> ⚠️ Do NOT `insert` dsh-argp: after `dsh plugin add`, dsh already includes the package in the profile layer (entry id = package name). Inserting a second entry with the same id crashes the loader with `duplicate loader entry id: dsh-argp`. A plain `dsh-argp` entry in the patch only overrides its config.
+> ⚠️ **Mounting happens in the package's own bundle patch** (`cordis.patch.yml`): it `insert`s the `id=dsh-argp` entry — a bundle include only applies the patch, it does NOT create an entry for the package itself. So after `dsh plugin add`, never `insert` dsh-argp in the profile layer again (that crashes with `duplicate loader entry id`); a plain `dsh-argp` row there only overrides config.
 
 After boot, `ctx.compaction` is the ARGP engine.
 
