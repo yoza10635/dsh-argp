@@ -2,6 +2,26 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [0.3.0] - 2026-08-20
+
+### Added
+- **assessment-v2 A 轨实现（docs/assessment-v2.md §4，12 项 A1–A12）**：基于逻辑链（引用依赖拓扑）的上下文压缩引擎重大功能升级。
+  - **A1 V6 分级 cites**：`parseCitesBlock` 返回 `{text, level}`，严格等级匹配（`c`/`critical`、`x`/`contextual`、裸字符串/非法值回退 `supporting`，禁止子串误判）；critical 边激活闭包守卫不变量 2′（仅 external critical 边计入 `inDegreeByClosure`）。
+  - **A2 前缀守卫**：默认 `citeMinPrefixLen=4`，统一 `ascii + wide*2` 折算（`"the"` 拒 / `"读书"` 放行）；歧义消解取最长公共前缀最深原子。
+  - **A3 R 版本键修复（N1）**：issuer A 工具名 + 参数 JSON（原 issuer 文本），修复同措辞不同参数误归链。
+  - **A4 版本链去重**：`mergeOlderR` 按合并后组成员数计 `chainLen`（无重复累加）；可选 θ 行重叠链式（默认关）。
+  - **A5 n-gram 倒排索引**：候选收窄 + 验证谓词分离；前缀过短回退全扫描。
+  - **A7 resume 账目重建**：`bindSession()` 统一 `setSession`/`agent/pre-step`/`compactIfNeeded`/`compactNow` 绑定，records + prunedNodeIndex 从追加日志懒重建（幂等、`rebuiltCompactionIds` 去重；未闭合 start → 仅 audit 告警）。
+  - **A8 ask 检测**：导出纯函数 `looksAskText()`，CJK 句首锚定（`^(请|帮我|能不能|能否)`），句尾"帮我"不再误命中。
+  - **A9 catalog 扩 R**：字符预算驱动（`charBudget = tokenBudget * charsPerToken`）。
+  - **A10（必补项，收窄版）**：带 R 组的工具 A 仅当组内 R 无任何组外入边（语义 `curInDegree` + 组外确定性边）才保护；被外部 cites 后 R 解锁 → A 可剪。force 路径同判据。
+  - **A11 参数化**：`closureWindowK`/`citeMinPrefixLen`/`overlapTheta`/`enableOverlapChain` 进 `ArgpGraphConfig`（带默认）。
+  - **A12 spike/25 中合规合成臂**。
+  - **A6 summarize 终端**：留作未实现（文档标注，默认关）。
+
+### Tests
+- 新增 10 用例：level 解析 / 前缀守卫 / A10 受保护·可剪双控 / chainLen / critical 闭包守卫 / ask 收窄（纯函数 + 集成）；crash-recovery 扩至真实 resume 流程。`npm run check` 72/72 通过。
+
 ## [0.2.9] - 2026-08-20
 
 ### Fixed
