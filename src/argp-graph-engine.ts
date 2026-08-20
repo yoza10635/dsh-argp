@@ -27,6 +27,8 @@ import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFr
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
+import type { ParsedCite, CiteLevel } from './cites-strip.js'
+export type { ParsedCite, CiteLevel } from './cites-strip.js'
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -37,7 +39,7 @@ export interface Atom {
   turn: number
   text: string          // 模型可见文本（A 已剥离 cites JSON）
   toolCallIds: string[] // A：发出的 tool-call id；R：应答的 call id —— 配对键（成对同剪防孤儿）
-  cites: string[]       // 仅 A：声明的引用前缀（原文）
+  cites: ParsedCite[]   // 仅 A：声明的引用（前缀原文 + 级别；V6 分级契约，见 cites-strip.ts）
   citesFailed: boolean  // 仅 A：检测到 cites 尝试但解析失败 → 保守保护（§4.7）
 }
 
@@ -63,6 +65,21 @@ export function scaleBudgets(
   const windowTokens = opts.explicitWindow ?? Math.floor(contextWindow * windowRatio)
   const retainTokens = opts.explicitRetain ?? Math.floor(windowTokens * retainRatio)
   return { windowTokens, retainTokens }
+}
+
+/**
+ * A8（问题 10 修订）：ask 检测中英双语纯函数。
+ * 英文：'?' / ask / what；中文：？/ 吗 / 呢 / 什么 / 怎么 / 如何 / 能否 / 能不能。
+ * /帮我/ 由子串收窄为句首（^请|^帮我|^能不能|^能否），避免 "顺便帮我带个话" 之类
+ * 非问句/非请求主语误命中；疑问词 什么/怎么/如何 仍保留子串（问句核心成分，方向保守=少剪）。
+ * 导出供测试直接锁定收窄行为。
+ */
+export function looksAskText(text: string): boolean {
+  const t = text.trim()
+  return t.endsWith('?') || /\bask\b/i.test(t) || /\bwhat\b/i.test(t)
+    || t.endsWith('？') || /吗[？?。]?$/.test(t) || /呢[？?。]?$/.test(t)
+    || /什么|怎么|如何|能否|能不能/.test(t)
+    || /^(请|帮我|能不能|能否)/.test(t)
 }
 
 export interface ArgpGraphConfig {
@@ -108,6 +125,14 @@ export interface ArgpGraphConfig {
    * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
    */
   maxOverflowRetries?: number
+  /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
+  closureWindowK?: number
+  /** cites 前缀最小长度守卫（A2，默认 2）：前缀字符数低于该值直接判失败，避免"的/a"等噪音伪引用。 */
+  citeMinPrefixLen?: number
+  /** 版本链重叠归链阈值 θ（A4，默认 0.8，仅对 R 生效）：sim=|A∩B|/min(|A|,|B|) ≥ θ 视为同一版本链。 */
+  overlapTheta?: number
+  /** 版本链重叠归链启用（A4，默认 false；启用后 A 文本仍走全等去重）。 */
+  enableOverlapChain?: boolean
 }
 
 export interface GraphPruneRecord {
@@ -200,8 +225,12 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
   })
 }
 
-/** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
-export function extractCites(text: string): { body: string; cites: string[]; attempted: boolean; parseFailed: boolean } {
+/**
+ * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
+ * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
+ * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
+ */
+export function extractCites(text: string): { body: string; cites: ParsedCite[]; attempted: boolean; parseFailed: boolean } {
   const matched = matchCitesTail(text)
   const attempted = text.includes('"cites"')
   if (matched === null) {
@@ -252,6 +281,14 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly sortMode: 'legacy' | 'density' | 'density-chain'
   readonly turnBasis: 'semantic' | 'all'
   readonly maxOverflowRetries: number
+  /** 闭包静止窗 K（A11 参数化，默认 2）。 */
+  readonly closureWindowK: number
+  /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
+  readonly citeMinPrefixLen: number
+  /** 版本链重叠归链阈值 θ（A4，默认 0.8）。 */
+  readonly overlapTheta: number
+  /** 版本链重叠归链开关（A4，默认 false）。 */
+  readonly enableOverlapChain: boolean
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
 
@@ -282,6 +319,10 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly overflowAgents = new WeakMap<Session, Agent>()
   /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
   private compactSourceCommandId: CommandId | undefined = undefined
+  /** A7：账目重建后追加的审计警告（供测试断言/诊断）。 */
+  readonly auditWarnings: string[] = []
+  /** A7：已重建过的 compactionId 集合（跨 session 重置，保证幂等 + 告警不重复）。 */
+  private rebuiltCompactionIds = new Set<string>()
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -323,6 +364,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.sortMode = config.sortMode ?? 'legacy'
     this.turnBasis = config.turnBasis ?? 'semantic'
     this.maxOverflowRetries = config.maxOverflowRetries ?? 1
+    this.closureWindowK = config.closureWindowK ?? 2
+    // 默认 4：ASCII 词（如 "the"=3）被拒；CJK 双字（"读书"=2×2=4）放行（问题 5 修订）
+    this.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
+    this.overlapTheta = config.overlapTheta ?? 0.8
+    this.enableOverlapChain = config.enableOverlapChain ?? false
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -502,10 +548,11 @@ export class ArgpGraphEngine extends CompactionEngine {
       text: () => 'Citation declaration (ARGP):\n'
         + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
         + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
-        + '{"cites":["..."]}\n'
+        + '{"cites":[...]}\n'
         + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
         + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
         + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
+        + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
         + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
     })
 
@@ -572,7 +619,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       return { kind: 'retry' }
     })
     ctx.on('agent/pre-step', async ({ agent, signal }, next): Promise<PreStepDecision> => {
-      if (this.session === null) this.session = agent.session
+      this.bindSession(agent.session) // A7（问题 3）：生产 resume 点，账目缺失时自动重建
       if (!signal.aborted) {
         try {
           await this.compactIfNeeded(agent, 'pressure', signal)
@@ -585,12 +632,26 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
   }
 
-  setSession(session: Session): void {
+  /**
+   * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定
+   * 都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：账目丢失仅日志在），
+   * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
+   */
+  private bindSession(session: Session): void {
+    if (this.session === session) return
     this.session = session
+    this.rebuiltCompactionIds.clear() // 跨 session 重置告警/重建去重
     this.shadowedSeqsOf(session) // setSession 时初始化一次；后续仅扫描新追加事件
+    try {
+      this.rebuildLedgerFromLog() // 懒触发：仅当 records 空 + 日志含事务事件时真正重建
+    } catch { /* 重建失败不阻断 turn */ }
   }
 
-  /** 生成上下文头部 catalog（设计稿 §5）：只列被剪 U/A，snippet 截断，≤maxItems 条。 */
+  setSession(session: Session): void {
+    this.bindSession(session)
+  }
+
+  /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。 */
   catalogText(maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
     if (this.session === null) return ''
     const shadowed = this.shadowedSeqsOf(this.session)
@@ -607,8 +668,10 @@ export class ArgpGraphEngine extends CompactionEngine {
         type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
       } else if (event.type === 'assistant/message') {
         type = 'A'
+      } else if (event.type === 'tool/result') {
+        type = 'R' // A9：R 补入 catalog 发现入口（N2）
       } else {
-        continue // catalog 只列 U/A
+        continue
       }
       const text = eventText(this.session, seq)
       const snippet = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
@@ -731,10 +794,18 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
       if (event.type === 'assistant/message') {
         const raw = eventText(session, seq)
-        const stored = (data as { argpCites?: string[] }).argpCites
+        const stored = (data as { argpCites?: ParsedCite[] | string[] }).argpCites
         const parsed = extractCites(raw)
         // 优先用 surface 剥离时存入的 argpCites，保证跨压缩引用图不丢（文本已无 cites）
-        const cites = Array.isArray(stored) ? stored : parsed.cites
+        // 兼容旧版纯 string 数组（V5 产物）→ 全部视为 supporting。
+        let cites: ParsedCite[]
+        if (Array.isArray(stored)) {
+          cites = stored.every(c => typeof c === 'object' && c !== null && typeof (c as { t?: unknown }).t === 'string')
+            ? (stored as ParsedCite[]).map(c => ({ text: c.text, level: c.level }))
+            : (stored as string[]).map(t => ({ text: t, level: 'supporting' as const }))
+        } else {
+          cites = parsed.cites
+        }
         const body = parsed.body
         const msg = (data as { message?: { content?: unknown[] } })?.message
         const content = Array.isArray(msg?.content) ? (msg?.content as { type: string; id?: string }[]) : []
@@ -756,10 +827,70 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * 建图（§4.2 + §4.7）：确定性边不计级别；cites 子串匹配生成 supporting 语义边
-   * （唯一命中采纳；多命中 AMBIG → 最早命中 + U 优先）。
-   * 实测修正（spike 5 首跑）：原 startsWith 头部匹配边数归零——逐字引文起点常落在
-   * 原子文本中段，改 includes 子串匹配（同“被动头部匹配陷阱”教训）。
+   * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
+   * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
+   * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
+   */
+  private citePrefixTooShort(prefix: string): boolean {
+    const minLen = this.citeMinPrefixLen
+    let ascii = 0
+    let wide = 0
+    for (const ch of prefix) {
+      if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) wide += 1
+      else ascii += 1
+    }
+    return ascii + wide * 2 < minLen
+  }
+
+  /** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
+  private readonly ngramN = 3
+
+  private buildNGramIndex(atoms: Atom[], extract: (a: Atom) => string): Map<string, number[]> {
+    const index = new Map<string, number[]>()
+    const n = this.ngramN
+    for (const a of atoms) {
+      const text = extract(a)
+      if (text === '') continue
+      const grams = new Set<string>()
+      for (let i = 0; i + n <= text.length; i += 1) grams.add(text.slice(i, i + n))
+      for (const g of grams) {
+        const list = index.get(g)
+        if (list === undefined) index.set(g, [a.id])
+        else list.push(a.id)
+      }
+    }
+    return index
+  }
+
+  /** 查询候选集：前缀长度 < n 时返回 null（走全扫描回退）。取前缀上 ≤3 个 n-gram 交集收窄候选。 */
+  private queryNGramCandidates(index: Map<string, number[]>, prefix: string): number[] | null {
+    const n = this.ngramN
+    if (prefix.length < n) return null
+    const first = prefix.slice(0, n)
+    const firstList = index.get(first)
+    if (firstList === undefined) return []
+    const candidates = new Set<number>(firstList)
+    const starts = [Math.floor((prefix.length - n) / 2), prefix.length - n]
+    for (const start of starts) {
+      if (start === 0) continue
+      const g = prefix.slice(start, start + n)
+      const list = index.get(g)
+      if (list === undefined) return []
+      const set = new Set(list)
+      for (const id of [...candidates]) {
+        if (!set.has(id)) candidates.delete(id)
+      }
+      if (candidates.size === 0) return []
+    }
+    return [...candidates]
+  }
+
+  /**
+   * 建图（§4.2 + §4.7 + A1/A2/A5）：确定性边不计级别；cites 子串匹配生成语义边，
+   * 级别取声明级别（V6 契约，裸字符串默认 supporting；critical 参与闭包守卫不变量 2′）。
+   * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
+   * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
+   * 前缀长度守卫：过短前缀不计 declared 也不建边。
    */
   buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; deterministicEdges: DeterministicEdge[]; inDegree: Map<number, number> } {
     const edges: SemanticEdge[] = []
@@ -773,20 +904,49 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (r !== undefined) deterministicEdges.push({ from: a.id, to: r.id })
       }
     }
+    // A5：整文本 n-gram 索引（子串命中）+ 行首 n-gram 索引（行首精确命中，A2 增强回退）
+    const textIndex = this.buildNGramIndex(atoms, a => a.text)
+    const lineIndex = this.buildNGramIndex(atoms, a => a.text.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n'))
+    const resolveHits = (prefix: string, index: Map<string, number[]>, verify: (t: Atom) => boolean): Atom[] => {
+      const candidates = this.queryNGramCandidates(index, prefix)
+      const pool = candidates === null
+        ? atoms
+        : candidates.map(id => atoms.find(a => a.id === id)).filter((a): a is Atom => a !== undefined)
+      return pool.filter(verify)
+    }
     for (const a of atoms) {
       if (a.type !== 'A') continue
-      for (const prefix of a.cites) {
-        const p = prefix.trim()
+      for (const cite of a.cites) {
+        const p = cite.text.trim()
         if (p === '') continue
-        const hits = atoms.filter(t => t.id !== a.id && t.text !== '' && t.text.includes(p))
+        if (this.citePrefixTooShort(p)) {
+          this.citeStats.failed += 1 // 过短前缀视为声明失败（保守保护，不建边）
+          continue
+        }
+        const selfExcluded = (t: Atom): boolean => t.id !== a.id && t.text !== ''
+        // 先精确（行首）后子串：行首命中更贴引用意图，其次整文子串（spike 5 教训：includes 兜底）
+        let hits = resolveHits(p, lineIndex, t => selfExcluded(t) && t.text.split('\n').some(line => line.trim().startsWith(p)))
+        if (hits.length === 0) {
+          hits = resolveHits(p, textIndex, t => selfExcluded(t) && t.text.includes(p))
+        }
         if (hits.length === 0) continue
         let target = hits[0]
         if (hits.length > 1) {
           this.citeStats.ambiguous += 1
           const uHit = hits.find(h => h.type === 'U')
-          target = uHit ?? hits.reduce((min, h) => (h.seq < min.seq ? h : min), hits[0])
+          if (uHit !== undefined) {
+            target = uHit
+          } else {
+            // A2：最长公共前缀最深的原子优先（引用意图最接近），同深度取最早 seq
+            const depth = (h: Atom): number => {
+              let i = 0
+              while (i < p.length && i < h.text.length && h.text[i] === p[i]) i += 1
+              return i
+            }
+            target = hits.reduce((min, h) => (depth(h) > depth(min) || (depth(h) === depth(min) && h.seq < min.seq) ? h : min), hits[0] as Atom)
+          }
         }
-        edges.push({ from: a.id, to: target.id, level: 'supporting' })
+        edges.push({ from: a.id, to: target.id, level: cite.level })
         this.citeStats.resolved += 1
       }
     }
@@ -819,8 +979,27 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
-  /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。
-   *  返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长（出现次数），供 density-chain 排序叠加 eff。 */
+  /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
+  private static lineOverlap(a: string, b: string): number {
+    const linesA = new Set(a.split('\n').map(l => l.trim()).filter(l => l !== ''))
+    const linesB = new Set(b.split('\n').map(l => l.trim()).filter(l => l !== ''))
+    const min = Math.min(linesA.size, linesB.size)
+    if (min === 0) return 0
+    let inter = 0
+    for (const l of linesA) if (linesB.has(l)) inter += 1
+    return inter / min
+  }
+
+  /**
+   * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
+   *  - A：文本全等（不变）。
+   *  - R：按「issuer A 的 tool name + arguments JSON」去重（而非旧版 issuer?.text.trim()），
+   *    解决「同措辞不同工具调用（如不同参数 read different files）被错误归链去重」的问题。
+   *    回退：issuer 不存在时用 r.text（callId 缺失的最小退化）。
+   *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
+   *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
+   * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
+   */
   private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number> } {
     const dupIds = new Set<number>()
     const chainLen = new Map<number, number>()
@@ -857,24 +1036,66 @@ export class ArgpGraphEngine extends CompactionEngine {
         seenA.set(key, { atom: a, count: 1 })
       }
     }
-    const seenR = new Map<string, { atom: Atom; count: number }>()
-    for (const r of atoms.filter(x => x.type === 'R')) {
+    const seenR = new Map<string, { atom: Atom }[]>()
+    const rKey = (r: Atom): string => {
+      // A3 N1 fix：R 去重键 = issuer A 的 tool name + arguments JSON（callId 缺失时退化为 r.text）
       const issuer = r.toolCallIds[0] !== undefined ? issuerByCall.get(r.toolCallIds[0]) : undefined
-      const key = (issuer?.text ?? r.text).trim()
-      const existing = seenR.get(key)
-      if (existing !== undefined) {
-        const older = existing.atom.turn < r.turn || (existing.atom.turn === r.turn && existing.atom.seq < r.seq) ? existing.atom : r
-        const newer = older === existing.atom ? r : existing.atom
-        if ((inDegree.get(older.id) ?? 0) === 0) {
-          dupIds.add(older.id)
-          if (issuer !== undefined) addPair(issuer)
-        }
-        const count = existing.count + 1
-        chainLen.set(newer.id, count)
-        seenR.set(key, { atom: newer, count })
-      } else {
-        seenR.set(key, { atom: r, count: 1 })
+      if (issuer === undefined) return 'text|' + r.text.trim()
+      const issuerEvent = this.session?.events[issuer.seq]
+      const content = (issuerEvent?.data as { message?: { content?: unknown[] } } | undefined)
+        ?.message?.content as Array<{ type?: string; id?: string; name?: string; arguments?: unknown }> | undefined
+      const tc = content?.find(b => b.type === 'tool-call' && b.id === r.toolCallIds[0])
+      const argsStr = tc !== undefined && tc.arguments !== undefined
+        ? (typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments))
+        : ''
+      return (tc?.name ?? '?') + '|' + argsStr
+    }
+    const registerR = (key: string, r: Atom): void => {
+      const list = seenR.get(key)
+      if (list === undefined) seenR.set(key, [{ atom: r }])
+      else list.push({ atom: r })
+    }
+    const mergeOlderR = (older: Atom, r: Atom, key: string): void => {
+      if ((inDegree.get(older.id) ?? 0) === 0) {
+        dupIds.add(older.id)
+        const issuer = older.toolCallIds[0] !== undefined ? issuerByCall.get(older.toolCallIds[0]) : undefined
+        if (issuer !== undefined) addPair(issuer)
       }
+      // A4 问题 4 修订：chainLen = 合并后组成员数（list.length），而非「已合并条目数+1」的
+      // cur.count 累加——后者在同一 atom 已入 list 时重复多计（如 3 副本 R 链混入 issuer A 计数）。
+      // 先 push 再取 list.length：3 个相同 R → 第一次 register len=1，随后两次 merge 各 push → len=2/3。
+      const list = seenR.get(key)
+      if (list === undefined) {
+        seenR.set(key, [{ atom: r }])
+        chainLen.set(r.id, 1)
+      } else {
+        list.push({ atom: r })
+        chainLen.set(r.id, list.length)
+      }
+    }
+    for (const r of atoms.filter(x => x.type === 'R')) {
+      const key = rKey(r)
+      const group = seenR.get(key)
+      const exact = group?.find(e => e.atom.text === r.text)
+      if (exact !== undefined) {
+        const older = exact.atom.turn < r.turn || (exact.atom.turn === r.turn && exact.atom.seq < r.seq) ? exact.atom : r
+        const newer = older === exact.atom ? r : exact.atom
+        if (older !== newer) {
+          mergeOlderR(older, newer, key)
+          exact.atom = newer
+        }
+        continue
+      }
+      if (this.enableOverlapChain && group !== undefined) {
+        const sims = group.map(e => ArgpGraphEngine.lineOverlap(e.atom.text, r.text))
+        const best = sims.reduce((m, s, i) => (s > sims[m] ? i : m), 0)
+        if (sims[best] !== undefined && sims[best] >= this.overlapTheta) {
+          const older = group[best]?.atom as Atom
+          mergeOlderR(older, r, key)
+          continue
+        }
+      }
+      registerR(key, r)
     }
     return { dupIds, chainLen }
   }
@@ -954,7 +1175,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     return result
   }
 
-  /** P3：summarize 末环占位。当前未实现，默认返回 null 以继续 force_prune。 */
+  /**
+   * A6（保守选项 a）：summarize 末环不实现 —— 保持默认关闭（enableSummarize=false）、
+   * force_prune 为终端降级，文档明确。本 stub 恒返回 null，degradationStrategy='summarize'
+   * 且 enableSummarize=true 时也不会产出 LLM 摘要；实际路径仍为 lifecycle → force。
+   */
   private summarizeCriticalChain(
     _session: Session,
     _atoms: Atom[],
@@ -1004,10 +1229,15 @@ export class ArgpGraphEngine extends CompactionEngine {
         lastRefByClosure.set(toClosure, Math.max(lastRefByClosure.get(toClosure) ?? 0, ref))
       }
       if (fromClosure !== undefined && toClosure !== undefined && fromClosure !== toClosure) {
-        inDegreeByClosure.set(toClosure, (inDegreeByClosure.get(toClosure) ?? 0) + 1)
+        // A1 不变量 2′：仅 external **critical** 边计入闭包守卫入度（supporting/contextual
+        // 跨闭包边不构成硬依赖；critical 边是「整链决策承重」的强依赖，须防整闭包被剪）。
+        if (e.level === 'critical') {
+          inDegreeByClosure.set(toClosure, (inDegreeByClosure.get(toClosure) ?? 0) + 1)
+        }
       }
     }
-    const k = 2
+    // A11：闭包静止窗 K 参数化（默认 2）
+    const k = this.closureWindowK
     const candidates: { id: string; root: Atom; lastRef: number; seqs: number[] }[] = []
     const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
     for (const [id, root] of rootByClosure) {
@@ -1153,7 +1383,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     _signal: AbortSignal,
   ): Promise<CompactionResult | null> {
     const session = agent.session
-    if (this.session === null) this.session = session
+    this.bindSession(session) // A7（问题 3）：compactIfNeeded 也走统一绑定（含账目懒重建）
     const { windowTokens, retainTokens } = await this.resolveScaledBudgets(agent)
     const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) {
@@ -1203,7 +1433,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     const askCoverage = new Map<number, number>()
     for (const u of atoms.filter(a => a.type === 'U')) {
       const text = u.text.trim()
-      const looksAsk = text.endsWith('?') || /\bask\b/i.test(text) || /\bwhat\b/i.test(text)
+      // A8：ask 检测（导出纯函数 looksAskText，测试直接锁定收窄行为）
+      const looksAsk = looksAskText(u.text)
       if (!looksAsk) continue
       const firstA = atoms
         .filter(a => a.type === 'A' && a.turn >= u.turn && a.seq > u.seq)
@@ -1254,6 +1485,29 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (pos === undefined || pos >= recencyCut) return false
       if (a.turn > latestTurn - this.turnGuard) return false
       if (a.citesFailed) return false
+      // A10（必补，收窄版）：A 带 R 组但漏 cites 时，该 A 对 R 无语义边 → 闭包守卫（inDegreeByClosure）
+      // 防不住整闭包被剪。但**仅当组内 R 均无来自组外的其他入边**才结构性保护（设计 §4 收窄版 + 问题 1 修订）：
+      //  - A 漏 cites 且 R 无任何外部入边（组内只有 issuer 的确定性配对边）→ 整组失去外部保护，
+      //    A 不可剪（防整闭包被剪；单轮 1U+1A+1R 探针场景即此形态，**应保护**——评审探针的
+      //    “工具 A 永久不可剪”是旧版无脑全保护的结论，收窄后仅漏 cites 且无外部引用的组受保护）
+      //  - R 被组外原子 cites 或引用（语义入度 >0，或来自其他 A 的确定性边）→ R 已被外部保护，A 照常可剪
+      //  - A 有 cites 指向组内 R → 有边，不触发保护
+      // 判定依据：语义边（edges）+ 确定性边（deterministicEdges）均只数「组外来源」——
+      // 组内 issuer 自己的配对边不算“其他入边”，否则“有 R 就保护”退化为无脑全保护（问题 1）。
+      // force_prune（allowInDegree=true）路径同样走此判定——结构性保护优先于强制降级。
+      if (a.type === 'A' && a.toolCallIds.length > 0) {
+        const groupIds = new Set<number>([a.id])
+        const groupRs = atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
+        for (const r of groupRs) groupIds.add(r.id)
+        if (groupRs.length > 0) {
+          const aCitesR = edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
+          // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
+          const anyRExternalIncoming = groupRs.some(r =>
+            (curInDegree.get(r.id) ?? 0) > 0 || // 语义入度（cites）——已含组外来源
+            deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
+          if (!aCitesR && !anyRExternalIncoming) return false
+        }
+      }
       if (!allowInDegree && (curInDegree.get(a.id) ?? 0) > 0) return false
       return true
     }
@@ -1361,7 +1615,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     signal: AbortSignal,
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
-    if (this.session === null) this.session = agent.session
+    this.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
     signal.throwIfAborted()
     // /compact 链路（command-compact 调用方传入 commandId）：透传给事务事件做
     // presentation correlation（对齐 compaction-basic 的 sourceCommandId 语义）。
@@ -1389,7 +1643,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     agent: CompactionAgentContext,
     signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    if (this.session === null) this.session = agent.session
+    this.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
     signal?.throwIfAborted()
     const session = agent.session
     const nodes = session.surface.nodes
@@ -1531,6 +1785,109 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 关闭失败保留未配对 start，可被 inspectCompactionEntryState 检出
       }
       throw error
+    }
+  }
+
+  /**
+   * A7 事务账目重建：resume 时从 append-only 日志扫描 compaction/start、compaction/prune、
+   * compaction/end 事件重建 records/prunedNodeIndex/shadowedSeqsOf 状态；无 end 的 start 记 warn。
+   * 不引入 WAL——日志本身即账目。幂等：已重建过的 compactionId 跳过（rebuiltCompactionIds 去重），
+   * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
+   */
+  rebuildLedgerFromLog(): void {
+    if (this.session === null) return
+    const events = this.session.events
+    const starts: { seq: number; compactionId: string; lifecycle: Record<string, unknown> }[] = []
+    const prunes: { seq: number; start: number; end: number; shadowedSeqs: number[]; shadowedTokenCount: number }[] = []
+    const ends = new Set<number>()
+    const endByStart = new Map<number, { endSeq: number; error?: string }>()
+    for (let i = 0; i < events.length; i += 1) {
+      const event = events[i]
+      if (event === undefined) continue
+      if (event.type === 'compaction/start') {
+        starts.push({ seq: i, compactionId: String((event.data as { compactionId?: unknown }).compactionId ?? ''), lifecycle: event.data as Record<string, unknown> })
+      } else if (event.type === 'compaction/prune') {
+        const d = event.data as { shadowedRange?: { start?: number; end?: number }; shadowedSeqs?: number[]; shadowedTokenCount?: number }
+        prunes.push({ seq: i, start: d.shadowedRange?.start ?? 0, end: d.shadowedRange?.end ?? 0, shadowedSeqs: d.shadowedSeqs ?? [], shadowedTokenCount: d.shadowedTokenCount ?? 0 })
+      } else if (event.type === 'compaction/end') {
+        ends.add(i)
+        const d = event.data as { compactionId?: unknown; error?: unknown }
+        const s = starts.find(st => st.compactionId === d.compactionId)
+        if (s !== undefined) endByStart.set(s.seq, { endSeq: i, error: typeof d.error === 'string' ? d.error : undefined })
+      }
+    }
+    // 账目重建：shadowed 集合直接复用 shadowedSeqsOf 的增量游标（问题 8：删重复扫描循环，
+    // shadowedSeqsOf 已从上次扫描处继续到 events.length，同一游标不冲突）
+    this.shadowedSeqsOf(this.session)
+    // 事件类型反查（问题 8）：从日志真实事件反推原子类型/轮次，不再一律占位 'A'/turn 0。
+    // 分类口径与 atomize 一致：user/message plugin 源 → X，其余 U；assistant → A；tool/result → R。
+    const typeOfSeq = (seq: number): AtomType => {
+      const event = this.session?.events[seq]
+      if (event === undefined) return 'X'
+      if (event.type === 'user/message') {
+        const source = (event.data as { source?: { kind?: string } }).source
+        return source?.kind === 'plugin' ? 'X' : 'U'
+      }
+      if (event.type === 'assistant/message') return 'A'
+      if (event.type === 'tool/result') return 'R'
+      return 'X'
+    }
+    const turnOfSeq = (seq: number): number => {
+      const event = this.session?.events[seq]
+      const turn = (event?.data as { turn?: unknown } | undefined)?.turn
+      return typeof turn === 'number' ? turn : 0
+    }
+    // 逐 start 配对：找到该事务的 prune（start 后最近的 compaction/prune）与 end
+    for (const s of starts) {
+      // 幂等守卫：已重建过则跳过（防止 setSession 自动重建后，测试显式 rebuildLedgerFromLog 再重建）
+      if (this.rebuiltCompactionIds.has(s.compactionId)) continue
+      const prune = prunes.find(p => p.seq > s.seq)
+      const end = endByStart.get(s.seq)
+      if (end === undefined) {
+        // 未闭合 start：仅告警，不重建记录；标记已处理防止重复告警
+        if (!this.rebuiltCompactionIds.has(s.compactionId)) {
+          this.auditWarnings.push('unclosed compaction start at seq ' + s.seq + ' (compactionId=' + s.compactionId + '); transaction may have been interrupted')
+          this.rebuiltCompactionIds.add(s.compactionId)
+        }
+        continue
+      }
+      if (prune === undefined) continue
+      // 标记已重建（重建后不重复，防止再次 rebuildLedgerFromLog 时追加）
+      this.rebuiltCompactionIds.add(s.compactionId)
+      const intervalSeqs = prune.shadowedSeqs
+      const charsBefore = 0 // 日志无快照，账目重建不伪造数值
+      const charsAfter = 0
+      const intervalRecords = intervalSeqs.length > 0
+        ? [{ start: intervalSeqs[0] as number, end: intervalSeqs[intervalSeqs.length - 1] as number, tombstoneSeq: end.endSeq }]
+        : []
+      const prunedAtoms: { id: number; type: AtomType; seq: number }[] = intervalSeqs.map(seq => ({ id: seq, type: typeOfSeq(seq), seq }))
+      this.records.push({
+        at: String((s.lifecycle as { at?: unknown }).at ?? ''),
+        compactionId: s.compactionId,
+        intervals: intervalRecords,
+        startEventSeq: s.seq,
+        summaryEventSeq: prune.seq,
+        endEventSeq: end.endSeq,
+        shadowedSeqs: intervalSeqs,
+        prunedAtoms,
+        semanticEdges: 0,
+        candidates: 0,
+        charsBefore,
+        charsAfter,
+        forced: false,
+      })
+      for (const seq of intervalSeqs) {
+        if (!this.prunedNodeIndex.has(seq)) {
+          this.prunedNodeIndex.set(seq, {
+            seq,
+            type: typeOfSeq(seq), // 问题 8：真实类型反查（R/U 不再一律 'A'）
+            turn: turnOfSeq(seq),
+            firstLine: '(rebuilt from log) seq=' + seq,
+            citedBySeq: [],
+            eff: 0,
+          })
+        }
+      }
     }
   }
 

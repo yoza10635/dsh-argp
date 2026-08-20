@@ -52,7 +52,7 @@ Implication: pairing with a model that follows instructions well is recommended;
 
 ### Declarative CLI mount (verified)
 
-Install from the **npm registry** (currently `v0.2.5`):
+Install from the **npm registry** (currently `v0.2.8`):
 
 ```bash
 dsh plugin --profile <name> add dsh-argp

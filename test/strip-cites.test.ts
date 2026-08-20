@@ -30,7 +30,7 @@ test('strips trailing {"cites":[...]} from the last text block and stashes argpC
   const content = (a.data.message as { content: Array<{ type: string; text: string }> }).content
   assert.equal(content.length, 1)
   assert.equal(content[0]!.text, 'Here is the answer.', 'cites JSON must be gone from text')
-  assert.deepEqual(a.data.argpCites, ['earlier claim A'], 'cites preserved in argpCites')
+  assert.deepEqual(a.data.argpCites, [{ text: 'earlier claim A', level: 'supporting' }], 'cites preserved in argpCites (V6 graded)')
   assert.equal((a.opts as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp.op, 'replace')
 })
 
@@ -77,5 +77,5 @@ test('preserves tool-call blocks and only trims the trailing text block', () => 
   assert.equal(content.length, 3, 'tool-call block must be preserved')
   assert.equal(content[1]!.type, 'tool-call')
   assert.equal(content[2]!.text, 'Done.', 'only the last text block is trimmed')
-  assert.deepEqual(appends[0]!.data.argpCites, ['call_1'])
+  assert.deepEqual(appends[0]!.data.argpCites, [{ text: 'call_1', level: 'supporting' }])
 })

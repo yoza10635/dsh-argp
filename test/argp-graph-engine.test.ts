@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, type Atom } from '../src/argp-graph-engine.ts'
+import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
@@ -31,19 +31,35 @@ function appendAssistant(session: Session, text: string, turn: number): void {
 test('extractCites: bare JSON, fenced JSON, empty cites, invalid, absent', () => {
   const bare = extractCites('answer\n{"cites":["hello world"]}')
   assert.equal(bare.body, 'answer')
-  assert.deepEqual(bare.cites, ['hello world'])
+  assert.deepEqual(bare.cites, [{ text: 'hello world', level: 'supporting' }])
   assert.equal(bare.attempted, true)
   assert.equal(bare.parseFailed, false)
 
   const fenced = extractCites('answer\n```json\n{"cites":["hello world"]}\n```')
   assert.equal(fenced.body, 'answer')
-  assert.deepEqual(fenced.cites, ['hello world'])
+  assert.deepEqual(fenced.cites, [{ text: 'hello world', level: 'supporting' }])
   assert.equal(fenced.parseFailed, false)
 
   const empty = extractCites('answer\n{"cites":[]}')
   assert.equal(empty.body, 'answer')
   assert.deepEqual(empty.cites, [])
   assert.equal(empty.parseFailed, false)
+
+  // A1 V6 分级契约：{"t":...,"l":"c|x|s"} 对象条目
+  const graded = extractCites('answer\n{"cites":[{"t":"the gateway release","l":"c"},{"t":"some file","l":"x"},{"t":"plain"}]}')
+  assert.equal(graded.parseFailed, false)
+  assert.deepEqual(graded.cites, [
+    { text: 'the gateway release', level: 'critical' },
+    { text: 'some file', level: 'contextual' },
+    { text: 'plain', level: 'supporting' },
+  ])
+
+  // 形状不合法（混入数字/对象缺 t）→ parseFailed
+  const badShape = extractCites('answer\n{"cites":["ok", 42]}')
+  assert.equal(badShape.attempted, true)
+  assert.equal(badShape.parseFailed, true)
+  const missingT = extractCites('answer\n{"cites":[{"x":"no t"}]}')
+  assert.equal(missingT.parseFailed, true)
 
   const invalid = extractCites('answer\n{"cites": [')
   assert.equal(invalid.attempted, true)
@@ -102,7 +118,7 @@ test('atomize: U/A/R/X types, cites stripping, toolCallIds', async () => {
     assert.equal(atoms[1]?.type, 'A')
     assert.equal(atoms[1]?.seq, aSeq)
     assert.equal(atoms[1]?.text, 'answer')
-    assert.deepEqual(atoms[1]?.cites, ['question'])
+    assert.deepEqual(atoms[1]?.cites, [{ text: 'question', level: 'supporting' }])
     assert.equal(atoms[1]?.citesFailed, false)
     assert.equal(engine.citeStats.aAtoms, 1)
     assert.equal(engine.citeStats.declared, 1)
@@ -117,7 +133,7 @@ test('buildGraph: supporting edge, no-hit, and ambiguity with U priority', async
     const atoms: Atom[] = [
       { id: 0, seq: 10, type: 'U', turn: 1, text: 'the gateway release passes. Neither', toolCallIds: [], cites: [], citesFailed: false },
       { id: 1, seq: 11, type: 'A', turn: 1, text: 'the gateway release passes. Neither', toolCallIds: [], cites: [], citesFailed: false },
-      { id: 2, seq: 12, type: 'A', turn: 2, text: 'answer', toolCallIds: [], cites: ['the gateway release passes'], citesFailed: false },
+      { id: 2, seq: 12, type: 'A', turn: 2, text: 'answer', toolCallIds: [], cites: [{ text: 'the gateway release passes', level: 'supporting' }], citesFailed: false },
     ]
     const { edges, inDegree } = engine.buildGraph(atoms)
     assert.equal(edges.length, 1)
@@ -128,7 +144,7 @@ test('buildGraph: supporting edge, no-hit, and ambiguity with U priority', async
     assert.equal(engine.citeStats.ambiguous, 1)
 
     const noHit = engine.buildGraph([
-      { id: 0, seq: 1, type: 'A', turn: 1, text: 'answer', toolCallIds: [], cites: ['not present'], citesFailed: false },
+      { id: 0, seq: 1, type: 'A', turn: 1, text: 'answer', toolCallIds: [], cites: [{ text: 'not present', level: 'supporting' }], citesFailed: false },
     ])
     assert.equal(noHit.edges.length, 0)
   } finally {
@@ -484,7 +500,7 @@ test('edge levels: EDGE_WEIGHTS and buildGraph default supporting', async () => 
   try {
     const atoms: Atom[] = [
       { id: 0, seq: 1, type: 'U', turn: 1, text: 'source', toolCallIds: [], cites: [], citesFailed: false },
-      { id: 1, seq: 2, type: 'A', turn: 2, text: 'answer', toolCallIds: [], cites: ['source'], citesFailed: false },
+      { id: 1, seq: 2, type: 'A', turn: 2, text: 'answer', toolCallIds: [], cites: [{ text: 'source', level: 'supporting' }], citesFailed: false },
     ]
     const { edges } = engine.buildGraph(atoms)
     assert.equal(edges.length, 1)
@@ -618,3 +634,272 @@ test('closure tombstone: includes closure id and root preview', async () => {
     await ctx.fiber.dispose()
   }
 })
+
+test('extractCites V6: full-word levels resolve; unknown level falls back to supporting (Q2)', () => {
+  const fullWord = extractCites('answer\n{"cites":[{"t":"critical item","l":"critical"},{"t":"contextual item","l":"contextual"},{"t":"plain"}]}')
+  assert.equal(fullWord.parseFailed, false)
+  assert.deepEqual(fullWord.cites, [
+    { text: 'critical item', level: 'critical' },
+    { text: 'contextual item', level: 'contextual' },
+    { text: 'plain', level: 'supporting' },
+  ])
+  // 未知/拼错等级 → 静默回退 supporting（绝不升级成 critical——问题 2 修复方向）
+  const unknown = extractCites('answer\n{"cites":[{"t":"zzz item","l":"zzz"},{"t":"legacy","l":"contextual"}]}')
+  assert.equal(unknown.parseFailed, false)
+  assert.deepEqual(unknown.cites, [
+    { text: 'zzz item', level: 'supporting' },
+    { text: 'legacy', level: 'contextual' },
+  ])
+  // l 缺失/非字符串 → supporting
+  const noLevel = extractCites('answer\n{"cites":[{"t":"no level"}]}')
+  assert.equal(noLevel.parseFailed, false)
+  assert.deepEqual(noLevel.cites, [{ text: 'no level', level: 'supporting' }])
+})
+
+test('buildGraph prefix guard: ASCII>=4 or CJK>=2 chars (Q5)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('prefix-guard-test'))
+    appendUser(session, 'the quick brown fox jumps over the lazy dog')
+    const uSeq = session.events.length - 1
+    // 过短 ASCII 前缀（“the”=3 < 4）→ 拒
+    appendAssistant(session, 'ans1 {"cites":[{"t":"the","l":"s"}]}', 1)
+    const aShortSeq = session.events.length - 1
+    // 长前缀（“the quick” >= 4）→ 放行
+    appendAssistant(session, 'ans2 {"cites":[{"t":"the quick","l":"s"}]}', 2)
+    const aLongSeq = session.events.length - 1
+    // CJK 双字（“读书”=2 wide）→ 放行且命中含中文的 U
+    appendUser(session, '读书使人进步')
+    const uCjkSeq = session.events.length - 1
+    appendAssistant(session, 'ans3 {"cites":[{"t":"读书","l":"s"}]}', 3)
+    const aCjkSeq = session.events.length - 1
+    const atoms = engine.atomize(session)
+    const { edges } = engine.buildGraph(atoms)
+    const aShort = atoms.find(a => a.seq === aShortSeq)
+    const aLong = atoms.find(a => a.seq === aLongSeq)
+    const aCjk = atoms.find(a => a.seq === aCjkSeq)
+    assert.ok(aShort !== undefined && aLong !== undefined && aCjk !== undefined)
+    // “the” 拒（citePrefixTooShort → failed++，无边）
+    assert.ok(!edges.some(e => e.from === aShort.id), '"the" prefix must be rejected')
+    // “the quick” 放行 → A→U 边
+    assert.ok(edges.some(e => e.from === aLong.id && e.to === uSeq), 'long ascii prefix must resolve to U')
+    // 读书 放行 → A→U(CJK) 边
+    assert.ok(edges.some(e => e.from === aCjk.id && e.to === uCjkSeq), 'CJK 2-char prefix must resolve to U')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('A10 narrow guard: tool A with R group and no external refs stays protected; with external cite becomes prunable (Q1)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('a10-narrow-test'))
+    appendUser(session, 'user anchor')
+    // 工具 A：带 R 组但漏 cites → 无外部入边 → 结构性保护（不可剪）
+    session.append('assistant/message', {
+      turn: 1, step: 1,
+      message: createAssistantMessage({
+        source: { provider: 'test', model: 'test' },
+        content: [
+          { type: 'text', text: 'tool answer' },
+          { type: 'tool-call', id: 'call_a' as never, name: 'read_file', arguments: '{"path":"x"}' },
+        ],
+      }),
+    }, { surfaceOp: 'append' })
+    const aSeq = session.events.length - 1
+    session.append('tool/result', {
+      turn: 1, step: 1,
+      message: createToolResultMessage({ callId: 'call_a' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
+    }, { surfaceOp: 'append' })
+    const rSeq = session.events.length - 1
+    appendAssistant(session, 'A3:' + 'y'.repeat(300), 3)
+    appendAssistant(session, 'A4:' + 'z'.repeat(300), 4)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, 'session must prune something (protected nodes are excluded from candidates)')
+    assert.ok(!result.shadowedSeqs.includes(aSeq), 'protected tool A must not be in shadowed set')
+    assert.ok(!result.shadowedSeqs.includes(rSeq), 'protected R must not be in shadowed set')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('A10 narrow guard: tool A with externally-cited R becomes prunable (Q1 control)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('a10-narrow-test2'))
+    appendUser(session, 'user anchor')
+    session.append('assistant/message', {
+      turn: 1, step: 1,
+      message: createAssistantMessage({
+        source: { provider: 'test', model: 'test' },
+        content: [
+          { type: 'text', text: 'tool answer' },
+          { type: 'tool-call', id: 'call_b' as never, name: 'read_file', arguments: '{"path":"x"}' },
+        ],
+      }),
+    }, { surfaceOp: 'append' })
+    session.append('tool/result', {
+      turn: 1, step: 1,
+      message: createToolResultMessage({ callId: 'call_b' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
+    }, { surfaceOp: 'append' })
+    const r2Seq = session.events.length - 1
+    // 另一个 A cites 该 R → R 有外部语义入边
+    appendAssistant(session, 'later cites R {"cites":[{"t":"file body","l":"s"}]}', 2)
+    appendAssistant(session, 'A5:' + 'y'.repeat(300), 5)
+    appendAssistant(session, 'A6:' + 'z'.repeat(300), 6)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, 'tool A with externally-cited R must become prunable')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('A4 chainLen: 3 identical R versions collapse to survivor chainLen=3, dup=2 (Q4)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('chainlen-test'))
+    appendUser(session, 'user anchor')
+    // 三个同 issuer 同 arguments 的 R 版本
+    for (let i = 0; i < 3; i += 1) {
+      session.append('tool/result', {
+        turn: 1, step: 1,
+        message: createToolResultMessage({ callId: ('call_' + i) as never, content: [{ type: 'text', text: 'SAME RESULT BODY ' + 'x'.repeat(40) }], isError: false }),
+      }, { surfaceOp: 'append' })
+    }
+    // 对应的三个 issuer A（同文本 → A 去重成一条链）
+    for (let i = 0; i < 3; i += 1) {
+      session.append('assistant/message', {
+        turn: 1, step: 1,
+        message: createAssistantMessage({
+          source: { provider: 'test', model: 'test' },
+          content: [
+            { type: 'text', text: 'ISSUER TEXT ' + 'y'.repeat(60) },
+            { type: 'tool-call', id: ('call_' + i) as never, name: 'read_file', arguments: '{"path":"x"}' },
+          ],
+        }),
+      }, { surfaceOp: 'append' })
+    }
+    const atoms = engine.atomize(session)
+    const { inDegree } = engine.buildGraph(atoms)
+    const { dupIds, chainLen } = (engine as unknown as {
+      findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number> }
+    }).findVersionDuplicates(atoms, inDegree)
+    // 三个 R 版本 → 2 个 dup，survivor chainLen=3
+    const rDups = atoms.filter(a => a.type === 'R' && dupIds.has(a.id)).length
+    assert.equal(rDups, 2, 'two of three R versions are dups')
+    const rSurvivor = atoms.find(a => a.type === 'R' && !dupIds.has(a.id))
+    assert.ok(rSurvivor !== undefined)
+    assert.equal(chainLen.get(rSurvivor.id), 3, 'survivor chainLen = 3 (mergeOlderR counts list length)')
+    // issuer A 文本全等 → A 侧也去重
+    const aDups = atoms.filter(a => a.type === 'A' && dupIds.has(a.id)).length
+    assert.equal(aDups, 2)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('critical closure guard: cross-closure critical edge blocks target closure; supporting does not (Q6)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('critical-closure-test'))
+    appendUser(session, 'closure one root')
+    const u1Seq = session.events.length - 1
+    appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
+    const a1Seq = session.events.length - 1
+    appendUser(session, 'closure two root')
+    const u2Seq = session.events.length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
+    const a2Seq = session.events.length - 1
+    // 第三个 U：让 closure2 不是「最后一个 root」（最后一个 root 永远不剪）
+    appendUser(session, 'closure three root')
+    appendAssistant(session, 'A3:' + 'w'.repeat(50), 3)
+    engine.setSession(session)
+    const atoms = engine.atomize(session)
+    const a1 = atoms.find(a => a.seq === a1Seq)
+    const a2 = atoms.find(a => a.seq === a2Seq)
+    assert.ok(a1 !== undefined && a2 !== undefined)
+    // 跨闭包 critical 边：closure1 的 A1 → closure2 的 A2。
+    // closure1 是最后 root 的前一个？不——roots=[u1,u2,u3]，u1 非最后 root，
+    // 但闭包归属：u1 的闭包 = [u1,A1]，u2 的闭包 = [u2,A2]，u3 的闭包=[u3,A3]。
+    // critical 边 A1→A2 使 closure2 有 external critical 入度 → closure2 被守卫。
+    // closure1 无入边 → 候选。排序后 closure1 被剪。
+    const edgesCrit = [{ from: a1.id, to: a2.id, level: 'critical' as const }]
+    const inDegreeCrit = new Map<number, number>([[a2.id, 1]])
+    const resultCrit = engine.tryPruneClosures(session, atoms, edgesCrit, inDegreeCrit, new Map(), 2)
+    assert.ok(resultCrit !== null, 'closure1 (no in-edge) must still be prunable')
+    // 关键：closure2 因 external critical 入边被守卫 → 不在剪除范围
+    assert.equal(engine.closurePrunes.length, 1)
+    assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq, 'closure1 pruned, not closure2')
+    const stillSurfaceCrit = new Set(session.surface.nodes)
+    assert.ok(stillSurfaceCrit.has(u2Seq), 'closure2 (critical in-edge) must stay on surface')
+    assert.ok(stillSurfaceCrit.has(a2Seq))
+
+    // 同结构 supporting 边：跨闭包 supporting 不计入 inDegreeByClosure → 无守卫。
+    // 用独立 engine 验证（closurePrunes 是实例数组，跨 session 累计）
+    const { ctx: ctx2, engine: engine2 } = await makeEngine()
+    try {
+      const session2 = Session.create(SessionId('critical-closure-test2'))
+      appendUser(session2, 'closure one root')
+      const u1b = session2.events.length - 1
+      appendAssistant(session2, 'A1:' + 'x'.repeat(50), 1)
+      const a1b = session2.events.length - 1
+      appendUser(session2, 'closure two root')
+      const u2b = session2.events.length - 1
+      appendAssistant(session2, 'A2:' + 'y'.repeat(50), 2)
+      const a2b = session2.events.length - 1
+      appendUser(session2, 'closure three root')
+      appendAssistant(session2, 'A3:' + 'w'.repeat(50), 3)
+      engine2.setSession(session2)
+      const atoms2 = engine2.atomize(session2)
+      const a1bAtom = atoms2.find(a => a.seq === a1b)
+      const a2bAtom = atoms2.find(a => a.seq === a2b)
+      assert.ok(a1bAtom !== undefined && a2bAtom !== undefined)
+      const edgesSup = [{ from: a1bAtom.id, to: a2bAtom.id, level: 'supporting' as const }]
+      const inDegreeSup = new Map<number, number>([[a2bAtom.id, 1]])
+      const resultSup = engine2.tryPruneClosures(session2, atoms2, edgesSup, inDegreeSup, new Map(), 2)
+      // supporting 边不构成闭包守卫 → closure1 仍可剪
+      assert.ok(resultSup !== null, 'supporting edge must not block closure pruning')
+      assert.equal(engine2.closurePrunes.length, 1)
+    } finally {
+      await ctx2.fiber.dispose()
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('A8 narrowed ask detection: looksAskText locks CJK rules (Q10)', () => {
+  // 句首请求/问句 → 命中
+  assert.equal(looksAskText('帮我看看这个报错'), true, 'CJK ask at start matches')
+  assert.equal(looksAskText('请告诉我怎么做'), true, '请 at start matches')
+  assert.equal(looksAskText('这个怎么处理'), true, '疑问词 怎么 matches')
+  assert.equal(looksAskText('你能帮忙吗'), true, '句尾 吗 matches')
+  assert.equal(looksAskText('What is the answer?'), true, 'English ? matches')
+  // 非句首“顺便帮我带个话” → 不再误判（收窄核心）
+  assert.equal(looksAskText('顺便帮我带个话'), false, 'trailing 帮我 must NOT match (Q10 fix)')
+  assert.equal(looksAskText('他问我什么了'), true, '疑问词 什么 still matches (conservative)')
+  assert.equal(looksAskText('好的没问题'), false, 'plain statement does not match')
+})
+
+test('A8 narrowed ask detection: CJK ask U exempted and prunable via coverage (Q10 integration)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    // 中文 ask 句（帮我…）→ askCoverage 覆盖 → U 可随组剪（收窄后中文问句仍豁免）
+    const session = Session.create(SessionId('ask-narrow-test'))
+    appendUser(session, '帮我看看这个报错')
+    const uAskSeq = session.events.length - 1
+    appendAssistant(session, '报错原因是配置错误。\n{"cites":[{"t":"帮我看看这个报错","l":"s"}]}', 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const record = engine.records[0]
+    assert.ok(record !== undefined, 'CJK ask U must be exempted and prunable')
+    assert.ok(record.prunedAtoms.some(a => a.type === 'U'), 'CJK ask U pruned (exemption works)')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+

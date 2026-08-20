@@ -9,8 +9,19 @@ import { eventText, extractCites } from '../src/argp-graph-engine.ts'
 
 const sample = 'body text\n{"cites":["gateway release passes"]}'
 const result = extractCites(sample)
-if (result.cites.length !== 1 || result.cites[0] !== 'gateway release passes' || result.body !== 'body text') {
+// V6 分级契约（A1）：cites[] 元素从 string → { text, level }，裸字符串降级为 supporting
+const c0 = result.cites[0] as { text?: string; level?: string } | undefined
+if (result.cites.length !== 1 || c0 === undefined || c0.text !== 'gateway release passes' || c0.level !== 'supporting' || result.body !== 'body text') {
   console.error('[smoke] extractCites mismatch:', result)
+  process.exit(1)
+}
+
+// V6 分级契约（A1）：{"t","l"} 对象条目解析
+const gradedSample = 'body text\n{"cites":[{"t":"gateway release","l":"c"}]}'
+const graded = extractCites(gradedSample)
+const g0 = graded.cites[0] as { text?: string; level?: string } | undefined
+if (graded.cites.length !== 1 || g0 === undefined || g0.text !== 'gateway release' || g0.level !== 'critical') {
+  console.error('[smoke] V6 graded cites mismatch:', graded)
   process.exit(1)
 }
 

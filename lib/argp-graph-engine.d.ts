@@ -5,6 +5,8 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
+import type { ParsedCite } from './cites-strip.js';
+export type { ParsedCite, CiteLevel } from './cites-strip.js';
 export type AtomType = 'U' | 'A' | 'R' | 'X';
 export interface Atom {
     id: number;
@@ -13,7 +15,7 @@ export interface Atom {
     turn: number;
     text: string;
     toolCallIds: string[];
-    cites: string[];
+    cites: ParsedCite[];
     citesFailed: boolean;
 }
 export type EdgeLevel = 'critical' | 'supporting' | 'contextual';
@@ -39,6 +41,14 @@ export declare function scaleBudgets(contextWindow: number | undefined, opts: {
     windowTokens: number;
     retainTokens: number;
 };
+/**
+ * A8（问题 10 修订）：ask 检测中英双语纯函数。
+ * 英文：'?' / ask / what；中文：？/ 吗 / 呢 / 什么 / 怎么 / 如何 / 能否 / 能不能。
+ * /帮我/ 由子串收窄为句首（^请|^帮我|^能不能|^能否），避免 "顺便帮我带个话" 之类
+ * 非问句/非请求主语误命中；疑问词 什么/怎么/如何 仍保留子串（问句核心成分，方向保守=少剪）。
+ * 导出供测试直接锁定收窄行为。
+ */
+export declare function looksAskText(text: string): boolean;
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
     windowTokens?: number;
@@ -85,6 +95,14 @@ export interface ArgpGraphConfig {
      * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
      */
     maxOverflowRetries?: number;
+    /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
+    closureWindowK?: number;
+    /** cites 前缀最小长度守卫（A2，默认 2）：前缀字符数低于该值直接判失败，避免"的/a"等噪音伪引用。 */
+    citeMinPrefixLen?: number;
+    /** 版本链重叠归链阈值 θ（A4，默认 0.8，仅对 R 生效）：sim=|A∩B|/min(|A|,|B|) ≥ θ 视为同一版本链。 */
+    overlapTheta?: number;
+    /** 版本链重叠归链启用（A4，默认 false；启用后 A 文本仍走全等去重）。 */
+    enableOverlapChain?: boolean;
 }
 export interface GraphPruneRecord {
     at: string;
@@ -129,10 +147,14 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     seq: number;
     data?: Record<string, unknown>;
 }): void;
-/** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
+/**
+ * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
+ * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
+ * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
+ */
 export declare function extractCites(text: string): {
     body: string;
-    cites: string[];
+    cites: ParsedCite[];
     attempted: boolean;
     parseFailed: boolean;
 };
@@ -181,6 +203,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly sortMode: 'legacy' | 'density' | 'density-chain';
     readonly turnBasis: 'semantic' | 'all';
     readonly maxOverflowRetries: number;
+    /** 闭包静止窗 K（A11 参数化，默认 2）。 */
+    readonly closureWindowK: number;
+    /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
+    readonly citeMinPrefixLen: number;
+    /** 版本链重叠归链阈值 θ（A4，默认 0.8）。 */
+    readonly overlapTheta: number;
+    /** 版本链重叠归链开关（A4，默认 false）。 */
+    readonly enableOverlapChain: boolean;
     /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
     private readonly tokenMeter;
     readonly records: GraphPruneRecord[];
@@ -222,13 +252,23 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly overflowAgents;
     /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
     private compactSourceCommandId;
+    /** A7：账目重建后追加的审计警告（供测试断言/诊断）。 */
+    readonly auditWarnings: string[];
+    /** A7：已重建过的 compactionId 集合（跨 session 重置，保证幂等 + 告警不重复）。 */
+    private rebuiltCompactionIds;
     private session;
     private shadowedSession;
     private shadowedSet;
     private shadowedScanned;
     constructor(ctx: Context, config?: ArgpGraphConfig);
+    /**
+     * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定
+     * 都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：账目丢失仅日志在），
+     * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
+     */
+    private bindSession;
     setSession(session: Session): void;
-    /** 生成上下文头部 catalog（设计稿 §5）：只列被剪 U/A，snippet 截断，≤maxItems 条。 */
+    /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。 */
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;
     /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。 */
     recallQuery(query: string, maxResults?: number): string;
@@ -258,10 +298,22 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。 */
     atomize(session: Session): Atom[];
     /**
-     * 建图（§4.2 + §4.7）：确定性边不计级别；cites 子串匹配生成 supporting 语义边
-     * （唯一命中采纳；多命中 AMBIG → 最早命中 + U 优先）。
-     * 实测修正（spike 5 首跑）：原 startsWith 头部匹配边数归零——逐字引文起点常落在
-     * 原子文本中段，改 includes 子串匹配（同“被动头部匹配陷阱”教训）。
+     * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
+     * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
+     * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
+     */
+    private citePrefixTooShort;
+    /** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
+    private readonly ngramN;
+    private buildNGramIndex;
+    /** 查询候选集：前缀长度 < n 时返回 null（走全扫描回退）。取前缀上 ≤3 个 n-gram 交集收窄候选。 */
+    private queryNGramCandidates;
+    /**
+     * 建图（§4.2 + §4.7 + A1/A2/A5）：确定性边不计级别；cites 子串匹配生成语义边，
+     * 级别取声明级别（V6 契约，裸字符串默认 supporting；critical 参与闭包守卫不变量 2′）。
+     * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
+     * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
+     * 前缀长度守卫：过短前缀不计 declared 也不建边。
      */
     buildGraph(atoms: Atom[]): {
         edges: SemanticEdge[];
@@ -272,8 +324,18 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private visibleChars;
     /** 测量当前上下文 token。真会话优先用 dsh tokenMeter；否则用配置函数；否则字符估算。 */
     private measureTokens;
-    /** §4.4 简化版本链去重：相同 A 文本 / 同源 R（按配对 A 的 toolCall 签名）保留最新，旧副本标记为可剪；A/R 配对同剪。
-     *  返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长（出现次数），供 density-chain 排序叠加 eff。 */
+    /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
+    private static lineOverlap;
+    /**
+     * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
+     *  - A：文本全等（不变）。
+     *  - R：按「issuer A 的 tool name + arguments JSON」去重（而非旧版 issuer?.text.trim()），
+     *    解决「同措辞不同工具调用（如不同参数 read different files）被错误归链去重」的问题。
+     *    回退：issuer 不存在时用 r.text（callId 缺失的最小退化）。
+     *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
+     *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
+     * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
+     */
     private findVersionDuplicates;
     /**
      * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
@@ -304,7 +366,11 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
      */
     private budgetRecallText;
-    /** P3：summarize 末环占位。当前未实现，默认返回 null 以继续 force_prune。 */
+    /**
+     * A6（保守选项 a）：summarize 末环不实现 —— 保持默认关闭（enableSummarize=false）、
+     * force_prune 为终端降级，文档明确。本 stub 恒返回 null，degradationStrategy='summarize'
+     * 且 enableSummarize=true 时也不会产出 LLM 摘要；实际路径仍为 lifecycle → force。
+     */
     private summarizeCriticalChain;
     /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
     tryPruneClosures(session: Session, atoms: Atom[], edges: SemanticEdge[], inDegree: Map<number, number>, askCover: Map<number, number>, latestTurn: number): CompactionResult | null;
@@ -334,6 +400,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private selectManualRange;
     /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。 */
     private pruneIntervals;
+    /**
+     * A7 事务账目重建：resume 时从 append-only 日志扫描 compaction/start、compaction/prune、
+     * compaction/end 事件重建 records/prunedNodeIndex/shadowedSeqsOf 状态；无 end 的 start 记 warn。
+     * 不引入 WAL——日志本身即账目。幂等：已重建过的 compactionId 跳过（rebuiltCompactionIds 去重），
+     * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
+     */
+    rebuildLedgerFromLog(): void;
     /** 日志尾部的 open turn（pre-step 时刻用于 compaction 括号的 owner）。 */
     private detectOpenTurn;
 }

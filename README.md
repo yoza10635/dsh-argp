@@ -52,7 +52,7 @@ dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用�
 
 ### CLI 声明式挂载（已验证）
 
-从 **npm registry** 安装（当前 `v0.2.5`）：
+从 **npm registry** 安装（当前 `v0.2.8`）：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
