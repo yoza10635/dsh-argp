@@ -22,9 +22,11 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage } from '@deepseek-ai/ds
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
+import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
+import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -111,6 +113,8 @@ export interface ArgpGraphConfig {
 export interface GraphPruneRecord {
   at: string
   compactionId: string
+  /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
+  sourceCommandId?: string
   intervals: { start: number; end: number; tombstoneSeq: number }[]
   startEventSeq: number
   summaryEventSeq: number
@@ -198,23 +202,16 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
 
 /** 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与前缀列表。 */
 export function extractCites(text: string): { body: string; cites: string[]; attempted: boolean; parseFailed: boolean } {
-  const fencedFull = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```\s*$/)
-  const bareFull = text.match(/(\{\s*"cites"\s*:[\s\S]*?\})\s*$/)
-  const raw = fencedFull?.[1] ?? bareFull?.[1]
-  if (raw === undefined) {
-    const attempted = text.includes('"cites"')
+  const matched = matchCitesTail(text)
+  const attempted = text.includes('"cites"')
+  if (matched === null) {
     return { body: text, cites: [], attempted, parseFailed: attempted }
   }
-  try {
-    const parsed = JSON.parse(raw) as { cites?: unknown }
-    if (Array.isArray(parsed.cites) && parsed.cites.every(c => typeof c === 'string')) {
-      const stripped = (fencedFull?.[0] ?? bareFull?.[0] ?? '').length
-      return { body: text.slice(0, text.length - stripped).trimEnd(), cites: parsed.cites, attempted: true, parseFailed: false }
-    }
+  const cites = parseCitesBlock(matched.raw)
+  if (cites === null) {
     return { body: text, cites: [], attempted: true, parseFailed: true } // JSON 合法但形状不对 → 解析失败，保守保护
-  } catch {
-    return { body: text, cites: [], attempted: true, parseFailed: true }
   }
+  return { body: text.slice(0, text.length - matched.span).trimEnd(), cites, attempted: true, parseFailed: false }
 }
 /** cites 服从率度量台账（C7-cites 判决用）。 */
 export interface CiteStats { aAtoms: number; declared: number; resolved: number; ambiguous: number; failed: number }
@@ -283,6 +280,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly overflowRetries = new WeakMap<Agent, number>()
   /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
   private readonly overflowAgents = new WeakMap<Session, Agent>()
+  /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
+  private compactSourceCommandId: CommandId | undefined = undefined
 
   private session: Session | null = null
   private shadowedSession: Session | null = null
@@ -1360,20 +1359,28 @@ export class ArgpGraphEngine extends CompactionEngine {
   override async compactNow(
     agent: ManualCompactAgentContext,
     signal: AbortSignal,
+    sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
     if (this.session === null) this.session = agent.session
     signal.throwIfAborted()
-    const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
-      const opSignal = AbortSignal.any([signal, agentSignal])
-      opSignal.throwIfAborted()
-      const range = this.selectManualRange(agent.session)
-      if (range === null) return null
-      return this.compactRegion(range.start, range.end, agent, opSignal)
+    // /compact 链路（command-compact 调用方传入 commandId）：透传给事务事件做
+    // presentation correlation（对齐 compaction-basic 的 sourceCommandId 语义）。
+    this.compactSourceCommandId = sourceCommandId
+    try {
+      const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
+        const opSignal = AbortSignal.any([signal, agentSignal])
+        opSignal.throwIfAborted()
+        const range = this.selectManualRange(agent.session)
+        if (range === null) return null
+        return this.compactRegion(range.start, range.end, agent, opSignal)
+      }
+      if (typeof agent.runMaintenance === 'function') {
+        return agent.runMaintenance(run)
+      }
+      return run(signal)
+    } finally {
+      this.compactSourceCommandId = undefined
     }
-    if (typeof agent.runMaintenance === 'function') {
-      return agent.runMaintenance(run)
-    }
-    return run(signal)
   }
 
   override async compactRegion(
@@ -1452,7 +1459,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     const first = intervals[0]?.seqs[0] ?? 0
     const last = intervals[intervals.length - 1]?.seqs[intervals[intervals.length - 1]!.seqs.length - 1] ?? first
 
-    const startEvent = session.append('compaction/start', lifecycle)
+    const startEvent = session.append('compaction/start', {
+      ...lifecycle,
+      // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）
+      ...this.compactSourceCommandId === undefined ? {} : { sourceCommandId: this.compactSourceCommandId },
+    })
     try {
       const shadowedTokenCount = Math.ceil(intervals.reduce((s, iv) => s + iv.chars, 0) / this.charsPerToken)
       const tombstones = tombstoneTexts !== undefined && tombstoneTexts.length === intervals.length
@@ -1487,6 +1498,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.records.push({
         at: new Date().toISOString(),
         compactionId,
+        ...this.compactSourceCommandId === undefined ? {} : { sourceCommandId: this.compactSourceCommandId },
         intervals: intervalRecords,
         startEventSeq: startEvent.seq,
         summaryEventSeq: pruneEvent.seq,

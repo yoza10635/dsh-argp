@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
+import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
 export type AtomType = 'U' | 'A' | 'R' | 'X';
@@ -88,6 +89,8 @@ export interface ArgpGraphConfig {
 export interface GraphPruneRecord {
     at: string;
     compactionId: string;
+    /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
+    sourceCommandId?: string;
     intervals: {
         start: number;
         end: number;
@@ -217,6 +220,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
     private readonly overflowAgents;
+    /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
+    private compactSourceCommandId;
     private session;
     private shadowedSession;
     private shadowedSet;
@@ -323,7 +328,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
      */
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
-    compactNow(agent: ManualCompactAgentContext, signal: AbortSignal): Promise<CompactionResult | null>;
+    compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
     /** 为手动 compactNow 选择一个确定性的最老 A/R 连续块。 */
     private selectManualRange;
