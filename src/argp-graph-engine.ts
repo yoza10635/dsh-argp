@@ -633,6 +633,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           await this.compactIfNeeded(agent, 'pressure', signal)
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
+          console.error('[argp-graph] pressure prune FAILED: ' + message + (error instanceof Error && error.stack ? '\n' + error.stack.split('\n').slice(0, 6).join('\n') : ''))
           ctx.logger.warn(`argp-graph pressure prune failed: ${message}; continuing the turn`)
         }
       }
@@ -812,13 +813,29 @@ export class ArgpGraphEngine extends CompactionEngine {
         const raw = eventText(session, seq)
         const stored = (data as { argpCites?: ParsedCite[] | string[] }).argpCites
         const parsed = extractCites(raw)
-        // 优先用 surface 剥离时存入的 argpCites，保证跨压缩引用图不丢（文本已无 cites）
-        // 兼容旧版纯 string 数组（V5 产物）→ 全部视为 supporting。
+        // 优先用 surface 剥离时存入的 argpCites，保证跨压缩引用图不丢（文本已无 cites）。
+        // ⚠ 2026-08-22 修复：判据原查 graded 字段 `c.t`，但写回格式是 ParsedCite `{text, level}`
+        // （stripTrailingCitesIfNeeded 存 extractCites 的返回值）→ every 恒 false → 误走 string[]
+        // 分支把对象塞进 text → buildGraph cite.text.trim() 抛 TypeError → 压缩静默失败（boundaries=0）。
+        // 现按实际格式归一化，兼容 ParsedCite[] / string[]（V5 产物）/ graded {t,l}（契约原文）三种形状。
         let cites: ParsedCite[]
         if (Array.isArray(stored)) {
-          cites = stored.every(c => typeof c === 'object' && c !== null && typeof (c as { t?: unknown }).t === 'string')
-            ? (stored as ParsedCite[]).map(c => ({ text: c.text, level: c.level }))
-            : (stored as string[]).map(t => ({ text: t, level: 'supporting' as const }))
+          cites = stored
+            .map(c => {
+              if (typeof c === 'string') return { text: c, level: 'supporting' as const }
+              if (c !== null && typeof c === 'object') {
+                const o = c as { text?: unknown; t?: unknown; level?: unknown; l?: unknown }
+                const text = typeof o.text === 'string' ? o.text : typeof o.t === 'string' ? o.t : ''
+                if (text === '') return null
+                let level: CiteLevel = 'supporting'
+                const lv = (typeof o.level === 'string' ? o.level : typeof o.l === 'string' ? o.l : '').trim().toLowerCase()
+                if (lv === 'c' || lv === 'critical') level = 'critical'
+                else if (lv === 'x' || lv === 'contextual') level = 'contextual'
+                return { text, level }
+              }
+              return null
+            })
+            .filter((c): c is ParsedCite => c !== null)
         } else {
           cites = parsed.cites
         }
@@ -933,6 +950,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     for (const a of atoms) {
       if (a.type !== 'A') continue
       for (const cite of a.cites) {
+        // 兜底防御（2026-08-22）：cites 来自模型不可信输入 + argpCites 历史格式迁移，
+        // 任何非字符串 text 一律视为无效声明跳过，绝不让压缩主体抛错。
+        if (typeof cite.text !== 'string') {
+          this.citeStats.failed += 1
+          continue
+        }
         const p = cite.text.trim()
         if (p === '') continue
         if (this.citePrefixTooShort(p)) {
