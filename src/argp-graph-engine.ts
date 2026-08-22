@@ -519,19 +519,27 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.tools.register(recallQueryTool)
 
-    // 压缩/恢复契约：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
+    // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
+    // 本 section 的 text 必须是纯静态（不引用引擎运行时状态）——否则每轮变化会破坏
+    // system message 前缀，使 KV/prefix cache 从本位置起全部失效（动态目录见 argp-catalog）。
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
-      text: () => {
-        const base = 'Context compression (ARGP):\n'
-          + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders like [elided seq=N..M ...], or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
-          + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-          + '- When your answer depends on content that is no longer in visible context, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct missing facts from memory.\n'
-          + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.'
-        const catalog = this.catalogText(20, 70)
-        return catalog === '' ? base : base + '\n\n' + catalog
-      },
+      text: () => 'Context compression (ARGP):\n'
+        + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders like [elided seq=N..M ...], or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
+        + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
+        + '- When your answer depends on content that is no longer in visible context, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct missing facts from memory.\n'
+        + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.',
+    })
+
+    // 被剪目录（动态部分）：每轮变化的“被剪节点列表”沉到 system message 最末尾（order 9999），
+    // 让 persona + argp-contract 正文 + argp-cites 等静态 section 构成稳定前缀、可被 prefix cache 复用。
+    // 根因修复：原实现把动态 catalog 拼进 order:150 的契约段，导致 system message 前缀每轮变、
+    // 缓存从 catalog 处断开（2026-08-22 发现，A 臂测试缓存零命中）。recall 协议不依赖其在 system 靠前。
+    ctx.systemPrompt.section({
+      name: 'argp-catalog',
+      order: 9999,
+      text: () => this.catalogText(20, 70),
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
@@ -735,7 +743,15 @@ export class ArgpGraphEngine extends CompactionEngine {
       const event = session.events[index]
       if (event === undefined) continue
       const op = (event as { surfaceOp?: unknown }).surfaceOp
-      if (op !== undefined && op !== 'append') {
+      // 只认「真剪枝」的 replace，排除 cites 剥离写回：stripTrailingCitesIfNeeded 用
+      // surfaceOp replace（单点，start===end）+ data.argpCites 原地改写 assistant 消息，
+      // 只是「模型可见面去协议产物」，不是 ARGP 剪枝。此前无条件收进 shadowedSet 导致
+      // catalog 谎报 "Compression removed N items"、system 前缀每轮变、跨轮缓存全断（2026-08-22 定位）。
+      // 真压缩的 replace 是 user/message tombstone（compactIfNeeded），无 argpCites 字段，
+      // 单点区间（start===end）也保留，故以 argpCites 标记做门控而非区间宽度。
+      if (op !== undefined && op !== 'append' && typeof op === 'object'
+          && (op as { op?: string }).op === 'replace'
+          && !Array.isArray((event.data as { argpCites?: unknown }).argpCites)) {
         for (const seq of (event as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []) {
           this.shadowedSet.add(seq)
         }
