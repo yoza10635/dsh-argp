@@ -49,7 +49,7 @@ if (candidateGroups.length === 0) {
 
 每次压缩实际执行链：正常候选剪 30 组（进 pruned）→ 版本重复 26 个（进 pruned）→ 候选空 → 闭包 return（**丢弃 pruned 56 个**）→ 只剪 1 个闭包（2–10 原子）。**每次压缩 96% 的剪枝成果被作废**。
 
-**已落地修复**（工作区 `src/argp-graph-engine.ts:1589-1606`，带 2026-08-22 注释；随本完整修复一起提交，commit hash 提交后回填）：
+**已落地修复**（commit `cc58960`，`src/argp-graph-engine.ts:1589-1606` 区域，带 2026-08-22 注释）：
 - `degradationStrategy === 'fail'` → `return null`（**保持设计语义**，见 §4.3）；
 - 否则 `pruned.size > 0` → `break`（先剪累积成果，不再被闭包 return 吞掉）；
 - 闭包生命周期降级为"pruned 为空时的纯兜底"。
