@@ -317,6 +317,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly overflowRetries = new WeakMap<Agent, number>()
   /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
   private readonly overflowAgents = new WeakMap<Session, Agent>()
+  /** 最近一次请求的真实 prompt token（usage.inputTokens + cacheReadTokens，provider 回报）。
+   *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
+   *  导致迟触发/窗口保护失效，2026-08-23）。 */
+  private lastRealPromptTokens = 0
+  /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
+  private lastRealAnchorSeq = -1
   /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
   private compactSourceCommandId: CommandId | undefined = undefined
   /** A7：账目重建后追加的审计警告（供测试断言/诊断）。 */
@@ -566,9 +572,18 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/start') this.recallCallsThisTurn = 0
-      // 一次成功的模型应答 = 溢出恢复序列的终结点：重置该 agent 的重试计数，
-      // 即使工具调用让同一 turn 继续（对齐 compaction-basic 的 overflowAgents 模式）。
+      // 真实 token 锚点（2026-08-23）：assistant/message 携带 provider 回报的 usage，
+      // inputTokens（未命中）+ cacheReadTokens（命中）= 本次请求的真实 prompt token。
+      // pressure check 优先用它，避免 tokenMeter chars/4 低估导致的迟触发。
       if (event.type === 'assistant/message') {
+        const usage = (event as { data?: { usage?: { inputTokens?: number; cacheReadTokens?: number } } }).data?.usage
+        const seq = (event as { seq?: unknown }).seq
+        if (usage !== undefined && typeof usage.inputTokens === 'number') {
+          this.lastRealPromptTokens = (usage.inputTokens ?? 0) + (usage.cacheReadTokens ?? 0)
+          if (typeof seq === 'number') this.lastRealAnchorSeq = seq
+        }
+        // 一次成功的模型应答 = 溢出恢复序列的终结点：重置该 agent 的重试计数，
+        // 即使工具调用让同一 turn 继续（对齐 compaction-basic 的 overflowAgents 模式）。
         const agent = this.overflowAgents.get(session)
         if (agent !== undefined) this.overflowRetries.delete(agent)
       }
@@ -1002,8 +1017,22 @@ export class ArgpGraphEngine extends CompactionEngine {
     return total
   }
 
-  /** 测量当前上下文 token。真会话优先用 dsh tokenMeter；否则用配置函数；否则字符估算。 */
+  /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
+   *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
+   *  dsh tokenMeter / 配置函数 / 字符估算。 */
   private measureTokens(session: Session): { contextTokens: number; surfaceTokens: number } {
+    const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
+    if (this.lastRealAnchorSeq >= 0 && this.lastRealPromptTokens > 0) {
+      // 真实锚点（上轮 provider usage）只覆盖锚点 seq 之前的内容；其后 surface 新增
+      // 节点（user/assistant/tool 事件）按字符估算增量。增量通常远小于全量，估算偏差
+      // 只作用于增量 → 总误差从 ±30% 降到几个百分点。
+      let deltaChars = 0
+      for (const seq of session.surface.nodes) {
+        if (seq > this.lastRealAnchorSeq) deltaChars += eventText(session, seq).length
+      }
+      const deltaTokens = Math.ceil(deltaChars / this.charsPerToken)
+      return { contextTokens: this.lastRealPromptTokens + deltaTokens, surfaceTokens }
+    }
     if (this.tokenMeter !== undefined) {
       try {
         const m = this.tokenMeter.measure(session)
@@ -1014,7 +1043,6 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     }
     if (this.tokenMeterFn !== undefined) return this.tokenMeterFn(session)
-    const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
     return { contextTokens: surfaceTokens, surfaceTokens }
   }
 
@@ -1379,12 +1407,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 彻底丢失，模型无法 recall），并给出「本区间 K / 闭包合计 N」消歧 —— 同一闭包跨多个
     // 区间时各 tombstone 的计数都是局部准确值，缺少 N 会让模型误判数据脏。
     const closureTotal = chosen.seqs.length
-    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.closureId
-      + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-      + ': ' + iv.seqs.length + ' of ' + closureTotal + ' surface nodes in this closure'
-      + ' pruned by ARGP closure lifecycle; root=' + chosen.rootPreview
-      + '; recall_pruned(seq) retrieves original]')
-    const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstoneTexts)
+    const tombstones = intervals.map(iv => ({
+      type: 'user' as const,
+      text: '[elided closure ' + chosen.closureId
+        + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+        + ': ' + iv.seqs.length + ' of ' + closureTotal + ' surface nodes in this closure'
+        + ' pruned by ARGP closure lifecycle; root=' + chosen.rootPreview
+        + '; recall_pruned(seq) retrieves original]',
+    }))
+    const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstones)
     this.closurePrunes.push({
       closureId: chosen.closureId,
       rootSeq: chosen.root.seq,
@@ -1521,27 +1552,21 @@ export class ArgpGraphEngine extends CompactionEngine {
         askCoverage.set(u.id, firstA.id)
       }
     }
-    // 成对同剪组（配对自保，修正版）：dsh surface 无 tool/call 节点，call 块内嵌在 A 里。
-    // 剪 R 不带走发出它的 A → 孤儿 call；剪含 call 的 A 不带走应答 R → 孤儿 result；两者都致 API 400。
-    // 故：A（含 tool-call）+ 应答其全部 call 的 R 成组，同进同退。
+    // 2026-08-23 半拆组：R（tool/result）独立成组，不再与 issuer A 同进退——
+    // 大 R（工具结果，常达 10-90K 字符）可独立剪除，解决"压缩率不足"（此前被 A+R 组绑定，
+    // 组候选要求 A 也候选；A 因 A10 保护/入度门槛不候选 → 整组不可剪 → 大 R 永远剪不掉）。
+    // 协议安全由两侧保证：① 剪 R（A 保留）→ tool 占位墓碑配对 A 的 tool_calls（见
+    // pruneIntervals tool 墓碑）；② 剪 A → pass 循环连带剪其全部 R（user 墓碑，防孤儿 tool 消息）。
+    // R 被 cites 引用（语义入度 > 0）时仍不可剪（isAtomCandidate 的 curInDegree 门槛保留）。
     const issuerByCall = new Map<string, Atom>()
     for (const a of atoms) if (a.type === 'A') for (const cid of a.toolCallIds) issuerByCall.set(cid, a)
+    // R by callId（半拆组连带剪用：剪 A 时把应答其 call 的 R 一并剪除）
+    const rByCallForPrune = new Map<string, Atom>()
+    for (const r of atoms) if (r.type === 'R' && r.toolCallIds[0] !== undefined) rByCallForPrune.set(r.toolCallIds[0], r)
     const groupOf = new Map<number, number>()
     const groups: Atom[][] = []
     for (const a of atoms) {
-      const issuer = a.type === 'R' && a.toolCallIds[0] !== undefined ? issuerByCall.get(a.toolCallIds[0]) : undefined
-      if (issuer !== undefined) {
-        let gid = groupOf.get(issuer.id)
-        if (gid === undefined) {
-          gid = groups.length
-          groups.push([issuer])
-          groupOf.set(issuer.id, gid)
-        }
-        ;(groups[gid] as Atom[]).push(a)
-        groupOf.set(a.id, gid)
-        continue
-      }
-      if (groupOf.has(a.id)) continue // 已作为 issuer 入组
+      if (groupOf.has(a.id)) continue
       const gid = groups.length
       groups.push([a])
       groupOf.set(a.id, gid)
@@ -1663,19 +1688,38 @@ export class ArgpGraphEngine extends CompactionEngine {
       const groupKey = (g: Atom[]): string => g.map(sortKey).sort()[0] as string
       candidateGroups.sort((x, y) => groupKey(x).localeCompare(groupKey(y)))
       const top = candidateGroups[0] as Atom[]
-      for (const a of top) pruned.set(a.id, a) // 整组同剪
+      for (const a of top) {
+        pruned.set(a.id, a)
+        // 2026-08-23 半拆组连带：剪 A（含 tool-call）必须连带其全部应答 R——
+        // 否则提交 messages 里出现孤儿 tool 消息（role:"tool" 无匹配 assistant.tool_calls）→ provider 400。
+        // R 独立剪时由 tool 占位墓碑配对（A 保留），此处只处理"A 剪 → R 跟剪"方向。
+        if (a.type === 'A' && a.toolCallIds.length > 0) {
+          for (const cid of a.toolCallIds) {
+            const r = rByCallForPrune.get(cid)
+            if (r !== undefined && !pruned.has(r.id)) pruned.set(r.id, r)
+          }
+        }
+      }
     }
 
-    // 微剪枝下限：按极大连续区间归并，区间可见量 < minSpanChars 的放回（不剪）
+    // 微剪枝下限：按极大连续区间归并，区间可见量 < minSpanChars 的放回（不剪）。
+    // 2026-08-23 半拆组：R 原子（issuer A 未被剪）强制单独成区间——tool 占位墓碑
+    // 的 surface replace 必须恰好替换 1 个节点（dsh assertToolResultRewrite），
+    // 多 R 相邻或 R 与邻原子合并会导致替换区间 > 1 节点 → schema 校验失败。
     const prunedSeqs = [...pruned.values()].map(a => a.seq).sort((x, y) => x - y)
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
     for (const seq of prunedSeqs) {
       const a = [...pruned.values()].find(x => x.seq === seq)
       if (a === undefined) continue
+      const isSoloR = a.type === 'R' && a.toolCallIds[0] !== undefined
+        && (() => {
+          const issuer = issuerByCall.get(a.toolCallIds[0] as string)
+          return issuer !== undefined && !pruned.has(issuer.id)
+        })()
       const lastInterval = intervals[intervals.length - 1]
       const prevPos = lastInterval !== undefined ? position.get(lastInterval.seqs[lastInterval.seqs.length - 1] as number) : undefined
       const curPos = position.get(seq)
-      if (lastInterval !== undefined && prevPos !== undefined && curPos !== undefined && curPos === prevPos + 1) {
+      if (!isSoloR && lastInterval !== undefined && prevPos !== undefined && curPos !== undefined && curPos === prevPos + 1) {
         lastInterval.seqs.push(seq)
         lastInterval.chars += a.text.length
         lastInterval.atoms.push(a)
@@ -1704,22 +1748,31 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     }
     // 2026-08-22：区间 tombstone 按闭包归属生成——区间原子全部来自同一闭包 → 闭包 tombstone
-    // （P3/P6：带 root/计数，recall 消歧）；混合/其他区间 → 默认 tombstone。
-    const tombstoneTexts = kept.map(iv => {
+    // （P3/P6：带 root/计数，recall 消歧）。
+    // 2026-08-23 半拆组：单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的
+    // tool_calls，wire 序列化输出 role:"tool"，不触发 provider 400；文本提示 recall 找回）。
+    const tombstoneTexts: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[] = kept.map(iv => {
       const metas = iv.atoms
         .map(a => closureSeqMeta.get(a.seq))
         .filter((m): m is { closureId: string; rootPreview: string; closureTotal: number } => m !== undefined)
       const first = metas[0]
       if (first !== undefined && metas.every(m => m.closureId === first.closureId)) {
-        return '[elided closure ' + first.closureId
+        return { type: 'user' as const, text: '[elided closure ' + first.closureId
           + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
           + ': ' + iv.seqs.length + ' of ' + first.closureTotal + ' surface nodes in this closure'
           + ' pruned by ARGP closure lifecycle; root=' + first.rootPreview
-          + '; recall_pruned(seq) retrieves original]'
+          + '; recall_pruned(seq) retrieves original]' }
       }
-      return '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+      const r0 = iv.atoms[0]
+      if (iv.atoms.length === 1 && r0.type === 'R' && r0.toolCallIds[0] !== undefined) {
+        const issuer = issuerByCall.get(r0.toolCallIds[0])
+        if (issuer !== undefined && !pruned.has(issuer.id)) {
+          return { type: 'tool', seq: r0.seq, callId: r0.toolCallIds[0] }
+        }
+      }
+      return { type: 'user' as const, text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
         + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-        + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
+        + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]' }
     })
     return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced, tombstoneTexts)
   }
@@ -1810,14 +1863,17 @@ export class ArgpGraphEngine extends CompactionEngine {
     return { start, end }
   }
 
-  /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。 */
+  /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
+   *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
+   *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id
+   *  ——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。 */
   private pruneIntervals(
     session: Session,
     intervals: { seqs: number[]; chars: number; atoms: Atom[] }[],
     semanticEdges: number,
     candidateCount: number,
     forced: boolean,
-    tombstoneTexts?: string[],
+    tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
   ): CompactionResult {
     const charsBefore = this.visibleChars(session)
     const openTurn = this.detectOpenTurn(session)
@@ -1834,11 +1890,14 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     try {
       const shadowedTokenCount = Math.ceil(intervals.reduce((s, iv) => s + iv.chars, 0) / this.charsPerToken)
-      const tombstones = tombstoneTexts !== undefined && tombstoneTexts.length === intervals.length
-        ? tombstoneTexts
-        : intervals.map(iv => '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-          + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-          + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]')
+      const resolvedTombstones = tombstones !== undefined && tombstones.length === intervals.length
+        ? tombstones
+        : intervals.map(iv => ({
+            type: 'user' as const,
+            text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+              + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
+              + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]',
+          }))
       // 0-LLM 剪枝使用 compaction/prune shadow-price 事件（替代 summary）
       const pruneEvent = session.append('compaction/prune', {
         shadowedRange: { start: first, end: last },
@@ -1851,7 +1910,39 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (iv === undefined) continue
         const start = iv.seqs[0] as number
         const end = iv.seqs[iv.seqs.length - 1] as number
-        const text = tombstones[i] ?? ''
+        const ts = resolvedTombstones[i]
+        if (ts !== undefined && ts.type === 'tool' && iv.seqs.length === 1) {
+          // tool 占位墓碑：克隆原 R data，只改 tool-result block 的 inner text
+          const origEvent = session.events[ts.seq] as { data?: Record<string, unknown> } | undefined
+          const origData = origEvent?.data
+          const origMsg = origData?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
+          const origBlock = origMsg?.content?.[0]
+          if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
+            const tombstone = session.append('tool/result', {
+              ...origData,
+              message: {
+                ...(origMsg as object),
+                content: [{
+                  type: 'tool-result',
+                  toolCallId: origBlock.toolCallId ?? ts.callId,
+                  isError: origBlock.isError ?? false,
+                  content: [{ type: 'text', text: '[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]' }],
+                }],
+              },
+            } as never, {
+              surfaceOp: { op: 'replace', start: ts.seq, end: ts.seq },
+              sourceEventSeqs: [startEvent.seq, pruneEvent.seq, ...iv.seqs],
+            })
+            intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
+            continue
+          }
+          // 原 R data 不可用时回退 user 墓碑（安全方向：无结构化 tool-result → 无孤儿配对问题）
+        }
+        const text = ts !== undefined && ts.type === 'user'
+          ? ts.text
+          : '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+            + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
+            + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
         const tombstone = session.append('user/message', createUserMessage({
           content: [{ type: 'text', text }],
           source: compactCheckpointSource(compactionId),
@@ -1881,12 +1972,20 @@ export class ArgpGraphEngine extends CompactionEngine {
       })
       // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）
       this.recallCharsUsed = 0
+      // 2026-08-23：压缩换代 surface——旧真实锚点（压缩前的 provider usage）失效，
+      // 若保留会用大锚点 + 增量导致压缩后立即误触发。用压缩后 surface 估算重置锚点
+      // （压缩后 surface 小、估算误差影响小；下一次请求的 usage 会再次精确锚定）。
+      const nodes = session.surface.nodes
+      const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
+      this.lastRealPromptTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
+      this.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : this.lastRealAnchorSeq
       return {
         compactionId,
         startSeq: startEvent.seq,
         summarySeq: pruneEvent.seq,
         endSeq: endEvent.seq,
-        summary: tombstones.map(text => ({ type: 'text', text })),
+        summary: resolvedTombstones.map(ts => ({ type: 'text', text: ts.type === 'tool'
+          ? '[elided tool result; recall_pruned(seq) retrieves original]' : ts.text })),
         shadowedRange: { start: first, end: last },
         shadowedSeqs: allSeqs,
         shadowedTokenCount,

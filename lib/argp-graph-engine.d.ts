@@ -250,6 +250,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
     private readonly overflowAgents;
+    /** 最近一次请求的真实 prompt token（usage.inputTokens + cacheReadTokens，provider 回报）。
+     *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
+     *  导致迟触发/窗口保护失效，2026-08-23）。 */
+    private lastRealPromptTokens;
+    /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
+    private lastRealAnchorSeq;
     /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
     private compactSourceCommandId;
     /** A7：账目重建后追加的审计警告（供测试断言/诊断）。 */
@@ -322,7 +328,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     };
     /** surface 可见字符总量（与 spike 4 同基准）。 */
     private visibleChars;
-    /** 测量当前上下文 token。真会话优先用 dsh tokenMeter；否则用配置函数；否则字符估算。 */
+    /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
+     *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
+     *  dsh tokenMeter / 配置函数 / 字符估算。 */
     private measureTokens;
     /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
     private static lineOverlap;
@@ -404,7 +412,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
     /** 为手动 compactNow 选择一个确定性的最老 A/R 连续块。 */
     private selectManualRange;
-    /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。 */
+    /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
+     *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
+     *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id
+     *  ——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。 */
     private pruneIntervals;
     /**
      * A7 事务账目重建：resume 时从 append-only 日志扫描 compaction/start、compaction/prune、

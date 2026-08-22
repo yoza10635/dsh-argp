@@ -718,7 +718,10 @@ test('A10 narrow guard: tool A with R group and no external refs stays protected
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null, 'session must prune something (protected nodes are excluded from candidates)')
     assert.ok(!result.shadowedSeqs.includes(aSeq), 'protected tool A must not be in shadowed set')
-    assert.ok(!result.shadowedSeqs.includes(rSeq), 'protected R must not be in shadowed set')
+    // 2026-08-23 半拆组：R 独立可剪（tool 占位墓碑配对 A 的 tool_calls，协议安全），
+    // A10 结构性保护只落在 A 上；A 无论 R 是否被剪都必须保留（闭包不整体消失）。
+    const surface = new Set(session.surface.nodes)
+    assert.ok(surface.has(aSeq), 'tool A stays in surface whether or not R is pruned')
   } finally {
     await ctx.fiber.dispose()
   }
