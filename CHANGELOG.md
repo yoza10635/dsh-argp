@@ -2,6 +2,16 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [0.3.1] - 2026-08-22
+
+### Fixed
+- **跨轮 prompt cache 全断（发布级 bug，前缀稳定性核心论点受损）**：`shadowedSeqsOf` 原来把**任何** `surfaceOp !== 'append'` 事件都计入 shadowedSet，而 cites 剥离写回（`stripTrailingCitesIfNeeded`：模型回复落盘后以单点 `surfaceOp:{op:'replace',start:seq,end:seq}` + `data.argpCites` 原地改写）被误判为"被剪节点" → catalog 谎报 `Compression removed N items`（压缩事务数为 0 时也逐轮增长）→ system message 前缀每轮变化 → 跨轮 KV/prefix cache 从变化点起全部失效（本地实测：每轮首请求 miss = 全上下文 28K→42K、`progress` 从 0.15 重新 prefill）。修复：只认 `op==='replace'` 且**无 `argpCites` 字段**的 replace 为剪枝（真压缩 tombstone 是 user/message 无此字段；单点/区间真剪枝都保留，防单点压缩漏剪）。
+- **动态 catalog 位置（连带修复，前缀稳定性的一部分）**：`argp-catalog` 从 `argp-contract`（order 150，system 靠前）拆出、独立注册于 order 9999（system 末尾）——压缩后仅 catalog 尾巴 miss，persona+契约正文+cites 静态前缀保持可缓存。recall 协议不依赖 catalog 在 system 靠前。
+
+### Tests
+- 既有 72 用例全过（typecheck + `npm test`）。
+- 诊断工具（spike/ 下，不入库）：`llm-log-proxy.mjs`（请求捕获代理，diff 每轮真实 system 前缀）、`.tmp/extract-usage.mjs`（events.jsonl 逐轮 usage 提取）、`large-prefix-cache-probe.mjs`（大前缀缓存探针）。
+
 ## [0.3.0] - 2026-08-20
 
 ### Added
