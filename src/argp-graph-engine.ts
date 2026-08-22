@@ -1228,15 +1228,29 @@ export class ArgpGraphEngine extends CompactionEngine {
     return null
   }
 
-  /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
-  tryPruneClosures(
+  /** P2 选择侧（2026-08-22 拆出）：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
+   *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前 tryPruneClosures
+   *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
+   *  pruned、统一事务剪"，闭包原子需与已剪集合去重（如 A1/A2 已正常剪 → 闭包仅剩 root U，
+   *  单独退休 root U 是有意设计：P5 注释"自动闭包生命周期确实会连 root U 一起剪除"）。 */
+  private selectClosureToMerge(
     session: Session,
     atoms: Atom[],
     edges: SemanticEdge[],
     inDegree: Map<number, number>,
     askCover: Map<number, number>,
     latestTurn: number,
-  ): CompactionResult | null {
+    alreadyPruned: Set<number>,
+  ): {
+    closureId: string
+    root: Atom
+    rootPreview: string
+    /** 闭包全量 seq（含已由正常候选剪过的原子）——closurePrunes 记录用（noteRecallHit 反查 rootSeq）。 */
+    seqs: number[]
+    /** 本事务实际并入 pruned 的原子（过滤 alreadyPruned）。 */
+    atoms: Atom[]
+    intervals: { seqs: number[]; chars: number; atoms: Atom[] }[]
+  } | null {
     const roots = atoms
       .filter(a => a.type === 'U' && !askCover.has(a.id))
       .sort((a, b) => a.seq - b.seq)
@@ -1255,7 +1269,6 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
       }
     }
-    // 计算每个闭包的 lastRefRound 和 inDegree
     const lastRefByClosure = new Map<string, number>()
     const inDegreeByClosure = new Map<string, number>()
     const atomById = new Map(atoms.map(a => [a.id, a]))
@@ -1268,20 +1281,17 @@ export class ArgpGraphEngine extends CompactionEngine {
         lastRefByClosure.set(toClosure, Math.max(lastRefByClosure.get(toClosure) ?? 0, ref))
       }
       if (fromClosure !== undefined && toClosure !== undefined && fromClosure !== toClosure) {
-        // A1 不变量 2′：仅 external **critical** 边计入闭包守卫入度（supporting/contextual
-        // 跨闭包边不构成硬依赖；critical 边是「整链决策承重」的强依赖，须防整闭包被剪）。
+        // A1 不变量 2′：仅 external **critical** 边计入闭包守卫入度
         if (e.level === 'critical') {
           inDegreeByClosure.set(toClosure, (inDegreeByClosure.get(toClosure) ?? 0) + 1)
         }
       }
     }
-    // A11：闭包静止窗 K 参数化（默认 2）
     const k = this.closureWindowK
-    const candidates: { id: string; root: Atom; lastRef: number; seqs: number[] }[] = []
+    const candidates: { id: string; root: Atom; lastRef: number; seqs: number[]; prunableSeqs: number[] }[] = []
     const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
     for (const [id, root] of rootByClosure) {
       if (root.seq === lastRootSeq) continue
-      // P2：按 rootSeq 查防抖（closureId 每 pass 重发，跨 pass 不可比）
       const lastRecalled = this.closureLastRecalled.get(root.seq)
       if (lastRecalled !== undefined && latestTurn - lastRecalled < k) continue
       const lastRef = lastRefByClosure.get(id) ?? 0
@@ -1289,7 +1299,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       if ((inDegreeByClosure.get(id) ?? 0) > 0) continue
       const seqs = atoms.filter(a => closureOf.get(a.id) === id).map(a => a.seq).sort((x, y) => x - y)
       if (seqs.length === 0) continue
-      candidates.push({ id, root, lastRef, seqs })
+      // 过滤已剪原子：只剩已剪原子的闭包无可剪内容，不选；prunable 用于 intervals，seqs 全量用于记录
+      const prunableSeqs = seqs.filter(s => !alreadyPruned.has(s))
+      if (prunableSeqs.length === 0) continue
+      candidates.push({ id, root, lastRef, seqs, prunableSeqs })
     }
     if (candidates.length === 0) return null
     candidates.sort((a, b) => a.lastRef - b.lastRef || a.root.seq - b.root.seq)
@@ -1297,7 +1310,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (chosen === undefined) return null
     const surfaceSeqs = session.surface.nodes
     const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
-    const chosenSet = new Set(chosen.seqs)
+    const chosenSet = new Set(chosen.prunableSeqs)
     const bySeq = new Map(atoms.map(a => [a.seq, a]))
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
     let current: number[] = []
@@ -1319,6 +1332,34 @@ export class ArgpGraphEngine extends CompactionEngine {
       intervals.push({ seqs: current, chars, atoms: intervalAtoms })
     }
     if (intervals.length === 0) return null
+    const chosenAtoms = chosen.prunableSeqs
+      .map(s => bySeq.get(s))
+      .filter((a): a is Atom => a !== undefined)
+    const rootPreview = chosen.root.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+    return {
+      closureId: chosen.id,
+      root: chosen.root,
+      rootPreview,
+      seqs: chosen.seqs,
+      atoms: chosenAtoms,
+      intervals,
+    }
+  }
+
+  /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
+  tryPruneClosures(
+    session: Session,
+    atoms: Atom[],
+    edges: SemanticEdge[],
+    inDegree: Map<number, number>,
+    askCover: Map<number, number>,
+    latestTurn: number,
+  ): CompactionResult | null {
+    // 2026-08-22：选择逻辑抽到 selectClosureToMerge（供 compactIfNeeded 降级链并入 pruned 复用），
+    // 本方法保持"独立闭包事务"语义（手动/独立路径）；执行段不变。
+    const chosen = this.selectClosureToMerge(session, atoms, edges, inDegree, askCover, latestTurn, new Set<number>())
+    if (chosen === null) return null
+    const intervals = chosen.intervals
     for (const iv of intervals) {
       for (const a of iv.atoms) {
         const citedBySeq = edges.filter(e => e.to === a.id).map(e => atoms[e.from]?.seq).filter((x): x is number => x !== undefined)
@@ -1334,19 +1375,18 @@ export class ArgpGraphEngine extends CompactionEngine {
         })
       }
     }
-    const rootPreview = chosen.root.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
     // P3/P6：tombstone 必须自带 seq 区间（否则 tombstone-within-tombstone 两跳后 seq 信息
     // 彻底丢失，模型无法 recall），并给出「本区间 K / 闭包合计 N」消歧 —— 同一闭包跨多个
     // 区间时各 tombstone 的计数都是局部准确值，缺少 N 会让模型误判数据脏。
     const closureTotal = chosen.seqs.length
-    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.id
+    const tombstoneTexts = intervals.map(iv => '[elided closure ' + chosen.closureId
       + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
       + ': ' + iv.seqs.length + ' of ' + closureTotal + ' surface nodes in this closure'
-      + ' pruned by ARGP closure lifecycle; root=' + rootPreview
+      + ' pruned by ARGP closure lifecycle; root=' + chosen.rootPreview
       + '; recall_pruned(seq) retrieves original]')
     const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstoneTexts)
     this.closurePrunes.push({
-      closureId: chosen.id,
+      closureId: chosen.closureId,
       rootSeq: chosen.root.seq,
       prunedSeqs: chosen.seqs,
       at: new Date().toISOString(),
@@ -1430,7 +1470,6 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
     const retainChars = retainTokens * this.charsPerToken
-    const visibleNow = this.visibleChars(session)
     const measurement = this.measureTokens(session)
     if (trigger !== 'context-overflow' && measurement.contextTokens < thresholdTokens) {
       console.log('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' < threshold=' + thresholdTokens + ', skip')
@@ -1555,6 +1594,9 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false)).length
     const pruned = new Map<number, Atom>()
+    // 2026-08-22：闭包原子归属（seq → 闭包元数据），intervals/tombstone 生成时按归属区分
+    // 闭包区间（P3/P6：闭包 tombstone 带 root/计数供 recall 消歧）与默认区间。
+    const closureSeqMeta = new Map<number, { closureId: string; rootPreview: string; closureTotal: number }>()
     const { dupIds: duplicateIds, chainLen } = this.findVersionDuplicates(atoms, inDegree)
     for (const id of duplicateIds) {
       const atom = atoms.find(a => a.id === id)
@@ -1587,9 +1629,29 @@ export class ArgpGraphEngine extends CompactionEngine {
       const liveGroups = groups.filter(g => g.some(a => !pruned.has(a.id)))
       let candidateGroups = liveGroups.filter(g => isGroupCandidate(g, false))
       if (candidateGroups.length === 0) {
-        const closureResult = this.tryPruneClosures(session, atoms, edges, inDegree, askCoverage, latestTurn)
-        if (closureResult !== null) return closureResult
+        // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原 tryPruneClosures
+        // 的 return 把正常候选 + 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），
+        // 25 次压缩剪除率 0-2%（"压缩饿死"，见 docs/engine-fix-2026-08-22-compaction-starvation.md）。
+        // fail 保持设计语义（§5.9/§5.11：资源用尽/超窗 → 报警终止，全有或全无、不产出）。
+        // lifecycle（默认）：闭包生命周期（选择并入 pruned，含 root U 退休，排除已剪）→
+        // summarize（默认关，独立事务）→ force_prune（忽略入度，剪到达标为止）；
+        // 全部累积统一走最终 pruneIntervals 一次事务剪。
         if (this.degradationStrategy === 'fail') return null
+        const closure = this.selectClosureToMerge(session, atoms, edges, inDegree, askCoverage, latestTurn, new Set(pruned.keys()))
+        if (closure !== null) {
+          const closureTotal = closure.seqs.length
+          for (const a of closure.atoms) {
+            pruned.set(a.id, a)
+            closureSeqMeta.set(a.seq, { closureId: closure.closureId, rootPreview: closure.rootPreview, closureTotal })
+          }
+          this.closurePrunes.push({
+            closureId: closure.closureId,
+            rootSeq: closure.root.seq,
+            prunedSeqs: closure.seqs,
+            at: new Date().toISOString(),
+          })
+          continue // 重推后继续：可能还有更多可剪闭包 / force
+        }
         if (this.degradationStrategy === 'summarize' && this.enableSummarize) {
           const summarizeResult = this.summarizeCriticalChain(session, atoms, edges, latestTurn)
           if (summarizeResult !== null) return summarizeResult
@@ -1623,11 +1685,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const kept = intervals.filter(iv => iv.chars >= this.minSpanChars)
     const droppedIntervals = intervals.length - kept.length
-    console.log('[argp-graph] prune decision: visible=' + visibleNow + ' groups=' + groups.length
-      + ' softCandidates=' + softCandidateGroups + ' prunedAtoms=' + pruned.size
-      + ' intervals=' + intervals.length + ' keptIntervals=' + kept.length
-      + (droppedIntervals > 0 ? ' droppedIntervals=' + droppedIntervals : '')
-      + ' forced=' + forced)
     if (kept.length === 0) return null
     for (const iv of kept) {
       for (const a of iv.atoms) {
@@ -1646,7 +1703,25 @@ export class ArgpGraphEngine extends CompactionEngine {
         })
       }
     }
-    return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced)
+    // 2026-08-22：区间 tombstone 按闭包归属生成——区间原子全部来自同一闭包 → 闭包 tombstone
+    // （P3/P6：带 root/计数，recall 消歧）；混合/其他区间 → 默认 tombstone。
+    const tombstoneTexts = kept.map(iv => {
+      const metas = iv.atoms
+        .map(a => closureSeqMeta.get(a.seq))
+        .filter((m): m is { closureId: string; rootPreview: string; closureTotal: number } => m !== undefined)
+      const first = metas[0]
+      if (first !== undefined && metas.every(m => m.closureId === first.closureId)) {
+        return '[elided closure ' + first.closureId
+          + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+          + ': ' + iv.seqs.length + ' of ' + first.closureTotal + ' surface nodes in this closure'
+          + ' pruned by ARGP closure lifecycle; root=' + first.rootPreview
+          + '; recall_pruned(seq) retrieves original]'
+      }
+      return '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
+        + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
+        + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
+    })
+    return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced, tombstoneTexts)
   }
 
   override async compactNow(

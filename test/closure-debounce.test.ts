@@ -85,10 +85,9 @@ test('P2 write-side: noteRecallHit 以 rootSeq 为 key 写入防抖（旧 closur
     assert.equal(engineAny.closureLastRecalled.get(u1), 5, 'debounce round should be latest turn (A5 turn=5)')
     assert.equal(engineAny.closureLastRecalled.size, 1, 'exactly one debounce entry — old closureId key must NOT be used')
     // 二次压缩不应再剪 C1（防抖窗口 latestTurn - lastRecalled = 5-5 = 0 < k=2）。
-    // 此时 C1 已被物理替换，C2 因 lastRootSeq 豁免 → 唯一还可能发生的是组剪枝剪
-    // 其他候选（如 B1）；断言：有事务可以发生，但绝不允许触碰 C1 原子。
+    // 2026-08-22 行为更新：降级链修复后，B1 作为正常候选已在首压被剪（正常候选优先），
+    // 二压可能无物可剪（返回 null）——防抖语义 = 若二压发生，绝不触碰 recalled 闭包原子。
     const second = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
-    assert.ok(second !== null, 'second compaction should still prune OTHER candidates (B1)')
     for (const r of engine.records.slice(1)) {
       for (const seq of [u1, a1, a2]) {
         assert.ok(!r.shadowedSeqs.includes(seq), 'recalled closure node ' + seq + ' must not be re-pruned')

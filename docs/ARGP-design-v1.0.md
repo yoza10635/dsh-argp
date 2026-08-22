@@ -192,6 +192,7 @@ while Σtokens(K) > T:
     force-prune 后仍不达标 → fail
 ```
 - **三硬终止条件（防死循环）**：① 单原子 token > T（超窗）→ 直接 fail；② summarize 上限 N 用尽仍不达标 → 转 force-prune；③ force-prune 后仍不达标（理论极端）→ fail。
+- **实现对齐注记（2026-08-22）**：降级链已全通——修复了候选耗尽时 `tryPruneClosures` 的 `return` 丢弃累积 pruned（正常候选 + 版本重复）的缺陷（此前每次压缩只剪 1 个闭包 2–10 原子、剪不到达标，见 `docs/engine-fix-2026-08-22-compaction-starvation.md`）。现按本降级顺序真正执行：**正常候选剪（主循环）→ 闭包叶序（5.11，候选耗尽后）→ summarize-critical（默认关）→ force-prune（剪到达标为止）→ fail（全有或全无，不产出）**；fail 语义保持本设计（资源用尽/超窗终止），未改为部分产出。
 - **层级 1 生命周期剪除（首选，0 LLM，V1.5）**：按 5.11 剪 PRUNABLE 闭包（已完成任务、无外部依赖），整体移除 + 写墓碑；**常态 0-LLM 路径**。
 - **层级 2 summarize-critical（次选，1 次 LLM）**：仅当无 PRUNABLE 闭包（全部是活跃任务）时才触发。对最老 critical 链（lastRefRound 最小的闭包连通子图，规模 ≤10 原子且 ≤2×超预算量）调一次 LLM 生成**摘要原子 S**：
   ① 只重定向外部入边 e=(x→y, critical)（x∉chain, x∈K）为 e'=(x→S)，chain 内边入摘要日志；

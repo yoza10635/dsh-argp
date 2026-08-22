@@ -35,6 +35,7 @@
 ## P3. 降级链补全 + 生产硬化
 
 1. ✅ summarize-critical 作为**末环**（默认关，config 开关；闭包剪除在前）——降级链 lifecycle→summarize→force→fail 闭合
+   - **2026-08-22 补**：降级链**真正可达**验证——修复 `tryPruneClosures` 候选耗尽时 `return` 丢弃累积 pruned 的缺陷（此前 force 被短路、每次压缩只剪 1 个闭包、剪不到 retain 目标，见 `docs/engine-fix-2026-08-22-compaction-starvation.md`）。重放验证单次压缩 2 原子/0.06% → 56 原子/59%，链条推进到 retain 目标或耗尽。
 2. ✅ recall 预算闸门（每轮 ≤3 次 / 单次 ≤5% window / 累计 ≤10% / truncated 标注）——2026-08-17 已实现
 3. ⬜ askCover 动态复核回归用例（P0-3 失败模式：跨轮引用到达 → 豁免失效）——实现已有（askCoverage 动态复核），回归用例未单独建档
 
