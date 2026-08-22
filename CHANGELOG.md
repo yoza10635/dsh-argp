@@ -2,6 +2,15 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [0.3.2] - 2026-08-22
+
+### Fixed
+- **压缩静默失效（发布级 bug：任何超线场景 boundaries 恒为 0）**：atomize 重建引用图时，`argpCites` 的形状判据检查的是 V6 graded 字段 `c.t`，但 `stripTrailingCitesIfNeeded` 实际写回的是 `ParsedCite`（`{text, level}`）→ `every()` 恒 false → 误落进 string[] 分支、把对象塞进 `text` → `buildGraph` 的 `cite.text.trim()` 抛 `TypeError` → pressure prune 被静默 catch 吞掉 → 估算超触发线也从不压缩（本地 100K/80K/16K 与 v4-flash 同复现；`compaction/start` 从未发出、`boundaries=0`、cites `resolved=0`）。修复：① atomize 对 argpCites 归一化，兼容 `ParsedCite[]` / `string[]`（V5 旧产物）/ graded `{t,l}`（契约原文）三种形状；② buildGraph 对非字符串 `cite.text` 防御性跳过（cites 来自不可信模型输入），压缩主体绝不再抛错。
+
+### Tests
+- 既有 72 用例全过（typecheck + `npm test`）。
+- 真实长程验证（spike/26，v4-flash 50 轮，100K/80K/16K）：**VERDICT PASS**——25 次压缩事务（start/summary/end 全配对、0 error，修复前为 0）、cites `declared=182 / resolved=182`（修复前 resolved=0）、U 探针 8/10、R 探针 8/10、8/8 文件、stderr 零抛错。产物 `spike/out/26-v4-fix50-*`。
+
 ## [0.3.1] - 2026-08-22
 
 ### Fixed
