@@ -421,6 +421,71 @@ test('compactRegion: balanced tool-call/result span can be pruned without orphan
   }
 })
 
+test('orphan fix: solo-R adjacent to prunable atom keeps own tool tombstone (no mixed interval)', async () => {
+  // 2026-08-23 回归：旧单向合并守卫会把「位置连续的 solo-R + 邻原子」合成混剪区间 →
+  // user tombstone 整体替换 → callId 蒸发 → issuer 的 tool-call 无应答（provider 400）。
+  // 实测 26-local-full-verify2 中 23 个孤儿全部是此形态。
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('orphan-mixed-interval-test'))
+    appendUser(session, 'user anchor')
+    // issuer A1：带 tool-call，本身不被剪（新近/入度保护不重要，只要不在 pruned 集）
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({
+        source: { provider: 'test', model: 'test' },
+        content: [{ type: 'tool-call', id: 'call_1' as never, name: 'read_file', arguments: '{"path":"x"}' }],
+      }),
+    }, { surfaceOp: 'append' })
+    const aSeq = session.events.length - 1
+    // 大 R（未被 cites 引用）——与后续 A2 位置连续，旧代码会合并成混剪区间
+    session.append('tool/result', {
+      turn: 1,
+      step: 1,
+      message: createToolResultMessage({ callId: 'call_1' as never, content: [{ type: 'text', text: 'R1:' + 'r'.repeat(300) }], isError: false }),
+    }, { surfaceOp: 'append' })
+    const rSeq = session.events.length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    const a2Seq = session.events.length - 1
+    appendAssistant(session, 'A3: latest anchor.', 3)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null)
+    assert.ok(result.shadowedSeqs.includes(rSeq))
+    assert.ok(session.surface.nodes.includes(aSeq), 'issuer A must survive')
+    // R 的墓碑必须是 tool 占位（replace 事件，保 callId），而不是 user/message 文本墓碑
+    const toolTombstone = [...session.events].find(e => {
+      const ev = e as { type?: string; surfaceOp?: { op?: string }; data?: { message?: { source?: { callId?: string } } } }
+      return ev.type === 'tool/result' && ev.surfaceOp?.op === 'replace' && ev.data?.message?.source?.callId === 'call_1'
+    })
+    assert.ok(toolTombstone !== undefined, 'R must get a tool tombstone (callId preserved)')
+    // 区间隔离：不存在同时覆盖 rSeq 与 a2Seq 的区间（混剪不再发生）
+    const record = engine.records[0]
+    assert.ok(record !== undefined)
+    for (const iv of record.intervals) {
+      assert.ok(iv.start > rSeq || iv.end < rSeq || iv.start > a2Seq || iv.end < a2Seq
+        || (iv.start === rSeq && iv.end === rSeq),
+      'interval ' + iv.start + '..' + iv.end + ' mixes solo-R with neighbor')
+    }
+    // wire 配对不变式：surface 上每个存活 tool-call 都有应答（含占位）
+    const callIds = new Set<string>()
+    const resultIds = new Set<string>()
+    for (const seq of session.surface.nodes) {
+      const ev = session.events[seq] as { type: string; data?: { message?: { content?: { type: string; id?: string; toolCallId?: string }[]; source?: { callId?: string } } } }
+      const blocks = ev.data?.message?.content ?? []
+      for (const b of blocks) {
+        if (b.type === 'tool-call' && b.id !== undefined) callIds.add(b.id)
+        if (b.type === 'tool-result' && b.toolCallId !== undefined) resultIds.add(b.toolCallId)
+      }
+      if (ev.data?.message?.source?.callId !== undefined) resultIds.add(ev.data.message.source.callId)
+    }
+    for (const id of callIds) assert.ok(resultIds.has(id), 'unanswered tool-call on surface: ' + id)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 test('production-like: repeated synthetic pruning yields multiple transactions without pruning U', async () => {
   const { ctx, engine } = await makeEngine()
   try {
