@@ -150,6 +150,16 @@ export interface ArgpGraphConfig {
   overlapTheta?: number
   /** 版本链重叠归链启用（A4，默认 false；启用后 A 文本仍走全等去重）。 */
   enableOverlapChain?: boolean
+  /**
+   * 边价值实验 A₃：注入 oracle 边（离线辅助 LLM 组图，schema 强制）。
+   * buildGraph 在 cites 边之后合并这些边，用于测"理论上限"保留集（A₃−A₂ = 模型服从率吃掉的价值）。
+   */
+  injectEdges?: (atoms: Atom[]) => SemanticEdge[]
+  /**
+   * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
+   * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
+   */
+  disableCiteEdges?: boolean
 }
 
 export interface GraphPruneRecord {
@@ -320,6 +330,10 @@ export class ArgpGraphEngine extends CompactionEngine {
   lastEdges: SemanticEdge[] = []
   /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
   lastDeterministicEdges: DeterministicEdge[] = []
+  /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
+  injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined = undefined
+  /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
+  disableCiteEdges = false
 
   /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
   readonly prunedNodeIndex = new Map<number, PrunedNodeInfo>()
@@ -392,6 +406,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
     this.overlapTheta = config.overlapTheta ?? 0.8
     this.enableOverlapChain = config.enableOverlapChain ?? false
+    this.injectEdges = config.injectEdges
+    this.disableCiteEdges = config.disableCiteEdges ?? false
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -979,7 +995,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         : candidates.map(id => atoms.find(a => a.id === id)).filter((a): a is Atom => a !== undefined)
       return pool.filter(verify)
     }
-    for (const a of atoms) {
+    if (!this.disableCiteEdges) for (const a of atoms) {
       if (a.type !== 'A') continue
       for (const cite of a.cites) {
         // 兜底防御（2026-08-22）：cites 来自模型不可信输入 + argpCites 历史格式迁移，
@@ -1019,6 +1035,13 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
         edges.push({ from: a.id, to: target.id, level: cite.level })
         this.citeStats.resolved += 1
+      }
+    }
+    // 边价值实验 A₃：合并注入的 oracle 边（离线辅助 LLM 组图）。校验 from/to 合法且非自环。
+    if (this.injectEdges !== undefined) {
+      const validIds = new Set(atoms.map(a => a.id))
+      for (const e of this.injectEdges(atoms)) {
+        if (e.from !== e.to && validIds.has(e.from) && validIds.has(e.to)) edges.push(e)
       }
     }
     this.lastEdges = edges
