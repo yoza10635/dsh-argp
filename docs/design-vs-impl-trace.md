@@ -27,6 +27,7 @@
 | 闭包生命周期 | §5.11 | `tryPruneClosures` (L626-733) | 🟡 | 根锚=U∧¬askCover、seq 窗口初界、K=2 静止、叶序 lastRef 升序、latestU 守卫、recall 回拉防抖（L592-600）均实现；**⚠️ 无"弱连通收紧/孤岛入游离池"**——直接用 seq 窗口切分 |
 | 闭包处置策略 memory/tips/tombstone | §5.12 | — | ⬜ | 只做 tombstone（X 原子占位 + prunedNodeIndex）；memory/tips 按 roadmap 推后 |
 | R 版本链 diff 去重 | §5.13 | `findVersionDuplicates` (L527-579) | 🟡 | **简化版**：A 文本全等 / R 按 issuer A 文本全等分组去重（in_degree==0 才剔、A/R 成对）；**非设计的 overlapCoefficient/sim≥0.8 部分重叠归链** |
+| 版本链二进制 hash 退化 | §5.13 | — | ⬜ | 未实现，**有意不做（2026-08-24 审计补记）**：全等文本去重对二进制内容天然成立（相同内容=合并，不同内容=不合并），hash 判定与全等判定在文本全等口径下等价；dsh 场景二进制 R 罕见，无实现收益 |
 | 配对自保（A+R 成组同剪） | 迁移稿/实测 | `groups` (L792-813) | ✅ | 防孤儿 toolCall/result → API 400 |
 | 头脑风暴模式 | §5.5 | — | ⬜ | 未实现（roadmap 未排入 P1-P5） |
 | summarize-critical 摘要原子 | §5.9 | `summarizeCriticalChain` (L615-623) | ⬜ | stub，默认关（本地单 slot 模型下破坏 KV cache） |
@@ -48,7 +49,7 @@
 
 ## 3. 设计稿未覆盖的提案（2026-08-17，用户提出，spike 18 离线模拟已验证）
 
-> 两个候选机制均未写入 ARGP-design-v1.0.md。`spike/18-density-sim.ts` 离线模拟 + `spike/19-sort-compare.ts` 真实验证（DeepSeek v4-flash，同场景三模式对照）已量化增益。引擎已加 `sortMode` 配置（默认 legacy 行为不变，27 测试全绿）。结论如下——是否设为默认进代码待用户拍板。
+> 两个候选机制均未写入 ARGP-design-v1.0.md。`spike/18-density-sim.ts` 离线模拟 + `spike/19-sort-compare.ts` 真实验证（DeepSeek v4-flash，同场景三模式对照）已量化增益。引擎已加 `sortMode` 配置。**2026-08-23 拍板：density 已设为默认**（`config.sortMode ?? 'density'`，注释已同步；回退需显式传 `sortMode:'legacy'`）。回归 73/73 + tsc 全绿，lib 已同步。结论如下。
 
 1. **单位 token 重要性（预算密度排序）**：设计 §5.4 排序键为 `[edgeLevel, eff, lastRef, seq]`（绝对 eff 升序），忽略原子体积。但压缩本质是"retain 预算内保留最大信息"——该问题的标准贪心解是按 **eff/tokens** 降序剪（分数背包）。落地方案（采用"分级"：eff 同档内插 token 降序，大先剪）：
    - 硬约束：edgeLevel 仍是第一键（设计 L77"等级比绝对值稳定"）；U 原子保护与墓碑不受影响

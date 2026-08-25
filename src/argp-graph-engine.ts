@@ -122,9 +122,9 @@ export interface ArgpGraphConfig {
   enableSummarize?: boolean
   /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
   degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail'
-  /** 排序模式（spike 18 提案，默认 legacy 保持现状）：
-   *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积）
-   *  density：eff 同档内 token 降序（大 token 先剪，单位 token 重要性）
+  /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
+   *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）
+   *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积；显式传入以回退旧行为）
    *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
   sortMode?: 'legacy' | 'density' | 'density-chain'
   /**
@@ -281,6 +281,9 @@ export interface PrunedNodeInfo {
   citedBySeq: number[]
   /** 被剪瞬间的有效重要性（recall 价值继承的来源，§3-3）。 */
   eff: number
+  /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时，指向同一路径（tool name+arguments）下最新存活版本的 seq。
+   *  未参与版本链去重的被剪节点无此字段（undefined）。 */
+  latestOfPath?: number
 }
 
 export class ArgpGraphEngine extends CompactionEngine {
@@ -398,7 +401,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     this.enableSummarize = config.enableSummarize ?? false
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
-    this.sortMode = config.sortMode ?? 'legacy'
+    // 2026-08-23 拍板：默认 density（spike 18 离线 + spike 19 真实验证：同达成度下 recall 2→0、
+    // 保留集单位信息量更高；eff 同档大 token 先剪 = 分数背包贪心）。需回退可显式传 sortMode:'legacy'。
+    this.sortMode = config.sortMode ?? 'density'
     this.turnBasis = config.turnBasis ?? 'semantic'
     this.maxOverflowRetries = config.maxOverflowRetries ?? 1
     this.closureWindowK = config.closureWindowK ?? 2
@@ -430,6 +435,21 @@ export class ArgpGraphEngine extends CompactionEngine {
         this.recallCalls.push({ seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined })
         if (!outcome.ok) return formatRecallOutcome('recall_pruned', seq, outcome)
         this.noteRecallHit(seq)
+        // 版本链重定向（2026-08-23）：被剪旧 R 若属于某路径版本链，重定向返回该路径最新存活版本原文，
+        // 替代旧值。避免模型基于已过时的旧快照做决定（旧值正是被剪的原因）；文件仍在演进时
+        // 模型要的是「现在长什么样」。保留 state 标签说明这是重定向结果。
+        const redirect = this.prunedNodeIndex.get(seq)?.latestOfPath
+        if (redirect !== undefined && redirect !== seq) {
+          const latestOutcome = recallFromLog(this.session, redirect, s => shadowed.has(s), eventText)
+          if (latestOutcome.ok) {
+            const result = stateHeader(seq, latestOutcome.state)
+              + '\n[version-chain redirect: seq ' + seq + ' was superseded by newer version seq ' + redirect + ' of the same path; returning the latest]\n'
+              + this.budgetRecallText(latestOutcome.text)
+            this.recallSourceSeq = seq
+            this.recallResultSeq = this.session.events.length
+            return result
+          }
+        }
         const result = formatRecallOutcome('recall_pruned', seq, outcome, text => this.budgetRecallText(text))
         // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
         // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
@@ -1107,9 +1127,11 @@ export class ArgpGraphEngine extends CompactionEngine {
    *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
    * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
    */
-  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number> } {
+  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number>; latestRByKey: Map<string, number>; rKeyByRId: Map<number, string> } {
     const dupIds = new Set<number>()
     const chainLen = new Map<number, number>()
+    const latestRByKey = new Map<string, number>()
+    const rKeyByRId = new Map<number, string>()
     const issuerByCall = new Map<string, Atom>()
     const rByCall = new Map<string, Atom>()
     for (const a of atoms) {
@@ -1122,10 +1144,13 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const addPair = (a: Atom): void => {
       if ((inDegree.get(a.id) ?? 0) !== 0) return
+      // 方案 A 修复（2026-08-23）：剪 A 时无条件连带剪其全部 R，与 pass 循环（:1693 附近）语义一致。
+      // 版本去重语义 = 旧快照整组淘汰；R 的 cites 引用在 newer 版本上会重建，旧 R 与引用一起剪。
+      // 不保护被 cites 的旧 R（否则 surface 膨胀、版本链去重失效）；无孤儿由连带剪保证。
       dupIds.add(a.id)
       for (const cid of a.toolCallIds) {
         const r = rByCall.get(cid)
-        if (r !== undefined && (inDegree.get(r.id) ?? 0) === 0) dupIds.add(r.id)
+        if (r !== undefined) dupIds.add(r.id)
       }
     }
     const seenA = new Map<string, { atom: Atom; count: number }>()
@@ -1161,6 +1186,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       const list = seenR.get(key)
       if (list === undefined) seenR.set(key, [{ atom: r }])
       else list.push({ atom: r })
+      latestRByKey.set(key, r.seq)
+      rKeyByRId.set(r.id, key)
     }
     const mergeOlderR = (older: Atom, r: Atom, key: string): void => {
       if ((inDegree.get(older.id) ?? 0) === 0) {
@@ -1179,6 +1206,10 @@ export class ArgpGraphEngine extends CompactionEngine {
         list.push({ atom: r })
         chainLen.set(r.id, list.length)
       }
+      // 版本链重定向：记录该 key 下最新见到的 R seq（遍历按 surface 顺序，后续 seq 更大更「新」）
+      latestRByKey.set(key, r.seq)
+      rKeyByRId.set(older.id, key)
+      rKeyByRId.set(r.id, key)
     }
     for (const r of atoms.filter(x => x.type === 'R')) {
       const key = rKey(r)
@@ -1204,7 +1235,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
       registerR(key, r)
     }
-    return { dupIds, chainLen }
+    return { dupIds, chainLen, latestRByKey, rKeyByRId }
   }
 
   /**
@@ -1664,7 +1695,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 2026-08-22：闭包原子归属（seq → 闭包元数据），intervals/tombstone 生成时按归属区分
     // 闭包区间（P3/P6：闭包 tombstone 带 root/计数供 recall 消歧）与默认区间。
     const closureSeqMeta = new Map<number, { closureId: string; rootPreview: string; closureTotal: number }>()
-    const { dupIds: duplicateIds, chainLen } = this.findVersionDuplicates(atoms, inDegree)
+    const { dupIds: duplicateIds, chainLen, latestRByKey, rKeyByRId } = this.findVersionDuplicates(atoms, inDegree)
     for (const id of duplicateIds) {
       const atom = atoms.find(a => a.id === id)
       if (atom !== undefined) pruned.set(id, atom)
@@ -1805,6 +1836,16 @@ export class ArgpGraphEngine extends CompactionEngine {
           .map(e => atoms[e.from]?.seq)
           .filter((x): x is number => x !== undefined)
         const firstLine = a.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
+        // 版本链重定向（2026-08-23）：被剪旧 R 若属于某路径版本链，记录该路径最新存活版本 seq，
+        // recall_pruned 命中时重定向返回最新版原文（替代旧值）。
+        let latestOfPath: number | undefined
+        if (a.type === 'R') {
+          const key = rKeyByRId.get(a.id)
+          if (key !== undefined) {
+            const latest = latestRByKey.get(key)
+            if (latest !== undefined && latest !== a.seq) latestOfPath = latest
+          }
+        }
         this.prunedNodeIndex.set(a.seq, {
           seq: a.seq,
           type: a.type,
@@ -1812,6 +1853,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
           citedBySeq,
           eff: eff.get(a.id) ?? 0,
+          ...(latestOfPath !== undefined ? { latestOfPath } : {}),
         })
       }
     }

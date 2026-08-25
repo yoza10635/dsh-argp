@@ -48,6 +48,8 @@ const windowTokens = Number(process.env['ARGP_WINDOW_TOKENS'] ?? 10_240)
 const retainTokens = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 7_168)
 const maxPasses = Number(process.env['ARGP_MAX_PASSES'] ?? 16)
 const minBoundaries = Number(process.env['ARGP_MIN_BOUNDARIES'] ?? 10)
+// 边价值实验开关：ARGP_CITES_ON=false → fillerBody 去掉 cites 指令句（A₁/A₀ 臂：模型不产 cites → 无语义边）
+const citesOn = process.env['ARGP_CITES_ON'] !== 'false'
 
 // ---------- 产物目录 ----------
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -77,12 +79,35 @@ for (let i = 1; i <= chunkCount; i += 1) {
   fs.writeFileSync(path.join(workDir, 'logs', 'chunk-' + i + '.md'), makeChunk(i), 'utf8')
 }
 
+// ---------- D 依赖针（边价值实验核心新增探针） ----------
+// 选 3 个早期 chunk（2/5/8，对应 filler 轮 3/6/9，新近度最低、最易被剪）的 telemetry 统计作答案源。
+// 答案 = 这 3 个 chunk 中「level=WARN 且 queue>40」行的 shard 并集（模型不被告知 chunk 号）。
+const D_CHUNKS = [2, 5, 8]
+function dChunkWarnShards(i: number): Set<number> {
+  const s = new Set<number>()
+  for (let n = 0; n < chunkLines; n += 1) {
+    if (n % 13 === 0 && ((n * 3 + i) % 50) > 40) s.add((n + i) % 16)
+  }
+  return s
+}
+const dExpected = new Set<number>()
+for (const i of D_CHUNKS) for (const sh of dChunkWarnShards(i)) dExpected.add(sh)
+function dProbeText(): string {
+  return 'Long-term memory cross-check. Earlier in this session you read several telemetry chunk files (logs/chunk-*.md). '
+    + 'Across chunks ' + D_CHUNKS.join(', ') + ', find every line where level=WARN and queue>40, and list the shard numbers '
+    + '(the "shard=N" field) that appear in those lines. If a chunk\'s content is no longer visible, recover it with recall_pruned '
+    + '(the chunk file first line reads "chunk <n> telemetry export — incident ref INC-<n>-MARKER-xxxx"; use list_pruned if you do not know the seq). '
+    + 'Reply with exactly one line: D-ANSWER: <space-separated sorted shard numbers, or NOT-RECOVERABLE if you cannot recover them>'
+}
+
 // ---------- 装配：模型（ARGP_MODEL_SOURCE 切换 deepseek / qwen-local）+ ArgpGraphEngine ----------
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-6 t-long archival persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
 const modelMount = await mountModel(ctx)
-await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses })
+// 边价值实验 seam：citesOn=false（A₁/A₀）→ disableCiteEdges=true → 确定性无边，
+// 与 A3 重放 clear 源一致；citesOn=true（A₂）→ 允许从模型 cites 块建语义边。
+await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses, disableCiteEdges: !citesOn })
 const engine = ctx.compaction as ArgpGraphEngine
 
 const sandbox = (rel: string): string => {
@@ -196,8 +221,12 @@ const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 50)
 const PROBE_TURNS = [14, 20, 26, 32, 38, 44, 50].filter(t => t <= MAX_TURNS)
 const NEEDLE_TURNS = [3, 6, 9, 12, 17, 23, 29] // 全局轮号，均为 filler 轮；probe k 针对 needle k
 const setupText = 'We are starting a long-running archival session. From time to time I will hand you archival notes containing the service token of a node — keep them in mind. On most turns I will ask you to read a log file and report its line count; those are routine work. Occasionally I will send a long-term memory check; for those, follow the exact answer format given in the check itself. Work carefully.'
-const fillerBody = (j: number): string =>
-  'Use the read tool to read the entire file logs/chunk-' + j + '.md. After reading, reply with the file name, a space, and its line count. If your reply depends on earlier context (the file content, the instruction, an archival note), append the ARGP citation block as instructed.'
+const fillerBody = (j: number): string => {
+  const base = 'Use the read tool to read the entire file logs/chunk-' + j + '.md. After reading, reply with the file name, a space, and its line count.'
+  return citesOn
+    ? base + ' If your reply depends on earlier context (the file content, the instruction, an archival note), append the ARGP citation block as instructed.'
+    : base
+}
 const probeText = (k: number): string =>
   'Long-term memory check ' + k + '. You need the first line of the chunk file that was read on the same turn as the archival note for node-' + k + '. That first line is not visible; recover it with recall_pruned before answering.\n'
   + 'To recover, call recall_pruned for each placeholder seq you are unsure about, one at a time, until you find the tool result whose text starts with "chunk <n> telemetry export". Copy the exact INC-<n>-MARKER-<code> from that recovered text. Do not guess.\n'
@@ -206,7 +235,7 @@ const probeText = (k: number): string =>
   + 'R-ANSWER: <the full incident reference marker from the first line of the chunk file you read on the same turn I gave you the archival note for node-' + k + '>\n'
   + 'If after trying recall_pruned for all placeholders you still cannot recover it, write NOT-RECOVERABLE on that line.'
 
-type Item = { label: string; text: string; kind: 'setup' | 'filler' | 'probe'; probeK?: number; chunkIndex?: number; needleK?: number }
+type Item = { label: string; text: string; kind: 'setup' | 'filler' | 'probe' | 'dprobe'; probeK?: number; chunkIndex?: number; needleK?: number }
 const items: Item[] = [{ label: 'setup', text: setupText, kind: 'setup' }]
 let fillerIdx = 0
 for (let turn = 2; turn <= MAX_TURNS; turn += 1) {
@@ -224,6 +253,8 @@ for (let turn = 2; turn <= MAX_TURNS; turn += 1) {
     : 'Archival note (remember it; no acknowledgment needed): the service token for node-' + needleK + ' is ' + uToken(needleK) + '.\n' + fillerBody(fillerIdx)
   items.push({ label: 'filler-' + fillerIdx, text, kind: 'filler', chunkIndex: fillerIdx, needleK })
 }
+// D 依赖针：综合 3 早期 chunk 的 WARN&queue>40 shard 并集（独立探针，不进 U/R 曲线）
+items.push({ label: 'dprobe', text: dProbeText(), kind: 'dprobe' })
 // 期望值登记：probe k → needle k（U token + 同轮所读 chunk 的 R marker）
 const expected = new Map<number, { u: string; r: string; chunkIndex: number }>()
 for (const item of items) {
@@ -264,6 +295,7 @@ const promptMarkers = new Map<string, string>([
   ['setup', 'long-running archival session'],
   ...items.filter(i => i.kind === 'filler').map(i => [i.label, 'logs/chunk-' + String(i.chunkIndex) + '.md'] as [string, string]),
   ...items.filter(i => i.kind === 'probe').map(i => [i.label, 'Long-term memory check ' + String(i.probeK)] as [string, string]),
+  ['dprobe', 'Long-term memory cross-check'],
 ])
 const turnOf = new Map<string, number>()
 {
@@ -333,8 +365,19 @@ const summaries = events.filter(e => e.type === 'compaction/summary' || e.type =
 const ends = events.filter(e => e.type === 'compaction/end')
 const endsWithError = ends.filter(e => (e.data as { error?: string }).error !== undefined).length
 const checkpointOk = engine.records.every(r => r.intervals.every(iv => {
-  const event = agent.session.events[iv.tombstoneSeq] as { data: { source: { kind: string; plugin?: string } } }
-  return event?.data.source.kind === 'plugin' && event.data.source.plugin === 'compact'
+  const event = agent.session.events[iv.tombstoneSeq] as { type?: string; data?: { source?: { kind?: string; plugin?: string }; message?: { content?: { content?: { text?: string }[] }[] } } } | undefined
+  if (event === undefined) return false
+  // 两种合法墓碑：①user/message compact checkpoint（source.plugin='compact'）；
+  // ②tool/result 占位墓碑（半拆组 2026-08-23：克隆原 R + elided 文本，无 plugin source）
+  if (event.type === 'user/message') {
+    const src = event.data?.source
+    return src?.kind === 'plugin' && src?.plugin === 'compact'
+  }
+  if (event.type === 'tool/result') {
+    const text = event.data?.message?.content?.[0]?.content?.[0]?.text
+    return typeof text === 'string' && text.startsWith('[elided')
+  }
+  return false
 }))
 verdict('L1-long-run-stable', !aborted && completedTurns === items.length && engine.records.length >= minBoundaries
   && orphans.length === 0 && starts === engine.records.length && summaries === engine.records.length
@@ -392,6 +435,26 @@ verdict('L3-r-recovery', rCorrectCount >= 4,
   + '，命中 ' + engine.recallCalls.filter(c => c.hit).length + '）')
 console.log('[METRIC error-curve] ' + JSON.stringify(curve.map(p => ({ probe: p.probe, b: p.boundaries, u: p.uCorrect ? 1 : 0, r: p.rCorrect ? 1 : 0, sh: p.targetShadowed ? 1 : 0 }))))
 
+// ---------- D 依赖针评估（综合 ≥3 个 R 原子；模型不被告知 chunk 号） ----------
+const dTurn = turnOf.get('dprobe') ?? -1
+const dRaw = events.filter(e => e.type === 'assistant/message' && (e.data as { turn?: number }).turn === dTurn).map(e => eventRawText(e)).join('\n')
+const dMatch = dRaw.match(/D-ANSWER:\s*([0-9\s]+|NOT-RECOVERABLE)/i)
+const dAnswerRaw = dMatch?.[1]?.trim() ?? ''
+const dCorrect = dAnswerRaw !== 'NOT-RECOVERABLE' && (() => {
+  const got = new Set(dAnswerRaw.split(/\s+/).filter(Boolean).map(Number))
+  if (got.size !== dExpected.size) return false
+  for (const sh of dExpected) if (!got.has(sh)) return false
+  return true
+})()
+// 有效性预检：D 针目标 chunk 的 tool/result 是否已被遮蔽（无边时须被剪 → 探针有鉴别力；oracle 边须保留）
+const dMarkerNeedles = D_CHUNKS.map(i => 'INC-' + i + '-MARKER-' + code(i))
+const dTargetSeqs = events.filter(e => e.type === 'tool/result' && dMarkerNeedles.some(m => eventRawText(e).includes(m))).map(e => e.seq)
+const dTargetShadowed = dTargetSeqs.length > 0 && dTargetSeqs.every(seq => shadowedAll.has(seq))
+verdict('L4-d-cross-retention', dCorrect && dTargetShadowed,
+  'D probe correct ' + (dCorrect ? 'yes' : 'no(' + dAnswerRaw + ')') + '; expected shards=' + [...dExpected].sort((a, b) => a - b).join(',')
+  + '; target chunks shadowed=' + dTargetShadowed + ' (' + dTargetSeqs.length + ' seqs)')
+console.log('[dprobe] D=' + (dCorrect ? 'OK' : 'MISS(' + dAnswerRaw + ')') + ' expected=' + [...dExpected].sort((a, b) => a - b).join(',') + ' targetShadowed=' + dTargetShadowed)
+
 // ---------- 统计与产物落盘 ----------
 const reasoningChars = events.filter(e => e.type === 'assistant/message').reduce((sum, e) => {
   const content = (e.data as { message: { content: { type: string; text?: string }[] } }).message?.content ?? []
@@ -404,7 +467,7 @@ const surfaceChars = [...agent.session.surface.nodes].reduce((sum, seq) => {
 const result = {
   spike: runName,
   at: new Date().toISOString(),
-  model: 'deepseek-official/deepseek-v4-flash',
+  model: modelMount.model,
   windowTokens,
   retainTokens,
   maxPasses,
@@ -418,6 +481,10 @@ const result = {
   curve,
   uCorrect: uCorrectCount,
   rCorrect: rCorrectCount,
+  citesOn,
+  dCorrect,
+  dExpected: [...dExpected].sort((a, b) => a - b),
+  dTargetShadowed,
   recallCalls: engine.recallCalls,
   citeStats: engine.citeStats,
   reasoningChars,
