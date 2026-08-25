@@ -51,7 +51,9 @@
     "smoke:deepseek": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/10a-deepseek-smoke.ts && node --import ./scripts/ts-import-rewrite-loader.mjs spike/10b-basic-deepseek-smoke.ts && node --import ./scripts/ts-import-rewrite-loader.mjs spike/10d-argp-deepseek-smoke.ts",
     "spike8a": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08a-production-synthetic.ts",
     "spike26": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/26-tlong-coding.ts",
-    "spike32": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/32-split-repr-compare.ts"
+    "spike7real": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/07-real-trace.ts",
+    "spike32": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/32-split-repr-compare.ts",
+    "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
