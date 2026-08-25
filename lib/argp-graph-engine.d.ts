@@ -49,6 +49,18 @@ export declare function scaleBudgets(contextWindow: number | undefined, opts: {
  * 导出供测试直接锁定收窄行为。
  */
 export declare function looksAskText(text: string): boolean;
+/**
+ * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
+ *
+ * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
+ * 插件 append，但必须按 U 待遇参与剪枝候选），再落 `source.kind === 'plugin'` → X
+ * （墓碑/checkpoint）判定。若先判 plugin-source，U-info 会被分类成 X 而**全局不可剪**，
+ * P4 的候选放行将永远失效。
+ *
+ * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
+ * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
+ */
+export declare function classifyUserMessage(data: unknown): 'U' | 'X';
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
     windowTokens?: number;
@@ -75,9 +87,9 @@ export interface ArgpGraphConfig {
     enableSummarize?: boolean;
     /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
     degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail';
-    /** 排序模式（spike 18 提案，默认 legacy 保持现状）：
-     *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积）
-     *  density：eff 同档内 token 降序（大 token 先剪，单位 token 重要性）
+    /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
+     *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）
+     *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积；显式传入以回退旧行为）
      *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
     sortMode?: 'legacy' | 'density' | 'density-chain';
     /**
@@ -103,6 +115,16 @@ export interface ArgpGraphConfig {
     overlapTheta?: number;
     /** 版本链重叠归链启用（A4，默认 false；启用后 A 文本仍走全等去重）。 */
     enableOverlapChain?: boolean;
+    /**
+     * 边价值实验 A₃：注入 oracle 边（离线辅助 LLM 组图，schema 强制）。
+     * buildGraph 在 cites 边之后合并这些边，用于测"理论上限"保留集（A₃−A₂ = 模型服从率吃掉的价值）。
+     */
+    injectEdges?: (atoms: Atom[]) => SemanticEdge[];
+    /**
+     * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
+     * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
+     */
+    disableCiteEdges?: boolean;
 }
 export interface GraphPruneRecord {
     at: string;
@@ -175,6 +197,9 @@ export interface PrunedNodeInfo {
     citedBySeq: number[];
     /** 被剪瞬间的有效重要性（recall 价值继承的来源，§3-3）。 */
     eff: number;
+    /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时，指向同一路径（tool name+arguments）下最新存活版本的 seq。
+     *  未参与版本链去重的被剪节点无此字段（undefined）。 */
+    latestOfPath?: number;
 }
 export declare class ArgpGraphEngine extends CompactionEngine {
     static inject: string[];
@@ -232,6 +257,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     lastEdges: SemanticEdge[];
     /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
     lastDeterministicEdges: DeterministicEdge[];
+    /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
+    injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
+    /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
+    disableCiteEdges: boolean;
     /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
     readonly prunedNodeIndex: Map<number, PrunedNodeInfo>;
     /** 闭包生命周期剪除记录。 */
