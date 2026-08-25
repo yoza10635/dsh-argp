@@ -5,6 +5,9 @@ dist/
 .env
 sessions/
 spike/out/
+# 一次性调试/诊断脚本（probe/diag 等），不进基线
+.tmp/
+*.tmpdir/
 
 # 内部开发文档（开源排除）
 docs/handoff-*.md

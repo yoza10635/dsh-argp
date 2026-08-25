@@ -53,6 +53,10 @@
     "spike26": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/26-tlong-coding.ts",
     "spike7real": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/07-real-trace.ts",
     "spike32": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/32-split-repr-compare.ts",
+    "spike33": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/33-peratom-live.ts",
+    "spike34": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/34-extract-fidelity.ts",
+    "spike35": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/35-peratom-agentloop.ts",
+    "spike36": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/36-peratom-soak.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "peerDependencies": {

@@ -1,2 +1,14 @@
 export { ArgpGraphEngine, default } from './argp-graph-engine.js'
 export * from './argp-graph-engine.js'
+
+// Per-Atom Stage-1（双引擎方案）：门控模块 + eager 熵降管线
+export * from './peratom/gate.js'
+export { PeratomCompressor, default as PeratomCompressorDefault } from './peratom/compressor.js'
+export type {
+  CompressDecision,
+  CompressRecord,
+  CurrentTurnCollect,
+  PeratomCompressorConfig,
+  ToolAction,
+  UserSplit,
+} from './peratom/compressor.js'

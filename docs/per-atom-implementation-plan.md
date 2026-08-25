@@ -56,12 +56,12 @@ export interface ArgpUserMeta {
 - 引擎改动面（P4 执行；修正设计文档"唯一改动点"口径）：atomize 分类、`isAtomCandidate` 的 ask-exempt 分支（U-info 与 ask 豁免两条可剪路径不得互相污染）、区间级 U/X 否决、pruneIntervals 过滤、eff 权重表——五处触点逐一枚举测试。
 
 **验收判据**：
-- [ ] 单测：短消息（<100 字符）零拆分零调用
-- [ ] 单测：复用 spike 32 语料（18 用例）作 fixture：多区间交错 quotes 切片哈希一致、余量进入单个 U-info 原子
-- [ ] 零标注消息 = 整条 U-info，过保护期后可正常参剪，`recall_detail(sourceSeq)` 全文逐字节恢复
-- [ ] dialog 覆盖率 ≥80% 的消息整条保留为 dialog（不产生 info 事件）；定位失败回退路径各有测试
-- [ ] U-info 不被分类为 X 的专项断言；同一 replace 事务产生相邻多条 user/message 时 provider 序列化兼容实测
-- [ ] 拆分调用次数 = 含长消息的轮数（无多余调用）
+- [x] 单测：短消息（<100 字符）零拆分零调用（test/peratom-split.test.ts + peratom-compressor.test.ts 门控短路/计数器）
+- [x] 单测：复用 spike 32 语料（18 用例）作 fixture：多区间交错 quotes 切片哈希一致、余量进入单个 U-info 原子（test/fixtures/split-corpus.ts + peratom-split.test.ts 语料扫描）
+- [ ] 零标注消息 = 整条 U-info，过保护期后可正常参剪，`recall_detail(sourceSeq)` 全文逐字节恢复（部分完成：info-only 落盘已实证 spike/33、35；"过保护期参剪"依赖 P4 候选放行、"recall_detail 全文恢复"依赖 P3 工具，两处落地后回补本条）
+- [x] dialog 覆盖率 ≥80% 的消息整条保留为 dialog（不产生 info 事件）；定位失败回退路径各有测试（peratom-split.test.ts）
+- [x] U-info 不被分类为 X 的专项断言；同一 replace 事务产生相邻多条 user/message 时 provider 序列化兼容实测（分类陷阱断言在 peratom-split.test.ts；相邻副本的真模型序列化兼容由 spike/35 实证——轮 2 请求含 dialog 副本+U-info 相邻排列，本地 Qwen 正常应答）
+- [x] 拆分调用次数 = 含长消息的轮数（无多余调用）（单次调用设计：compressor calls 计数器断言覆盖纯对话轮/可压轮/链成员轮）
 
 ## P1 PeratomCompressor：eager 熵降管线（~2 天）
 
@@ -87,10 +87,10 @@ R 档位来源按设计 §3 顺序：版本链成员（哈希复用，决策④�
 **LLM 调用**：首版直接 OpenAI 兼容 fetch（对齐 spike 30 模式）+ 结构化输出；生产 dsh-llm 适配器接入留到 P5 后（登记为已知债务）。
 
 **验收判据**：
-- [ ] **前缀不变断言**：N 轮会话逐轮熵降后，第 k 轮请求的 system+历史前缀指纹与上一轮完全一致（复用 llm-log-proxy 指纹法）——这是缓存经济的生命线
-- [ ] 版本链成员 R 原文零替换（哈希比对）
-- [ ] 純对话轮零调用（调用计数器）
-- [ ] extract 保真探针初版：构造含路径/行号/错误码/marker 的 tool result，四类串保留率 = 100%（构造集上）
+- [x] **前缀不变断言**：N 轮会话逐轮熵降后，第 k 轮请求的 system+历史前缀指纹与上一轮完全一致（复用 llm-log-proxy 指纹法）——这是缓存经济的生命线（test/peratom-prefix-fingerprint.test.ts：三轮逐轮压缩，deriveEventMessage 指纹流公共前缀覆盖当轮起点；2026-08-25）
+- [x] 版本链成员 R 原文零替换（哈希比对）（同上测试：事件数据 JSON 哈希底账比对 + gate 版本链硬排除单测）
+- [x] 純对话轮零调用（调用计数器）（test/peratom-compressor.test.ts）
+- [x] extract 保真探针初版：构造含路径/行号/错误码/marker 的 tool result，四类串保留率 = 100%（构造集上）（spike/34-extract-fidelity.ts + fidelityGuard 守卫：表面保留率 100%——violation=0；原始服从率 83.3% @ Qwen3.6-35B-A3B，产物 spike/out/34-extract-fidelity-*.json；2026-08-25）
 
 ## P2 CiteDeclarer：边声明管线（~1 天）
 
