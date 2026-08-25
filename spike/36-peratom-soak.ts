@@ -65,6 +65,10 @@ import { projectSurfaceText } from '../src/peratom/gate.ts'
 
 const BASE = (process.env['QWEN_BASE'] ?? 'http://127.0.0.1:8080/v1').replace(/\/$/, '')
 let MODEL = process.env['QWEN_MODEL'] ?? ''
+// OpenRouter 模式开关：QWEN_BASE 指向 openrouter 域名时自动启用（API key 读 OPEN_ROUTER_API_KEY，
+// thinking 走 openrouter wire，不注入 llama.cpp 的 chat_template_kwargs）。
+const IS_OPENROUTER = /openrouter\.ai/.test(BASE)
+const API_KEY_ENV = IS_OPENROUTER ? 'OPEN_ROUTER_API_KEY' : 'ARGP_LOCAL_KEY'
 // 探测 8080 实际加载的模型，避免产物标签与实际请求不符（env QWEN_MODEL 仍可强制覆盖）。
 async function resolveLiveModel(): Promise<string> {
   try {
@@ -252,8 +256,13 @@ function fingerprint(session: Session): string[] {
 
 async function main(): Promise<void> {
   if (!MODEL) MODEL = await resolveLiveModel()
-  console.log(`[spike36] base=${BASE} model=${MODEL}`)
-  process.env['ARGP_LOCAL_KEY'] = process.env['ARGP_LOCAL_KEY'] ?? 'local-no-auth'
+  console.log(`[spike36] base=${BASE} model=${MODEL} route=${IS_OPENROUTER ? 'openrouter' : 'local-llama'}`)
+  // OpenRouter 用真实 key env；本地回退 dummy。
+  process.env[API_KEY_ENV] = process.env[API_KEY_ENV] ?? (IS_OPENROUTER ? '' : 'local-no-auth')
+  if (IS_OPENROUTER && !process.env['OPEN_ROUTER_API_KEY']) {
+    console.error('[spike36] OPEN_ROUTER_API_KEY 未设置（OpenRouter 模式必需）')
+    process.exit(1)
+  }
 
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-36 peratom soak persona' } })
@@ -263,15 +272,31 @@ async function main(): Promise<void> {
   await ctx.plugin(LlmPiAi, {
     providers: {
       local: {
-        displayName: 'Local llama.cpp', apiKeyEnv: 'ARGP_LOCAL_KEY', api: 'openai-completions',
-        baseURL: BASE, compat: { thinkingFormat: 'qwen' },
-        models: [{ id: MODEL, name: MODEL, contextWindow: 196_608, maxTokens: 2048, reasoningEfforts: { off: 'false', high: 'true' } }],
+        displayName: IS_OPENROUTER ? 'OpenRouter' : 'Local llama.cpp',
+        apiKeyEnv: API_KEY_ENV, api: 'openai-completions',
+        baseURL: BASE,
+        compat: { thinkingFormat: IS_OPENROUTER ? 'openrouter' : 'qwen' },
+        models: [{
+          id: MODEL, name: MODEL,
+          // minimax-m3:free 上下文 1M；本地 Qwen 196K。reasoning wire 按路由区分：
+          // openrouter 格式把 wire 值直接塞进 reasoning:{effort:<wire>}，必须用 effort 枚举
+          // （布尔会 400：Invalid option）；本地 llama.cpp 用布尔开关。
+          contextWindow: IS_OPENROUTER ? 1_048_576 : 196_608,
+          maxTokens: 2048,
+          reasoningEfforts: IS_OPENROUTER
+            ? { off: 'minimal', high: 'high' }
+            : { off: 'false', high: 'true' },
+        }],
       },
     },
   })
   const compressorConfig = {
-    endpoint: BASE + '/chat/completions', apiKey: 'dummy-local', model: MODEL,
-    timeoutMs: 240_000, chatTemplateKwargs: { enable_thinking: true },
+    endpoint: BASE + '/chat/completions',
+    apiKey: IS_OPENROUTER ? (process.env['OPEN_ROUTER_API_KEY'] ?? '') : 'dummy-local',
+    model: MODEL,
+    timeoutMs: 240_000,
+    // OpenRouter 不认 llama.cpp 的 chat_template_kwargs（会 400/忽略）——只本地注入。
+    ...(IS_OPENROUTER ? {} : { chatTemplateKwargs: { enable_thinking: true } }),
   }
   const compressor = new PeratomCompressor(ctx, compressorConfig)
 
@@ -308,8 +333,35 @@ async function main(): Promise<void> {
   const originalHashes = new Map<number, string>()
   let cfTotal = 0
 
+  // ---- 剧本循环（测量错位一轮，flush 走生产路径）----
+  // dsh-session 不变量：tool/result 的 surface 替换必须在 open turn 内（invariant.js）。
+  // 生产路径在下一轮 agent/pre-step 时 flush（新轮已开、合法）；spike 若在 idle 后手动
+  // flushStashed（turn 已闭合）会触发 invariant 拒绝 → 压缩静默丢失（T1/T4/T7 曾因此
+  // appliedReplaces=None，T5 因替换 user/message 不受限而幸存）。因此本循环：
+  //   上一轮压缩的生效与观测，都在本轮 followup 触发的 pre-step 之后进行（错位一轮）。
+  // 每轮 record 的 pending 就绪（LLM 返回）须在下一轮 followup 前确认，否则 pre-step flush 空转。
+  interface PendingMeasure {
+    step: typeof SCRIPT[number]
+    turn: number
+    surfaceBefore: number
+    before: string[]
+    collect: ReturnType<PeratomCompressor['collectCurrentTurn']>
+  }
+  let pendingMeasure: PendingMeasure | null = null
+
   for (const step of SCRIPT) {
-    // 记录本轮新增原文的哈希底账在 idle 后做（事件 seq 已知后）
+    // 1) 上一轮 collect（本轮 followup 前，最新闭合轮 = 上一轮；collect 不依赖 flush）
+    const prevCollect = pendingMeasure !== null ? compressor.collectCurrentTurn(session) : null
+    // 2) 上一轮 pending 就绪：LLM 已返回且暂存入队，本轮 pre-step 才有东西可 flush
+    if (pendingMeasure !== null) {
+      await waitFor(`turn${pendingMeasure.turn} pending 就绪`, () => {
+        const r = compressor.records.findLast(x => x.turn === pendingMeasure!.turn)
+        if (r === undefined) return false
+        if (r.called === false || r.parseFailed === true || r.error !== undefined) return true
+        return r.ms !== undefined && compressor.pendingCount >= 1
+      }, 240_000)
+    }
+    // 3) followup 本轮 → pre-step 自然 flush 上一轮 → agent 跑完
     agent.followup(createUserMessage({ content: [{ type: 'text', text: step.text }], source: { kind: 'user' } }))
     await waitIdle(ctx, agent)
 
@@ -320,32 +372,67 @@ async function main(): Promise<void> {
       if (!originalHashes.has(ev.seq)) originalHashes.set(ev.seq, JSON.stringify(ev.data))
     }
 
-    const surfaceBefore = surfaceChars(session)
-    const before = fingerprint(session)
-
-    // 等调用完成且暂存就绪：生产路径由下一次 agent/pre-step 触发 flush；spike 是同步驱动，
-    // 需在读取 record 前手动 flush，否则 record 的 skippedFidelity/fidelityMissing/appliedReplaces
-    // 尚未落账（flushEntry 只在 flush 时写入），导致产物缺字段、surface 不反映本轮回压。
-    await waitFor(`turn${turn} 压缩终态`, () => {
-      const r = compressor.records.findLast(x => x.turn === turn)
-      if (r === undefined) return false
-      // 零调用 / 解析失败 / 报错：终态已定，无需 flush
-      if (r.called === false || r.parseFailed === true || r.error !== undefined) return true
-      // 调用成功：须等 ms 落账且暂存条目已入队，flush 才有东西可发
-      return r.ms !== undefined && compressor.pendingCount >= 1
-    }, 240_000)
-    const rec: CompressRecord | undefined = compressor.records.findLast(r => r.turn === turn)
-    // 手动发射：把本轮暂存事务落盘，使 record 的 skippedFidelity/fidelityMissing/appliedReplaces 落账，
-    // 同时让本轮压缩真实作用于 surface（surBefore→surfaceAfter 才能反映本轮回压）。
-    if (rec && rec.called === true && rec.parseFailed !== true && rec.error === undefined) {
-      compressor.flushStashed(session)
+    // 4) 测量上一轮（已被本轮 pre-step flush，record 的 appliedReplaces 等已落账）
+    if (pendingMeasure !== null) {
+      const pm = pendingMeasure
+      const rec: CompressRecord | undefined = compressor.records.findLast(r => r.turn === pm.turn)
+      const after = fingerprint(session)
+      let common = 0
+      while (common < pm.before.length && common < after.length && pm.before[common] === after[common]) common += 1
+      const firstNewIdx = (() => {
+        // 当轮第一个节点的 surface 下标：找本轮 user 输入（最后一个 append+user 署名消息）
+        let idx = Number.MAX_SAFE_INTEGER
+        for (let i = 0; i < session.surface.nodes.length; i += 1) {
+          const ev = session.events[session.surface.nodes[i]!]
+          const d = ev?.data as { source?: { kind?: string }; [k: string]: unknown } | undefined
+          if (ev?.type === 'user/message' && d?.source?.kind === 'user') { idx = i; break }
+        }
+        return idx
+      })()
+      cfTotal = counterfactualChars(session)
+      const recObj = rec ?? {}
+      rows.push({
+        label: pm.step.label, kind: pm.step.kind, turn: pm.turn,
+        surfaceBefore: pm.surfaceBefore, surfaceAfter: surfaceChars(session), cfTotal,
+        ...recObj,
+        prefixOk: common >= firstNewIdx,
+        interrupted: prevCollect?.interrupted,
+        chainExcluded: pm.step.kind === 'chain' && prevCollect?.interrupted !== true
+          ? (prevCollect?.toolResults.length ?? -1) === 0
+          : undefined,
+      })
+      console.log(`[${pm.step.label}/${pm.step.kind}] turn=${pm.turn} called=${recObj.called} `
+        + `replaces=${recObj.appliedReplaces ?? 'undef'} fb=${recObj.skippedFallbackDialog ?? 'undef'} fid=${recObj.skippedFidelity ?? 'undef'} `
+        + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
     }
 
+    // 5) 记录本轮起点（上一轮压缩已生效后的 surface），供下一轮测量
+    pendingMeasure = {
+      step, turn,
+      surfaceBefore: surfaceChars(session),
+      before: fingerprint(session),
+      collect: compressor.collectCurrentTurn(session),
+    }
+  }
+
+  // 收尾：最后一轮（T9）的压缩需再触发一次 pre-step 才 flush 并测量。
+  agent.followup(createUserMessage({ content: [{ type: 'text', text: '收到，本轮到此为止。' }], source: { kind: 'user' } }))
+  await waitIdle(ctx, agent)
+  if (pendingMeasure !== null) {
+    const pm = pendingMeasure
+    await waitFor(`turn${pm.turn} pending 就绪`, () => {
+      const r = compressor.records.findLast(x => x.turn === pm.turn)
+      if (r === undefined) return false
+      if (r.called === false || r.parseFailed === true || r.error !== undefined) return true
+      return r.ms !== undefined && compressor.pendingCount >= 1
+    }, 240_000)
+    // 尾轮的 collect 在本次 followup 前不可得（最新闭合已变）——用 record 内的 turn 关联即可，
+    // chainExcluded 仅对 chain 轮有意义，尾轮若为 chain（T9）此处近似缺省。
+    const rec: CompressRecord | undefined = compressor.records.findLast(r => r.turn === pm.turn)
     const after = fingerprint(session)
     let common = 0
-    while (common < before.length && common < after.length && before[common] === after[common]) common += 1
+    while (common < pm.before.length && common < after.length && pm.before[common] === after[common]) common += 1
     const firstNewIdx = (() => {
-      // 当轮第一个节点的 surface 下标：找本轮 user 输入（最后一个 append+user 署名消息）
       let idx = Number.MAX_SAFE_INTEGER
       for (let i = 0; i < session.surface.nodes.length; i += 1) {
         const ev = session.events[session.surface.nodes[i]!]
@@ -354,23 +441,21 @@ async function main(): Promise<void> {
       }
       return idx
     })()
-
-    const collect = compressor.collectCurrentTurn(session)
     cfTotal = counterfactualChars(session)
     const recObj = rec ?? {}
     rows.push({
-      label: step.label, kind: step.kind, turn,
-      surfaceBefore, surfaceAfter: surfaceChars(session), cfTotal,
+      label: pm.step.label, kind: pm.step.kind, turn: pm.turn,
+      surfaceBefore: pm.surfaceBefore, surfaceAfter: surfaceChars(session), cfTotal,
       ...recObj,
       prefixOk: common >= firstNewIdx,
-      interrupted: collect?.interrupted,
-      chainExcluded: step.kind === 'chain' && collect?.interrupted !== true
-        ? (collect?.toolResults.length ?? -1) === 0
+      interrupted: pm.collect?.interrupted,
+      chainExcluded: pm.step.kind === 'chain' && pm.collect?.interrupted !== true
+        ? (pm.collect?.toolResults.length ?? -1) === 0
         : undefined,
     })
-    console.log(`[${step.label}/${step.kind}] turn=${turn} called=${recObj.called} `
+    console.log(`[${pm.step.label}/${pm.step.kind}] turn=${pm.turn} called=${recObj.called} `
       + `replaces=${recObj.appliedReplaces ?? 'undef'} fb=${recObj.skippedFallbackDialog ?? 'undef'} fid=${recObj.skippedFidelity ?? 'undef'} `
-      + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} surface=${surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
+      + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
   }
 
   // ---- 聚合判决 ----
@@ -428,8 +513,12 @@ async function main(): Promise<void> {
       base: BASE, model: MODEL, runAt: new Date().toISOString(), failures,
       // 版本指纹：对照报告只认同指纹产物（review 严重发现 #3）
       gitCommit: fp.commit, scriptHash: fp.scriptHash,
-      // 引擎配置指纹：thinking 开关 + 有无 max_tokens（compressor 请求体已删 max_tokens）
-      enableThinking: Boolean((compressorConfig.chatTemplateKwargs ?? {})['enable_thinking']),
+      // 引擎配置指纹：thinking 开关 + 有无 max_tokens（compressor 请求体已删 max_tokens）。
+      // OpenRouter 模式 thinking 走 reasoning 参数（agent 侧 reasoningEffort=high），
+      // 无 chat_template_kwargs——enableThinking 显式标注路由以免误读。
+      enableThinking: IS_OPENROUTER
+        ? 'openrouter-reasoning(high)'
+        : Boolean((compressorConfig.chatTemplateKwargs ?? {})['enable_thinking']),
       maxTokens: 'none (engine 侧已删，仅 AbortSignal 兜底)',
       splitThresholdChars: 100, smallResultChars: 512,
     },
