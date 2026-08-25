@@ -12,6 +12,7 @@
  * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
  */
 import type { Session } from '@deepseek-ai/dsh-session'
+import { isArgpUserInfo } from './peratom/types.js'
 
 /**
  * 节点相对可见上下文的状态：
@@ -101,6 +102,8 @@ export type LogRowType = 'U' | 'A' | 'R' | 'X' | 'T' | 'other'
 
 export function logRowType(eventType: string, data: Record<string, unknown> | undefined): LogRowType {
   if (eventType === 'user/message') {
+    // P0 分类陷阱防线：U-info 聚合副本（data[argp].info）按 U 展示，先于 plugin-source → X 判定
+    if (isArgpUserInfo(data)) return 'U'
     return (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
   }
   if (eventType === 'assistant/message') return 'A'

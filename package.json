@@ -50,7 +50,8 @@
     "check": "npm run typecheck && npm run smoke && npm test",
     "smoke:deepseek": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/10a-deepseek-smoke.ts && node --import ./scripts/ts-import-rewrite-loader.mjs spike/10b-basic-deepseek-smoke.ts && node --import ./scripts/ts-import-rewrite-loader.mjs spike/10d-argp-deepseek-smoke.ts",
     "spike8a": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08a-production-synthetic.ts",
-    "spike26": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/26-tlong-coding.ts"
+    "spike26": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/26-tlong-coding.ts",
+    "spike32": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/32-split-repr-compare.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

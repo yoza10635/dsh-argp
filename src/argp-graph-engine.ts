@@ -23,12 +23,13 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog } from './log-access.js'
+import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, stateHeader } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 import type { ParsedCite, CiteLevel } from './cites-strip.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
+import { isArgpUserInfo } from './peratom/types.js'
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -80,6 +81,22 @@ export function looksAskText(text: string): boolean {
     || t.endsWith('？') || /吗[？?。]?$/.test(t) || /呢[？?。]?$/.test(t)
     || /什么|怎么|如何|能否|能不能/.test(t)
     || /^(请|帮我|能不能|能否)/.test(t)
+}
+
+/**
+ * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
+ *
+ * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
+ * 插件 append，但必须按 U 待遇参与剪枝候选），再落 `source.kind === 'plugin'` → X
+ * （墓碑/checkpoint）判定。若先判 plugin-source，U-info 会被分类成 X 而**全局不可剪**，
+ * P4 的候选放行将永远失效。
+ *
+ * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
+ * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
+ */
+export function classifyUserMessage(data: unknown): 'U' | 'X' {
+  if (isArgpUserInfo(data)) return 'U'
+  return (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
 }
 
 export interface ArgpGraphConfig {
@@ -474,7 +491,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           if (filters.turn !== undefined && turn !== filters.turn) continue
           let type: AtomType
           if (event.type === 'user/message') {
-            type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+            type = classifyUserMessage(data)
           } else if (event.type === 'assistant/message') {
             type = 'A'
           } else if (event.type === 'tool/result') {
@@ -689,7 +706,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       const data = event.data as Record<string, unknown> | undefined
       let type: AtomType
       if (event.type === 'user/message') {
-        type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+        type = classifyUserMessage(data)
       } else if (event.type === 'assistant/message') {
         type = 'A'
       } else if (event.type === 'tool/result') {
@@ -729,7 +746,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       for (const term of terms) if (lower.includes(term)) score += 1
       if (score === 0) continue
       let type: AtomType
-      if (event.type === 'user/message') type = (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+      if (event.type === 'user/message') type = classifyUserMessage(data)
       else if (event.type === 'assistant/message') type = 'A'
       else if (event.type === 'tool/result') type = 'R'
       else type = 'X'
@@ -819,8 +836,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       const data = event.data as Record<string, unknown> | undefined
       const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
       if (event.type === 'user/message') {
-        const source = (data as { source?: { kind?: string } }).source
-        const kind = source?.kind === 'plugin' ? 'X' : 'U'
+        // P0 分类陷阱防线：先认 data[argp].info（U-info 聚合副本），再判 plugin-source → X
+        const kind = classifyUserMessage(data)
         atoms.push({ id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false })
         continue
       }
@@ -1183,8 +1200,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
       if (this.turnBasis === 'semantic' && event.type === 'user/message'
-        && (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin') {
-        continue // 注入型 X（system-reminder / ARGP tombstone）不推进语义轮次
+        && classifyUserMessage(data) === 'X') {
+        continue // 注入型 X（system-reminder / ARGP tombstone）不推进语义轮次；
+        // U-info 聚合副本（classifyUserMessage → U）是真实用户内容的替换拷贝，照常参与——
+        // 若被跳过，被拆分消息所在轮会漏报 latestTurn，recency/turnGuard 保护线随之偏移。
       }
       const t = data?.turn
       if (typeof t === 'number' && t > max) max = t
@@ -2059,14 +2078,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     // shadowedSeqsOf 已从上次扫描处继续到 events.length，同一游标不冲突）
     this.shadowedSeqsOf(this.session)
     // 事件类型反查（问题 8）：从日志真实事件反推原子类型/轮次，不再一律占位 'A'/turn 0。
-    // 分类口径与 atomize 一致：user/message plugin 源 → X，其余 U；assistant → A；tool/result → R。
+    // 分类口径与 atomize 一致：统一走 classifyUserMessage（先 data[argp].info → U，再 plugin 源 → X）。
     const typeOfSeq = (seq: number): AtomType => {
       const event = this.session?.events[seq]
       if (event === undefined) return 'X'
-      if (event.type === 'user/message') {
-        const source = (event.data as { source?: { kind?: string } }).source
-        return source?.kind === 'plugin' ? 'X' : 'U'
-      }
+      if (event.type === 'user/message') return classifyUserMessage(event.data)
       if (event.type === 'assistant/message') return 'A'
       if (event.type === 'tool/result') return 'R'
       return 'X'
