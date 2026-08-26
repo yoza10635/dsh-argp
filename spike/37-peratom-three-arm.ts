@@ -414,6 +414,26 @@ function auditTypeOf(o: any): string {
   if (o.toolCallId !== undefined || o.toolUseId !== undefined) return 'R'
   return '?'
 }
+// 模型可见长度：只计 text 块 + tool-result 内层 text + tool-call arguments，**不含 reasoning**
+// （实测本地 llama.cpp/Qwen 丢弃 reasoning_content 字段：同请求加/不加 reasoning_content，prompt_tokens 差值=0。
+//  口径 = 模型实际上下文；官方 DeepSeek API 的 reasoning 计费行为未验证，对外引用需标注环境。）
+function visBlocks(arr: any[]): number {
+  let s = 0
+  for (const b of arr) {
+    if (!b) continue
+    if (b.type === 'text') s += b.text?.length ?? 0
+    else if (b.type === 'tool-result' && Array.isArray(b.content)) s += visBlocks(b.content)
+    else if (b.type === 'tool-call') s += (b.name?.length ?? 0) + (typeof b.arguments === 'string' ? b.arguments.length : JSON.stringify(b.arguments ?? '').length)
+  }
+  return s
+}
+function visLen(o: any): number {
+  if (!o) return 0
+  const c = o.message?.content ?? o.content
+  if (Array.isArray(c)) return visBlocks(c)
+  if (typeof o.text === 'string') return o.text.length
+  return 0
+}
 
 function waitForIdle(): Promise<void> {
   return new Promise(resolve => {
@@ -442,7 +462,8 @@ function verifyOriginals(): { ok: boolean; bad: number[] } {
 // ---------- 轮次执行（重试 3 次，连续 2 轮耗尽即中止） ----------
 interface TurnRow { label: string; kind: ItemKind; ok: boolean; boundariesAfter: number; genDelta: number; seconds: number }
 const turnLog: TurnRow[] = []
-// 逐轮活上下文轨迹（隔离 Stage-1 per-atom 压缩的上下文效应）：liveChars=活原子总字符（缓存无关，直接=上下文大小）
+// 逐轮活上下文轨迹（隔离 Stage-1 per-atom 压缩的上下文效应）：liveChars=活原子模型可见总字符
+//（text+tool-result 内层+tool-call args，**不含 reasoning**——本地 Qwen 丢弃 reasoning_content，实测 prompt_tokens 差值=0）
 interface CtxRow { turn: number; label: string; liveChars: number; liveAtoms: number }
 const contextTraj: CtxRow[] = []
 let aborted = false
@@ -471,12 +492,13 @@ for (const item of items) {
   // 本轮 pre-step 的引擎压缩换代：genBefore 是 followup 前快照，pre-step 在其后 → genDelta>0 即本轮发生了 surface 换代
   turnLog.push({ label: item.label, kind: item.kind, ok, boundariesAfter, genDelta, seconds: Math.round((Date.now() - t0) / 1000) })
   snapshotOriginals()
-  // 逐轮活上下文大小：活原子 seq 来自 surface.nodes；seq 即 log 下标（deriveMessages 同款 log[seq]），
-  // 事件信封 .data 即原子内容（auditTextLen 递归下钻 tool-result 嵌套）。tombstone 原子已不在 nodes 中。
+  // 逐轮活上下文大小（模型可见口径，排除 reasoning）：活原子 seq 来自 surface.nodes；
+  // seq 即 log 下标（events[seq].data，deriveMessages 同款 log[seq]），tombstone 原子已不在 nodes 中。
+  // 口径=模型实际上下文（本地 Qwen 丢弃 reasoning_content，prompt_tokens 差值=0 实测）。
   const sf = agent.session.surface as any
   const nodes: number[] = sf?.nodes ?? []
   let liveChars = 0
-  for (const seq of nodes) liveChars += auditTextLen((agent.session.events as any[])[seq]?.data)
+  for (const seq of nodes) liveChars += visLen((agent.session.events as any[])[seq]?.data)
   contextTraj.push({ turn: turnLog.length, label: item.label, liveChars, liveAtoms: nodes.length })
   console.log('[turn] ' + item.label + ' ' + (ok ? 'ok' : 'FAILED') + ' in ' + Math.round((Date.now() - t0) / 1000) + 's; boundaries=' + boundariesAfter + ' genΔ=' + genDelta + ' liveChars=' + liveChars + ' liveAtoms=' + nodes.length)
   if (!ok) {
