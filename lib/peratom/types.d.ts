@@ -30,6 +30,12 @@ export interface SplitDecision {
 export interface ArgpUserMeta {
     info: true;
     sourceSeq: number;
+    /**
+     * 压缩时产的 summary（P1 落盘，P3 recall_summary 消费）。U-info 原子专属——
+     * tool/result 副本受 dsh-session 硬约束不能携带 `data[ARG_NS]`（多余键即拒绝），
+     * 其 summary 语义由副本正文承载，recall_summary 对无此字段的节点降级返回原文。
+     */
+    summary?: string;
 }
 /**
  * 类型守卫：事件 data 是否携带 U-info 标记。
