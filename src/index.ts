@@ -41,3 +41,6 @@ export type {
   SummaryResolution,
   SummarySource,
 } from './peratom/recall-zoom.js'
+// 双引擎生产挂载工厂（P4）：三管线 + Stage-2 图引擎组装为声明式可挂载整体；P5 三臂开关
+export { mountPeratomStack } from './peratom/mount.js'
+export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js'

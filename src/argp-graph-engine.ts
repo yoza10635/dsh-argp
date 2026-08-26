@@ -29,7 +29,7 @@ export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 import type { ParsedCite, CiteLevel } from './cites-strip.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
-import { isArgpUserInfo } from './peratom/types.js'
+import { ARG_NS, isArgpUserInfo } from './peratom/types.js'
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -42,6 +42,14 @@ export interface Atom {
   toolCallIds: string[] // A：发出的 tool-call id；R：应答的 call id —— 配对键（成对同剪防孤儿）
   cites: ParsedCite[]   // 仅 A：声明的引用（前缀原文 + 级别；V6 分级契约，见 cites-strip.ts）
   citesFailed: boolean  // 仅 A：检测到 cites 尝试但解析失败 → 保守保护（§4.7）
+  /**
+   * P4（U-info 剪枝放行）：仅 U-info 聚合副本有值——原始用户消息的日志 seq
+   * （recall_detail(sourceSeq) 的恢复目标）。dialog 副本（无 argp meta）与
+   * 普通 user 消息均无此字段，故 `sourceSeq !== undefined` 即 U-info 识别判据：
+   * ① isAtomCandidate 按 R 待遇参剪；② 排除出闭包 root（防 U-info 误当
+   * task-init 根拖整段退休）。
+   */
+  sourceSeq?: number
 }
 
 export type EdgeLevel = 'critical' | 'supporting' | 'contextual'
@@ -160,6 +168,15 @@ export interface ArgpGraphConfig {
    * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
    */
   disableCiteEdges?: boolean
+  /**
+   * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
+   * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
+   * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
+   * 再次 forcePrune 收尾。未注入（undefined）时退化为现役两步
+   * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
+   * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
+   */
+  onOverflowCompress?: (session: Session) => Promise<void>
 }
 
 export interface GraphPruneRecord {
@@ -311,6 +328,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly sortMode: 'legacy' | 'density' | 'density-chain'
   readonly turnBasis: 'semantic' | 'all'
   readonly maxOverflowRetries: number
+  /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
+  readonly onOverflowCompress?: (session: Session) => Promise<void>
   /** 闭包静止窗 K（A11 参数化，默认 2）。 */
   readonly closureWindowK: number
   /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
@@ -406,6 +425,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.sortMode = config.sortMode ?? 'density'
     this.turnBasis = config.turnBasis ?? 'semantic'
     this.maxOverflowRetries = config.maxOverflowRetries ?? 1
+    this.onOverflowCompress = config.onOverflowCompress
     this.closureWindowK = config.closureWindowK ?? 2
     // 默认 4：ASCII 词（如 "the"=3）被拒；CJK 双字（"读书"=2×2=4）放行（问题 5 修订）
     this.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
@@ -668,15 +688,42 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= this.maxOverflowRetries) return next()
-      const generation = agent.session.surface.replaceGeneration
+      // P4 溢出三步序列（在现有重试环内，"仍超？"的真信号 = provider 再次溢出事件）：
+      //   事件#1（retries=0）→ ① forcePrune(旧内容) → retry
+      //   事件#2（retries=1）→ ① 没解决才走到这：② onOverflowCompress（当前轮
+      //      per-atom 降熵：U 拆分/大 R extract，顺带补 cites）→ ③ forcePrune → retry
+      //   事件#3（retries≥2）→ ③ 也没解决 → 保留原错误（现有行为）
+      // retries 是每序列单调计数器（成功应答/idle 才重置），故第②步全序列只跑一次、
+      // 且永不空转（① 成功即不再溢出、不再进本钩子）。onOverflowCompress 未注入时
+      // 事件#2 直接保留原错误——与现役行为完全一致。
+      const session = agent.session
+      const genBefore = session.surface.replaceGeneration
+      const isStepOne = retries < 1
+      // 耗尽判定：事件#3（retries≥2 三步用尽）或未注入 compressor 的事件#2（现役即止）。
+      if (!isStepOne && (this.onOverflowCompress === undefined || retries >= 2)) {
+        ctx.logger.warn(`argp-graph overflow recovery exhausted (retries=${retries}); preserving the original request error`)
+        return next()
+      }
+      // ② per-atom 降熵（仅事件#2；① 成功就不会进到这里，故不空转）。
+      // 失败隔离：compressor 抛错只记日志——genBefore 在其前捕获，② 的换代仍计入下方
+      // "durable progress" 凭证，不吞 provider 溢出错误。
+      if (!isStepOne && this.onOverflowCompress !== undefined) {
+        try {
+          await this.onOverflowCompress(session)
+        } catch (compressError: unknown) {
+          const message = compressError instanceof Error ? compressError.message : String(compressError)
+          ctx.logger.warn(`argp-graph overflow per-atom compress failed: ${message}; relying on step-3 forcePrune`)
+        }
+      }
+      // ①（事件#1）/ ③（事件#2）forcePrune
       let result: CompactionResult | null
       try {
         result = await this.compactIfNeeded(agent, 'context-overflow', signal)
       } catch (recoveryError: unknown) {
         const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         // 剪枝可能在 summarize 之类后续阶段抛错前已落地（模型无关的确定性占位
-        // 替换）。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
-        if (!signal.aborted && agent.session.surface.replaceGeneration > generation) {
+        // 替换）；或 ② 已换代。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
+        if (!signal.aborted && session.surface.replaceGeneration > genBefore) {
           ctx.logger.warn(`argp-graph overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
           this.overflowRetries.set(agent, retries + 1)
           return { kind: 'retry' }
@@ -684,10 +731,10 @@ export class ArgpGraphEngine extends CompactionEngine {
         ctx.logger.warn(`argp-graph overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
         return next()
       }
-      if (signal.aborted || agent.session.surface.replaceGeneration <= generation) return next()
+      if (signal.aborted || session.surface.replaceGeneration <= genBefore) return next()
       if (result !== null) {
         ctx.logger.info(
-          `argp-graph context-overflow recovery: shadowed ${result.shadowedSeqs.length} surface nodes `
+          `argp-graph context-overflow step-${isStepOne ? 1 : 3} prune: shadowed ${result.shadowedSeqs.length} surface nodes `
           + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
         )
       }
@@ -874,7 +921,13 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (event.type === 'user/message') {
         // P0 分类陷阱防线：先认 data[argp].info（U-info 聚合副本），再判 plugin-source → X
         const kind = classifyUserMessage(data)
-        atoms.push({ id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false })
+        // P4：U-info 投影 sourceSeq（原始用户消息日志 seq）——既是 recall_detail 恢复
+        // 目标，也是 isAtomCandidate/闭包 root 的 U-info 识别判据（dialog 无此字段）。
+        const uInfoMeta = (data as Record<string, unknown> | undefined)?.[ARG_NS] as { sourceSeq?: unknown } | undefined
+        const uSourceSeq = typeof uInfoMeta?.sourceSeq === 'number' ? (uInfoMeta.sourceSeq as number) : undefined
+        const userAtom: Atom = { id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false }
+        if (uSourceSeq !== undefined) userAtom.sourceSeq = uSourceSeq
+        atoms.push(userAtom)
         continue
       }
       if (event.type === 'assistant/message') {
@@ -1353,7 +1406,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     intervals: { seqs: number[]; chars: number; atoms: Atom[] }[]
   } | null {
     const roots = atoms
-      .filter(a => a.type === 'U' && !askCover.has(a.id))
+      .filter(a => a.type === 'U' && a.sourceSeq === undefined && !askCover.has(a.id))
+      // P4：排除 U-info 作 root——U-info 是"可丢弃可召回"的资料副本，不是开启新
+      // 任务的 task-init 根。若不排除，闭包生命周期会以 U-info 为根把其后整段
+      // dialog/A/R 拖进闭包退休（语义错误）。普通 U（dialog）仍为合法根。
       .sort((a, b) => a.seq - b.seq)
     if (roots.length === 0) return null
     const closureOf = new Map<number, string>()
@@ -1471,8 +1527,8 @@ export class ArgpGraphEngine extends CompactionEngine {
           turn: a.turn,
           firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
           citedBySeq,
-          // 闭包剪枝没有 eff map；用 selfImportance 近似（A=5/U=3/R=0）
-          eff: a.type === 'A' ? 5 : a.type === 'U' ? 3 : 0,
+          // 闭包剪枝没有 eff map；用 selfImportance 近似（A=5/U=3/R=0；P4：U-info 按 R=0）
+          eff: a.type === 'A' ? 5 : (a.type === 'U' && a.sourceSeq === undefined ? 3 : 0),
         })
       }
     }
@@ -1590,7 +1646,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
     const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
-    const selfImportance = (a: Atom): number => (a.type === 'A' ? 5 : a.type === 'U' ? 3 : 0)
+    // P4：U-info 按 R 待遇（eff=0，无 selfImportance，靠边权重/排序）；普通 U=3。
+    const selfImportance = (a: Atom): number => (a.type === 'A' ? 5 : (a.type === 'U' && a.sourceSeq === undefined ? 3 : 0))
     const eff = new Map(atoms.map(a => [a.id, selfImportance(a)]))
     for (const e of edges) eff.set(e.to, Math.max(eff.get(e.to) ?? 0, EDGE_WEIGHTS[e.level])) // 语义边权重
     // §3-3 recall 价值继承：recall 结果原子若被 cites 命中（入度>0 = 模型确认使用），
@@ -1645,7 +1702,9 @@ export class ArgpGraphEngine extends CompactionEngine {
       groupOf.set(a.id, gid)
     }
     const isAtomCandidate = (a: Atom, allowInDegree: boolean): boolean => {
-      if (a.type === 'U') {
+      if (a.type === 'U' && a.sourceSeq === undefined) {
+        // 普通 U（含 task-init dialog）：ask-exempt 路径——须被首个 A 的 supporting
+        // 边覆盖才参剪。dialog 永不剪不变（无覆盖 → 不可剪）。
         const coverer = askCoverage.get(a.id)
         if (coverer === undefined) return false
         const pos = position.get(a.seq)
@@ -1656,7 +1715,10 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (incoming.length === 0 || incoming.some(e => e.from !== coverer)) return false
         return true
       }
-      if (a.type !== 'A' && a.type !== 'R') return false
+      // P4：U-info（a.sourceSeq 有值）按 R 待遇参剪——跳过 ask-exempt（其不是 ask
+      // 文本、永远拿不到覆盖），走下方与 A/R 相同的 recencyGuard/turnGuard/
+      // citesFailed/入度门槛。dialog 不受影响（仍走上方 ask-exempt 分支）。
+      if (a.type !== 'A' && a.type !== 'R' && a.type !== 'U') return false
       const pos = position.get(a.seq)
       if (pos === undefined || pos >= recencyCut) return false
       if (a.turn > latestTurn - this.turnGuard) return false
