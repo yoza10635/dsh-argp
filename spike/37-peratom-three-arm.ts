@@ -440,6 +440,9 @@ function verifyOriginals(): { ok: boolean; bad: number[] } {
 // ---------- 轮次执行（重试 3 次，连续 2 轮耗尽即中止） ----------
 interface TurnRow { label: string; kind: ItemKind; ok: boolean; boundariesAfter: number; genDelta: number; seconds: number }
 const turnLog: TurnRow[] = []
+// 逐轮活上下文轨迹（隔离 Stage-1 per-atom 压缩的上下文效应）：liveChars=活原子总字符（缓存无关，直接=上下文大小）
+interface CtxRow { turn: number; label: string; liveChars: number; liveAtoms: number }
+const contextTraj: CtxRow[] = []
 let aborted = false
 let consecutiveFailed = 0
 const startedAt = Date.now()
@@ -466,7 +469,14 @@ for (const item of items) {
   // 本轮 pre-step 的引擎压缩换代：genBefore 是 followup 前快照，pre-step 在其后 → genDelta>0 即本轮发生了 surface 换代
   turnLog.push({ label: item.label, kind: item.kind, ok, boundariesAfter, genDelta, seconds: Math.round((Date.now() - t0) / 1000) })
   snapshotOriginals()
-  console.log('[turn] ' + item.label + ' ' + (ok ? 'ok' : 'FAILED') + ' in ' + Math.round((Date.now() - t0) / 1000) + 's; boundaries=' + boundariesAfter + ' genΔ=' + genDelta)
+  // 逐轮活上下文大小：活原子 seq 来自 surface.nodes；seq 即 log 下标（deriveMessages 同款 log[seq]），
+  // 事件信封 .data 即原子内容（auditTextLen 递归下钻 tool-result 嵌套）。tombstone 原子已不在 nodes 中。
+  const sf = agent.session.surface as any
+  const nodes: number[] = sf?.nodes ?? []
+  let liveChars = 0
+  for (const seq of nodes) liveChars += auditTextLen((agent.session.events as any[])[seq]?.data)
+  contextTraj.push({ turn: turnLog.length, label: item.label, liveChars, liveAtoms: nodes.length })
+  console.log('[turn] ' + item.label + ' ' + (ok ? 'ok' : 'FAILED') + ' in ' + Math.round((Date.now() - t0) / 1000) + 's; boundaries=' + boundariesAfter + ' genΔ=' + genDelta + ' liveChars=' + liveChars + ' liveAtoms=' + nodes.length)
   if (!ok) {
     consecutiveFailed += 1
     if (consecutiveFailed >= 2) {
@@ -683,6 +693,7 @@ const result = {
   compressorCalls: stack?.compressor?.calls ?? 0,
   originals: { count: originalHashes.size, allIntact: origCheck.ok, bad: origCheck.bad },
   atomAudit,
+  contextTraj,
   turnStats,
   turnLog,
   verdict: { failures },
