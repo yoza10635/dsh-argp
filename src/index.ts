@@ -28,3 +28,16 @@ export type {
   DeclaredCite,
   DeclaredLevel,
 } from './peratom/cite-declarer.js'
+// RecallZoom 两级召回 zoom（P3）：gist 档 recall_summary + exact 档 recall_detail（verbatim 天花板），4 倍制预算
+export {
+  RecallZoom,
+  DEFAULT_BUDGET_RATIO,
+  resolveSummaryText,
+  default as RecallZoomDefault,
+} from './peratom/recall-zoom.js'
+export type {
+  RecallZoomConfig,
+  RecallZoomRecord,
+  SummaryResolution,
+  SummarySource,
+} from './peratom/recall-zoom.js'
