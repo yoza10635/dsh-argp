@@ -374,6 +374,45 @@ ctx.on('session/event', (session, event) => {
   }
 })
 
+// 逐原子审计：压缩前后长度 + 剪枝原子类型（回应"双引擎逐原子验证"）
+// 事件驱动：直接解析 agent.session.events 的 surface-op（append=原文 / replace start===end=原地压缩），
+// 剪枝类型取自 engine.records[].prunedAtoms（权威，避免墓碑后 surface.at 取空）。
+// 不依赖 surface.at() 时序，避免 run-to-run 变量与取数陷阱。
+function blockText(b: any): number {
+  if (!b) return 0
+  let s = 0
+  if (typeof b.text === 'string') s += b.text.length
+  if (typeof b.content === 'string') s += b.content.length
+  if (Array.isArray(b.content)) s += blocksText(b.content)
+  if (typeof b.arguments === 'string') s += b.arguments.length
+  else if (b.arguments) s += JSON.stringify(b.arguments).length
+  return s
+}
+function blocksText(arr: any[]): number { let s = 0; for (const b of arr) s += blockText(b); return s }
+function auditTextLen(o: any): number {
+  if (!o) return 0
+  if (typeof o.text === 'string') return o.text.length
+  if (typeof o.body === 'string') return o.body.length
+  const arr = o.message?.content ?? o.content
+  if (Array.isArray(arr)) return blocksText(arr)
+  if (typeof o.arguments === 'string') return o.arguments.length
+  if (o.arguments) return JSON.stringify(o.arguments).length
+  if (o.message) return JSON.stringify(o.message).length
+  return JSON.stringify(o).length
+}
+function auditTypeOf(o: any): string {
+  if (!o) return '?'
+  if (o.type) return o.type
+  if (o.role === 'user') return 'U'
+  const c0 = Array.isArray(o.message?.content) ? o.message.content[0] : null
+  if (c0?.type === 'tool-result') return 'R'
+  if (c0?.type === 'tool-call') return 'tool/call'
+  if (o.role === 'assistant' || o.message) return 'A'
+  if (o.name && (o.arguments !== undefined || o.toolCallId !== undefined)) return 'tool/call'
+  if (o.toolCallId !== undefined || o.toolUseId !== undefined) return 'R'
+  return '?'
+}
+
 function waitForIdle(): Promise<void> {
   return new Promise(resolve => {
     const dispose = ctx.on('agent/status', ({ agent: a, status }) => {
@@ -552,6 +591,64 @@ const nonCompressHit = (() => {
   return m + h > 0 ? 100 * h / (m + h) : 100
 })()
 
+// ---------- 逐原子审计计算（事件驱动，解析 agent.session.events）----------
+const seqOrigLen = new Map<number, number>()
+const seqOrigType = new Map<number, string>()
+const seqReplaceLen = new Map<number, number>()
+const seqReplaceCount = new Map<number, number>()
+for (const ev of agent.session.events as any[]) {
+  const sop = ev?.surfaceOp
+  if (!sop) continue
+  const isObj = typeof sop === 'object'
+  const op = isObj ? sop.op : sop
+  if (op === 'append') {
+    const s = ev.seq
+    if (typeof s === 'number' && !seqOrigLen.has(s)) {
+      seqOrigLen.set(s, auditTextLen(ev.data))
+      seqOrigType.set(s, auditTypeOf(ev.data))
+    }
+  } else if (op === 'replace') {
+    const st = isObj ? sop.start : ev.seq
+    const en = isObj ? sop.end : ev.seq
+    if (typeof st === 'number' && st === en) {
+      seqReplaceLen.set(st, auditTextLen(ev.data))
+      seqReplaceCount.set(st, (seqReplaceCount.get(st) ?? 0) + 1)
+    }
+  }
+}
+const allReplaces: { seq: number; type: string; before: number; after: number; rate: number; reduced: boolean; replaces: number }[] = []
+for (const [seq, before] of seqOrigLen) {
+  const after = seqReplaceLen.get(seq)
+  if (after !== undefined && before > 0) {
+    allReplaces.push({ seq, type: seqOrigType.get(seq) ?? '?', before, after, rate: +(after / before * 100).toFixed(1), reduced: after < before * 0.9, replaces: seqReplaceCount.get(seq) ?? 1 })
+  }
+}
+allReplaces.sort((a, b) => a.rate - b.rate)
+const compressions = allReplaces.filter(c => c.reduced)
+
+// 剪枝（权威：engine.records[].prunedAtoms）
+const er0 = (engine as any)?.records?.[0]
+const prunedAtoms = er0?.prunedAtoms ?? []
+const prunedSeqs = prunedAtoms.map((p: any) => p.seq)
+const prunedTypes = prunedAtoms.map((p: any) => p.type)
+const shadowedTokenCount = (agent.session.events as any[]).find((e: any) => e.type === 'compaction/prune')?.data?.shadowedTokenCount ?? 0
+const prunedOrigLen = prunedSeqs.map((s: number) => seqOrigLen.get(s) ?? -1)
+const prunedSet = new Set(prunedSeqs)
+const compressedThenPruned = compressions.filter(c => prunedSet.has(c.seq)).map(c => c.seq)
+const atomAudit = {
+  compressedReplacedCount: allReplaces.length,
+  compressedCount: compressions.length,
+  compressions,
+  prunedTransactions: (engine as any)?.records?.length ?? 0,
+  prunedSeqs,
+  prunedTypes,
+  prunedOrigLen,
+  prunedTokenCount: shadowedTokenCount,
+  prunedRangeCharsBefore: er0?.charsBefore ?? 0,
+  prunedRangeCharsAfter: er0?.charsAfter ?? 0,
+  compressedThenPruned,
+}
+
 // ---------- 产物落盘 ----------
 const result = {
   spike: '37-three-arm',
@@ -585,6 +682,7 @@ const result = {
   declarerCachedEdges: stack?.declarer?.cachedEdgeCount ?? 0,
   compressorCalls: stack?.compressor?.calls ?? 0,
   originals: { count: originalHashes.size, allIntact: origCheck.ok, bad: origCheck.bad },
+  atomAudit,
   turnStats,
   turnLog,
   verdict: { failures },
@@ -614,6 +712,16 @@ console.log('miss=' + miss + ' hit=' + hit + ' out=' + out + ' hit%=' + hitRate.
   + ' aux: calls=' + auxStats.calls + ' completion=' + auxStats.completion)
 console.log('=== 压缩 ===')
 console.log('boundaries=' + (engine.records?.length ?? 0) + '（图引擎剪枝事务）换代轮=' + genBumpTurns.length + '（' + genBumpTurns.map(t => t.label).join(',') + '，含 peratom 主动替换）摘要压缩事务=' + agent.session.events.filter(e => e.type === 'compaction/summary').length)
+if (ARM !== 'D') {
+  const tc: Record<string, number> = {}
+  for (const t of atomAudit.prunedTypes) tc[t] = (tc[t] ?? 0) + 1
+  console.log('=== 逐原子审计 ===')
+  console.log('per-atom 压缩(原地replace)原子数=' + atomAudit.compressedReplacedCount + ' 其中显著压缩(>10%降幅)=' + atomAudit.compressedCount)
+  console.log('压缩最狠前 12（* = 后被 Stage-2 剪枝）:')
+  for (const c of compressions.slice(0, 12)) console.log('  seq=' + c.seq + (prunedSet.has(c.seq) ? ' *' : '') + ' type=' + c.type + ' ' + c.before + '→' + c.after + ' (' + c.rate + '%)')
+  console.log('剪枝原子数=' + atomAudit.prunedSeqs.length + ' 类型分布=' + JSON.stringify(tc) + ' 剪枝token=' + atomAudit.prunedTokenCount + ' 区间chars=' + atomAudit.prunedRangeCharsBefore + '→' + atomAudit.prunedRangeCharsAfter)
+  console.log('压缩后又被剪枝的原子=' + atomAudit.compressedThenPruned.length + ' [' + atomAudit.compressedThenPruned.join(',') + ']')
+}
 
 console.log('\n产物：' + outDir)
 console.log(failures.length === 0
