@@ -77,6 +77,12 @@ export interface CompressRecord {
     skippedFidelity?: number;
     /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
     fidelityMissing?: string[];
+    /**
+     * summary 副本的守卫审计清单（level-aware 放行，spike36 复盘驱动）：
+     * 模型自选 summary 时守卫不做硬拒，但原文中被概括丢掉的高信号 token
+     * 逐条入账，供 LLM 审核 / 人工审核事后评判。空数组/缺省 = 无丢失。
+     */
+    summaryDropped?: string[];
     /** 当轮原子 seq 快照（prompt 里给出的值；调试 seq 信任边界用）。 */
     atomSeqs?: {
         userLong: number[];
@@ -113,6 +119,8 @@ interface PlanResult {
     skippedFidelity: number;
     /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
     fidelityMissing: string[];
+    /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
+    summaryDropped: string[];
     anomalies: number;
 }
 /**
