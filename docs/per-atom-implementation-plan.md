@@ -152,12 +152,13 @@ recall_detail(seq)   // 从 append-only 日志取 verbatim（复用 log-access.r
 - **引用原子长寿**：被依赖内容所在回复本身高价值（计划/决策类），不在早死区
 - 规模：30 轮起步，工具结果占增量 ≥80%
 
-**三臂对比**（同一任务、同一本地模型）：
+**四臂对比**（同一任务、同一本地模型；D 为传统 LLM 摘要压缩对照基线，验证"为何不直接用摘要"）：
 | 臂 | 配置 |
 |---|---|
-| A. peratom 全开 | compressor + declarer + graph |
+| A. peratom 全开 | compressor + declarer + graph + zoom |
 | B. 无边 | compressor + graph，declarer 关闭 |
 | C. 现役基线 | 仅 ArgpGraphEngine（溢出才剪） |
+| D. 摘要压缩基线 | dsh 原生 `BasicCompactionEngine`（LLM 摘要改写历史），安装 argp 时经 cordis.yml 被 disable |
 
 测量：成本三元组（miss/hit/out，`.tmp/cost-audit.mjs` 口径）/ 最大可持续轮数 / 三类探针正确率（exact/gist/保真）。
 
@@ -179,7 +180,15 @@ recall_detail(seq)   // 从 append-only 日志取 verbatim（复用 log-access.r
 - [x] 三臂防干涉全过（append-origin 原文零替换：A 140 / B 154 / C 216）
 - [x] 成本三元组 A 全分量 ≤ C（miss 256k≤460k / hit 324k≤910k / out 11.9k≤14.8k）；¥空闲 A 0.454 < B 0.556 < C 0.802
 
-**总判决：GO — 双引擎方案通过 P5 验收**（详见 spike/out/37-three-arm-compare-*.md）。未结：① 绝对 95% 前缀命中与溢出存活 ≥3× 需在 DeepSeek/v4-flash 长任务复核；② dsh-llm 生产适配器未接（P5 后债务）。
+**D 臂（dsh 原生 `BasicCompactionEngine` 传统 LLM 摘要压缩）对照发现**（2026-08-26T16 补跑，同任务同模型，单 slot 串行 D）：
+- D 30/30 0 error，探针 **5/7**：D1-D4 跨轮精确依赖 4/4 全对，但 **G1(gist 大意) MISS + R2(精确找回被剪 artifact) MISS**——摘要改写吞掉 region/host 上下文与 ART-11-MARKER-1D4T 精确 token。
+- 成本最低：¥0.124 主 / **¥0.134 全口径**（含引擎内 `summarize()` 1 次 +¥0.0105，由新增 `allLlmCost` 遍历全 session 事件捕获）；比同保真 C 便宜 5.98×、比 A 便宜 3.39×。
+- 命中 84%（历史被压短致缓存命中高，但语义已损）；summaryCompactions=1（仅 T16-mod9）；recall/zoom=0（无图引擎，纯摘要）。
+- 防干涉判据对 D **不适用**（摘要改写历史属设计使然），`[SKIP P5-originals]`。
+
+**校准结论（保真优先于成本）**：传统摘要压缩在成本上最具侵略性，但失败模式正是 ARGP 要解决的痛点——**摘要会吞掉精确字符串与关键大意**。ARGP 双引擎用"图拓扑纯算法剪枝 + per-atom recall/zoom"替代"LLM 重写历史"，做到 7/7 保真且仍比现役基线 C 便宜 1.77×。**战略卖点不是"最便宜"，而是"在保真前提下最省"**：四臂中唯一同时达成 7/7 保真 + 比 C 便宜的臂是 A；D 只赢成本、C 既贵又丢 R2。若下游允许语义损失可作低成本旁路，但需精确依赖/token 召回必须 ARGP。
+
+**总判决：GO — 双引擎方案通过 P5 验收**（四臂对照详见 spike/out/37-three-arm-compare-2026-08-26T16-14-46-975Z.md）。未结：① 绝对 95% 前缀命中与溢出存活 ≥3× 需在 DeepSeek/v4-flash 长任务复核；② dsh-llm 生产适配器未接（P5 后债务）；③ D 臂"摘要丢信息"定性在 DeepSeek/v4-flash 长任务复核摘要保真衰减曲线。
 
 ---
 
