@@ -62,8 +62,9 @@ import type { CiteDeclarerConfig } from '../src/peratom/cite-declarer.ts'
 
 const BASE = (process.env['QWEN_BASE'] ?? 'http://127.0.0.1:8080/v1').replace(/\/$/, '')
 const MODEL = process.env['QWEN_MODEL'] ?? 'Qwen3.6-35B-A3B'
-const ARM = (process.env['ARGP_ARM'] ?? 'A').toUpperCase() as 'A' | 'B' | 'C' | 'D'
-const IS_PERATOM = ARM !== 'C' && ARM !== 'D'
+const ARM = (process.env['ARGP_ARM'] ?? 'A').toUpperCase() as 'A' | 'B' | 'C' | 'D' | 'E'
+// A/B: 图引擎 + per-atom；C: 仅图引擎（溢出才硬剪）；D: dsh 原生摘要压缩；E: 零压缩（无任何 compaction 引擎，纯原始增长对照）
+const IS_PERATOM = ARM !== 'C' && ARM !== 'D' && ARM !== 'E'
 const HAS_DECLARER = ARM === 'A'
 const CONTEXT_WINDOW = 20_000
 const WINDOW_TOKENS = 16_000
@@ -317,16 +318,17 @@ if (IS_PERATOM) {
   })
 } else if (ARM === 'C') {
   await ctx.plugin(ArgpGraphEngine, { windowTokens: WINDOW_TOKENS, retainTokens: RETAIN_TOKENS, maxPasses: 256 })
-} else {
-  // ARM === 'D'：dsh 原生 compaction-basic（传统 LLM 摘要压缩），与 ArgpGraphEngine 同基座、同窗口参数
+} else if (ARM === 'D') {
+  // dsh 原生 compaction-basic（传统 LLM 摘要压缩），与 ArgpGraphEngine 同基座、同窗口参数
   await ctx.plugin(BasicCompactionEngine, {
     thresholdRatio: WINDOW_TOKENS / CONTEXT_WINDOW, // 0.8 → thresholdTokens=16000（=WINDOW_TOKENS）
     retainTokens: RETAIN_TOKENS,
     auto: true,
   })
 }
+// ARM === 'E'：零压缩——不挂任何 compaction 引擎，上下文纯原始增长（无压缩对照，差距应随轮单调拉大）
 const engine = (ctx.compaction ?? (stack?.engine ?? null)) as any
-if (!engine) throw new Error('spike 37: compaction engine did not mount')
+if (!engine && ARM !== 'E') throw new Error('spike 37: compaction engine did not mount')
 
 ctx.tools.register(defineTool({
   name: 'read_file',
@@ -672,7 +674,7 @@ const result = {
   turnsCompleted: completedTurns,
   maxSustainedTurns: maxSustained,
   aborted,
-  pruneTransactions: engine.records?.length ?? 0,
+  pruneTransactions: (engine as any)?.records?.length ?? 0,
   cost: {
     missTokens: miss, hitTokens: hit, outTokens: out,
     missYuan: +(miss * P_MISS / 1e6).toFixed(4), hitYuan: +(hit * P_HIT / 1e6).toFixed(4), outYuan: +(out * P_OUT / 1e6).toFixed(4),
@@ -688,7 +690,7 @@ const result = {
   probeTotal: probes.length,
   recallCalls,
   zoomCalls,
-  engineRecords: engine.records ?? null,
+  engineRecords: engine?.records ?? null,
   declarerCachedEdges: stack?.declarer?.cachedEdgeCount ?? 0,
   compressorCalls: stack?.compressor?.calls ?? 0,
   originals: { count: originalHashes.size, allIntact: origCheck.ok, bad: origCheck.bad },
@@ -722,7 +724,7 @@ console.log('=== 成本 ===')
 console.log('miss=' + miss + ' hit=' + hit + ' out=' + out + ' hit%=' + hitRate.toFixed(1) + '（非压缩轮 ' + nonCompressHit.toFixed(1) + '%）'
   + ' aux: calls=' + auxStats.calls + ' completion=' + auxStats.completion)
 console.log('=== 压缩 ===')
-console.log('boundaries=' + (engine.records?.length ?? 0) + '（图引擎剪枝事务）换代轮=' + genBumpTurns.length + '（' + genBumpTurns.map(t => t.label).join(',') + '，含 peratom 主动替换）摘要压缩事务=' + agent.session.events.filter(e => e.type === 'compaction/summary').length)
+console.log('boundaries=' + (engine?.records?.length ?? 0) + '（图引擎剪枝事务）换代轮=' + genBumpTurns.length + '（' + genBumpTurns.map(t => t.label).join(',') + '，含 peratom 主动替换）摘要压缩事务=' + agent.session.events.filter(e => e.type === 'compaction/summary').length)
 if (ARM !== 'D') {
   const tc: Record<string, number> = {}
   for (const t of atomAudit.prunedTypes) tc[t] = (tc[t] ?? 0) + 1
