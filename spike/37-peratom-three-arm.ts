@@ -67,9 +67,11 @@ const ARM = (process.env['ARGP_ARM'] ?? 'A').toUpperCase() as 'A' | 'B' | 'C' | 
 const IS_PERATOM = ARM !== 'C' && ARM !== 'D' && ARM !== 'E'
 const HAS_DECLARER = ARM === 'A'
 const CONTEXT_WINDOW = 20_000
-const WINDOW_TOKENS = 16_000
-const RETAIN_TOKENS = 4_000
-const MAX_TURNS = 30
+// ARGP_WINDOW_TOKENS 可调：设成物理上限之上（如 262144）= 图引擎压力永不过阈 = "完全放开"（只留 per-turn 逐原子压缩）
+const WINDOW_TOKENS = Number(process.env['ARGP_WINDOW_TOKENS'] ?? 16_000)
+const RETAIN_TOKENS = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 4_000)
+// ARGP_MAX_TURNS 可调：30=原剧本；60=拉长 filler 看水位差距（探针块固定沉在最后）
+const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 30)
 
 const failures: string[] = []
 const verdict = (name: string, ok: boolean, detail: string): void => {
@@ -230,12 +232,13 @@ items.push({ label: 'T4-api', kind: 'filler', text: 'Use read_file to read `docs
 items.push({ label: 'T5-svc', kind: 'filler', text: 'Use read_file to read `codebase/service.ts`. Report the service class name and its public methods, briefly.' })
 items.push({ label: 'T6-dialog', kind: 'dialog', text: 'Got it. Continue.' })
 items.push({ label: 'T7-dialog', kind: 'dialog', text: 'Thanks, noted.' })
-// T8-T22 filler：读 codebase/mod-1..15（j=1..15），T9/T15/T20 带 U 针
-const FILLER_START = 8
-const FILLER_COUNT = 15 // T8..T22
+// T8 起 filler：读 codebase/mod-1..N，T9/T15/T20 带 U 针
+// 结构：7 固定头 + F filler + 7 探针 + 1 结尾 = MAX_TURNS → F = MAX_TURNS - 15
+const FILLER_COUNT = MAX_TURNS - 15
+if (FILLER_COUNT < 1) throw new Error('MAX_TURNS 太小，装不下 filler 区')
 for (let i = 0; i < FILLER_COUNT; i += 1) {
   const j = i + 1
-  const turnNo = FILLER_START + i
+  const turnNo = 8 + i
   let text = 'Use read_file to read `codebase/mod-' + j + '.ts`. Reply with its line count and the ART marker from its first comment line, briefly.'
   let needleU: string | undefined
   if (turnNo === 9) { needleU = 'NOTE-U1-' + code(9); text = 'Archival note (remember it exactly, no acknowledgment): ' + needleU + '.\n' + text }
@@ -243,17 +246,18 @@ for (let i = 0; i < FILLER_COUNT; i += 1) {
   if (turnNo === 20) { needleU = 'NOTE-U3-' + code(20); text = 'Archival note (remember it exactly, no acknowledgment): ' + needleU + '.\n' + text }
   items.push({ label: 'T' + turnNo + '-mod' + j, kind: 'filler', text, modJ: j, needleU })
 }
-// 探针轮
-items.push({ label: 'T23-D1', kind: 'probe', probe: 'D1', text: 'Long-term memory check D1. Earlier you read `config/app.yaml`. Using the exact http timeout and pool max values from that file, write the file `deploy/rollout.yaml` with a yaml block containing `timeout:` and `pool.max:` (exact values from the file). Reply with only the two values you used, one per line, in format:\nD1-ANSWER: timeout=<v> poolMax=<v>\nIf you cannot see the file content, use recall tools before answering. Do not guess.' })
-items.push({ label: 'T24-G1', kind: 'probe', probe: 'G1', text: 'Long-term memory check G1 (gist only). Earlier you read `logs/app.log`. From memory of that log: (a) which service was throwing errors, and (b) what was the first FATAL line about? Answer in at most two short sentences. Do NOT quote exact lines, IDs, or codes — a gist is enough. If the log is no longer visible, use recall tools (summary level is fine). If truly unrecoverable, write NOT-RECOVERABLE.\nG1-ANSWER: <service> / <fatal gist>' })
-items.push({ label: 'T25-D2', kind: 'probe', probe: 'D2', text: 'Long-term memory check D2. Earlier you read `docs/api-contract.md`. Using the exact endpoint path and the required query field name from that contract, write the file `client/query.ts` as a minimal TS function `queryOrder(id: string)` that fetches the right URL with the right query parameter. Reply with only the two values you used, one per line, in format:\nD2-ANSWER: endpoint=<path> field=<name>\nIf you cannot see the contract, use recall tools before answering. Do not guess.' })
-const R1_MOD_J = 3 // T10 读 mod-3 → T26 探针
-items.push({ label: 'T26-R1', kind: 'probe', probe: 'R1', text: 'Long-term memory check R1 (exact). On an earlier turn you read `codebase/mod-' + R1_MOD_J + '.ts`; its FIRST line contains a unique marker of the form ART-<n>-MARKER-<XXXX>. That line is no longer visible in context. Recover it with recall_pruned (or recall_detail for a seq) before answering — copy the exact marker, do not guess.\nR1-ANSWER: <exact ART marker>' })
-items.push({ label: 'T27-D3', kind: 'probe', probe: 'D3', text: 'Long-term memory check D3. Earlier you read `codebase/service.ts`. Using the exact service class name and the name of its single-order public method from that file, write the file `test/service.test.ts` as a minimal test stub that instantiates the class and calls that method. Reply with only the two values you used, one per line, in format:\nD3-ANSWER: class=<ClassName> method=<methodName>\nIf you cannot see the file, use recall tools before answering. Do not guess.' })
-const R2_MOD_J = 11 // T18 读 mod-11 → T28 探针
-items.push({ label: 'T28-R2', kind: 'probe', probe: 'R2', text: 'Long-term memory check R2 (exact). On an earlier turn you read `codebase/mod-' + R2_MOD_J + '.ts`; its FIRST line contains a unique marker of the form ART-<n>-MARKER-<XXXX>. That line is no longer visible in context. Recover it with recall_pruned (or recall_detail for a seq) before answering — copy the exact marker, do not guess.\nR2-ANSWER: <exact ART marker>' })
-items.push({ label: 'T29-D4', kind: 'probe', probe: 'D4', text: 'Long-term memory check D4. From the ARCHIVE-DECISION record I gave you at the very start, using the exact values, write the file `report/final.md` with a markdown table containing the service port, service token, http timeout, pool max, query endpoint and required query field. Reply with the six values in exactly this one-line format:\nD4-ANSWER: port=<v> token=<v> timeout=<v> poolMax=<v> endpoint=<path> field=<name>\nIf any value is no longer in context, use recall tools before answering. Do not guess.' })
-items.push({ label: 'T30-end', kind: 'dialog', text: 'That is all for this session. Thanks.' })
+// 探针块：固定沉在最后 7 轮（轮号随 MAX_TURNS 平移，内容不变）
+const PT = FILLER_COUNT + 7 // 探针区起始轮
+const R1_MOD_J = 3 // mod-3 在 T10 被读
+const R2_MOD_J = 11 // mod-11 在 T18 被读
+items.push({ label: 'T' + (PT + 1) + '-D1', kind: 'probe', probe: 'D1', text: 'Long-term memory check D1. Earlier you read `config/app.yaml`. Using the exact http timeout and pool max values from that file, write the file `deploy/rollout.yaml` with a yaml block containing `timeout:` and `pool.max:` (exact values from the file). Reply with only the two values you used, one per line, in format:\nD1-ANSWER: timeout=<v> poolMax=<v>\nIf you cannot see the file content, use recall tools before answering. Do not guess.' })
+items.push({ label: 'T' + (PT + 2) + '-G1', kind: 'probe', probe: 'G1', text: 'Long-term memory check G1 (gist only). Earlier you read `logs/app.log`. From memory of that log: (a) which service was throwing errors, and (b) what was the first FATAL line about? Answer in at most two short sentences. Do NOT quote exact lines, IDs, or codes — a gist is enough. If the log is no longer visible, use recall tools (summary level is fine). If truly unrecoverable, write NOT-RECOVERABLE.\nG1-ANSWER: <service> / <fatal gist>' })
+items.push({ label: 'T' + (PT + 3) + '-D2', kind: 'probe', probe: 'D2', text: 'Long-term memory check D2. Earlier you read `docs/api-contract.md`. Using the exact endpoint path and the required query field name from that contract, write the file `client/query.ts` as a minimal TS function `queryOrder(id: string)` that fetches the right URL with the right query parameter. Reply with only the two values you used, one per line, in format:\nD2-ANSWER: endpoint=<path> field=<name>\nIf you cannot see the contract, use recall tools before answering. Do not guess.' })
+items.push({ label: 'T' + (PT + 4) + '-R1', kind: 'probe', probe: 'R1', text: 'Long-term memory check R1 (exact). On an earlier turn you read `codebase/mod-' + R1_MOD_J + '.ts`; its FIRST line contains a unique marker of the form ART-<n>-MARKER-<XXXX>. That line is no longer visible in context. Recover it with recall_pruned (or recall_detail for a seq) before answering — copy the exact marker, do not guess.\nR1-ANSWER: <exact ART marker>' })
+items.push({ label: 'T' + (PT + 5) + '-D3', kind: 'probe', probe: 'D3', text: 'Long-term memory check D3. Earlier you read `codebase/service.ts`. Using the exact service class name and the name of its single-order public method from that file, write the file `test/service.test.ts` as a minimal test stub that instantiates the class and calls that method. Reply with only the two values you used, one per line, in format:\nD3-ANSWER: class=<ClassName> method=<methodName>\nIf you cannot see the file, use recall tools before answering. Do not guess.' })
+items.push({ label: 'T' + (PT + 6) + '-R2', kind: 'probe', probe: 'R2', text: 'Long-term memory check R2 (exact). On an earlier turn you read `codebase/mod-' + R2_MOD_J + '.ts`; its FIRST line contains a unique marker of the form ART-<n>-MARKER-<XXXX>. That line is no longer visible in context. Recover it with recall_pruned (or recall_detail for a seq) before answering — copy the exact marker, do not guess.\nR2-ANSWER: <exact ART marker>' })
+items.push({ label: 'T' + (PT + 7) + '-D4', kind: 'probe', probe: 'D4', text: 'Long-term memory check D4. From the ARCHIVE-DECISION record I gave you at the very start, using the exact values, write the file `report/final.md` with a markdown table containing the service port, service token, http timeout, pool max, query endpoint and required query field. Reply with the six values in exactly this one-line format:\nD4-ANSWER: port=<v> token=<v> timeout=<v> poolMax=<v> endpoint=<path> field=<name>\nIf any value is no longer in context, use recall tools before answering. Do not guess.' })
+items.push({ label: 'T' + MAX_TURNS + '-end', kind: 'dialog', text: 'That is all for this session. Thanks.' })
 
 // 冒烟截断（ARGP_MAX_ITEMS=N 只跑前 N 轮，验证装配/模型/工具/计量，不碰探针轮）
 const MAX_ITEMS = Number(process.env['ARGP_MAX_ITEMS'] ?? items.length)
