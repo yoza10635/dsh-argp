@@ -143,3 +143,51 @@
 - [ ] llama.cpp 恢复后重跑 `npm run spike36`（watchdog 已改 50 分钟，`ARGP_SPIKE36_TIMEOUT_MIN` 可覆盖）
 - [ ] 验证新语料下 VK-ratio ≈74% 可达（阈值 85% 有牙齿）、VK-plan-c 全过、VK-env 无中断轮
 - [ ] 对照报告引用新产物（指纹匹配）后，提交 git 基线（src/lib/test 同步）
+### 7.4 本地 llama-server 崩溃诊断（2026-08-26 追加，阻塞 noise200 验证后用户重启解决）
+
+- 10:42 跑 noise200 版时服务崩溃（9 轮全部 interrupted，产物作废）。4 种启动变体（Q4_K_M/Q4_K_XL × 196K/64K/`--no-mmap`）全在模型加载阶段确定性崩溃。
+- 事件日志坐实：8 次崩溃同一签名——`ucrtbase.dll` + `0xc0000409`(__fastfail) + 同偏移 `0x7f6fe` + 同二进制（时间戳 0x6a8a2fd2）。构建级确定性 bug，非参数/模型/内存问题（已排除：GPU 驱动正常、RAM 空闲 ~17GB、无僵尸进程）。
+- 用户用自己的方式重启服务后跑批正常。
+
+---
+
+## 8. VK-ratio 判定链终审（2026-08-26 追加）
+
+VK-ratio 从"4 模型全 FAIL"到全绿，共经历 4 轮修复，每轮对应一个真实缺陷层：
+
+### 8.1 缺陷层 ①：extract/summary 语义错配（靶子选错）
+- 原语料 narrative 是连贯故事散文，语义诱导模型做 **summary**；而 ARGP 的 extract+保真守卫机理只支持**摘原文子集逐字保留**（用户定义：extract=摘取部分原文段落逐字完整拷贝；如 help 输出只拿需要的命令、失败日志只拿 error 部分）。
+- 模型一旦概括散文 → 丢精确串 → `fidelityGuard` 拒 → 压缩不 apply → ratio 卡 90%+。**这是"死裁判"的第一层根因**。
+
+### 8.2 缺陷层 ②：extract 提示词诱导改写（commit 910d7da）
+- 旧指令"关键内容摘录（1-3 句）"诱导模型自己组织语言 → 改写 `req_id=`/`latency_ms=` 等 key=value → 守卫拒。
+- 修复：extract 指令 verbatim 化（与 quotes 同风格：逐字完整拷贝，空白/换行/标点/大小写/全角半角/emoji 原样，禁止改写/翻译/增删/重组；未选中行视为噪声丢弃）。
+- 效果：T1 从 `fid=1` 不 apply → `fid=0` 完美提取（6 行 structured 逐字全保留、22 行噪声全丢），ratio 96.8% → 90.4%。
+
+### 8.3 缺陷层 ③：语料可压占比太小（90.4% 是结构性地板）
+- 地板根因：① T2/T9 链成员必须保留 2 份完整 app.log（VK-chain 硬要求）；② **assistant 回复不可压**（ARGP 只压 user-long + tool-result），每轮 ~300-900 字符 ×9 轮 ≈ 8000+，分母分子同步抬高；③ corpus-bound 假设 `otherPerTurn=120`，实测 ~1300——**差 10 倍**，理论 79.9% vs 实测 90.4% 的全部来源。
+- 修复：app.log 噪声 22 → ~200 行（T1 收益主导 cfTotal）+ persona 加"回答尽量简短"。corpus-bound 重估理论 68.9%，实测 **69.7%**（noise200 版全 8 判决 PASS，commit 910d7da 同批）。
+- **口径统一**（原 74%/79.2%/80.1% 三个数字不一致）：74% = 旧 corpus-bound 单原子最优注释；79.2% = 旧语料（22 行散文）全局估算；80.1% = 脚本实际输出。三者的差源于语料/口径演进，**现行口径以 noise200 语料的理论 68.9% 与实测 69.7% 为准**，旧数字作废并标注历史。
+
+### 8.4 压缩档位改为模型自选 + 守卫分级（commit c3e00c8）
+- 用户设计：让 LLM 自己判断每原子用 summary 还是 extract，再输出（同一 JSON 结构 `{seq, level, text}` 不同字段）。
+- `fidelityGuard` 按 level 分级：extract 维持硬拒；**summary 审计式放行**——被概括丢弃的高信号 token 逐条入账 `CompressRecord.summaryDropped` 供 LLM/人工审核。
+- spike36 新增 T7b 纯叙述事故复盘靶子（`docs/postmortem.md`，零 load-bearing）。验证：log/yaml/runbook → extract（verbatim 子集 fid=0）；**postmortem → summary**（421 字，事实全保留，sumDrop=0）。自选语义成立。
+
+### 8.5 压缩率改为按原子度量（commit 9d43394）
+- 用户定义修正：压缩率按**每个被压缩原子**计算（origChars vs newChars），非按 turn/全局——全局 ratio 被链副本/assistant 回复稀释。
+- 新判决 **VK-atom** = 被压原子聚合收益 `1-Σnew/Σorig ≥ 50%`；全局 ratio 降为参考。首测 90.7% PASS（T1:extract 97.0%、T7b:summary 85.1%；T3/T7 近 0% 因全 load-bearing 属正确保留）。
+
+### 8.6 拿不准选 false，禁全文照抄（commit 87c66de）
+- 用户指示：拿不准时该原子不出现在输出里（保原文），避免 extract 全文照抄——output token 白花且压缩率 0。
+- 效果：T3 yaml → 模型选 false 不压（空 tools，零 token 浪费）；T7 runbook → 伪压缩 0.1% 变真 summary **65.7%**（5 条命令 verbatim、散文概括）；**VK-atom 90.7% → 94.7%**（剔除伪压缩原子后更高）。
+- 行为三层齐：extract（T1）/ summary（T7、T7b）/ false（T3）——模型按内容性质自选成立。
+
+### 8.7 门控运行间随机：评估后挂起
+- 现象：Qwen3.8 多次跑批中偶见 VK-plan/plan-c 抖动（对话轮被压、可压轮 no-candidate）。
+- 判定：LLM 采样非确定是天然属性；"能不能压"已由代码侧确定性判据兜住（>512 字门、链成员排除、toolName 对照表），"怎么压"交给 LLM 的随机风险已被守卫+审计兜底，错误方向只可能"少压"不会"压坏"——**细化判定标准需加长 prompt 提高每轮成本，性价比低，挂起不修**。
+
+### 8.8 终态结论
+- **VK-ratio 阈值本身合理**；此前 4 模型全 FAIL 是"靶子选错 + 提示词诱导改写 + 语料可压占比小"三层叠加，均已修复。
+- 现判决口径：VK-atom（按原子聚合压缩收益）+ VK-plan/plan-c/env/chain/originals/clean/prefix 共 8 项全 PASS，参考全局 ratio 69.0-70.6%。
+- 最终产物：`spike/out/36-peratom-soak-2026-08-26T07-34-11-688Z.json`（false-opt 版，VK-atom 94.7%）。
