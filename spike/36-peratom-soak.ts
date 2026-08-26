@@ -30,7 +30,7 @@
  *   - 前缀：逐轮 deriveEventMessage 指纹流公共前缀 ≥ 当轮起点（缓存生命线）
  *
  * 判决项：
- *   VK-ratio     累计可见字符 ≤ 反事实 × 0.85（熵减实际发生；逐原子压缩明细见产物）
+ *   VK-atom      压缩率按原子计算：被压原子聚合收益 1-Σnew/Σorig ≥ 50%（全局 ratio 仅参考）
  *   VK-plan      对话/链轮全部零调用
  *   VK-plan-c    可压轮全部产生调用（语料已扩 >512，called=false 即 bug/死设计）
  *   VK-chain     T2/T9 collect.toolResults 为空（链排除 live）
@@ -365,12 +365,17 @@ async function main(): Promise<void> {
     called?: boolean; appliedReplaces?: number; skippedFallbackDialog?: number
     skippedFidelity?: number; anomalies?: number; parseFailed?: boolean; error?: string
     summaryDropped?: string[]
+    /** 本轮被压缩原子的 per-atom 度量（压缩率按原子算，非按 turn/全局）。 */
+    perAtoms?: Array<{ seq: number; level: string; origChars: number; newChars: number; atomRatio: number }>
     skipReason?: 'no-candidate' | 'interrupted'
     prefixOk?: boolean; chainExcluded?: boolean; interrupted?: boolean
   }
   const rows: TurnRow[] = []
   const originalHashes = new Map<number, string>()
   let cfTotal = 0
+  /** 全跑批 per-atom 压缩台账（跨轮聚合，VK-atom 判决用）。 */
+  interface AtomStat { label: string; seq: number; level: string; origChars: number; newChars: number }
+  const atomStats: AtomStat[] = []
 
   // ---- 剧本循环（测量错位一轮，flush 走生产路径）----
   // dsh-session 不变量：tool/result 的 surface 替换必须在 open turn 内（invariant.js）。
@@ -430,10 +435,26 @@ async function main(): Promise<void> {
       })()
       cfTotal = counterfactualChars(session)
       const recObj = rec ?? {}
+      // per-atom 压缩率：原长取该轮 collect 的原子原文，新长取决策 text（按原子算，非全局）。
+      const decTools = (recObj.decision as { tools?: Array<{ seq: number; level: string; text: string }> } | undefined)?.tools ?? []
+      const origBySeq = new Map<number, string>()
+      for (const t of [...(pm.collect?.toolResults ?? []), ...(prevCollect?.toolResults ?? [])]) {
+        if (!origBySeq.has(t.seq)) origBySeq.set(t.seq, t.text)
+      }
+      const perAtoms: TurnRow['perAtoms'] = decTools
+        .filter(t => origBySeq.has(t.seq))
+        .map(t => {
+          const origChars = origBySeq.get(t.seq)!.length
+          const newChars = t.text.length
+          const atomRatio = newChars / Math.max(origChars, 1)
+          atomStats.push({ label: pm.step.label, seq: t.seq, level: t.level, origChars, newChars })
+          return { seq: t.seq, level: t.level, origChars, newChars, atomRatio }
+        })
       rows.push({
         label: pm.step.label, kind: pm.step.kind, turn: pm.turn,
         surfaceBefore: pm.surfaceBefore, surfaceAfter: surfaceChars(session), cfTotal,
         ...recObj,
+        perAtoms,
         prefixOk: common >= firstNewIdx,
         interrupted: prevCollect?.interrupted,
         chainExcluded: pm.step.kind === 'chain' && prevCollect?.interrupted !== true
@@ -442,7 +463,10 @@ async function main(): Promise<void> {
       })
       console.log(`[${pm.step.label}/${pm.step.kind}] turn=${pm.turn} called=${recObj.called} `
         + `replaces=${recObj.appliedReplaces ?? 'undef'} fb=${recObj.skippedFallbackDialog ?? 'undef'} fid=${recObj.skippedFidelity ?? 'undef'} `
-        + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} sumDrop=${recObj.summaryDropped?.length ?? 0} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
+        + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} sumDrop=${recObj.summaryDropped?.length ?? 0} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`
+        + (perAtoms.length > 0
+          ? ' atoms=' + perAtoms.map(a => `${pm.step.label}:${a.origChars}->${a.newChars}(${(a.atomRatio * 100).toFixed(1)}%)`).join(' ')
+          : ''))
     }
 
     // 5) 记录本轮起点（上一轮压缩已生效后的 surface），供下一轮测量
@@ -535,12 +559,16 @@ async function main(): Promise<void> {
   verdict('VK-clean', rows.every(r => !r.parseFailed && r.error === undefined),
     `parseFailed=${rows.filter(r => r.parseFailed).length} errorRows=${rows.filter(r => r.error !== undefined).length}`)
   verdict('VK-prefix', rows.every(r => r.prefixOk === true), '每次压缩历史前缀指纹不变')
-  // VK-ratio：语料已改为"结构化必留 + 叙事可丢"（见 makeLog 注释），85% 阈值现在有牙齿——
-  // 做行级 verbatim 保留 + 丢叙事的模型能破阈，做摘要式压缩的会被保真守卫拒而诚实 FAIL。
-  verdict('VK-ratio', ratio <= 0.85,
-    `可见/反事实 = ${(ratio * 100).toFixed(1)}%（阈值 ≤85%）。逐原子压缩：`
-      + rows.filter(r => r.appliedReplaces !== undefined)
-        .map(r => `${r.label}:replace=${r.appliedReplaces} fid=${r.skippedFidelity ?? 0}`).join(' ') || ' 无事务')
+  // VK-atom：压缩率按原子计算（用户定义，2026-08-26）——每个被压缩原子的
+  // origChars vs newChars 单独记账，聚合收益 = 1 - Σnew/Σorig（只看被压原子，
+  // 不受链成员副本/assistant 回复等不可压内容稀释）。全局 ratio 仅作参考打印。
+  const atomSum = atomStats.reduce((a, s) => a + s.origChars, 0)
+  const newSum = atomStats.reduce((a, s) => a + s.newChars, 0)
+  const atomSaved = atomSum > 0 ? 1 - newSum / atomSum : 0
+  verdict('VK-atom', atomSaved >= 0.5,
+    `被压原子聚合压缩收益 = ${(atomSaved * 100).toFixed(1)}%（Σorig=${atomSum} Σnew=${newSum}，阈值 ≥50%）。`
+      + `全局 ratio=${(ratio * 100).toFixed(1)}%（参考）。逐原子：`
+      + (atomStats.map(s => `${s.label}:${s.level} ${s.origChars}->${s.newChars}(${(100 - (s.newChars / Math.max(s.origChars, 1)) * 100).toFixed(1)}% 缩减)`).join(' ') || ' 无事务'))
 
   const outDir = path.join(process.cwd(), 'spike', 'out')
   fs.mkdirSync(outDir, { recursive: true })
