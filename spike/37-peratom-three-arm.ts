@@ -54,14 +54,16 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { mountPeratomStack } from '../src/peratom/mount.ts'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import type { PeratomStack } from '../src/peratom/mount.ts'
 import type { PeratomCompressorConfig } from '../src/peratom/compressor.ts'
 import type { CiteDeclarerConfig } from '../src/peratom/cite-declarer.ts'
 
 const BASE = (process.env['QWEN_BASE'] ?? 'http://127.0.0.1:8080/v1').replace(/\/$/, '')
 const MODEL = process.env['QWEN_MODEL'] ?? 'Qwen3.6-35B-A3B'
-const ARM = (process.env['ARGP_ARM'] ?? 'A').toUpperCase() as 'A' | 'B' | 'C'
-const IS_PERATOM = ARM !== 'C'
+const ARM = (process.env['ARGP_ARM'] ?? 'A').toUpperCase() as 'A' | 'B' | 'C' | 'D'
+const IS_PERATOM = ARM !== 'C' && ARM !== 'D'
 const HAS_DECLARER = ARM === 'A'
 const CONTEXT_WINDOW = 20_000
 const WINDOW_TOKENS = 16_000
@@ -296,6 +298,7 @@ const declarerConfig: CiteDeclarerConfig = { ...auxCommon }
 
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-37 three-arm persona (answer briefly; when a check asks for an exact format, follow it exactly)' } })
+await ctx.plugin(TokenMeter) // BasicCompactionEngine 硬依赖 ctx.tokenMeter 做压力测量（D 臂）；对 A/B/C 无害
 await ctx.plugin(AgentLoop, { agents: [] })
 await ctx.plugin(LlmDeepSeek, {
   thinking: 'disabled',
@@ -312,10 +315,17 @@ if (IS_PERATOM) {
     declarer: HAS_DECLARER ? declarerConfig : false,
     zoom: { windowTokens: WINDOW_TOKENS },
   })
-} else {
+} else if (ARM === 'C') {
   await ctx.plugin(ArgpGraphEngine, { windowTokens: WINDOW_TOKENS, retainTokens: RETAIN_TOKENS, maxPasses: 256 })
+} else {
+  // ARM === 'D'：dsh 原生 compaction-basic（传统 LLM 摘要压缩），与 ArgpGraphEngine 同基座、同窗口参数
+  await ctx.plugin(BasicCompactionEngine, {
+    thresholdRatio: WINDOW_TOKENS / CONTEXT_WINDOW, // 0.8 → thresholdTokens=16000（=WINDOW_TOKENS）
+    retainTokens: RETAIN_TOKENS,
+    auto: true,
+  })
 }
-const engine = (ctx.compaction ?? (stack?.engine ?? null)) as ArgpGraphEngine | null
+const engine = (ctx.compaction ?? (stack?.engine ?? null)) as any
 if (!engine) throw new Error('spike 37: compaction engine did not mount')
 
 ctx.tools.register(defineTool({
@@ -499,6 +509,25 @@ for (const t of turnStats) { miss += Math.max(0, t.input); hit += t.hit; out += 
 const P_MISS = 1.5, P_HIT = 0.05, P_OUT = 4.5 // v4-flash 空闲锚（本地折算下界，06c 同口径）
 const cost = miss * P_MISS / 1e6 + hit * P_HIT / 1e6 + out * P_OUT / 1e6
 const hitRate = hit + miss > 0 ? 100 * hit / (hit + miss) : 0
+// D 臂真实成本（含引擎内部摘要 LLM 调用）：全口径，兼容 dsh(inputTokens) 与 openai(prompt_tokens) 两种 usage 格式
+const eventUsage = (e: { data?: any }): { m: number; h: number; o: number } | null => {
+  const u = (e as any).data?.usage
+  if (!u) return null
+  const m = u.inputTokens ?? u.prompt_tokens ?? 0
+  const h = u.cacheReadTokens ?? u.prompt_tokens_details?.cached_tokens ?? 0
+  const o = u.outputTokens ?? u.completion_tokens ?? 0
+  if (m + h + o === 0) return null
+  return { m, h, o }
+}
+let allMiss = 0, allHit = 0, allOut = 0
+for (const e of agent.session.events) {
+  const u = eventUsage(e)
+  if (u) { allMiss += u.m; allHit += u.h; allOut += u.o }
+}
+const allLlmCost = {
+  missTokens: allMiss, hitTokens: allHit, outTokens: allOut,
+  totalYuan: +(allMiss * P_MISS / 1e6 + allHit * P_HIT / 1e6 + allOut * P_OUT / 1e6).toFixed(4),
+}
 // 换代轮（genΔ>0）命中率单列（A 臂判据：换代轮除外 ≥95%）。
 // 注意：genΔ>0 = 该轮 surface.replaceGeneration 增加 = 该轮发生 surface 替换（缓存前缀在该点之后失效）。
 // 替换来源在 A 臂有两类：图引擎 Stage-2 剪枝（compaction/start + engine.records）
@@ -543,6 +572,8 @@ const result = {
     totalYuan: +cost.toFixed(4), cacheHitRatePct: +hitRate.toFixed(1),
     aux: auxStats, // compressor/declarer 的 LLM 调用（本地，计入输出税）
   },
+  summaryCompactions: agent.session.events.filter(e => e.type === 'compaction/summary').length,
+  allLlmCost, // D 臂真实成本（含引擎内部摘要 LLM 调用全口径）
   nonCompressHitRatePct: +nonCompressHit.toFixed(1),
   genBumpTurns: genBumpTurns.map(t => t.label),
   probes,
@@ -564,8 +595,12 @@ fs.writeFileSync(path.join(outDir, 'events.jsonl'), agent.session.events.map(e =
 // ---------- 判决项 ----------
 verdict('P5-turns', completedTurns === items.length && !aborted,
   '完成轮数 ' + completedTurns + '/' + items.length + (aborted ? '（中止于 ' + maxSustained + '）' : ''))
-verdict('P5-originals', origCheck.ok,
-  '防干涉：' + originalHashes.size + ' 个 append-origin 事件原文' + (origCheck.ok ? '零替换' : '被替换 ' + origCheck.bad.length + ' 个: ' + origCheck.bad.slice(0, 10).join(',')))
+if (ARM !== 'D') {
+  verdict('P5-originals', origCheck.ok,
+    '防干涉：' + originalHashes.size + ' 个 append-origin 事件原文' + (origCheck.ok ? '零替换' : '被替换 ' + origCheck.bad.length + ' 个: ' + origCheck.bad.slice(0, 10).join(',')))
+} else {
+  console.log('[SKIP P5-originals] D 臂为摘要压缩基线，历史本就被 LLM 改写，防干涉判据不适用（属设计使然）')
+}
 const dProbes = probes.filter(p => p.probe.startsWith('D'))
 const rProbes = probes.filter(p => p.probe.startsWith('R'))
 const gProbes = probes.filter(p => p.probe === 'G1')
@@ -578,7 +613,7 @@ console.log('=== 成本 ===')
 console.log('miss=' + miss + ' hit=' + hit + ' out=' + out + ' hit%=' + hitRate.toFixed(1) + '（非压缩轮 ' + nonCompressHit.toFixed(1) + '%）'
   + ' aux: calls=' + auxStats.calls + ' completion=' + auxStats.completion)
 console.log('=== 压缩 ===')
-console.log('boundaries=' + (engine.records?.length ?? 0) + '（图引擎剪枝事务）换代轮=' + genBumpTurns.length + '（' + genBumpTurns.map(t => t.label).join(',') + '，含 peratom 主动替换）')
+console.log('boundaries=' + (engine.records?.length ?? 0) + '（图引擎剪枝事务）换代轮=' + genBumpTurns.length + '（' + genBumpTurns.map(t => t.label).join(',') + '，含 peratom 主动替换）摘要压缩事务=' + agent.session.events.filter(e => e.type === 'compaction/summary').length)
 
 console.log('\n产物：' + outDir)
 console.log(failures.length === 0
