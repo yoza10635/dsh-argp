@@ -231,6 +231,12 @@ export interface CompressRecord {
   skippedFidelity?: number
   /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
   fidelityMissing?: string[]
+  /**
+   * summary 副本的守卫审计清单（level-aware 放行，spike36 复盘驱动）：
+   * 模型自选 summary 时守卫不做硬拒，但原文中被概括丢掉的高信号 token
+   * 逐条入账，供 LLM 审核 / 人工审核事后评判。空数组/缺省 = 无丢失。
+   */
+  summaryDropped?: string[]
   /** 当轮原子 seq 快照（prompt 里给出的值；调试 seq 信任边界用）。 */
   atomSeqs?: { userLong: number[]; toolResults: number[] }
   /** 模型原始 decision（解析成功时留痕；调试服从率用）。 */
@@ -270,6 +276,8 @@ interface PlanResult {
   skippedFidelity: number
   /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
   fidelityMissing: string[]
+  /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
+  summaryDropped: string[]
   anomalies: number
 }
 
@@ -323,6 +331,7 @@ export function planReplacements(
   let skippedFallbackDialog = 0
   let skippedFidelity = 0
   const fidelityMissing: string[] = []
+  const summaryDropped: string[] = []
   let anomalies = 0
 
   const seenUserSeqs = new Set<number>()
@@ -377,10 +386,19 @@ export function planReplacements(
     if (atom === undefined) { anomalies += 1; continue }
     if (seenToolSeqs.has(action.seq)) { anomalies += 1; continue }
     seenToolSeqs.add(action.seq)
-    // 保真守卫（spike 34 驱动）：原文的高信号 token 必须在副本里 verbatim 存活；
-    // 缺任一个 → 拒绝替换、原文保面（错误方向只允许往"少压"错）。
+    // 保真守卫（spike 34 驱动）：原文的高信号 token 必须在副本里 verbatim 存活。
+    // level-aware 分级（spike36 复盘驱动）：extract 维持硬拒——缺任一 token 即拒绝替换、
+    // 原文保面（错误方向只允许往"少压"错）；summary 是模型自选的概括档，概括天然
+    // 会丢精确串，硬拒会让该档位永远不可用——改为审计式放行：缺失清单入账
+    // summaryDropped，供 LLM 审核 / 人工审核事后评判。
     const guard = fidelityGuard(atom.text, action.text)
-    if (!guard.ok) { skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue }
+    if (!guard.ok) {
+      if (action.level === 'summary') {
+        summaryDropped.push(...guard.missing)
+      } else {
+        skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+      }
+    }
     steps.push({
       kind: 'replace',
       type: 'tool/result',
@@ -391,7 +409,7 @@ export function planReplacements(
     replaces += 1
   }
 
-  return { steps, replaces, skippedFallbackDialog, skippedFidelity, fidelityMissing, anomalies }
+  return { steps, replaces, skippedFallbackDialog, skippedFidelity, fidelityMissing, summaryDropped, anomalies }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,9 +427,10 @@ const PROMPT_RULES = [
   '- 未抄写的部分视为资料，会被聚合成可压缩副本。',
   '',
   '## 工具结果压缩（tools）',
-  '- level="extract"：从原文中摘取需要保留的段落，text 必须是所选原文片段的逐字完整拷贝——与原文完全一致（空白、换行、标点、大小写、全角半角、emoji 全部原样），禁止改写、翻译、增删、合并或重新组织任何字符；未选中的行视为噪声直接丢弃。',
-  '- 保真纪律（硬规则）：text 整体必须逐字命中原文（路径、行号、错误码、URL、UUID、哈希、key=value 等精确串在整段逐字拷贝下自然原样，无需额外处理）。宁可整段多抄原文，也不要自己组织语言；可跳过若干行选取保留段，被保留的每一段必须原样。',
-  '- level="summary"：一句话概括，仅当内容是纯叙述性状态、无精确串可保时使用。',
+  '- 对每个原子先做二选一判断，再把判断和压缩内容写进同一条 {"seq","level","text"}：',
+  '- 判断为摘取（level="extract"）：内容含结构化数据或精确串（日志行、配置、代码、命令输出），关键信息依赖原文措辞 → text 必须是所选原文片段的逐字完整拷贝——与原文完全一致（空白、换行、标点、大小写、全角半角、emoji 全部原样），禁止改写、翻译、增删、合并或重新组织任何字符；未选中的行视为噪声直接丢弃。',
+  '- 判断为摘要（level="summary"）：内容是冗长叙述性文本、概括不损失关键信息 → text 用简洁概括替换全文；若原文仍有个别必须精确保留的串（错误码、标识符、路径等），把它们原样写进概括文本。',
+  '- 两种档位由你按每个原子的内容性质自行判断，不必统一；拿不准时选 extract（宁可多抄原文，不要自己组织语言）。',
   '',
   '## 输出',
   '只输出一个 JSON 对象：{"splits":[{"seq":<整数>,"quotes":["…"]}],"tools":[{"seq":<整数>,"level":"extract"|"summary","text":"…"}]}',
@@ -786,6 +805,7 @@ export class PeratomCompressor {
       // 全部动作被拒（保真守卫/回退）或零动作：不开空事务，但统计直接落账到本次记录。
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
+      if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
       return
@@ -837,6 +857,7 @@ export class PeratomCompressor {
       record.appliedReplaces = replaceCount
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
+      if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
     } catch (error) {

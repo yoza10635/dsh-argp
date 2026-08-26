@@ -13,6 +13,7 @@
  *   T5 长混合消息（指令+粘贴）   → 拆分可压
  *   T6 纯对话                    → 零调用
  *   T7 读 docs/runbook.md       → 可压（>512 字门）
+ *   T7b 读 docs/postmortem.md   → 可压（>512 字门；纯叙述 summary 靶子）
  *   T8 短确认                    → 零调用
  *   T9 第三次读 logs/app.log    → 链成员 → 零调用
  *
@@ -205,6 +206,28 @@ const FILES: Record<string, string> = {
     + 'gaps, so always verify the segment sequence is contiguous before the switch.\n'
     + 'Escalation: dba-oncall first, then platform-oncall. Never delete wal segments by hand, '
     + 'because the archive still depends on them for point-in-time recovery.\n',
+  // T7b：summary 靶子——纯叙述事故复盘散文，无结构化数据、无精确串（不含路径/URL/
+  // file:line/UUID/哈希/全大写长错误码/key=value），摘取无处下手、概括不损失关键信息
+  // → 自选模式下 summary 应是模型的正确判断。约 1.9K 字符，>512 字门。
+  'docs/postmortem.md':
+    'Incident Review: Slow Morning Degradation\n\n'
+    + 'Early in the morning the support channel started collecting complaints about slow page loads. '
+    + 'The duty engineer noticed the trend only after several customers chimed in, because the alert '
+    + 'threshold had been set generously after last quarter and nobody wanted noisy pages.\n\n'
+    + 'The first suspicion fell on the latest release. It had gone out the evening before without any '
+    + 'schema changes, and the team briefly considered rolling it back. A quick look at deployment notes '
+    + 'showed nothing unusual, so the hypothesis was dropped within minutes.\n\n'
+    + 'Dashboards told a clearer story. Database load looked calm, memory was unremarkable, and the '
+    + 'network path showed no packet loss. What did stand out was a slow creep in queue depth on the '
+    + 'worker fleet, as if jobs were arriving faster than they could be drained.\n\n'
+    + 'It turned out a partner had started replaying a large backfill early in the morning. Their '
+    + 'integration guide asks clients to pace bulk imports, but nothing enforces it on our side. The '
+    + 'extra load was legitimate, just poorly timed, and it starved the interactive workers of headroom.\n\n'
+    + 'By late morning the backfill finished on its own and everything drifted back to normal. No data '
+    + 'was lost and no customer asked for compensation, though a few wrote in to complain about the wait.\n\n'
+    + 'Follow-up items are modest. The team wants a gentler alert threshold for queue growth, a note in '
+    + 'the partner handbook about pacing bulk imports, and a small dashboard panel that separates batch '
+    + 'traffic from interactive traffic so the next incident is obvious at a glance.\n',
 }
 
 // 剧本：每轮的用户消息 + 该轮预期分类（用于判决）
@@ -222,6 +245,7 @@ const SCRIPT: Array<{ label: string; kind: TurnKind; text: string }> = [
   },
   { label: 'T6', kind: 'dialog', text: '好的。' },
   { label: 'T7', kind: 'compressible', text: '读 docs/runbook.md，摘出数据库相关的注意事项。' },
+  { label: 'T7b', kind: 'compressible', text: '读 docs/postmortem.md，给我讲讲这次事故的来龙去脉。' },
   { label: 'T8', kind: 'dialog', text: '收到，就这些。' },
   { label: 'T9', kind: 'chain', text: '最后再看一眼 logs/app.log 收尾。' },
 ]
@@ -340,6 +364,7 @@ async function main(): Promise<void> {
     surfaceBefore: number; surfaceAfter: number; cfTotal: number
     called?: boolean; appliedReplaces?: number; skippedFallbackDialog?: number
     skippedFidelity?: number; anomalies?: number; parseFailed?: boolean; error?: string
+    summaryDropped?: string[]
     skipReason?: 'no-candidate' | 'interrupted'
     prefixOk?: boolean; chainExcluded?: boolean; interrupted?: boolean
   }
@@ -417,7 +442,7 @@ async function main(): Promise<void> {
       })
       console.log(`[${pm.step.label}/${pm.step.kind}] turn=${pm.turn} called=${recObj.called} `
         + `replaces=${recObj.appliedReplaces ?? 'undef'} fb=${recObj.skippedFallbackDialog ?? 'undef'} fid=${recObj.skippedFidelity ?? 'undef'} `
-        + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
+        + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} sumDrop=${recObj.summaryDropped?.length ?? 0} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
     }
 
     // 5) 记录本轮起点（上一轮压缩已生效后的 surface），供下一轮测量
@@ -469,7 +494,7 @@ async function main(): Promise<void> {
     })
     console.log(`[${pm.step.label}/${pm.step.kind}] turn=${pm.turn} called=${recObj.called} `
       + `replaces=${recObj.appliedReplaces ?? 'undef'} fb=${recObj.skippedFallbackDialog ?? 'undef'} fid=${recObj.skippedFidelity ?? 'undef'} `
-      + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
+      + `anom=${recObj.anomalies ?? 'undef'} parseFailed=${recObj.parseFailed ?? false} sumDrop=${recObj.summaryDropped?.length ?? 0} surface=${pm.surfaceBefore}->${surfaceChars(session)} cf=${cfTotal} prefixOk=${common >= firstNewIdx}`)
   }
 
   // ---- 聚合判决 ----
