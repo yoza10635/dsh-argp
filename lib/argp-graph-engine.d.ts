@@ -17,6 +17,14 @@ export interface Atom {
     toolCallIds: string[];
     cites: ParsedCite[];
     citesFailed: boolean;
+    /**
+     * P4（U-info 剪枝放行）：仅 U-info 聚合副本有值——原始用户消息的日志 seq
+     * （recall_detail(sourceSeq) 的恢复目标）。dialog 副本（无 argp meta）与
+     * 普通 user 消息均无此字段，故 `sourceSeq !== undefined` 即 U-info 识别判据：
+     * ① isAtomCandidate 按 R 待遇参剪；② 排除出闭包 root（防 U-info 误当
+     * task-init 根拖整段退休）。
+     */
+    sourceSeq?: number;
 }
 export type EdgeLevel = 'critical' | 'supporting' | 'contextual';
 export interface SemanticEdge {
@@ -125,6 +133,15 @@ export interface ArgpGraphConfig {
      * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
      */
     disableCiteEdges?: boolean;
+    /**
+     * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
+     * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
+     * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
+     * 再次 forcePrune 收尾。未注入（undefined）时退化为现役两步
+     * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
+     * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
+     */
+    onOverflowCompress?: (session: Session) => Promise<void>;
 }
 export interface GraphPruneRecord {
     at: string;
@@ -228,6 +245,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly sortMode: 'legacy' | 'density' | 'density-chain';
     readonly turnBasis: 'semantic' | 'all';
     readonly maxOverflowRetries: number;
+    /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
+    readonly onOverflowCompress?: (session: Session) => Promise<void>;
     /** 闭包静止窗 K（A11 参数化，默认 2）。 */
     readonly closureWindowK: number;
     /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */

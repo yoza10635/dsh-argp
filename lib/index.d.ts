@@ -7,3 +7,5 @@ export { CiteDeclarer, CITATION_WINDOW_TURNS, citeDeclarerDefaultEndpoint, colle
 export type { CiteDeclarerConfig, CiteRecord, DeclAtom, DeclCollect, DeclaredCite, DeclaredLevel, } from './peratom/cite-declarer.js';
 export { RecallZoom, DEFAULT_BUDGET_RATIO, resolveSummaryText, default as RecallZoomDefault, } from './peratom/recall-zoom.js';
 export type { RecallZoomConfig, RecallZoomRecord, SummaryResolution, SummarySource, } from './peratom/recall-zoom.js';
+export { mountPeratomStack } from './peratom/mount.js';
+export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js';
