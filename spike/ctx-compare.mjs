@@ -24,10 +24,10 @@ function maxOf(arr, k) { return arr.reduce((m, x) => Math.max(m, x[k]), 0) }
 function avgOf(arr, k) { return arr.length ? arr.reduce((s, x) => s + x[k], 0) / arr.length : 0 }
 
 const n = Math.max(C.traj.length, A.traj.length)
-console.log('=== 同轮次上下文差距（无原子压缩 C vs 有原子压缩 A）===')
+console.log('=== 同轮次上下文差距（左臂=' + C.arm + ' 右臂=' + A.arm + '，liveChars=模型可见口径）===')
 console.log(`C = ${C.arm}臂  完成轮=${C.completedTurns}/${C.total}   A = ${A.arm}臂  完成轮=${A.completedTurns}/${A.total}`)
 console.log('')
-console.log('轮  | C活字符      | A活字符      | 差距(C-A)  | A降幅   | C活原子 | A活原子')
+console.log('轮  | ' + C.arm + '活字符      | ' + A.arm + '活字符      | 差距(' + C.arm + '-' + A.arm + ')  | ' + A.arm + '降幅   | ' + C.arm + '活原子 | ' + A.arm + '活原子')
 console.log('----+--------------+--------------+------------+----------+---------+--------')
 let sumGap = 0, nComp = 0
 for (let i = 0; i < n; i += 1) {
@@ -54,5 +54,5 @@ console.log(`峰值上下文：C≈${Math.round(cMax / CHARS_PER_TOKEN)} tokens 
 console.log('')
 console.log('注：活上下文=活原子模型可见总字符（text+tool-result 内层+tool-call args，不含 reasoning；')
 console.log('    本地 Qwen 丢弃 reasoning_content，prompt_tokens 差值=0 实测；tombstone/剪枝原子不计入）。')
-console.log('    C 臂仍挂 ArgpGraphEngine（溢出才剪），A 臂=图引擎+per-atom 压缩；两者唯一差异=Stage-1 per-atom 压缩。')
+console.log('    臂配置见两臂各自日志头部（E=零压缩；A=图引擎+per-atom；A+ARGP_WINDOW_TOKENS=262144=仅 per-atom 无硬剪）。')
 console.log('    run-to-run 变量：两臂各独立跑一次，模型非 temperature=0，绝对值有波动，但相对差距趋势稳定。')
