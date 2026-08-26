@@ -12,3 +12,19 @@ export type {
   ToolAction,
   UserSplit,
 } from './peratom/compressor.js'
+// CiteDeclarer 边声明管线（P2）：idle 触发 LLM 声明引用边，喂 Stage-2 injectEdges
+export {
+  CiteDeclarer,
+  CITATION_WINDOW_TURNS,
+  citeDeclarerDefaultEndpoint,
+  collectDeclAtoms,
+  normalizeCites,
+} from './peratom/cite-declarer.js'
+export type {
+  CiteDeclarerConfig,
+  CiteRecord,
+  DeclAtom,
+  DeclCollect,
+  DeclaredCite,
+  DeclaredLevel,
+} from './peratom/cite-declarer.js'
