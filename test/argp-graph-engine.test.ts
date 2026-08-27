@@ -388,6 +388,64 @@ test('catalogText: renders pruned U/A items with context header', async () => {
   }
 })
 
+// 回归：per-atom 原地压缩（无 compaction/prune 事务）不得计入剪枝账本。
+// 2026-08-27 定位：旧 shadowedSeqsOf 靠「replace 形态推断」剪枝，per-atom 压缩的
+// start===end replace（sourceEventSeqs=[被压原子]）穿透门控被当「已剪」，导致
+// catalog 谎报 "Compression removed N"、system 前缀逐轮变、跨轮缓存全断
+// （60 轮 A 臂实证：catalog removed 44，而 compaction/prune 事件数=0）。
+// 修复后只认 compaction/prune.shadowedSeqs 权威账本，per-atom 压缩天然不在内。
+test('regression: per-atom in-place compression is NOT counted as pruned (no false "Compression removed")', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('peratom-not-pruned'))
+    appendUser(session, 'original user content ' + 'x'.repeat(50))
+    const uSeq = session.events.length - 1
+    // per-atom 原地压缩形态：user 副本 replace 原文（start===end、sourceEventSeqs=[原 seq]），
+    // **不**发 compaction/prune（peratom/compressor.ts 的写回路径无剪枝事务）。
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: '[compressed copy]' }],
+      source: { kind: 'plugin', plugin: 'dsh-argp' },
+    }), { surfaceOp: { op: 'replace', start: uSeq, end: uSeq }, sourceEventSeqs: [uSeq] })
+    engine.setSession(session)
+
+    // 剪枝账本必须为空：压缩原子不算被剪
+    const shadowed = (engine as unknown as { shadowedSeqsOf(s: Session): Set<number> }).shadowedSeqsOf(session)
+    assert.equal(shadowed.size, 0, 'per-atom in-place compression must NOT enter the shadowed ledger, got: ' + [...shadowed].join(','))
+    // catalog 不得谎报 "Compression removed"（无真剪枝 → 空字符串）
+    const catalog = engine.catalogText()
+    assert.ok(!catalog.includes('[context] Compression removed'), 'catalog must not falsely report a removal for a compression, got: ' + catalog.slice(0, 120))
+    // 程序化 recall 不应把压缩原子当 shadowed 命中（recall 仅命中剪节点）
+    assert.equal(engine.recall(uSeq), null, 'recall must not treat a compressed (non-pruned) atom as a pruned node')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// 对照：真剪枝事务（compaction/prune 携带 shadowedSeqs）仍须正常入账、catalog 正常渲染。
+test('regression: real prune transaction (compaction/prune) IS counted as pruned', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('real-prune-transaction'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    const aSeq = session.events.length - 1
+    // 模拟 pruneIntervals 的权威事务：compaction/prune 携带 shadowedSeqs + tombstone replace
+    session.append('compaction/prune', { shadowedRange: { start: aSeq, end: aSeq }, shadowedSeqs: [aSeq], shadowedTokenCount: 50 })
+    session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: '[elided seq=' + aSeq + ': pruned by ARGP]' }],
+      source: { kind: 'plugin', plugin: 'argp-test' },
+    }), { surfaceOp: { op: 'replace', start: aSeq, end: aSeq }, sourceEventSeqs: [aSeq] })
+    engine.setSession(session)
+
+    const shadowed = (engine as unknown as { shadowedSeqsOf(s: Session): Set<number> }).shadowedSeqsOf(session)
+    assert.ok(shadowed.has(aSeq), 'real pruned node must be in the shadowed ledger')
+    assert.ok(engine.catalogText().includes('[context] Compression removed'), 'catalog must report the real removal')
+    assert.ok(engine.recall(aSeq) !== null, 'recall must hit a genuinely pruned node')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 test('compactRegion: balanced tool-call/result span can be pruned without orphan pair', async () => {
   const { ctx, engine } = await makeEngine()
   try {

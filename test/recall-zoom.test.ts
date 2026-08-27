@@ -166,7 +166,10 @@ test('recall_summary 档1（stored）：U-info 副本 data[ARG_NS].summary 直�
   const out = await runTool(h.ctx, 'recall_summary', { seq: origU })
   assert.ok(out.includes('INFO-SUMMARY-ABC'), 'must return the stored summary via copy reverse-lookup: ' + out)
   assert.equal(h.zoom.records.at(-1)?.source, 'stored')
-  assert.equal(h.zoom.records.at(-1)?.state, 'shadowed') // 原节点被 replace 遮蔽
+  assert.equal(h.zoom.records.at(-1)?.state, 'off-surface')
+  // per-atom 原地压缩（start===end）把原节点替换出 surface，但**不**进剪枝账本（无 compaction/prune）：
+  // 故原 seq 状态是 off-surface（被替换、非剪枝），而非旧的 shadowed（谎称"已剪枝"）。
+  // 这正是 2026-08-27 修复的误报：压缩≠剪枝，不应报 state=shadowed。
 })
 
 test('recall_summary 档2（copy）：tool/result extract 副本正文（无 ARG_NS，走 sourceEventSeqs 反查）', async t => {
