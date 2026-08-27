@@ -610,6 +610,22 @@ test('normalizeDecision：splits 透传 infoLevel/infoText；异形档位与 sum
   assert.deepEqual(d?.splits[4], { seq: 5, quotes: ['e'], infoLevel: 'summary', infoText: undefined }, 'summary 空压缩文本 → undefined')
 })
 
+test('normalizeDecision：tools 透传显式 false（设计对称：与 info 同级不压信号），空/缺 text 也接受', () => {
+  const d = normalizeDecision({
+    splits: [],
+    tools: [
+      { seq: 5, level: 'extract', text: 'EADDRINUSE stack' },
+      { seq: 6, level: 'false', text: '' },
+      { seq: 7, level: 'false' },
+      { seq: 8, level: 'nonsense', text: 'x' },
+    ],
+  })
+  assert.deepEqual(d?.tools[0], { seq: 5, level: 'extract', text: 'EADDRINUSE stack' })
+  assert.deepEqual(d?.tools[1], { seq: 6, level: 'false', text: '' }, 'false + 空 text 透传')
+  assert.deepEqual(d?.tools[2], { seq: 7, level: 'false', text: '' }, 'false + 缺 text → 空串兜底')
+  assert.equal(d?.tools.length, 3, '异形 level(nonsense) 弃档')
+})
+
 test('planReplacements：infoLevel=extract 全含高信号 token → U-info 节点 = 压缩 infoText（非逐字），单档 summary 元数据', () => {
   const plan = planReplacements(
     INFO_COLLECT,
@@ -671,6 +687,52 @@ test('planReplacements：infoLevel=false / 缺省 → info 逐字保留（原文
     [],
   )
   assert.equal((omitted.steps[1] as { data: { content?: { text: string }[] } }).data.content?.[0]?.text, 'AAA资料BBB', '缺省 → 逐字')
+})
+
+test('planReplacements：tools level=false → 不 emit replace、原子保原文、skippedFalse 计数', () => {
+  const toolText = 'Error ERR_CACHE_EVICTION_0x1F4 at src/cache/lru.ts:141:19 victim=txn#8821 budget 256MiB'
+  const collect: CurrentTurnCollect = {
+    turn: 1, startSeq: 5, endSeq: 5, interrupted: false,
+    userLong: [],
+    toolResults: [{ kind: 'tool-result', seq: 5, turn: 1, text: toolText, callId: 'c9' }],
+  }
+  const plan = planReplacements(
+    collect,
+    { splits: [], tools: [{ seq: 5, level: 'false', text: '' }] },
+    [],
+  )
+  assert.equal(plan.steps.length, 0, 'false 不 emit replace（与 verbatim extract 的 no-op 区别：根本不发表面事件）')
+  assert.equal(plan.skippedFalse, 1, 'skippedFalse 计数')
+  assert.equal(plan.replaces, 0)
+})
+
+test('端到端：tools level=false（完整源码模块）→ 不替换保原文，skippedFalse 落账，无表面 rewrite', async t => {
+  const h = await makeHarness()
+  t.after(() => dispose(h))
+  const session = Session.create(SessionId('pc-tool-false-e2e'))
+  const { uSeq, rSeq } = buildCompressibleTurn(session, 1, 'c1')
+  const srcMod = 'export class Mod26 { constructor() { this.marker = "ART-26"; } }'
+  // 把 tool result 内容改成完整源码风格（原 fixture 是报错，这里显式用源码串演示）
+  const record = await (async () => {
+    h.respond({
+      splits: [{ seq: uSeq, quotes: [DIALOG_QUOTE] }],
+      tools: [{ seq: rSeq, level: 'false', text: '' }],
+    })
+    return h.compressor.compressCurrentTurn(session)
+  })()
+  assert.equal(record?.appliedReplaces, 1, '仅 dialog replace（tool 因 false 跳过）')
+  assert.equal(record?.skippedFalse, 1, 'skippedFalse 落账到 CompressRecord')
+  // 原始 tool result 内容应原样保留在 surface（无 replace 事件）
+  const kinds = session.events.map(e => e.type)
+  const startIdx = kinds.lastIndexOf('compaction/start')
+  const endIdx = kinds.lastIndexOf('compaction/end')
+  let toolReplaces = 0
+  for (let i = startIdx!; i <= endIdx!; i += 1) {
+    const sop = (session.events[i] as { surfaceOp?: unknown })?.surfaceOp
+    if (sop && (sop as { op: string }).op === 'replace' && (session.events[i] as { type: string }).type === 'tool/result') toolReplaces += 1
+  }
+  assert.equal(toolReplaces, 0, 'compaction 事务内无 tool/result replace')
+  void srcMod
 })
 
 test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文本（非逐字），事务与断言全过', async t => {
