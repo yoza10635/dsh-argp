@@ -20,7 +20,16 @@ import type { Session } from '@deepseek-ai/dsh-session';
  *  - `off-surface`：合法事件但从未进入 surface（tool/call、turn/start、compaction/* 等）。
  */
 export type NodeState = 'shadowed' | 'live' | 'off-surface';
-/** 全日志扫描收集被遮蔽 surface seq（replace 事件 sourceEventSeqs 的并集）。 */
+/**
+ * 全日志扫描收集被遮蔽 surface seq（权威剪枝账本：compaction/prune.shadowedSeqs 的并集）。
+ *
+ * 2026-08-27：与 ArgpGraphEngine.shadowedSeqsOf 对齐——只认 compaction/prune 事件
+ * （pruneIntervals 每次真剪枝必发，shadowedSeqs 即被剪 seq 权威清单）。此前靠
+ * 「replace 形态推断」（任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed），
+ * 会把 per-atom 原地压缩（peratom/compressor.ts 的副本，无 compaction/prune 事件）误判为
+ * shadowed，导致 recall_summary/recall_detail 对压缩原子谎报 state=shadowed（同一反模式的
+ * 第二条路径，且连 argpCites 门控都没有，比 shadowedSeqsOf 更激进）。
+ */
 export declare function scanShadowedSeqs(session: Session): Set<number>;
 /** 判定单个 seq 的状态。shadowed 优先（被遮蔽的节点也可能仍留在 surface 索引之外）。 */
 export declare function nodeStateOf(session: Session, seq: number, isShadowed: (seq: number) => boolean): NodeState;

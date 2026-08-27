@@ -29,10 +29,11 @@ async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: 
  * 会话布局（seq = events 数组索引）：
  *   0 turn/start(turn1)             —— off-surface，无正文
  *   1 user/message U1               —— live
- *   2 assistant/message A1 (cites)  —— live → 被 replace 遮蔽 → shadowed
- *   3 user/message plugin tombstone —— replace [2..2] sourceEventSeqs=[2]
- *   4 turn/start(turn2)             —— off-surface，无正文
- *   5 user/message U2               —— live
+ *   2 assistant/message A1 (cites)  —— live → 被真剪枝事务遮蔽 → shadowed
+ *   3 compaction/prune              —— 权威剪枝账本（shadowedSeqs=[2]），pruneIntervals 每次真剪枝必发
+ *   4 user/message plugin tombstone —— replace [2..2] sourceEventSeqs=[2]
+ *   5 turn/start(turn2)             —— off-surface，无正文
+ *   6 user/message U2               —— live
  */
 function buildSession(): Session {
   const session = Session.create(SessionId('recall-log-access'))
@@ -44,6 +45,8 @@ function buildSession(): Session {
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'COOKIE-FACT: it was the dog.' }] }),
   }, { surfaceOp: 'append' })
   const a1 = session.events.length - 1 // seq 2：assistant/message A1
+  // 权威剪枝事务：compaction/prune 携带 shadowedSeqs（shadowedSeqsOf 的唯一账本来源）
+  session.append('compaction/prune', { shadowedRange: { start: a1, end: a1 }, shadowedSeqs: [a1], shadowedTokenCount: 10 })
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=2: pruned by ARGP; recall_pruned(seq) to retrieve]' }],
     source: { kind: 'plugin', plugin: 'argp-test' },
@@ -86,7 +89,7 @@ test('recall_pruned: live 节点（旧盲区）返回原文 + state=live 标签'
     const text = await runTool(ctx, 'recall_pruned', { seq: 1 })
     assert.ok(text.includes('state=live'), 'live node must carry state=live, got: ' + text.slice(0, 80))
     assert.ok(text.includes('who ate the cookie'), 'must return the live node text')
-    const u2 = await runTool(ctx, 'recall_pruned', { seq: 5 })
+    const u2 = await runTool(ctx, 'recall_pruned', { seq: 6 })
     assert.ok(u2.includes('state=live') && u2.includes('and the milk'), 'second live node recallable')
   } finally {
     await ctx.fiber.dispose()
@@ -127,11 +130,11 @@ test('list_pruned: 默认模式只列 shadowed，区间模式列出 live 节点�
     const prunedOnly = await runTool(ctx, 'list_pruned', {})
     assert.ok(prunedOnly.includes('seq=2'), 'default mode must list the shadowed node, got: ' + prunedOnly.slice(0, 120))
     assert.ok(prunedOnly.includes('state=shadowed'), 'default rows carry state=shadowed')
-    assert.ok(!prunedOnly.includes('seq=1 ') && !prunedOnly.includes('seq=5 '), 'default mode must NOT list live nodes')
-    // 区间模式：全日志扫描，live 节点（seq 1/5）出现且带 state=live
-    const ranged = await runTool(ctx, 'list_pruned', { fromSeq: 0, toSeq: 5 })
+    assert.ok(!prunedOnly.includes('seq=1 ') && !prunedOnly.includes('seq=6 '), 'default mode must NOT list live nodes')
+    // 区间模式：全日志扫描，live 节点（seq 1/6）出现且带 state=live
+    const ranged = await runTool(ctx, 'list_pruned', { fromSeq: 0, toSeq: 6 })
     assert.ok(ranged.includes('seq=1 '), 'range mode must reveal live seq 1')
-    assert.ok(ranged.includes('seq=5 '), 'range mode must reveal live seq 5')
+    assert.ok(ranged.includes('seq=6 '), 'range mode must reveal live seq 6')
     assert.ok(ranged.includes('state=live'), 'range rows carry state=live for live nodes')
     assert.ok(ranged.includes('seq=2 '), 'range mode also lists shadowed seq 2')
     assert.ok(ranged.includes('state=shadowed'), 'range rows carry state=shadowed for pruned nodes')
