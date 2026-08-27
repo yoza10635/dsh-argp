@@ -54,7 +54,11 @@ export interface UserSplit {
 }
 export interface ToolAction {
     seq: number;
-    level: 'extract' | 'summary';
+    /**
+     * 工具结果压缩档位（设计对称：与 info 同级显式信号）。`false`=全是关键内容、
+     * 无可压空间（典型如完整源码模块）→ 原子保原文、不 emit replace；`text` 此时可空。
+     */
+    level: 'extract' | 'summary' | 'false';
     text: string;
 }
 /** 单次压缩调用的输出形状（覆盖当轮全部可压原子）。 */
@@ -86,6 +90,8 @@ export interface CompressRecord {
     skippedFallbackDialog?: number;
     /** 保真守卫拒绝的 tool 副本数（缺高信号 token → 原文保面，spike 34 驱动）。 */
     skippedFidelity?: number;
+    /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
+    skippedFalse?: number;
     /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
     fidelityMissing?: string[];
     /**
@@ -128,6 +134,8 @@ interface PlanResult {
     replaces: number;
     skippedFallbackDialog: number;
     skippedFidelity: number;
+    /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
+    skippedFalse: number;
     /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
     fidelityMissing: string[];
     /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */

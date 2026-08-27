@@ -128,7 +128,11 @@ export interface UserSplit {
 
 export interface ToolAction {
   seq: number
-  level: 'extract' | 'summary'
+  /**
+   * 工具结果压缩档位（设计对称：与 info 同级显式信号）。`false`=全是关键内容、
+   * 无可压空间（典型如完整源码模块）→ 原子保原文、不 emit replace；`text` 此时可空。
+   */
+  level: 'extract' | 'summary' | 'false'
   text: string
 }
 
@@ -165,7 +169,7 @@ const OUTPUT_SCHEMA = {
         required: ['seq', 'level', 'text'],
         properties: {
           seq: { type: 'integer' },
-          level: { type: 'string', enum: ['extract', 'summary'] },
+          level: { type: 'string', enum: ['extract', 'summary', 'false'] },
           text: { type: 'string' },
         },
       },
@@ -217,6 +221,11 @@ export function normalizeDecision(cand: unknown): CompressDecision | null {
   for (const item of Array.isArray(o.tools) ? o.tools : []) {
     const t = item as { seq?: unknown; level?: unknown; text?: unknown }
     if (typeof t?.seq !== 'number' || !Number.isInteger(t.seq)) continue
+    // 显式"不压"信号（设计对称：与 info 同级）。text 可空，planReplacements 直接跳过。
+    if (t.level === 'false') {
+      tools.push({ seq: t.seq, level: 'false', text: typeof t.text === 'string' ? t.text : '' })
+      continue
+    }
     if (t.level !== 'extract' && t.level !== 'summary') continue
     if (typeof t.text !== 'string' || t.text.length === 0) continue
     tools.push({ seq: t.seq, level: t.level, text: t.text })
@@ -251,6 +260,8 @@ export interface CompressRecord {
   skippedFallbackDialog?: number
   /** 保真守卫拒绝的 tool 副本数（缺高信号 token → 原文保面，spike 34 驱动）。 */
   skippedFidelity?: number
+  /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
+  skippedFalse?: number
   /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
   fidelityMissing?: string[]
   /**
@@ -296,6 +307,8 @@ interface PlanResult {
   replaces: number
   skippedFallbackDialog: number
   skippedFidelity: number
+  /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
+  skippedFalse: number
   /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
   fidelityMissing: string[]
   /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
@@ -352,6 +365,7 @@ export function planReplacements(
   let replaces = 0
   let skippedFallbackDialog = 0
   let skippedFidelity = 0
+  let skippedFalse = 0
   const fidelityMissing: string[] = []
   const summaryDropped: string[] = []
   let anomalies = 0
@@ -428,6 +442,7 @@ export function planReplacements(
   }
   const seenToolSeqs = new Set<number>()
   for (const action of decision.tools) {
+    if (action.level === 'false') { skippedFalse += 1; continue } // 显式"不压"：原子保原文，不 emit replace
     const atom = toolBySeq.get(action.seq)
     if (atom === undefined) { anomalies += 1; continue }
     if (seenToolSeqs.has(action.seq)) { anomalies += 1; continue }
@@ -455,7 +470,7 @@ export function planReplacements(
     replaces += 1
   }
 
-  return { steps, replaces, skippedFallbackDialog, skippedFidelity, fidelityMissing, summaryDropped, anomalies }
+  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, fidelityMissing, summaryDropped, anomalies }
 }
 
 // ---------------------------------------------------------------------------
@@ -476,13 +491,14 @@ const PROMPT_RULES = [
   '- infoText 必填：summary/extract 时写入压缩结果；false 时留空字符串。',
   '',
   '## 工具结果压缩（tools）',
-  '- 对每个原子先做二选一判断，再把判断和压缩内容写进同一条 {"seq","level","text"}：',
+  '- 对每个原子做三选一判断（extract / summary / false），把判断与压缩内容写进同一条 {"seq","level","text"}：',
   '- 判断为摘取（level="extract"）：内容含结构化数据或精确串（日志行、配置、代码、命令输出），关键信息依赖原文措辞 → text 必须是所选原文片段的逐字完整拷贝——与原文完全一致（空白、换行、标点、大小写、全角半角、emoji 全部原样），禁止改写、翻译、增删、合并或重新组织任何字符；未选中的行视为噪声直接丢弃。',
   '- 判断为摘要（level="summary"）：内容是冗长叙述性文本、概括不损失关键信息 → text 用简洁概括替换全文；若原文仍有个别必须精确保留的串（错误码、标识符、路径等），把它们原样写进概括文本。',
-  '- 两种档位由你按每个原子的内容性质自行判断，不必统一。判断标准：确有可丢弃的噪声/冗余时才选 extract（text 必须比原文显著缩短，只逐字保留有用部分）；没有可压空间或拿不准时，该原子不要出现在输出里（视为保原文）——禁止全文照抄一遍，那既浪费 token 又无压缩收益。',
+  '- 判断为不压（level="false"）：原子全是关键内容、无可丢弃的噪声（典型如完整源码模块、无任何冗余的文本）→ 保留原文，text 留空字符串，不要输出压缩副本。',
+  '- 档位由你按每个原子的内容性质自行判断，不必统一。判断标准：确有可丢弃的噪声/冗余时才选 extract 或 summary（text 必须比原文显著缩短）；没有可压空间或拿不准时，显式选 false（从输出里省略该 seq 也等价）。禁止全文照抄一遍（如 level=extract 且 text≈原文），那既浪费 token 又无压缩收益。',
   '',
   '## 输出',
-  '只输出一个 JSON 对象：{"splits":[{"seq":<整数>,"quotes":["…"]}],"tools":[{"seq":<整数>,"level":"extract"|"summary","text":"…"}]}',
+  '只输出一个 JSON 对象：{"splits":[{"seq":<整数>,"quotes":["…"]}],"tools":[{"seq":<整数>,"level":"extract"|"summary"|"false","text":"…"}]}',
   '- seq 原样返回输入给出的值；不需要压缩的原子不要出现在输出里（视为保原文）。',
 ].join('\n')
 
@@ -854,6 +870,7 @@ export class PeratomCompressor {
       // 全部动作被拒（保真守卫/回退）或零动作：不开空事务，但统计直接落账到本次记录。
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
+      record.skippedFalse = plan.skippedFalse
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
@@ -906,6 +923,7 @@ export class PeratomCompressor {
       record.appliedReplaces = replaceCount
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
+      record.skippedFalse = plan.skippedFalse
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
