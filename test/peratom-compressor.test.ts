@@ -4,7 +4,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { ARG_NS } from '../src/peratom/types.ts'
-import { PeratomCompressor, planReplacements } from '../src/peratom/compressor.ts'
+import { PeratomCompressor, normalizeDecision, planReplacements } from '../src/peratom/compressor.ts'
 import type { CompressDecision, CurrentTurnCollect } from '../src/peratom/compressor.ts'
 import { isArgpUserInfo } from '../src/peratom/types.ts'
 
@@ -575,4 +575,123 @@ test('planReplacements：split 解析产出 dialog replace + U-info append 两�
   assert.deepEqual(dialog.sourceEventSeqs, [3])
   assert.equal(info.kind, 'append')
   assert.deepEqual(info.sourceEventSeqs, [3])
+})
+
+// ---------------------------------------------------------------------------
+// info 压缩（设计 §10 决策 1 补实现）：infoLevel/infoText 契约 + 保真守卫 + 单档落盘
+// ---------------------------------------------------------------------------
+
+const INFO_SPLIT_TEXT = '检查A：Error EADDRINUSE at src/cache/lru.ts:141:19 victim=txn#8821检查B：'
+const INFO_RAW = 'Error EADDRINUSE at src/cache/lru.ts:141:19 victim=txn#8821'
+const INFO_COLLECT: CurrentTurnCollect = {
+  turn: 1,
+  startSeq: 3,
+  endSeq: 3,
+  interrupted: false,
+  userLong: [{ kind: 'user-long', seq: 3, turn: 1, text: INFO_SPLIT_TEXT }],
+  toolResults: [],
+}
+
+test('normalizeDecision：splits 透传 infoLevel/infoText；异形档位与 summary 空文本弃档（回退逐字）', () => {
+  const d = normalizeDecision({
+    splits: [
+      { seq: 1, quotes: ['a'], infoLevel: 'extract', infoText: 'EADDRINUSE' },
+      { seq: 2, quotes: ['b'], infoLevel: 'summary', infoText: '概括' },
+      { seq: 3, quotes: ['c'], infoLevel: 'false', infoText: '' },
+      { seq: 4, quotes: ['d'], infoLevel: 'nonsense', infoText: 'x' },
+      { seq: 5, quotes: ['e'], infoLevel: 'summary', infoText: '' },
+    ],
+    tools: [],
+  })
+  assert.deepEqual(d?.splits[0], { seq: 1, quotes: ['a'], infoLevel: 'extract', infoText: 'EADDRINUSE' })
+  assert.deepEqual(d?.splits[1], { seq: 2, quotes: ['b'], infoLevel: 'summary', infoText: '概括' })
+  assert.deepEqual(d?.splits[2], { seq: 3, quotes: ['c'], infoLevel: 'false', infoText: '' })
+  assert.deepEqual(d?.splits[3], { seq: 4, quotes: ['d'], infoLevel: undefined, infoText: 'x' }, '异形档位 → undefined（planReplacements 回退逐字）')
+  assert.deepEqual(d?.splits[4], { seq: 5, quotes: ['e'], infoLevel: 'summary', infoText: undefined }, 'summary 空压缩文本 → undefined')
+})
+
+test('planReplacements：infoLevel=extract 全含高信号 token → U-info 节点 = 压缩 infoText（非逐字），单档 summary 元数据', () => {
+  const plan = planReplacements(
+    INFO_COLLECT,
+    { splits: [{ seq: 3, quotes: ['检查A：', '检查B：'], infoLevel: 'extract', infoText: INFO_RAW }], tools: [] },
+    [],
+  )
+  assert.equal(plan.steps.length, 2)
+  assert.equal(plan.skippedFidelity, 0)
+  const info = plan.steps[1] as { kind: string; data: { content?: { text: string }[]; [k: string]: unknown } }
+  assert.equal(info.kind, 'append')
+  assert.equal(info.data.content?.[0]?.text, INFO_RAW, 'info 节点 = 模型压缩 extract 文本')
+  const meta = info.data[ARG_NS] as { info: boolean; sourceSeq: number; summary: string }
+  assert.equal(meta.summary, INFO_RAW, '单档：ARG_NS.summary = surface 压缩态')
+})
+
+test('planReplacements：info extract 缺高信号 token → 回退逐字（原文保面），skippedFidelity 记账', () => {
+  const plan = planReplacements(
+    INFO_COLLECT,
+    { splits: [{ seq: 3, quotes: ['检查A：', '检查B：'], infoLevel: 'extract', infoText: 'cache eviction at lru.ts line 141 for txn 8821' }], tools: [] },
+    [],
+  )
+  assert.equal(plan.skippedFidelity, 1, '缺 token 的 extract 被拒')
+  assert.ok(plan.fidelityMissing.includes('EADDRINUSE'), '缺失清单含错误码')
+  const info = plan.steps[1] as { data: { content?: { text: string }[] } }
+  assert.equal(info.data.content?.[0]?.text, INFO_RAW, '回退逐字 info（错误方向只往少压错）')
+})
+
+test('planReplacements：info summary 丢精确串 → 审计放行（summaryDropped 入账，压缩文本仍落盘）', () => {
+  const plan = planReplacements(
+    INFO_COLLECT,
+    { splits: [{ seq: 3, quotes: ['检查A：', '检查B：'], infoLevel: 'summary', infoText: 'lru 缓存淘汰触发绑定失败' }], tools: [] },
+    [],
+  )
+  assert.equal(plan.skippedFidelity, 0, 'summary 不硬拒')
+  assert.ok(plan.summaryDropped.includes('EADDRINUSE'), '缺失精确串入审计账')
+  const info = plan.steps[1] as { data: { content?: { text: string }[] } }
+  assert.equal(info.data.content?.[0]?.text, 'lru 缓存淘汰触发绑定失败', 'summary 压缩文本落盘')
+})
+
+test('planReplacements：infoLevel=false / 缺省 → info 逐字保留（原文切片回退）', () => {
+  const text = '先看A：AAA资料BBB再看B：'
+  const collect: CurrentTurnCollect = {
+    turn: 1,
+    startSeq: 3,
+    endSeq: 3,
+    interrupted: false,
+    userLong: [{ kind: 'user-long', seq: 3, turn: 1, text }],
+    toolResults: [],
+  }
+  const withFalse = planReplacements(
+    collect,
+    { splits: [{ seq: 3, quotes: ['先看A：', '再看B：'], infoLevel: 'false', infoText: '' }], tools: [] },
+    [],
+  )
+  assert.equal((withFalse.steps[1] as { data: { content?: { text: string }[] } }).data.content?.[0]?.text, 'AAA资料BBB', 'false → 逐字')
+  const omitted = planReplacements(
+    collect,
+    { splits: [{ seq: 3, quotes: ['先看A：', '再看B：'] }], tools: [] },
+    [],
+  )
+  assert.equal((omitted.steps[1] as { data: { content?: { text: string }[] } }).data.content?.[0]?.text, 'AAA资料BBB', '缺省 → 逐字')
+})
+
+test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文本（非逐字），事务与断言全过', async t => {
+  const h = await makeHarness()
+  t.after(() => dispose(h))
+  const session = Session.create(SessionId('pc-info-extract-e2e'))
+  const { uSeq, rSeq } = buildCompressibleTurn(session, 1, 'c1')
+  const compressedInfo = 'EADDRINUSE :::3000 at node:net:1917'
+  h.respond({
+    splits: [{ seq: uSeq, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: compressedInfo }],
+    tools: [{ seq: rSeq, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const record = await h.compressor.compressCurrentTurn(session)
+  assert.equal(record?.appliedReplaces, 2, 'dialog replace + tool replace')
+  const kinds = session.events.map(e => e.type)
+  const endIdx = kinds.lastIndexOf('compaction/end')
+  const infoEvent = session.events[endIdx! - 2]
+  assert.equal(infoEvent?.type, 'user/message')
+  const iData = infoEvent?.data as unknown as { content?: { text: string }[]; [k: string]: unknown }
+  assert.equal(iData.content?.[0]?.text, compressedInfo, 'U-info surface = 模型压缩 extract 文本')
+  const meta = iData[ARG_NS] as { summary: string }
+  assert.equal(meta.summary, compressedInfo, '单档 summary 元数据 = 压缩文本')
+  assert.equal(infoEvent?.surfaceOp, 'append')
 })

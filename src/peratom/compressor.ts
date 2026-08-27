@@ -113,6 +113,17 @@ export function defaultEndpoint(env: NodeJS.ProcessEnv = process.env): ResolvedE
 export interface UserSplit {
   seq: number
   quotes: string[]
+  /**
+   * 资料（info）压缩档位（设计 §10 决策 1 补实现）：`false`=原样 / `summary`=概括 /
+   * `extract`=逐字摘取。用户源 info 默认偏好 summary（设计 L54：叙述类资料保意图）；
+   * shell 报错/含精确串 → extract。缺省（undefined）= 不压缩（引擎回退原文切片）。
+   */
+  infoLevel?: 'false' | 'summary' | 'extract'
+  /**
+   * 压缩后的 info 文本：summary/extract 时必填；false 或缺省时留空/缺省（引擎回退逐字切片）。
+   * 单档（§10 决策 7"只有两种形态"）：surface 放此文本、`data[ARG_NS].summary` 存同文本。
+   */
+  infoText?: string
 }
 
 export interface ToolAction {
@@ -137,10 +148,12 @@ const OUTPUT_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['seq', 'quotes'],
+        required: ['seq', 'quotes', 'infoLevel', 'infoText'],
         properties: {
           seq: { type: 'integer' },
           quotes: { type: 'array', items: { type: 'string' } },
+          infoLevel: { type: 'string', enum: ['false', 'summary', 'extract'] },
+          infoText: { type: 'string' },
         },
       },
     },
@@ -190,7 +203,16 @@ export function normalizeDecision(cand: unknown): CompressDecision | null {
     const quotes = (item as { quotes?: unknown } | undefined)?.quotes
     if (typeof seq !== 'number' || !Number.isInteger(seq)) continue
     if (!Array.isArray(quotes)) continue
-    splits.push({ seq, quotes: quotes.filter((q): q is string => typeof q === 'string') })
+    const rawLevel = (item as { infoLevel?: unknown } | undefined)?.infoLevel
+    // 档位白名单；缺省/异形 → undefined（planReplacements 回退逐字，安全方向）。
+    const infoLevel = rawLevel === 'summary' || rawLevel === 'extract' || rawLevel === 'false' ? rawLevel : undefined
+    const rawText = (item as { infoText?: unknown } | undefined)?.infoText
+    // summary/extract 必须带非空压缩文本，否则弃档（回退逐字）；false/缺省允许空串。
+    const infoText = typeof rawText === 'string'
+      && (infoLevel === undefined || infoLevel === 'false' || rawText.length > 0)
+      ? rawText
+      : undefined
+    splits.push({ seq, quotes: quotes.filter((q): q is string => typeof q === 'string'), infoLevel, infoText })
   }
   for (const item of Array.isArray(o.tools) ? o.tools : []) {
     const t = item as { seq?: unknown; level?: unknown; text?: unknown }
@@ -343,7 +365,29 @@ export function planReplacements(
     const res: SplitResolution = resolveSplit(atom.text, split.quotes)
     if (res.kind === 'split') {
       const dialogText = buildDialogText(atom.text, res.dialogSpans)
-      const infoText = buildInfoText(atom.text, res.infoSpans)
+      const verbatimInfo = buildInfoText(atom.text, res.infoSpans)
+      // info 压缩（设计 §10 决策 1 补实现）：summary/extract 用模型压缩文本；false/缺省回退逐字切片。
+      // guard 的 original 取 info 片段而非整条 user——dialog 里的路径/错误码不要求出现在 info 副本中。
+      let infoText = verbatimInfo
+      if (split.infoLevel === 'summary' || split.infoLevel === 'extract') {
+        const candidate = split.infoText ?? ''
+        if (candidate.length > 0) {
+          const guard = fidelityGuard(verbatimInfo, candidate)
+          if (!guard.ok) {
+            if (split.infoLevel === 'summary') {
+              // summary 审计放行：概括天然丢精确串，缺失清单入账供审核（与 tool summary 同档纪律）。
+              summaryDropped.push(...guard.missing)
+              infoText = candidate
+            } else {
+              // extract 硬拒：缺任一高信号 token 即回退逐字（原文保面，错误方向只往"少压"错）。
+              skippedFidelity += 1
+              fidelityMissing.push(...guard.missing)
+            }
+          } else {
+            infoText = candidate
+          }
+        }
+      }
       steps.push({
         kind: 'replace',
         type: 'user/message',
@@ -353,6 +397,8 @@ export function planReplacements(
       })
       replaces += 1
       // U-info append：tail-only 管线（flush 窗口内恰落在当轮尾部）；原文天然留日志。
+      // 单档（§10 决策 7）：surface 放压缩态文本，data[ARG_NS].summary 存同文本——
+      // recall_summary 直接可用；recall_detail 从 append-only 日志还原原文。
       steps.push({
         kind: 'append',
         type: 'user/message',
@@ -425,6 +471,9 @@ const PROMPT_RULES = [
   '- 片段按原文出现顺序排列；同一段连续指令不要拆成多段，不相邻的指令不要合并成一段。',
   '- 保守纪律：任何可能包含指令语义的片段都必须抄入 quotes——错误方向只允许往 dialog 错；存档/转发类引导语算资料。',
   '- 未抄写的部分视为资料，会被聚合成可压缩副本。',
+  '- infoLevel 决定资料的压缩方式：false=资料很短或无可压空间（infoText 留空，保留原文）；summary=叙述性资料（外部评审、方案、讨论记录、说明）用简洁概括，概括中保留出现的函数名、版本号、API、路径、错误码等精确串；extract=含精确串的资料（shell 报错、日志行、代码片段）逐字保留有用部分、丢弃噪声，infoText 必须与原文逐字一致（空白、换行、标点、大小写全部原样），禁止改写。',
+  '- 档位判断：外部 AI 的评审/方案/记录、长段说明 → summary；shell 报错、含错误码/路径/行号的内容 → extract；短小或无冗余 → false。',
+  '- infoText 必填：summary/extract 时写入压缩结果；false 时留空字符串。',
   '',
   '## 工具结果压缩（tools）',
   '- 对每个原子先做二选一判断，再把判断和压缩内容写进同一条 {"seq","level","text"}：',

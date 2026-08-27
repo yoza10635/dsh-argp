@@ -40,6 +40,17 @@ export declare function defaultEndpoint(env?: NodeJS.ProcessEnv): ResolvedEndpoi
 export interface UserSplit {
     seq: number;
     quotes: string[];
+    /**
+     * 资料（info）压缩档位（设计 §10 决策 1 补实现）：`false`=原样 / `summary`=概括 /
+     * `extract`=逐字摘取。用户源 info 默认偏好 summary（设计 L54：叙述类资料保意图）；
+     * shell 报错/含精确串 → extract。缺省（undefined）= 不压缩（引擎回退原文切片）。
+     */
+    infoLevel?: 'false' | 'summary' | 'extract';
+    /**
+     * 压缩后的 info 文本：summary/extract 时必填；false 或缺省时留空/缺省（引擎回退逐字切片）。
+     * 单档（§10 决策 7"只有两种形态"）：surface 放此文本、`data[ARG_NS].summary` 存同文本。
+     */
+    infoText?: string;
 }
 export interface ToolAction {
     seq: number;
