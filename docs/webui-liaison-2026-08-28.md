@@ -49,3 +49,13 @@ P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `reques
 - **幽灵危害升级实证**：本轮幽灵第三次运行"成功"但产出**空摘要**——UI 显示"上下文已压缩 压缩摘要不可用"，上下文被压掉而内容不可恢复。比 lossy 更糟：无损历史换来了零信息占位。幽灵 compaction-basic 绕过 disabled row 的机制未最终定位（所有 dump 视图均 disabled:true；源码无旁路 import；profile 本地 node_modules 与源码的 web-app patch 同为禁用）——已到上游问题边界，建议以本节证据向上游反馈（dsh-api-feedback 通道）。
 - ModelScope 观察项：首 token 2.7s（显著快于本地 8-13s）、108 tok/s；`缓存命中 0%`（openai-completions 路径不回 cacheReadTokens，ARGP 锚定退化为纯 inputTokens，功能不受损）；thinking 默认开（reasoning_content 存在但 content 正确）。
 - settings 注记：modelscope 两个模型条目已补 `contextWindow: 32000`（声明口径，驱动压缩阈值；如需真实物理口径可改）。
+
+## §5 部署宿主更新与 rc.2 验证（2026-08-28 深夜）
+
+部署宿主 `D:\deepseek-harness` 从 rc.7 更新至 **0.1.1-rc.2**（浅抓 tag `dsh-v0.1.1-rc.2` @ b150a55，pnpm install + 全量 build，200 产物）——与 dsh-argp 钉住的 `@deepseek-ai/dsh-*` 0.1.1-rc.2 API 对齐。注意：`D:\deepseek-harness`（部署）与 `D:\workspace\ARGP\deepseek-harness`（rc.8 快照，只读参考）共享 `~/.dsh` home，profile 内 argp 0.3.2 对两宿主同时生效。
+
+**rc.2 部署宿主复测（web + ModelScope Flash-Next，压力任务）**：
+
+- P1 修复在 rc.2 完整生效：threshold=25600 贯穿、锚定 15178→22471 真实、boot 零错误。
+- **幽灵摘要器跨版本定论**：rc.2 上 turn 1 即两次外来压缩（裸 UUID）——排除"旧部署伪影"，`compaction-basic 绕过 disabled row`是当前上游（含最新 rc.2）的普遍行为，上游反馈证据链补全（rc.7 时代 UI 有 lossy checkpoint + rc.8/rc.2 有告警日志 + 三次运行两次空摘要错误一次空摘要"成功"）。
+- 待办联动：P0 双引擎挂载入口后续验证一律以 rc.2 部署宿主为准（用户的真实环境），快照宿主退回只读参考位。
