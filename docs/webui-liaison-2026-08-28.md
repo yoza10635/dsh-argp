@@ -59,3 +59,21 @@ P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `reques
 - P1 修复在 rc.2 完整生效：threshold=25600 贯穿、锚定 15178→22471 真实、boot 零错误。
 - **幽灵摘要器跨版本定论**：rc.2 上 turn 1 即两次外来压缩（裸 UUID）——排除"旧部署伪影"，`compaction-basic 绕过 disabled row`是当前上游（含最新 rc.2）的普遍行为，上游反馈证据链补全（rc.7 时代 UI 有 lossy checkpoint + rc.8/rc.2 有告警日志 + 三次运行两次空摘要错误一次空摘要"成功"）。
 - 待办联动：P0 双引擎挂载入口后续验证一律以 rc.2 部署宿主为准（用户的真实环境），快照宿主退回只读参考位。
+
+## §6 P0 双引擎生产挂载——修复与真宿主全栈验证（2026-08-28 深夜，commit a96fcbe）
+
+发现一的插件侧修复 + 端到端验证，**1.0.0 验收第①项达成**：
+
+**实现**（三件）：
+1. `ArgpGraphConfig.peratom` 自挂载块：构造期挂三管线，`injectEdges`/`onOverflowCompress` 内部接线（显式同名键忽略并告警），`false` 关闭单管线；与 `mountPeratomStack` 同拓扑，测试/三臂工厂不受影响。启用方式=profile 用户层 patch 给 dsh-argp 行加 peratom config（bundle patch 保持 graph-only 默认）。
+2. `resolveLlmRuntime`：属性访问优先（测试替身 loose ctx），抛错回退 `ctx.get('llm')`——真宿主 cordis 对属性访问做 inject 检查（`cannot get property "llm" without inject`），`ctx.get(name)` 官方语义即免 inject 读取。
+3. compressor/declarer 生产诊断日志（`[argp-peratom]` 前缀：触发/候选/decision/LLM 失败），告别纯静默。
+
+**rc.2 部署宿主全栈验证**（web profile + ModelScope Qwen3.8-Flash-Next，用户层 peratom config 指向 modelscope）：
+
+- compressor：turn-1 触发，2u+1r 候选，32,459 chars prompt 经 ctx.llm 发出 → 175s 返回 **splits=2 extract=1**（usage 捕获）。
+- declarer：同 turn 触发（from=6 to=0；turn-1 无 prior 原子，空声明正确——优化注记：to=0 可零调用短路）。
+- 发射段：turn-2 pre-step 落账 **`argp-peratom-*` 事务**（compaction/start+end 无错），同 turn **`argp-graph-*` 图剪事务**亦触发（P1 修复后真宿主首次真实图剪）——**双引擎同会话协同，id 前缀区分**。
+- 会话回答全程正确（130ms/retry=3/72ms 三问全对）；上下文注入面板出现两条 dsh-argp 行（graph+peratom 事件注入）。
+- ModelScope aux 调用观察：32KB prompt 175s（慢但可用）；配额消耗约 3 calls/turn（compressor+declarer+可能重试），60 轮会话预估 ~180 calls——与 215/日额度同量级，长程实验需分日或切回本地模型。
+- 新缺口注记：幽灵摘要器的"压缩摘要不可用"节点仍在（§4），它与 ARGP 的 replace 并存于同一会话——上游反馈更紧迫。
