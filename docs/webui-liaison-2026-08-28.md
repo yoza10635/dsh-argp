@@ -77,3 +77,10 @@ P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `reques
 - 会话回答全程正确（130ms/retry=3/72ms 三问全对）；上下文注入面板出现两条 dsh-argp 行（graph+peratom 事件注入）。
 - ModelScope aux 调用观察：32KB prompt 175s（慢但可用）；配额消耗约 3 calls/turn（compressor+declarer+可能重试），60 轮会话预估 ~180 calls——与 215/日额度同量级，长程实验需分日或切回本地模型。
 - 新缺口注记：幽灵摘要器的"压缩摘要不可用"节点仍在（§4），它与 ARGP 的 replace 并存于同一会话——上游反馈更紧迫。
+
+## §7 UI 插件通道核实与 P2 消解（2026-08-28 深夜）
+
+用户指出官方 UI 是插件化管理——核实结果修正两件事：
+
+1. **发现三（cites 泄漏）实际已消解，P2 划勾**。dsh-argp 的 client 半区（`src/client/index.ts`，v0.3.0 自带）注册 `assistantDisplay` seam（ui-conversation 官方显示层扩展点，注册过滤器在渲染前转换 assistant 块），rc.2 部署宿主当前会话实测 **cites JSON 已不可见**。早上看到的泄漏系当天早期部署态伪影（陈旧 0.3.0 / 未完成 client 组合），与发现二同款教训：**引用 0.3.2 行为前必须确认部署态新鲜**。
+2. **peratom 可见性的正确通道与边界**。UI 对话节点渲染 = ui-conversation 的 `conversation.chat.node` keyed slot + 宿主侧节点投影。`CompactionNodeView` 只渲染**带 checkpoint 用户消息的摘要型事务**（幽灵摘要器那种），ARGP 替换型事务（peratom 内联 replace / graph tombstone）无 node key → 不可见。插件侧现状：graph 剪枝的 `[elided seq=N..M]` tombstone 是 surface 用户消息、UI 本来可见；peratom 内联替换要可见需投影层 seam（第三方 client 目前插不进投影）。**上游反馈清单合并为三项**：①幽灵摘要器绕过 disabled row；②替换型压缩事务的 UI 节点投影 seam（或第三方 chat.node 注册通道）；③cites 泄漏根因解释（client seam 0.3.0 已修，附验证方法）。
