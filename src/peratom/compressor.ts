@@ -29,6 +29,8 @@ import { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { ARG_NS, SPLIT_THRESHOLD_CHARS } from './types.js'
+import { completeViaDshLlm } from './llm-adapter.js'
+import type { DshLlmSpec } from './llm-adapter.js'
 import type { SplitResolution } from './split.js'
 import { buildDialogText, buildInfoText, resolveSplit } from './split.js'
 import {
@@ -57,6 +59,11 @@ export interface PeratomCompressorConfig {
   endpoint?: string
   apiKey?: string
   model?: string
+  /**
+   * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+   * （fetch 遗产路径）。多模型分工：与 declarer 各自指定 provider/model（lite 档可选）。
+   */
+  llm?: DshLlmSpec
   /** 用户长消息阈值（默认 SPLIT_THRESHOLD_CHARS=100）。 */
   splitThresholdChars?: number
   /** 工具结果小结果阈值（默认 DEFAULT_SMALL_RESULT_CHARS=512）。 */
@@ -262,6 +269,8 @@ export interface CompressRecord {
   skippedFidelity?: number
   /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
   skippedFalse?: number
+  /** no-op 守卫拒的 tool 副本数（收益 ≤5% 视同 false；spike 37 全文照抄实锤驱动）。 */
+  skippedNoopGain?: number
   /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
   fidelityMissing?: string[]
   /**
@@ -276,6 +285,8 @@ export interface CompressRecord {
   decision?: CompressDecision
   /** 模型原始响应文本（无论解析成败都留痕；调试 parseFailed 根因用）。 */
   rawResponse?: string
+  /** dsh-llm 后端的 usage 记账（fetch 后端经 meteringFetch 在 spike 侧独立计量）。 */
+  usage?: { promptTokens: number; completionTokens: number }
   anomalies?: number
   error?: string
   /**
@@ -309,6 +320,8 @@ interface PlanResult {
   skippedFidelity: number
   /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
   skippedFalse: number
+  /** no-op 守卫拒的 tool 副本数（收益 ≤5% 视同 false；spike 37 全文照抄实锤驱动）。 */
+  skippedNoopGain: number
   /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
   fidelityMissing: string[]
   /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
@@ -366,6 +379,7 @@ export function planReplacements(
   let skippedFallbackDialog = 0
   let skippedFidelity = 0
   let skippedFalse = 0
+  let skippedNoopGain = 0
   const fidelityMissing: string[] = []
   const summaryDropped: string[] = []
   let anomalies = 0
@@ -447,6 +461,15 @@ export function planReplacements(
     if (atom === undefined) { anomalies += 1; continue }
     if (seenToolSeqs.has(action.seq)) { anomalies += 1; continue }
     seenToolSeqs.add(action.seq)
+    // no-op 守卫（spike 37 两次跑批实锤）：模型对源码类 tool-result 全文照抄（2.5K 模块
+    // 原样返回）→ fidelityGuard 平凡通过（token 全在）→ 零收益 replace 白花 surface 换代、
+    // 污染逐原子审计。副本收益 ≤5%（含持平/变长）视同显式 false：原文保面 + 计数入账
+    //（对齐 87c66de「拿不准选 false」的设计意图）。用户路径不受此守卫——'info-only' 的
+    // 同文 replace 承载 data[ARG_NS] 元数据，有结构作用，不能省。
+    if (action.text.length >= atom.text.length * 0.95) {
+      skippedNoopGain += 1
+      continue
+    }
     // 保真守卫（spike 34 驱动）：原文的高信号 token 必须在副本里 verbatim 存活。
     // level-aware 分级（spike36 复盘驱动）：extract 维持硬拒——缺任一 token 即拒绝替换、
     // 原文保面（错误方向只允许往"少压"错）；summary 是模型自选的概括档，概括天然
@@ -470,7 +493,7 @@ export function planReplacements(
     replaces += 1
   }
 
-  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, fidelityMissing, summaryDropped, anomalies }
+  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, skippedNoopGain, fidelityMissing, summaryDropped, anomalies }
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +612,7 @@ export class PeratomCompressor {
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
   private readonly endpoint: ResolvedEndpoint | null
+  private readonly dshLlm: DshLlmSpec | null
   private readonly fetchImpl: typeof fetch
   private readonly ctx: Context
 
@@ -633,6 +657,7 @@ export class PeratomCompressor {
 
   constructor(ctx: Context, config: PeratomCompressorConfig = {}) {
     this.ctx = ctx
+    this.dshLlm = config.llm ?? null
     this.endpoint = config.endpoint !== undefined
       ? {
           endpoint: config.endpoint,
@@ -648,8 +673,8 @@ export class PeratomCompressor {
       for (const [name, policy] of config.toolPolicies) this.toolPolicies.set(name, policy)
     }
     this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args))
-    if (this.endpoint === null) {
-      ctx.logger.warn('peratom-compressor: no LLM endpoint resolved (set DEEPSEEK_API_KEY or pass config); compressor disabled')
+    if (this.endpoint === null && this.dshLlm === null) {
+      ctx.logger.warn('peratom-compressor: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); compressor disabled')
     }
 
     // 触发钩子：轮末 idle（当轮必已闭）→ 收集 + LLM（异步，不阻塞状态切换）。
@@ -823,7 +848,7 @@ export class PeratomCompressor {
   private async callAndStash(session: Session, collect: CurrentTurnCollect): Promise<CompressRecord> {
     const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     this.records.push(record)
-    if (this.endpoint === null) {
+    if (this.endpoint === null && this.dshLlm === null) {
       record.error = 'no-endpoint'
       return record
     }
@@ -837,15 +862,24 @@ export class PeratomCompressor {
       }
       let raw: string
       let ms = Date.now() - started
-      try {
-        raw = await postChat(this.fetchImpl, this.endpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+      if (this.dshLlm !== null) {
+        // dsh-llm 生产后端：GenerateOptions 无 response_format——schema 约束仅在 fetch
+        // 后端可用，此路径一次到位，依赖 extractJson 兜底解析（无 schema 重试舞蹈）。
+        const res = await completeViaDshLlm(this.ctx, this.dshLlm, prompt, this.timeoutMs)
+        raw = res.text
+        if (res.usage !== undefined) record.usage = res.usage
         ms = Date.now() - started
-      } catch (schemaError) {
-        // response_format 被端点拒绝/网络抖动：spike 30/32 兼容模式重试一次（裸 prompt）。
-        raw = await postChat(this.fetchImpl, this.endpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
-        ms = Date.now() - started
-        record.anomalies = (record.anomalies ?? 0) + 1
-        void schemaError
+      } else {
+        try {
+          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+          ms = Date.now() - started
+        } catch (schemaError) {
+          // response_format 被端点拒绝/网络抖动：spike 30/32 兼容模式重试一次（裸 prompt）。
+          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+          ms = Date.now() - started
+          record.anomalies = (record.anomalies ?? 0) + 1
+          void schemaError
+        }
       }
       record.ms = ms
       record.rawResponse = raw
@@ -871,6 +905,7 @@ export class PeratomCompressor {
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
       record.skippedFalse = plan.skippedFalse
+      record.skippedNoopGain = plan.skippedNoopGain
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
@@ -924,6 +959,7 @@ export class PeratomCompressor {
       record.skippedFallbackDialog = plan.skippedFallbackDialog
       record.skippedFidelity = plan.skippedFidelity
       record.skippedFalse = plan.skippedFalse
+      record.skippedNoopGain = plan.skippedNoopGain
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies

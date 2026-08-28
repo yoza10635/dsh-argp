@@ -26,6 +26,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { Atom, SemanticEdge } from '../argp-graph-engine.js';
 import type { GateAtom } from './gate.js';
+import type { DshLlmSpec } from './llm-adapter.js';
 /** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
 export declare const CITATION_WINDOW_TURNS = 10;
 /** 声明边级别（直接复用 Stage-2 的 EdgeLevel 值域）。 */
@@ -80,6 +81,11 @@ export interface CiteDeclarerConfig {
     endpoint?: string;
     apiKey?: string;
     model?: string;
+    /**
+     * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+     * （fetch 遗产路径）。多模型分工：可指向与 compressor 不同的 lite 档（台账 D21）。
+     */
+    llm?: DshLlmSpec;
     /** 声明窗口轮数（默认 CITATION_WINDOW_TURNS=10）。 */
     windowTurns?: number;
     /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
@@ -133,6 +139,7 @@ export declare class CiteDeclarer {
     readonly timeoutMs: number;
     private readonly ctx;
     private readonly endpoint;
+    private readonly dshLlm;
     private readonly fetchImpl;
     private readonly chatTemplateKwargs;
     /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */

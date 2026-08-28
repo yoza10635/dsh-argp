@@ -1,11 +1,17 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+import type { DshLlmSpec } from './llm-adapter.js';
 import type { GateToolResult, GateUserLong, NeedCompress } from './gate.js';
 export interface PeratomCompressorConfig {
     /** OpenAI 兼容 chat/completions 端点全 URL。缺省按环境变量解析（见 defaultEndpoint）。 */
     endpoint?: string;
     apiKey?: string;
     model?: string;
+    /**
+     * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+     * （fetch 遗产路径）。多模型分工：与 declarer 各自指定 provider/model（lite 档可选）。
+     */
+    llm?: DshLlmSpec;
     /** 用户长消息阈值（默认 SPLIT_THRESHOLD_CHARS=100）。 */
     splitThresholdChars?: number;
     /** 工具结果小结果阈值（默认 DEFAULT_SMALL_RESULT_CHARS=512）。 */
@@ -92,6 +98,8 @@ export interface CompressRecord {
     skippedFidelity?: number;
     /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
     skippedFalse?: number;
+    /** no-op 守卫拒的 tool 副本数（收益 ≤5% 视同 false；spike 37 全文照抄实锤驱动）。 */
+    skippedNoopGain?: number;
     /** 被保真守卫拒的副本中缺失的高信号 token 汇总（诊断白压根因）。 */
     fidelityMissing?: string[];
     /**
@@ -109,6 +117,11 @@ export interface CompressRecord {
     decision?: CompressDecision;
     /** 模型原始响应文本（无论解析成败都留痕；调试 parseFailed 根因用）。 */
     rawResponse?: string;
+    /** dsh-llm 后端的 usage 记账（fetch 后端经 meteringFetch 在 spike 侧独立计量）。 */
+    usage?: {
+        promptTokens: number;
+        completionTokens: number;
+    };
     anomalies?: number;
     error?: string;
     /**
@@ -136,6 +149,8 @@ interface PlanResult {
     skippedFidelity: number;
     /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
     skippedFalse: number;
+    /** no-op 守卫拒的 tool 副本数（收益 ≤5% 视同 false；spike 37 全文照抄实锤驱动）。 */
+    skippedNoopGain: number;
     /** 被保真守卫拒的副本中，缺失的高信号 token 汇总（诊断"白压"根因用）。 */
     fidelityMissing: string[];
     /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
@@ -155,6 +170,7 @@ export declare class PeratomCompressor {
     readonly timeoutMs: number;
     private readonly chatTemplateKwargs;
     private readonly endpoint;
+    private readonly dshLlm;
     private readonly fetchImpl;
     private readonly ctx;
     /** LLM 压缩调用计数器（纯 dialog 轮零调用的断言读这里）。 */
