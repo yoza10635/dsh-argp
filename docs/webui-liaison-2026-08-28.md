@@ -37,3 +37,15 @@ system prompt 教了完整 cites 协议（V6 分级 s/c/x），模型正确服�
 ## 对 1.0.0 门槛的影响
 
 P5-bis 实测（轮次放大 ≥3.2×）成立的前提是"窗口=声明窗口"；复测表明真环境需修两项才能兑现同叙事。**1.0.0 验收清单更新为三项**：①双引擎声明式挂载入口 + ctx.llm 真跑通（P0，原判维持）；②窗口口径归一（声明 contextWindow 进引擎阈值 + session-checkpoint-policy 处置）+ 真会话复测 ARGP 实际触发图剪（P1，改判后精确化）；③cites 块显示层剥离（P2，随显示层修复走）。
+
+## §4 插件侧修复与第三轮验证（2026-08-28 晚，commit 10c584b）
+
+P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `request/context` 事件的声明 contextWindow（WeakMap per session），`resolveScaledBudgets` 优先 requestContext() → 事件缓存 → 探测回退；②声明值未知时 pressure 检查宁缺勿错跳过（显式配置 windowTokens 不受影响）；③无 `argp-` 前缀的外来 `compaction/start` 打 warn（抢跑可见性）。质量门禁 184/184 绿。
+
+**第三轮端到端验证（web profile + ModelScope Qwen3.8-Flash-Next，用户配置接入）**：
+
+- **声明窗口口径修复实证**：threshold=**25,600**（32K×0.8）贯穿全部检查；contextTokens 锚定读数 20504→23234 连续真实（此前 0 或 9K 假值）。
+- **外来压缩告警实证**：幽灵摘要器两次触发被实时告警抓住（turn 2，裸 UUID）。
+- **幽灵危害升级实证**：本轮幽灵第三次运行"成功"但产出**空摘要**——UI 显示"上下文已压缩 压缩摘要不可用"，上下文被压掉而内容不可恢复。比 lossy 更糟：无损历史换来了零信息占位。幽灵 compaction-basic 绕过 disabled row 的机制未最终定位（所有 dump 视图均 disabled:true；源码无旁路 import；profile 本地 node_modules 与源码的 web-app patch 同为禁用）——已到上游问题边界，建议以本节证据向上游反馈（dsh-api-feedback 通道）。
+- ModelScope 观察项：首 token 2.7s（显著快于本地 8-13s）、108 tok/s；`缓存命中 0%`（openai-completions 路径不回 cacheReadTokens，ARGP 锚定退化为纯 inputTokens，功能不受损）；thinking 默认开（reasoning_content 存在但 content 正确）。
+- settings 注记：modelscope 两个模型条目已补 `contextWindow: 32000`（声明口径，驱动压缩阈值；如需真实物理口径可改）。
