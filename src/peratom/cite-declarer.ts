@@ -35,6 +35,8 @@ import {
 } from './gate.js'
 import type { GateAtom } from './gate.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
+import { completeViaDshLlm } from './llm-adapter.js'
+import type { DshLlmSpec } from './llm-adapter.js'
 
 /** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
 export const CITATION_WINDOW_TURNS = 10
@@ -106,6 +108,11 @@ export interface CiteDeclarerConfig {
   endpoint?: string
   apiKey?: string
   model?: string
+  /**
+   * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+   * （fetch 遗产路径）。多模型分工：可指向与 compressor 不同的 lite 档（台账 D21）。
+   */
+  llm?: DshLlmSpec
   /** 声明窗口轮数（默认 CITATION_WINDOW_TURNS=10）。 */
   windowTurns?: number
   /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
@@ -406,6 +413,7 @@ export class CiteDeclarer {
 
   private readonly ctx: Context
   private readonly endpoint: ResolvedEndpoint | null
+  private readonly dshLlm: DshLlmSpec | null
   private readonly fetchImpl: typeof fetch
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
@@ -426,6 +434,7 @@ export class CiteDeclarer {
 
   constructor(ctx: Context, config: CiteDeclarerConfig = {}) {
     this.ctx = ctx
+    this.dshLlm = config.llm ?? null
     this.endpoint = config.endpoint !== undefined
       ? { endpoint: config.endpoint, model: config.model ?? 'deepseek-v4-flash', apiKey: config.apiKey ?? '' }
       : (config.apiKey !== undefined
@@ -435,8 +444,8 @@ export class CiteDeclarer {
     this.timeoutMs = config.timeoutMs ?? 120_000
     this.chatTemplateKwargs = config.chatTemplateKwargs
     this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args))
-    if (this.endpoint === null) {
-      ctx.logger.warn('cite-declarer: no LLM endpoint resolved (set DEEPSEEK_API_KEY or pass config); declarer disabled')
+    if (this.endpoint === null && this.dshLlm === null) {
+      ctx.logger.warn('cite-declarer: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); declarer disabled')
     }
 
     // 触发钩子：轮末 idle（当轮必已闭）→ 收集 + 声明（异步，不阻塞状态切换）。
@@ -471,7 +480,7 @@ export class CiteDeclarer {
       this.records.push(record)
       return record // 孤立原子规则：纯 dialog / 全版本链 / 全小结果 → 零调用、零建边
     }
-    if (this.endpoint === null) {
+    if (this.endpoint === null && this.dshLlm === null) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'no-endpoint' }
       this.records.push(record)
       return record // disabled：静默跳过
@@ -483,12 +492,17 @@ export class CiteDeclarer {
     try {
       const prompt = buildCitePrompt([...collect.fromAtoms, ...collect.toAtoms])
       let raw: string
-      try {
-        raw = await postChat(this.fetchImpl, this.endpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
-      } catch {
-        // response_format 被端点拒绝 / 网络抖动：降级裸 prompt 静默重试一次（compressor 同款，
-        // plan P2"至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
-        raw = await postChat(this.fetchImpl, this.endpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+      if (this.dshLlm !== null) {
+        // dsh-llm 生产后端：一次到位（GenerateOptions 无 response_format，extractJson 兜底）。
+        raw = (await completeViaDshLlm(this.ctx, this.dshLlm, prompt, this.timeoutMs)).text
+      } else {
+        try {
+          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+        } catch {
+          // response_format 被端点拒绝 / 网络抖动：降级裸 prompt 静默重试一次（compressor 同款，
+          // plan P2"至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
+          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+        }
       }
       record.ms = Date.now() - started
       const parsed = extractJson(raw)

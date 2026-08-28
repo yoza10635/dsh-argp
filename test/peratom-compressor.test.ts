@@ -552,6 +552,59 @@ test('planReplacements：保真守卫——缺高信号 token 的 extract 被拒
   assert.equal(good.skippedFidelity, 0)
 })
 
+test('planReplacements：no-op 守卫——extract 全文照抄（收益 ≤5%）视同 false，原文保面不 emit replace', () => {
+  // 模拟 spike 37 实锤形态：源码类 tool-result，模型 extract 把原文原样抄回
+  const toolText = ('// mod7 line with ERR_CODE_X1 token=abc\n').repeat(40) // ≈1840 chars
+  const collect: CurrentTurnCollect = {
+    turn: 1,
+    startSeq: 0,
+    endSeq: 5,
+    interrupted: false,
+    userLong: [{ kind: 'user-long', seq: 0, turn: 1, text: '指令A：粘贴资料粘贴资料' }],
+    toolResults: [{ kind: 'tool-result', seq: 5, turn: 1, text: toolText, callId: 'c7' }],
+  }
+  // 全文照抄：守卫前拦截，零 step + skippedNoopGain=1
+  const noop = planReplacements(
+    collect,
+    { splits: [], tools: [{ seq: 5, level: 'extract', text: toolText }] },
+    [],
+  )
+  assert.equal(noop.steps.length, 0)
+  assert.equal(noop.skippedNoopGain, 1)
+  assert.equal(noop.skippedFalse, 0, 'no-op 拒绝不与显式 false 混计')
+  // 有效压缩（删 30% 行，保留高信号 token）→ 放行
+  const reduced = toolText.split('\n').filter((_, i) => i % 10 !== 0).join('\n')
+  assert.ok(reduced.length < toolText.length * 0.95, 'test fixture must clear the 5% gain bar')
+  const origEvent = {
+    type: 'tool/result',
+    seq: 5,
+    time: 0,
+    surfaceOp: 'append',
+    data: {
+      message: {
+        role: 'user',
+        content: [{ type: 'tool-result', toolCallId: 'c7', content: [{ type: 'text', text: toolText }], isError: false }],
+        source: { kind: 'tool', callId: 'c7' },
+      },
+    },
+  } as never
+  const useful = planReplacements(
+    collect,
+    { splits: [], tools: [{ seq: 5, level: 'extract', text: reduced }] },
+    [origEvent],
+  )
+  assert.equal(useful.steps.length, 1)
+  assert.equal(useful.skippedNoopGain, 0)
+  // 用户路径不受守卫影响：info-only 的同文 replace 承载 data[ARG_NS] 元数据，保留
+  const infoOnly = planReplacements(
+    collect,
+    { splits: [{ seq: 0, quotes: [] }], tools: [] },
+    [],
+  )
+  assert.equal(infoOnly.steps.length, 1, 'info-only 同文 replace 有结构作用，不能被 no-op 守卫吞掉')
+  assert.equal(infoOnly.skippedNoopGain, 0)
+})
+
 test('planReplacements：split 解析产出 dialog replace + U-info append 两步，sourceEventSeqs 指向原文', () => {
   const text = '先看A：AAA资料BBB再看B：'
   const collect: CurrentTurnCollect = {
