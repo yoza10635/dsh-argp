@@ -58,7 +58,7 @@ export interface ArgpUserMeta {
 **验收判据**：
 - [x] 单测：短消息（<100 字符）零拆分零调用（test/peratom-split.test.ts + peratom-compressor.test.ts 门控短路/计数器）
 - [x] 单测：复用 spike 32 语料（18 用例）作 fixture：多区间交错 quotes 切片哈希一致、余量进入单个 U-info 原子（test/fixtures/split-corpus.ts + peratom-split.test.ts 语料扫描）
-- [ ] 零标注消息 = 整条 U-info，过保护期后可正常参剪，`recall_detail(sourceSeq)` 全文逐字节恢复（部分完成：info-only 落盘已实证 spike/33、35；"过保护期参剪"依赖 P4 候选放行、"recall_detail 全文恢复"依赖 P3 工具，两处落地后回补本条）
+- [x] 零标注消息 = 整条 U-info，过保护期后可正常参剪，`recall_detail(sourceSeq)` 全文逐字节恢复（2026-08-28 回补勾选：info-only 落盘已实证 spike/33、35；"过保护期参剪"与"recall_detail 全文恢复"已随 P4 落地由 test/peratom-p4.test.ts 一并覆盖——U-info 候选放行 + 被剪后逐字节恢复两条断言）
 - [x] dialog 覆盖率 ≥80% 的消息整条保留为 dialog（不产生 info 事件）；定位失败回退路径各有测试（peratom-split.test.ts）
 - [x] U-info 不被分类为 X 的专项断言；同一 replace 事务产生相邻多条 user/message 时 provider 序列化兼容实测（分类陷阱断言在 peratom-split.test.ts；相邻副本的真模型序列化兼容由 spike/35 实证——轮 2 请求含 dialog 副本+U-info 相邻排列，本地 Qwen 正常应答）
 - [x] 拆分调用次数 = 含长消息的轮数（无多余调用）（单次调用设计：compressor calls 计数器断言覆盖纯对话轮/可压轮/链成员轮）
@@ -108,9 +108,9 @@ export interface DeclaredCite { fromSeq: number; toSeq: number; level: 'critical
 - 孤立原子规则：门控跳过的轮次不调用、不建边（与 gate.ts 共用谓词，自动一致）。
 
 **验收判据**：
-- [ ] 边解析成功率 ≥ 95%（50 轮合成对话）
-- [ ] cites 失败注入不影响同轮熵降结果（两插件故障注入测试）
-- [ ] 关闭 cite-declarer（不挂载）→ Stage-2 行为与现役 ArgpGraphEngine 完全一致（回归等价测试）
+- [x] 边解析成功率 ≥ 95%（50 轮合成对话）（test/cite-declarer.test.ts 验收①：50 轮合成对话混合响应形态，管线解析成功率 100%）
+- [x] cites 失败注入不影响同轮熵降结果（两插件故障注入测试）（test/cite-declarer.test.ts 验收②：declarer LLM 故障注入重试耗尽，同轮 compressor 熵降不受影响）
+- [x] 关闭 cite-declarer（不挂载）→ Stage-2 行为与现役 ArgpGraphEngine 完全一致（回归等价测试）（test/cite-declarer.test.ts 验收③：disabled declarer 的剪枝结果与无 declarer 基线一致）
 
 ## P3 两级召回 zoom（~1 天）
 
@@ -124,9 +124,9 @@ recall_detail(seq)   // 从 append-only 日志取 verbatim（复用 log-access.r
 - `argp-contract` 契约文案扩展：两级语义 + "gist 用 summary / exact 用 detail"。
 
 **验收判据**：
-- [ ] verbatim 天花板：detail 返回 = 日志原文逐字节一致（hash 相等断言）
-- [ ] 预算拦截与恢复路径各一测
-- [ ] 召回产物回注后成为普通原子（下一轮可被正常门控/剪枝）
+- [x] verbatim 天花板：detail 返回 = 日志原文逐字节一致（hash 相等断言）（test/recall-zoom.test.ts 验收①：sha256 相等）
+- [x] 预算拦截与恢复路径各一测（test/recall-zoom.test.ts 验收②a 超预算引导文案不硬拒 / ②b resetBudget 恢复 / compaction/end 归零）
+- [x] 召回产物回注后成为普通原子（下一轮可被正常门控/剪枝）（test/recall-zoom.test.ts 验收③）
 
 ## P4 Stage-2 对接 + 溢出三步路径（~1.5 天）
 
@@ -141,9 +141,9 @@ recall_detail(seq)   // 从 append-only 日志取 verbatim（复用 log-access.r
 3. dialog/info 共享 `turn` + `sourceSeq` 入 Atom 投影（`Atom` 接口加可选字段）。
 
 **验收判据**：
-- [ ] 集成测试：单条超大 tool result 直超窗口 → 三步序列收敛到窗口内（复用 context-overflow.test.ts 模式）
-- [ ] U-info 被剪后 `recall_detail(sourceSeq)` 可恢复原用户消息全文
-- [ ] 全量回归：现有 12 个 test 文件零破坏（`npm run check`）
+- [x] 集成测试：单条超大 tool result 直超窗口 → 三步序列收敛到窗口内（复用 context-overflow.test.ts 模式）（test/peratom-p4.test.ts：三步序列 + 首溢出 compress 恰 0 次调用断言）
+- [x] U-info 被剪后 `recall_detail(sourceSeq)` 可恢复原用户消息全文（test/peratom-p4.test.ts）
+- [x] 全量回归：现有 test 文件零破坏（`npm run check`）（2026-08-28 复核 175/175 绿；测试文件已从 12 扩至 21 个）
 
 ## P5 合成多轮任务验证（~2 天，对应设计 §10）
 
