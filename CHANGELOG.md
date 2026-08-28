@@ -2,6 +2,37 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [Unreleased] — 1.0.0 候选（双引擎落地版）
+
+> **发版门槛（AGENTS.md 版本策略 + 2026-08-28 精确化）**：双引擎"落地验收"= ① `docs/p5bis-turn-amplification.md` 预注册判据实测（G1-G6，轮次放大主判据）；② DeepSeek/v4-flash 复核三项（绝对 95% 前缀命中、溢出存活 ≥3×、D 臂摘要保真衰减）。两项未过线前不 bump、不 push、不 release。本节为骨架，⚠️ 标记处待数字填空。
+
+### Added — 双引擎（Stage-1 per-atom，此前的 0.x 版本只有 Stage-2 graph）
+
+- **PeratomCompressor**（eager 轮末熵降）：确定性门控（`gate.ts` 判"是否可压"）+ 单次 LLM 调用逐原子决策（`extract` 逐字摘录 / `summary` 概括入账 / `false` 显式不压）；长 user 消息 dialog 抄写拆分 + U-info 聚合（空隙归 info，spike 32 实测定案）；tail-only 替换 + 前缀指纹不变断言（缓存经济生命线）。
+- **CiteDeclarer**（轮末边声明）：模型按近 10 轮窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2 建图——实测召回效率 ≈ 无边臂 2.6×。
+- **RecallZoom**（两级召回）：`recall_summary` / `recall_detail`（日志原文逐字节一致，sha256 测试锁定）+ 4 倍制预算（超限引导不硬拒）。
+- **Stage-2 对接 + 溢出三步**（P4）：U-info 按 R 待遇参剪（唯一引擎改动点，五处触点枚举测试）；context-overflow 恢复环插入 forcePrune→compress→forcePrune 序列；生产挂载工厂（`mountPeratomStack`）。
+- **dsh-llm 生产适配器**：compressor/declarer `config.llm = {provider, model}` 走宿主 LlmRuntime（`purpose='compaction'`、usage 入 record、多模型分工独立指定）；fetch 遗产路径行为不变作 fallback。
+- spike/37 五臂 harness（A/B/C/D/E）+ K_no 死亡检测 + 反事实轨迹 + 放大倍数计算（P5-bis 就绪）；spike/atom-audit.mjs 逐原子审计工具。
+
+### Fixed
+
+- **no-op replace**：模型对源码类 tool-result 全文照抄（收益 ≤5%）时 fidelityGuard 平凡通过 → 零收益 replace；新增 no-op 守卫视同 false 拒绝（spike 37 两次跑批 6 例实锤，计数 `skippedNoopGain` 可观测）。
+
+### Changed
+
+- per-atom prompt 定义式迭代：资料定义改开放集（"一切非指令内容"）、quotes 规则强化（粘贴物正文的建议性表述算资料）、tools false 档（"不压"为显式信号）、info 压缩落地（设计 §10 决策 1）。
+- shadowed 账本只认 compaction/prune——per-atom 压缩 replace 不再谎报为剪枝（catalog "Compression removed N" 不再误增）。
+- 验收判据回勾：per-atom 实现计划 P0-P5 全部条目核对关闭（2026-08-28）；askCover 动态复核回归用例建档（test/askcover-recheck.test.ts）。
+
+### Verified
+
+- P5 四臂对照 **GO**（2026-08-26，spike 37/37b）：A 臂 30/30 零 error、探针 7/7、成本 A≤C 全分量；D 臂（摘要基线）最便宜但探针 5/7——保真优先于成本校准定调。
+- 60 轮放开对比：末轮水位 A=E 的 40%（模型可见口径）；E vs A 30 轮末轮降幅 59.8%。
+- ⚠️ P5-bis 轮次放大实测：待跑（判据预注册 `docs/p5bis-turn-amplification.md`；外推 16K 档 ≈2.8×）。
+- ⚠️ DeepSeek/v4-flash 复核三项：待跑。
+- 质量门禁基线：`npm run check` 全绿（2026-08-28，见 §0.3.2 后历次提交）。
+
 ## [0.3.2] - 2026-08-22
 
 ### Fixed

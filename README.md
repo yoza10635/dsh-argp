@@ -1,149 +1,134 @@
 [English](README.en.md) | 中文
 
-# dsh-argp — 基于逻辑链的原子引用图剪枝式上下文压缩引擎
+# dsh-argp — 双引擎上下文压缩：逐原子守卫压缩 + 引用图确定性剪枝
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp（ARGP = **A**tomic **R**eference **G**raph **P**runing，原子引用图剪枝）是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方 `CompactionEngine`：**基于逻辑链（引用依赖拓扑）的原子级选择性遗忘**——历史中"被依赖"的内容按引用图保留，"孤立"内容按反向拓扑序摘除，压缩阶段零 LLM 调用，不把历史重写为摘要。
+dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（1.0.0 候选，双引擎形态）：
 
-- **压缩阶段 0 次 LLM 调用**——纯图规则，确定性、可收敛
-- **基于逻辑链决策**——剪枝依据是引用依赖拓扑（"谁被依赖"），不是新旧位置或模型偏好
-- **选择性遗忘而非重写**——被剪内容留在 append-only 会话日志，可通过内置 `recall_pruned` / `recall` 工具取回
-- **引擎无关的接缝**——通过标准 `CompactionEngine` 接口挂载，作为 `compaction-basic` 的替代后端
-- **压缩率精确兑现**——实测 200K 上下文 → 160K 触发 → 32K 保留，输出大小可控
-
-> 状态：研究/验证阶段。全链路（挂载 → 剪枝 → recall，事务不变式）已在 dsh `0.1.0-rc.7` + DeepSeek v4-flash 上完成 50 轮验证；声明式生产挂载已验证（`dsh plugin` CLI 加载）。
+- **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
+- **Stage-2 引用图剪枝（lazy，超阈值时）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现。
+- **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail`（逐字节一致，哈希测试锁定）随取随回。上下文是日志的一个渲染视图，不是历史本身。
 
 ## 为什么
 
-摘要式压缩（如 `compaction-basic`）在压缩时调用 LLM 重写历史：成本随上下文线性放大、信息有损、压缩率不可控。ARGP 走相反路线：依赖关系在对话发生时以结构化方式沉淀（每轮小额标注），压缩时只按引用图的反向拓扑序"摘除"原子——每个原子 token 数已知、剪枝确定性、降级链收敛到预算。
+摘要式压缩（LLM 重写历史）有三重代价：
+
+1. **信息有损**——精确 token（路径、错误码、配置值）在改写中最先死，且不可找回；
+2. **缓存全断**——重写后的历史使 system+前缀逐轮变化，跨轮 KV/prefix cache 从变化点起全部失效；
+3. **压缩率失控**——摘要长度由模型心情决定，预算不可兑现。
+
+ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"不可信输入提案"，守卫按 verbatim 纪律裁决；**遗忘是确定性的**——0-LLM 图规则保证收敛与预算；**历史不可变**——append-only 日志承载全部原文，召回契约（never guess）兜底。
+
+实测（30 轮合成多轮编码任务，四臂对照，spike 37）：四臂中唯一同时达成 **7/7 探针保真**且成本低于现役基线的臂是双引擎全开臂（A）；传统摘要基线（D）最便宜但探针 5/7——吞掉精确字符串与关键大意。**卖点不是"最便宜"，是"保真前提下最省"**（A 全成本分量 ≤ 基线 C；比 D 贵 3.39×——这个差距就是保真的价格，明码标价）。
 
 ## 核心机制
 
-1. **原子化**——历史拆分为原子（用户输入 / Agent 输出 / 工具结果）。dsh surface 无独立 tool/call 节点，call 块内嵌在 assistant 原子内。
-2. **建图**——确定性边（assistant → 其工具结果，经 `toolCallId`）+ 语义边（assistant 输出中声明的引用前缀 `{"cites": [...]}`）。
-3. **拓扑剪枝**——反复摘除入度为 0 的原子，排序键：边等级 → 有效重要性 → 最近引用轮次。被剪引用方的出边随之消失，目标入度递减解锁（每 pass 动态有效入度）。`U`（用户）原子与墓碑永不参剪。
-4. **闭包生命周期**——已完成任务的闭包（以任务型 U 原子为根锚）可整体摘除，墓碑进入 recall 索引。
-5. **recall**——`recall_pruned(seq)` 从日志取回被剪原子；`list_pruned` 展示剪枝目录。预算：每轮 ≤3 次、单次 ≤5% window、累计 ≤10%。
-6. **版本去重**——完全重复的 assistant 原子 / 同 issuer 的工具结果成对剪除（设计稿 θ=0.8 版本链去重的简化形态）。
+### Stage-1：PeratomCompressor（eager 熵降）
 
-设计细节、不变式与设计↔实现差异见 [`docs/`](docs/)。
+1. **确定性门控**（`gate.ts`）：纯谓词判定"该轮是否可压"（长 user 消息 / 超 512 字符 tool result / 非版本链成员）；LLM 只执行"怎么压"。
+2. **逐原子决策**：单次 LLM 调用返回 `{seq, level, text}` 决策——`extract`（逐字子集拷贝，守卫硬拒缺失）/ `summary`（概括放行，丢弃 token 逐条入账 `summaryDropped` 供审核）/ `false`（显式不压，保原文）；长 user 消息走拆分（dialog 逐字抄写 + 余量聚合 U-info，空隙归 info）。
+3. **no-op 守卫**：收益 ≤5% 的"全文照抄"副本视同 false，不 emit replace（0 收益替换白花 surface 换代）。
+4. **tail-only 替换**：只允许 sourceEventSeqs ⊆ 当轮区间（越界即 bug，断言锁定）；前缀指纹测试证明 N 轮逐轮压缩后请求前缀稳定（缓存经济的生命线）。
 
-## 模型要求（建边密度与指令遵循能力挂钩）
+### Stage-2：ArgpGraphEngine（lazy 图剪枝，0-LLM）
 
-语义边来自模型在对话时按 prompt 契约输出的 `{"cites": [...]}` 声明——**建边密度直接取决于模型的指令遵循能力**：
+1. **原子化 + 建图**：确定性边（assistant → 其 tool result，经 toolCallId）+ 语义边（模型按契约输出的 `{"cites":[{"t":"前缀","l":"c|s|x"}]}`，四级分级 critical/supporting/contextual/isolated）。
+2. **拓扑剪枝**：反复摘除入度为 0 的原子（边等级 → 有效重要性 → 最近引用轮次排序），被剪引用方的出边消失、下游逐 pass 解锁；闭包生命周期（ACTIVE→COMPLETED→PRUNABLE→PRUNED）整闭包退休已完成任务。
+3. **压缩率精确兑现**：window = contextWindow×0.8 触发、retain = window×0.2 目标；降级链 lifecycle→summarize→force→fail 收敛到预算或显式失败，实测 200K→160K 触发→32K 保留精确落地。
 
-- **遵循能力强**：按契约声明 cites → 引用图反映真实依赖 → 剪枝选择性高
-- **遵循能力弱**：漏声明（图稀疏，只剩确定性边）或乱声明（图过密）→ 剪枝选择性下降，事务形态改变
+### 桥接与召回
 
-实测对照（50 轮 t-long，同引擎同参数、**同任务指令**）：DeepSeek v4-flash（high 档）cites declared=0、每笔事务剪 34–35 原子（稀疏图）；Qwen3.8-27B declared=547、每笔事务只剪 4 原子、37 笔事务（密集图）——**同一引擎在不同模型上呈现不同剪枝形态**，但两者 L1/L2/L3 不变式均 PASS。
+- **CiteDeclarer**（每轮）：模型按窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2——实测召回效率 ≈ 无边臂的 2.6×（zoom 精准定位）。
+- **RecallZoom**：`recall_summary(seq)`（读压缩态）/ `recall_detail(seq)`（日志原文逐字节）；4 倍制预算（summary 预算 = 4×detail），超限返回引导文案而非硬拒。历史被剪原子另有 `recall_pruned` / `list_pruned`。
 
-一个关键的模型差异（实测）：t-long 任务指令本身写有 "reply with exactly one line and nothing else"（与 cites 契约存在冲突），**DeepSeek v4-flash 的系统提示词优先级低于用户指令**——"nothing else" 压住了 cites 声明（declared=0）；**Qwen3.8-27B 则系统提示词优先级高于用户指令，声明更稳健**——即使指令说 "nothing else"，它仍在回复后追加 cites 声明（declared=547）。**系统提示词与用户指令冲突时的取舍，由模型训练决定，而非提示词措辞**——这是建边密度差异的深层原因，prompt 模板优化对服从率的提升存在天花板（实测各模板 ≤40%）。
+## 模型要求（如实版）
 
-**对使用者的警示**：DeepSeek 系模型在"系统提示词 vs 用户指令"冲突时更易被用户指令压制——如果你的任务/工具 prompt 恰好写了类似 "nothing else"、要求严格格式输出等与 cites 契约冲突的措辞，DeepSeek 可能全程 0 建边。这不影响压缩功能（见下一条"零建边保证"），只是失去语义选择性；任务 prompt 给 cites 留出口后（实测 10 轮）声明率即可恢复到 43.6%、解析 100%。
+per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫保证任何模型上都"不会压坏"（错误方向只往少压错），但收益随服从率缩放**：
 
-约束含义：建议搭配指令遵循能力强的模型使用；弱模型下压缩依然安全（0-LLM 确定性 + `U` 锚点保护 + `recall` 兜底在任何模型上成立），只是选择性收益降低。
-
-**一个重要保证：即使全程零建边（cites declared=0，语义引用层完全缺失），也不影响压缩中其他剪枝优先级机制的正常运作**。语义边只是压缩决策的**增强信号**，不是必要条件——剪枝的核心路径（确定性边配对、`eff` 重要性排序、`U` 锚点永不剪、lastRef 最近引用轮次、density 密度排序、闭包生命周期、版本链去重）全部独立于 cites 声明独立工作。DeepSeek v4-flash 档（declared=0）的 50 轮实测即为此保证的完整证据：L1/L2/L3 全 PASS、压缩率精确兑现、recall 正常兜底——**跨轮逻辑链缺失时引擎退化为"确定性边 + 位置/重要性排序"的普通剪枝，功能完整，只是选择性增益消失**。
+- 实测基准：本地 Qwen3.6-35B-A3B / Qwen3.8-27B 全链路 30/60 轮 0 error、探针 7/7；拆分抄写表示法解析失败 0%（vs 区间定位法 72%）。
+- **DeepSeek 系模型的已知特性**：系统提示词与用户指令冲突时（如任务 prompt 写 "nothing else"）cites 声明可为 0——语义选择性归零，但 Stage-1 守卫压缩与 Stage-2 确定性剪枝照常工作、不变式全过（50 轮 v4-flash 实证）。任务 prompt 给 cites 留出口后声明率恢复（10 轮实测 43.6%）。
+- spike 38 探针（info 契约服从率）随 1.0.0 复核轮在 DeepSeek 上补测。
 
 ## 安装与挂载
 
-### CLI 声明式挂载（已验证）
-
-从 **npm registry** 安装（当前 `v0.3.0`）：
+从 npm 安装（当前发布版 `v0.3.2` 单引擎形态；双引擎形态随 1.0.0 发布，本仓库 HEAD 已含）：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
 ```
 
-升级到最新版（`dsh plugin` 是 pnpm 转发器，`update` 直接拉取 npm registry 新版）：
-
-```bash
-dsh plugin --profile <name> update dsh-argp
-```
-
-备选：从 GitHub 安装同一版本（源码直达，不经 npm）：
-
-```bash
-dsh plugin --profile <name> add github:yoza10635/dsh-argp
-```
-
-然后在 profile 的 `cordis.patch.yml` 中禁用 stock 摘要器并按需调引擎参数：
+profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 
 ```yaml
 - id: compaction-basic
   disabled: true
+```
+
+> 挂载由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
+
+### 双引擎配置（1.0.0 形态）
+
+Stage-1 组件默认跟随环境变量解析端点（`DEEPSEEK_API_KEY`）；生产建议显式指向宿主 dsh-llm：
+
+```yaml
 - id: dsh-argp
-  config: { maxPasses: 16 }   # 预算默认按比例驱动，无需硬编码
+  config:
+    compressor:
+      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm 后端
+    declarer:
+      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # 可指向独立 lite 档
 ```
 
-> ⚠️ **挂载由包的 bundle patch（`cordis.patch.yml`）负责**：它用 `insert` 创建 `id=dsh-argp` entry（bundle include 只应用 patch、不创建 entry——`dsh plugin add` 后无须也不应在 profile 层再 `insert`，否则报 `duplicate loader entry id`）。profile 层对 `dsh-argp` 的普通条目只做配置覆盖（modify）。
-
-启动后 `ctx.compaction` 即为 ARGP 引擎。
-
-### 预算比例驱动（默认）
-
-- `windowTokens = contextWindow × 0.8`（上下文 80% 触发）
-- `retainTokens = windowTokens × 0.2`（压缩率 1/5）
-
-上下文容量读自模型适配器声明，换模型自动适配；需要时也可显式覆盖（见 [config](src/argp-graph-engine.ts)）。
-
-### 本地开发
-
-```bash
-npm install
-npm run check        # typecheck + 本地 smoke + 单元测试
-```
-
-DeepSeek 实测需要 dsh 标准凭据：
-
-```bash
-npm run smoke:deepseek   # 10a + 10b + 10d 单轮冒烟
-```
+不配 `llm` 时按 `endpoint`/`apiKey` config 或环境变量走 OpenAI 兼容直连（本地 llama.cpp 实验形态，行为不变）。Stage-2 预算默认比例驱动（window=ctx×0.8 / retain=window×0.2），无须硬编码。
 
 ## 验证结果
 
-DeepSeek v4-flash，50 轮 t-long 任务；完整数字与产物路径见 [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md)。
+### 四臂对照（30 轮合成多轮编码，本地 Qwen3.6-35B-A3B，spike 37）
 
-| 指标 | dsh-argp | compaction-basic（同任务 high 档） |
-|---|---|---|
-| 预算模式 | 比例驱动（200K → 160K 触发 → 32K 保留） | 固定 32K 意图，不可控 |
-| 事务 / error | 4 / 0 | 30 / 23（77%，全为空流） |
-| U 锚点保留 | 7/7 | 7/7 |
-| needle 找回 | 7/7（5/7 经 recall） | 0/7（不可找回） |
-| 压缩目标兑现 | 精确（32K） | 实际 67K（失控） |
-| 成本（空闲价） | ¥2.695 | ¥3.087 |
+| 臂 | 配置 | 探针 | 成本（空闲价） | 结论 |
+|---|---|---|---|---|
+| **A 双引擎全开** | compressor + declarer + graph + zoom | **7/7** | ¥0.454 | 唯一 7/7 且 ≤ 基线成本的臂 |
+| B 无边 | declarer 关 | 7/7 | ¥0.556 | 召回次数 31 vs A 的 12（declarer ≈2.6× 更省） |
+| C 现役基线 | 仅 graph（溢出才剪） | 6/7（R2 漏检） | ¥0.802 | A 全成本分量 ≤ C |
+| D 摘要基线 | dsh 原生 BasicCompactionEngine | 5/7（丢精确 token + 大意） | ¥0.134 | 最便宜但丢保真——反衬"保真前提下最省" |
 
-研究档对照：dsh-argp ¥0.355（U 7/7 R 7/7）vs `compaction-basic` ¥0.911（U 0/7 R 0/7）。
+防干涉：A/B/C 三臂 append-origin 原文零替换（A 140 / B 154 / C 216 事件）；前缀稳定：A 臂 21 个主请求指纹全同。
+
+### 水位与轮次放大
+
+- E（零压缩）vs A（30 轮，模型可见口径）：末轮水位 A = E 的 40%（降幅 59.8%），均值降幅 39.2%；差距自 T11 单调拉大。
+- 60 轮放开对比：末轮差距 32.6%、均值 36.6%；per-atom 使图引擎硬剪推迟 5 轮（T14→T19）且剪后维持更低水位。
+- **轮次放大（固定窗口 → N× 轮）主判据：P5-bis 实验待跑**（判据已预注册：`docs/p5bis-turn-amplification.md`；60 轮轨迹外推 16K 档 ≈2.8×、大窗口渐近 ≈1.4×，实测数字填入后此处更新）。**本节数字落地前，对外请勿引用"N 倍轮次"。**
+
+### Graph 引擎历史验证（v0.3.x，DeepSeek v4-flash / Qwen3.8-27B）
+
+50 轮 t-long：U 锚点 7/7、needle 7/7（5/7 经 recall 找回）、4 事务 0 error、压缩目标精确兑现（32K）；200K 主流档成本 ¥2.695 vs 基线 high ¥3.087（该基线含 77% 空流 error，系平台 B-5 缺陷——对照数字按此口径解读，disabled 档 ¥3.19 为更干净的对照）。
 
 ## 复现
 
 | 实验 | 命令 | 验证内容 |
 |---|---|---|
-| 50 轮 t-long（high 思考档） | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 不变式、7/7 锚点、7/7 needle 经 recall 找回 |
-| 160K 主流档 | `ARGP_CONTEXT_WINDOW=200000 ARGP_CHUNK_LINES=600 node spike/06-tlong.ts` | 压缩率精确兑现、比例预算 |
-| 基线对照（compaction-basic） | `node spike/07-baseline.ts` | 同任务下 stock 摘要器对照 |
-| 合成 0-LLM | `npm run spike8a` | 28 原子单事务、零 LLM 调用 |
+| 四臂对照（需本地模型） | `ARGP_ARM=A\|B\|C\|D\|E node spike/37-peratom-three-arm.ts` | 探针保真、成本三元组、防干涉、K_no/放大 |
+| per-atom soak | `npm run spike36` | 门控/链/守恒/前缀/VK-atom 八判决 |
+| 50 轮 t-long | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 不变式、锚点/needle、精确预算 |
+| 合成 0-LLM | `npm run spike8a` | 单事务零 LLM 调用 |
+| 逐原子审计 | `node spike/atom-audit.mjs <产物目录>` | 事件驱动逐原子压缩/剪枝明细 |
 
-每个数字都带产物路径（见实验记录文档）。
+`npm run check` = typecheck + smoke + 单测（2026-08-28 基线 184 用例）。每个数字都带产物路径（见 `docs/publication-plan.md` 台账与各实验记录）。
 
 ## 平台缺口反馈（给 dsh）
 
-开发非 LLM 压缩后端暴露了 compaction 接缝的四处扩展性缺口，细节与复现脚本见 [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md)：
-
-1. **tool/result 替换无结构化元数据通道**——占位必须克隆原 message，只能改 content。
-2. **`compaction/prune` 游离于事务不变式状态机**——算法剪枝没有原生事件类型，第三方引擎只能借 `summary` 语义 + 填伪字段。
-3. **headless 测试装配静默失效**——`mountAgentLoopTestDependencies` 不注册 `tokenMeter`，pre-step 的 catch 吞掉错误。
-4. **摘要调用间歇性空流（B-5）**——high 思考档 77% 事务空流失败，`maxTokens=32768` 无效，疑似流式连接竞态。
-5. **surface 窗口丢弃无痕迹（B-6）**——live 节点掉出模型可见窗口后不留占位，对压缩引擎与模型均不可发现（08-19 追加，详见反馈书 B-6 节）。
+tool/result 替换无结构化元数据通道（B-1）、compaction/prune 游离于事务状态机（B-3）、headless 测试装配 tokenMeter 静默失效（B-4）、摘要空流（B-5）、surface 窗口丢弃无痕迹（B-6）——详见 [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md)。
 
 ## 已知限制
 
-- **窗口截断盲区（B-6）**：未被 ARGP 替换的 live 节点在上下文逼近 `contextWindow` 时会被请求组装层截掉最旧部分，且**不留任何痕迹**（无占位、无 seq）。这类内容模型不可发现，`recall_pruned` 也只认"被替换过的 pruned 节点"、取不回它们——"never guess"召回契约在窗口边界内不可执行。当前缓解：ARGP 的比例预算（0.8×窗口触发、0.2×保留）把触发点大幅前移，显著推迟窗口截断的发生；根治依赖 dsh 侧为被丢节点留带 seq 占位（已列入反馈书 B-6）。
-- **建边密度依赖模型指令遵循能力**：语义边来自模型按契约输出的 `{"cites": [...]}` 声明。弱遵循模型（或任务 prompt 含 "nothing else" 类冲突措辞）下声明率下降甚至为 0，压缩退化为"确定性边 + 位置/重要性排序"——功能完整、不变式仍全过，但选择性增益消失（见上文"模型要求"节）。
-- **tombstone 两跳后可能不可召回**：占位文本经后续轮次演化后，若原 seq 未被模型记住，`recall_pruned(seq)` 需要正确编号才能取回（B-6 的占位建议落地后此限制一并消除）。
+- **B-6 窗口截断盲区**：未被 ARGP 替换的 live 节点在逼近 contextWindow 时被请求组装层截掉最旧部分、不留痕迹——`recall_pruned` 取不回它们。缓解：比例预算前移触发点；根治在 dsh 侧（B-6 立案中）。
+- **模型依赖（如实版，见上）**：守卫保证安全，收益依赖服从率；lite 档多模型分工的服从率未实测（台账 D21）。
+- **per-atom 输出税**：Stage-1 每轮的压缩调用是 side-channel 成本（30 轮实测 completion 7.2K tokens，不进上下文但计入总成本）；dsh-llm 后端的 usage 已入 record，spike 汇总口径接入中。
+- **tombstone 两跳召回**：占位文本经多轮演化后原 seq 可能丢失，`recall_pruned(seq)` 需正确编号（B-6 落地后一并消除）。
 
 ## License
 
