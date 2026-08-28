@@ -232,11 +232,13 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.ok(startIdx > 0 && endIdx === kinds.length - 1, `start..end 括号收尾：${kinds.slice(-4).join(',')}`)
   assert.equal((session.events[endIdx]?.data as { error?: string }).error, undefined)
 
-  // 事件 ①：dialog replace（原位替换，plugin 署名，无 ARG_NS 标记）
-  const dialogEvent = session.events[endIdx! - 3]
+  // 事件 ①：dialog replace（原位替换，compact checkpoint 署名——UI 节点关联，无 ARG_NS 标记）
+  const dialogEvent = session.events[endIdx! - 4]
   assert.equal(dialogEvent?.type, 'user/message')
-  const dData = dialogEvent?.data as unknown as { source?: { plugin?: string }; content?: { text: string }[]; [k: string]: unknown }
-  assert.equal(dData.source?.plugin, 'dsh-argp')
+  const dData = dialogEvent?.data as unknown as { source?: { plugin?: string; compactionId?: string }; content?: { text: string }[]; [k: string]: unknown }
+  // 2026-08-28：user 替换副本 source = compact checkpoint（宿主 CompactionNodeView 关联）
+  assert.equal(dData.source?.plugin, 'compact')
+  assert.ok(dData.source?.compactionId?.startsWith('argp-peratom-'), 'checkpoint carries per-atom compactionId')
   assert.equal(isArgpUserInfo(dData), false, 'dialog 副本不带 info 标记（永不剪）')
   assert.deepEqual((dialogEvent as unknown as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp, { op: 'replace', start: uSeq, end: uSeq })
   assert.deepEqual(dialogEvent?.sourceEventSeqs, [uSeq])
@@ -248,7 +250,7 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   )
 
   // 事件 ②：U-info append（info 标记 + sourceSeq + summary）
-  const infoEvent = session.events[endIdx! - 2]
+  const infoEvent = session.events[endIdx! - 3]
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { [k: string]: unknown }
   assert.equal(isArgpUserInfo(iData), true, 'U-info 标记落盘')
@@ -259,7 +261,7 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal(infoEvent?.surfaceOp, 'append')
 
   // 事件 ③：tool replace 副本（dsh-session 硬约束：只许改 content，故无 ARG_NS 元数据）
-  const toolEvent = session.events[endIdx! - 1]
+  const toolEvent = session.events[endIdx! - 2]
   assert.equal(toolEvent?.type, 'tool/result')
   const tData = toolEvent?.data as unknown as {
     message?: { content?: { toolCallId?: string; content?: { text: string }[] }[] }
@@ -802,7 +804,9 @@ test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文�
   assert.equal(record?.appliedReplaces, 2, 'dialog replace + tool replace')
   const kinds = session.events.map(e => e.type)
   const endIdx = kinds.lastIndexOf('compaction/end')
-  const infoEvent = session.events[endIdx! - 2]
+  // compaction/summary 在最后一个事务步与 end 之间（2026-08-28 UI 节点文本通道）
+  assert.equal(kinds[endIdx! - 1], 'compaction/summary', 'display summary event precedes end')
+  const infoEvent = session.events[endIdx! - 3]
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { content?: { text: string }[]; [k: string]: unknown }
   assert.equal(iData.content?.[0]?.text, compressedInfo, 'U-info surface = 模型压缩 extract 文本')
