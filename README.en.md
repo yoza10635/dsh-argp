@@ -1,3 +1,5 @@
+> ⚠️ **This English version still describes the v0.3.x single-engine story and is pending update to the 1.0.0 dual-engine narrative. The Chinese [README.md](README.md) is authoritative.**
+
 [中文](README.md) | English
 
 # dsh-argp — Logical-Chain Atomic Reference-Graph Pruning Compaction Engine
