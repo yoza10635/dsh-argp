@@ -84,3 +84,13 @@ P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `reques
 
 1. **发现三（cites 泄漏）实际已消解，P2 划勾**。dsh-argp 的 client 半区（`src/client/index.ts`，v0.3.0 自带）注册 `assistantDisplay` seam（ui-conversation 官方显示层扩展点，注册过滤器在渲染前转换 assistant 块），rc.2 部署宿主当前会话实测 **cites JSON 已不可见**。早上看到的泄漏系当天早期部署态伪影（陈旧 0.3.0 / 未完成 client 组合），与发现二同款教训：**引用 0.3.2 行为前必须确认部署态新鲜**。
 2. **peratom 可见性的正确通道与边界**。UI 对话节点渲染 = ui-conversation 的 `conversation.chat.node` keyed slot + 宿主侧节点投影。`CompactionNodeView` 只渲染**带 checkpoint 用户消息的摘要型事务**（幽灵摘要器那种），ARGP 替换型事务（peratom 内联 replace / graph tombstone）无 node key → 不可见。插件侧现状：graph 剪枝的 `[elided seq=N..M]` tombstone 是 surface 用户消息、UI 本来可见；peratom 内联替换要可见需投影层 seam（第三方 client 目前插不进投影）。**上游反馈清单合并为三项**：①幽灵摘要器绕过 disabled row；②替换型压缩事务的 UI 节点投影 seam（或第三方 chat.node 注册通道）；③cites 泄漏根因解释（client seam 0.3.0 已修，附验证方法）。
+
+## §8 checkpoint 节点落地（2026-08-28 深夜，commit 23e8c43）
+
+用户问"我们的不能做成带 checkpoint 的吗"→ 核查后**归因修正 + 实现**：
+
+- **归因修正**：图剪的 `[elided]` 墓碑 0.3.x 起就带 `compactCheckpointSource`，宿主 `CompactionNodeView` 一直在为它渲染"上下文已压缩"节点——此前误归因给幽灵摘要器。节点显示"压缩摘要不可用"是因为 ARGP 不发 `compaction/summary`（宿主节点的显示文本通道），而非节点缺席。
+- **实现**：①peratom `flushEntry` 的 user/message 替换副本 source 换为 compact checkpoint（tool/result 替换受宿主"只许改 content"硬约束不携带）；②peratom 与图剪事务均追加 `compaction/summary`（off-surface 日志事件，模型不可见），填诚实值（拆分/提取/摘要/保原文计数 + shadowed 计量 + aux 模型来源）。
+- **设计修订并注明**：`compaction/prune` 仍是唯一权威账本（accounting 只读它），summary 仅供 UI 展示；对应测试改名守护，3 处位置敏感断言随事务序列更新，186/186 绿。
+- **实测**：rc.2 部署宿主节点显示「已压缩 2 条历史记录（约 1720 tokens）」——替换型压缩事务首次在 UI 可见且带真实计量。
+- 剩余边界：peratom 纯 tool extract 事务（无 user 替换）无 checkpoint 消息 → 无节点（summary 事件已落账，UI 侧展示需宿主支持 summary-only 节点，可并入上游清单）。
