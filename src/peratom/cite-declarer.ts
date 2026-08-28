@@ -488,6 +488,7 @@ export class CiteDeclarer {
     this._calls += 1
     const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     this.records.push(record)
+    console.log(`[argp-peratom] declarer: turn ${collect.turn} from=${collect.fromAtoms.length} to=${collect.toAtoms.length} (dsh-llm=${this.dshLlm !== null})`)
     const started = Date.now()
     try {
       const prompt = buildCitePrompt([...collect.fromAtoms, ...collect.toAtoms])

@@ -7,6 +7,9 @@ import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
 import type { ParsedCite } from './cites-strip.js';
 export type { ParsedCite, CiteLevel } from './cites-strip.js';
+import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
+import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js';
+import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js';
 export type AtomType = 'U' | 'A' | 'R' | 'X';
 export interface Atom {
     id: number;
@@ -133,6 +136,21 @@ export interface ArgpGraphConfig {
      * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
      */
     disableCiteEdges?: boolean;
+    /**
+     * P0 双引擎生产挂载（2026-08-28，docs/webui-liaison-2026-08-28.md 发现一）：非空时
+     * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
+     * injectEdges/onOverflowCompress 由内部接线——显式传入的同名 config 键被忽略并告警。
+     * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
+     * （生产形态，purpose='compaction'）；不传按各组件 fetch 环境变量口径解析（本地实验
+     * 形态，环境缺失时组件自然 disabled，零网络）。`false` = 关闭该管线。
+     * 与 mountPeratomStack（测试/三臂工厂）同拓扑；本块存在的意义是真宿主 bundle patch
+     * 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）。
+     */
+    peratom?: {
+        compressor?: PeratomCompressorConfig | false;
+        declarer?: CiteDeclarerConfig | false;
+        zoom?: RecallZoomConfig | false;
+    };
     /**
      * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
      * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
@@ -280,6 +298,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
     /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
     disableCiteEdges: boolean;
+    /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
+    readonly peratomStack: {
+        compressor: PeratomCompressor | null;
+        declarer: CiteDeclarer | null;
+        zoom: RecallZoom | null;
+    } | null;
     /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
     readonly prunedNodeIndex: Map<number, PrunedNodeInfo>;
     /** 闭包生命周期剪除记录。 */

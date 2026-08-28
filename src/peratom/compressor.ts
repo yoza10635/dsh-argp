@@ -860,6 +860,7 @@ export class PeratomCompressor {
         userLong: collect.userLong.map(u => u.seq),
         toolResults: collect.toolResults.map(t => t.seq),
       }
+      console.log(`[argp-peratom] compressor: turn ${collect.turn} candidates=${collect.userLong.length}u+${collect.toolResults.length}r (dsh-llm=${this.dshLlm !== null})`)
       let raw: string
       let ms = Date.now() - started
       if (this.dshLlm !== null) {
@@ -890,8 +891,13 @@ export class PeratomCompressor {
       }
       record.decision = decision
       this.pending.push({ session, collect, decision, record })
+      const extract = decision.tools.filter(t => t.level === 'extract').length
+      const summary = decision.tools.filter(t => t.level === 'summary').length
+      const falseActions = decision.tools.filter(t => t.level === 'false').length
+      console.log(`[argp-peratom] compressor: turn ${collect.turn} decision splits=${decision.splits.length} extract=${extract} summary=${summary} false=${falseActions} ms=${record.ms ?? '?'}`)
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error)
+      console.warn(`[argp-peratom] compressor: turn ${collect.turn} LLM call failed: ${record.error}`)
     }
     return record
   }
