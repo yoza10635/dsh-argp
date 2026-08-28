@@ -374,6 +374,10 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
    *  导致迟触发/窗口保护失效，2026-08-23）。 */
   private lastRealPromptTokens = 0
+  /** 声明窗口缓存（session → 适配器声明的 contextWindow，来自 request/context 事件）。
+   *  2026-08-28 真环境联调：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
+   *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
+  private readonly declaredContextWindows = new WeakMap<Session, number>()
   /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
   private lastRealAnchorSeq = -1
   /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
@@ -645,6 +649,31 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/start') this.recallCallsThisTurn = 0
+      // 声明窗口缓存（2026-08-28 真环境联调）：request/context 事件携带适配器声明的
+      // contextWindow（settings 模型条目），是权威口径。pre-step 压力检查可能早于首个
+      // request/context 事件落账（新会话 turn-1），此缓存使后续检查/重启会话立即拿到
+      // 声明值，不再退化为物理窗口探测（llama.cpp 场景 262144 vs 声明 32000，7.7× 口径差）。
+      if (event.type === 'request/context') {
+        const declared = (event.data as { contextWindow?: number } | undefined)?.contextWindow
+        if (typeof declared === 'number' && declared > 0) {
+          const previous = this.declaredContextWindows.get(session)
+          if (previous !== undefined && previous !== declared) {
+            console.log(`[argp-graph] declared contextWindow changed: ${previous} -> ${declared}`)
+          }
+          this.declaredContextWindows.set(session, declared)
+        }
+      }
+      // 外来压缩事务可见性（2026-08-28 真环境联调）：本插件的 compactionId 一律带
+      // `argp-` 前缀；不带前缀的 compaction/start = 其他压缩实现（如原生摘要器）在
+      // 本 ctx.compaction 位之外运作——lossy 摘要会先于图剪发生，必须在日志可见。
+      if (event.type === 'compaction/start') {
+        const cid = (event.data as { compactionId?: string } | undefined)?.compactionId
+        if (typeof cid === 'string' && !cid.startsWith('argp-')) {
+          console.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${(event.data as { turn?: number }).turn ?? '?'})`
+            + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt graph pruning'
+            + ' (see docs/webui-liaison-2026-08-28.md 发现二)')
+        }
+      }
       // 真实 token 锚点（2026-08-23）：assistant/message 携带 provider 回报的 usage，
       // inputTokens（未命中）+ cacheReadTokens（命中）= 本次请求的真实 prompt token。
       // pressure check 优先用它，避免 tokenMeter chars/4 低估导致的迟触发。
@@ -1566,7 +1595,7 @@ export class ArgpGraphEngine extends CompactionEngine {
  */
   private async resolveScaledBudgets(
     agent: CompactionAgentContext,
-  ): Promise<{ windowTokens: number; retainTokens: number }> {
+  ): Promise<{ windowTokens: number; retainTokens: number; declaredKnown: boolean }> {
     const explicitWindow = this.explicitWindowTokens ? this.windowTokens : undefined
     const explicitRetain = this.explicitRetainTokens ? this.retainTokens : undefined
     let contextWindow: number | undefined
@@ -1578,6 +1607,12 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     } catch {
       contextWindow = undefined
+    }
+    // 1.5) 声明窗口缓存（request/context 事件的 WeakMap 副本）：覆盖 requestContext()
+    // 尚未落账但事件已流经的时序（pre-step 检查早于首个请求的落账窗口）。
+    if (contextWindow === undefined) {
+      const cached = this.declaredContextWindows.get(agent.session)
+      if (cached !== undefined && cached > 0) contextWindow = cached
     }
     // 2) fallback 到 llm.resolveModelInfo（旧路径/测试路径）。
     if (contextWindow === undefined) {
@@ -1595,17 +1630,21 @@ export class ArgpGraphEngine extends CompactionEngine {
         contextWindow = undefined
       }
     }
+    // 3) 声明值完全未知（新会话首个 pre-step，且探测路径不可信/缺失）：标记
+    // declaredKnown=false，宁缺勿错——物理窗口口径（llama.cpp n_ctx）会让阈值放大
+    // 7×+，形同禁用。显式配置 windowTokens 的场景不依赖声明值，不受影响。
+    const declaredKnown = explicitWindow !== undefined
+      || (contextWindow !== undefined && contextWindow > 0)
+    if (!declaredKnown) {
+      console.log('[argp-graph] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
+    }
     const scaled = scaleBudgets(contextWindow, {
       explicitWindow, explicitRetain,
       windowRatio: this.windowRatio, retainRatio: this.retainRatio,
       fallbackWindow: this.windowTokens, fallbackRetain: this.retainTokens,
     })
     this.resolvedWindowTokens = scaled.windowTokens
-    if (contextWindow === undefined || contextWindow <= 0) {
-      console.warn('[argp-graph] contextWindow unavailable; falling back to static defaults '
-        + `(window=${this.windowTokens}, retain=${this.retainTokens})`)
-    }
-    return scaled
+    return { ...scaled, declaredKnown }
   }
 
   /**
@@ -1626,7 +1665,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   ): Promise<CompactionResult | null> {
     const session = agent.session
     this.bindSession(session) // A7（问题 3）：compactIfNeeded 也走统一绑定（含账目懒重建）
-    const { windowTokens, retainTokens } = await this.resolveScaledBudgets(agent)
+    const { windowTokens, retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) {
       console.log('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
@@ -1634,6 +1673,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const retainChars = retainTokens * this.charsPerToken
     const measurement = this.measureTokens(session)
+    // 声明窗口未知时的早检跳过（2026-08-28）：物理口径宁可不用（宁缺勿错）；
+    // context-overflow 触发除外——那是 provider 确认的真实溢出，必须处置。
+    if (trigger !== 'context-overflow' && !declaredKnown) {
+      console.log('[argp-graph] pressure check: declared contextWindow unknown, skip (will check after first request/context)')
+      return null
+    }
     if (trigger !== 'context-overflow' && measurement.contextTokens < thresholdTokens) {
       console.log('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' < threshold=' + thresholdTokens + ', skip')
       return null

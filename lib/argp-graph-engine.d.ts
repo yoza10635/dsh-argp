@@ -302,6 +302,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
      *  导致迟触发/窗口保护失效，2026-08-23）。 */
     private lastRealPromptTokens;
+    /** 声明窗口缓存（session → 适配器声明的 contextWindow，来自 request/context 事件）。
+     *  2026-08-28 真环境联调：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
+     *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
+    private readonly declaredContextWindows;
     /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
     private lastRealAnchorSeq;
     /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
