@@ -267,7 +267,7 @@ test('compactNow: selects oldest A/R block and prunes it without LLM', async () 
   }
 })
 
-test('prune emits compaction/prune instead of compaction/summary', async () => {
+test('prune emits compaction/prune (ledger) + compaction/summary (UI display)', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('prune-event-test'))
@@ -281,7 +281,12 @@ test('prune emits compaction/prune instead of compaction/summary', async () => {
     const pruneEvents = events.filter(e => e.type === 'compaction/prune')
     const summaryEvents = events.filter(e => e.type === 'compaction/summary')
     assert.equal(pruneEvents.length, 1)
-    assert.equal(summaryEvents.length, 0)
+    // 2026-08-28 设计修订（docs/webui-liaison-2026-08-28.md §8）：compaction/summary
+    // 是宿主 CompactionNodeView 的唯一显示文本通道——不发则 UI 节点显示"压缩摘要不可用"。
+    // 账本语义不变：权威剪枝账本仍只认 compaction/prune，summary 仅供 UI 展示。
+    assert.equal(summaryEvents.length, 1)
+    assert.ok(((summaryEvents[0]?.data as { summary?: { text?: string }[] }).summary ?? [])
+      .some(block => typeof block.text === 'string' && block.text.includes('ARGP 图剪')))
     const record = engine.records[0]
     assert.ok(record !== undefined)
     const tombstoneSeq = record.intervals[0]?.tombstoneSeq

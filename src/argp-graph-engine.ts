@@ -2214,6 +2214,23 @@ export class ArgpGraphEngine extends CompactionEngine {
         })
         intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
       }
+      // 人类可读剪枝摘要（2026-08-28 UI 联调）：compaction 节点的展示文本来自
+      // compaction/summary 事件；不发则 WebUI 显示"压缩摘要不可用"。off-surface
+      // 日志事件，模型不可见。payload 按 CompactionSummary 词典填诚实值，类型走 as never。
+      const prunedCount = intervals.reduce((sum, iv) => sum + iv.atoms.length, 0)
+      const charsBefore0 = intervals.reduce((sum, iv) => sum + iv.chars, 0)
+      session.append('compaction/summary', {
+        ...lifecycle,
+        summary: [{
+          type: 'text',
+          text: `ARGP 图剪：${prunedCount} 原子 / ${intervals.length} 区间（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+        }],
+        shadowedRange: { start: first, end: last },
+        shadowedSeqs: allSeqs,
+        shadowedTokenCount: Math.ceil(charsBefore0 / this.charsPerToken),
+        provider: 'argp',
+        model: 'deterministic-guards',
+      } as never)
       const endEvent = session.append('compaction/end', lifecycle)
       const charsAfter = this.visibleChars(session)
       this.records.push({
