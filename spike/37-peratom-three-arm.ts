@@ -72,6 +72,12 @@ const WINDOW_TOKENS = Number(process.env['ARGP_WINDOW_TOKENS'] ?? 16_000)
 const RETAIN_TOKENS = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 4_000)
 // ARGP_MAX_TURNS 可调：30=原剧本；60=拉长 filler 看水位差距（探针块固定沉在最后）
 const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 30)
+// P5-bis 轮次放大：有效窗口 B（E 臂死亡线 / K_no 判定），默认= WINDOW_TOKENS。
+// 口径：surface 活原子 visLen（模型可见，不含 reasoning；见 docs/visible-context-calibration.md），
+// ×3.5 折 chars；不含 system/persona（与引擎 surfaceTokens 口径一致，臂间公平）。
+const EFF_WINDOW_TOKENS = Number(process.env['ARGP_EFF_WINDOW_TOKENS'] ?? WINDOW_TOKENS)
+const CHARS_PER_TOKEN = 3.5
+const EFF_WINDOW_CHARS = EFF_WINDOW_TOKENS * CHARS_PER_TOKEN
 
 const failures: string[] = []
 const verdict = (name: string, ok: boolean, detail: string): void => {
@@ -468,11 +474,18 @@ interface TurnRow { label: string; kind: ItemKind; ok: boolean; boundariesAfter:
 const turnLog: TurnRow[] = []
 // 逐轮活上下文轨迹（隔离 Stage-1 per-atom 压缩的上下文效应）：liveChars=活原子模型可见总字符
 //（text+tool-result 内层+tool-call args，**不含 reasoning**——本地 Qwen 丢弃 reasoning_content，实测 prompt_tokens 差值=0）
-interface CtxRow { turn: number; label: string; liveChars: number; liveAtoms: number }
+interface CtxRow { turn: number; label: string; liveChars: number; liveAtoms: number; counterfactualChars: number }
 const contextTraj: CtxRow[] = []
 let aborted = false
 let consecutiveFailed = 0
 const startedAt = Date.now()
+// P5-bis：K_no（无压缩反事实）与臂死亡轮。counterfactualChars = append-origin 事件 visLen 累计
+//（零压缩会话的模型可见水位；对任意臂都可从自身 events.jsonl 离线复算 → E 臂实跑用于校准反事实口径）。
+let counterfactualChars = 0
+let counterfactualScanned = 0
+let deathTurn: number | undefined        // 反事实首次超 B 的轮次（K_no = deathTurn - 1）
+let armDeathTurn: number | undefined     // 本臂实际 liveChars 首次超 B 的轮次（undefined = 全程守住）
+let deathReason: string | undefined
 
 for (const item of items) {
   const t0 = Date.now()
@@ -503,8 +516,21 @@ for (const item of items) {
   const nodes: number[] = sf?.nodes ?? []
   let liveChars = 0
   for (const seq of nodes) liveChars += visLen((agent.session.events as any[])[seq]?.data)
-  contextTraj.push({ turn: turnLog.length, label: item.label, liveChars, liveAtoms: nodes.length })
-  console.log('[turn] ' + item.label + ' ' + (ok ? 'ok' : 'FAILED') + ' in ' + Math.round((Date.now() - t0) / 1000) + 's; boundaries=' + boundariesAfter + ' genΔ=' + genDelta + ' liveChars=' + liveChars + ' liveAtoms=' + nodes.length)
+  // P5-bis：反事实累计（仅 append-origin 事件，零压缩口径）+ 死亡判定
+  const evsAll = agent.session.events as any[]
+  for (; counterfactualScanned < evsAll.length; counterfactualScanned++) {
+    if (evsAll[counterfactualScanned]?.surfaceOp === 'append') counterfactualChars += visLen(evsAll[counterfactualScanned]?.data)
+  }
+  contextTraj.push({ turn: turnLog.length, label: item.label, liveChars, liveAtoms: nodes.length, counterfactualChars })
+  if (deathTurn === undefined && counterfactualChars > EFF_WINDOW_CHARS) deathTurn = turnLog.length
+  if (armDeathTurn === undefined && liveChars > EFF_WINDOW_CHARS) armDeathTurn = turnLog.length
+  console.log('[turn] ' + item.label + ' ' + (ok ? 'ok' : 'FAILED') + ' in ' + Math.round((Date.now() - t0) / 1000) + 's; boundaries=' + boundariesAfter + ' genΔ=' + genDelta + ' liveChars=' + liveChars + ' liveAtoms=' + nodes.length + ' cfChars=' + counterfactualChars)
+  if (ARM === 'E' && armDeathTurn !== undefined) {
+    console.log('[death] E 臂 liveChars=' + liveChars + ' 超有效窗口 ' + Math.round(EFF_WINDOW_CHARS) + ' chars @ ' + item.label + ' —— K_no 已观测，提前收队（探针不判，E 臂职责=K_no 校准）')
+    aborted = true
+    deathReason = 'context-window-exceeded'
+    break
+  }
   if (!ok) {
     consecutiveFailed += 1
     if (consecutiveFailed >= 2) {
@@ -691,7 +717,7 @@ const atomAudit = {
 const result = {
   spike: '37-three-arm',
   arm: ARM,
-  config: { contextWindow: CONTEXT_WINDOW, windowTokens: WINDOW_TOKENS, retainTokens: RETAIN_TOKENS, maxTurns: MAX_TURNS, hasDeclarer: HAS_DECLARER, isPeratom: IS_PERATOM },
+  config: { contextWindow: CONTEXT_WINDOW, windowTokens: WINDOW_TOKENS, retainTokens: RETAIN_TOKENS, maxTurns: MAX_TURNS, hasDeclarer: HAS_DECLARER, isPeratom: IS_PERATOM, effWindowTokens: EFF_WINDOW_TOKENS },
   at: new Date().toISOString(),
   model: 'qwen-local/' + MODEL,
   base: BASE,
@@ -700,6 +726,12 @@ const result = {
   turnsCompleted: completedTurns,
   maxSustainedTurns: maxSustained,
   aborted,
+  deathReason,
+  // P5-bis 轮次放大：K_no = 反事实死亡轮 - 1（无压缩口径最后可持轮数）；放大 = 本臂完成轮数 / K_no
+  deathTurn,
+  armDeathTurn,
+  kNo: deathTurn !== undefined ? deathTurn - 1 : null,
+  amplification: deathTurn !== undefined && deathTurn > 1 ? +(completedTurns / (deathTurn - 1)).toFixed(2) : null,
   pruneTransactions: (engine as any)?.records?.length ?? 0,
   cost: {
     missTokens: miss, hitTokens: hit, outTokens: out,
@@ -730,8 +762,24 @@ fs.writeFileSync(path.join(outDir, 'result.json'), JSON.stringify(result, null, 
 fs.writeFileSync(path.join(outDir, 'events.jsonl'), agent.session.events.map(e => JSON.stringify(e)).join('\n'), 'utf8')
 
 // ---------- 判决项 ----------
-verdict('P5-turns', completedTurns === items.length && !aborted,
-  '完成轮数 ' + completedTurns + '/' + items.length + (aborted ? '（中止于 ' + maxSustained + '）' : ''))
+// P5-bis：E 臂提前死亡属预期（职责=K_no 校准），不计失败
+verdict('P5-turns', (completedTurns === items.length && !aborted) || (ARM === 'E' && deathReason === 'context-window-exceeded'),
+  '完成轮数 ' + completedTurns + '/' + items.length + (aborted ? '（中止于 ' + maxSustained + '，原因 ' + (deathReason ?? 'retry-exhausted') + '）' : ''))
+// P5-bis 轮次放大判定链（判据预注册见 docs/p5bis-turn-amplification.md）：
+// K_no = 反事实死亡轮-1；K_arm = completedTurns；放大 = K_arm / K_no。
+if (ARM === 'E') {
+  verdict('P5-K-no-observed', deathTurn !== undefined,
+    deathTurn !== undefined
+      ? 'K_no=' + (deathTurn - 1) + '（@T' + deathTurn + ' 反事实超窗 ' + Math.round(EFF_WINDOW_CHARS) + ' chars）'
+      : 'MAX_TURNS=' + MAX_TURNS + ' 内未触窗 —— 压强不足实验作废：调小 ARGP_EFF_WINDOW_TOKENS 或加大每轮增量重跑')
+} else if (deathTurn !== undefined) {
+  console.log('[K] K_no(反事实)=' + (deathTurn - 1) + ' K_arm=' + completedTurns + ' 放大=' + (completedTurns / (deathTurn - 1)).toFixed(2) + '×'
+    + (armDeathTurn !== undefined ? '（本臂 @T' + armDeathTurn + ' 实超窗）' : '（本臂全程未超窗）'))
+  verdict('P5-window-hold', armDeathTurn === undefined,
+    armDeathTurn === undefined
+      ? '本臂全程未超有效窗口（B=' + Math.round(EFF_WINDOW_CHARS) + ' chars，K_no=' + (deathTurn - 1) + '）'
+      : '本臂 @T' + armDeathTurn + ' 超窗——压缩未能守住窗口（K_no=' + (deathTurn - 1) + '，放大无意义）')
+}
 if (ARM !== 'D') {
   verdict('P5-originals', origCheck.ok,
     '防干涉：' + originalHashes.size + ' 个 append-origin 事件原文' + (origCheck.ok ? '零替换' : '被替换 ' + origCheck.bad.length + ' 个: ' + origCheck.bad.slice(0, 10).join(',')))
