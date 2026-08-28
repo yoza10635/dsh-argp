@@ -12,23 +12,28 @@
 
 真宿主上 dsh-argp 的 default export = `ArgpGraphEngine`，bundle patch 只挂 Stage-2 图引擎（C 臂形态）。**PeratomCompressor / CiteDeclarer / RecallZoom 三管线（`mountPeratomStack`）没有任何声明式挂载入口**——`ctx.llm` dsh-llm 生产适配器（commit 2afbd53）在真宿主上一行都没跑到。1.0.0 的"双引擎"叙事在真环境里目前只兑现了单引擎。**需要**：插件入口按 config 分叉挂 `mountPeratomStack`，compressor/declarer 的 llm spec 从插件 config 声明（provider/model 走宿主 llm 服务或独立 endpoint 配置）。
 
-## 发现二（P1）：压力测量与真实水位脱节——图剪在真环境永不触发
+## 发现二（P1，复测后改判 + 精确化）：窗口口径三重错位——声明窗口被绕过，原生摘要器抢跑
 
-实测数据（同会话）：引擎账本 `contextTokens=9054 < threshold=25600, skip`，而同一时刻真实 per-request 输入 ≈25–40K tok（UI 显示"上下文已用 100%"，llama.cpp 物理 256K 未溢出所以会话不死）。脱节构成：
+**原始观察（20:0x，web profile 实为陈旧 0.3.0）**：引擎账本 9054 tok vs 服务端实测 69,907 tok prompt（7.7× 低估）。**改判**：web profile 装的是 0.3.0（08-20 拷贝），而 usage 真值锚定（`lastRealPromptTokens`，08-23 修复）只在工作区 0.3.2 构建——`grep -c lastRealPromptTokens`：0.3.0 lib=0 处，0.3.2 lib=6 处。原观察是**部署陈旧伪影**，且路线图 P4 已知注意事项（file: 复制需重装同步）再次被验证。
 
-1. **宿主脚手架不可见**：system prompt（20,143 chars，含 ARGP 两段协议）+ AGENTS.md 注入 + skill catalog + runtime context ≈ 15K+ tok 固定占用，不是原子、引擎不计量。spike-37 里脚手架≈0，账本≈真实，两口径重合掩盖了这一点。
-2. 修复方向：`windowTokens` 语义必须从"原子预算"升级为"有效窗口预算减固定脚手架占用"（引擎 config 加 `scaffoldReserveTokens`，或宿主把不可剪 token 数喂给引擎）。否则阈值(window×0.8)在真环境系统性偏晚——直到物理溢出前图剪都不会动。
+**0.3.2 复测（20:08 新会话，同 8 文件压力任务）暴露两个真问题**：
 
-## 发现三（P2）：cite 协议"只教不收"——cites JSON 泄漏到用户可见回复
+1. **引擎阈值跟物理窗口走，声明窗口被绕过**。web 组合里 dsh-argp 行 config 无 `windowTokens` → 运行时按 `contextWindow × 0.8` 解析，日志实测 threshold=**209,715 = 262,144 × 0.8**（llama.cpp 物理 `-c 262144`），而 settings 声明的 `contextWindow: 32000` 被忽略。结果：真实 prompt 94,618 tok（服务端日志 task 354：69,907 miss + 24,711 hit，与 usage 事件逐字吻合）远超声明窗口 3 倍，ARGP 纹丝不动。
+2. **dsh 原生 `session-checkpoint-policy` 摘要器抢跑**。99% 声明水位时，UI"已压缩 9 条历史记录（约 7011 tokens）"来自 dsh 原生 checkpoint 摘要器（`compaction/summary` 事件 + "## Primary Request and Intent" 格式 + "automatically generated checkpoint" 消息）——**lossy 摘要，恰是 ARGP 存在要避免的东西**。web 组合中 compaction-basic 已被禁（web-app 与 dsh-argp 双重 patch 验证），但 session-checkpoint-policy 是独立行、无人禁。另有两次 checkpoint 尝试以 "summarization produced no text summary content" 失败（Qwen 空输出），三次尝试才成功一次——摘要器本身也不稳。
+
+**修复方向（1.0.0 验收项）**：①引擎 windowTokens 运行时解析必须用**模型声明 contextWindow**（adapter catalog 声明值，与 compaction-basic 同源），物理窗口只做溢出恢复兜底；②argp 托管 profile 的 bundle patch 应同时禁 `session-checkpoint-policy`，让 ARGP 成为唯一压缩权威（否则声明窗口越小、原生摘要器越抢跑）。
+
+## 发现三（P2，原报告结论维持但补细节）：cite 协议"只教不收"
 
 system prompt 教了完整 cites 协议（V6 分级 s/c/x），模型正确服从并在回复体输出 JSON 块，但 WebUI 显示层没有剥离——用户直接看到 `{"cites":[...]}`。spike 里 strip 由测试 harness 做；生产显示路径缺这一环。修复方向：宿主侧 assistant 消息渲染前剥 cites 块（或引擎在 surface replace 时消化）。
 
 ## 次要观察
 
 - 模型输出撞 max_tokens 上限时反复截断（"Think All" 大表格重输出两轮），配合 dsh `tool-*` 的 head/tail 截断，真环境的截断行为比 spike 复杂——P5-bis 数字外推到真环境时须再打折。
-- 压力会话取证产物：`~/.dsh/sessions/--D-workspace-ARGP--/session-165d98aa-1e84-45a8-9ab3-09727dfccdfd/`（zstd jsonl，解压件 `.tmp/session-decomp.jsonl`）；压力工作区 `.tmp/liantest/`。
-- 联调后 settings.yaml 已还原默认模型（glm），保留 llamacpp 条目 + 127.0.0.1 修复；web 宿主进程留在 3080 供人工查看。
+- 复测会话里 ARGP 的 pressure check 日志只在 turn-1 出现一次（`contextTokens=0`，usage 锚建立前的空转值）；turn-2 无第二条日志且剪枝未发生——pressure check 的触发钩子覆盖面（每 turn 一次？仅首轮？）与 usage 锚的时序衔接需要一次代码级复查，本记录只对日志可见事实负责。
+- 复测取证产物：`~/.dsh/sessions/--D-workspace-ARGP--/session-5e1ac918-388b-4790-ba32-0c6070c76727/`（解压件 `.tmp/session-retest.jsonl`：compaction 三对事件 + usage 逐请求记录）；首轮会话 `session-165d98aa-...`（0.3.0 时代）。压力工作区 `.tmp/liantest/`。
+- 联调后 settings.yaml 已还原默认模型（glm），保留 llamacpp 条目 + 127.0.0.1 修复；web profile 插件已刷至 0.3.2；web 宿主进程留在 3080 供人工查看。
 
 ## 对 1.0.0 门槛的影响
 
-P5-bis 实测（轮次放大 ≥3.2×）成立的前提是"窗口=原子预算"；发现二表明真环境需要 scaffoldReserve 才能兑现同叙事。**1.0.0 验收清单新增两项**：①双引擎声明式挂载入口 + ctx.llm 真跑通；②scaffoldReserve 压力口径修正 + 真会话复测图剪实际触发。发现三随显示层修复走，不单独设门槛。
+P5-bis 实测（轮次放大 ≥3.2×）成立的前提是"窗口=声明窗口"；复测表明真环境需修两项才能兑现同叙事。**1.0.0 验收清单更新为三项**：①双引擎声明式挂载入口 + ctx.llm 真跑通（P0，原判维持）；②窗口口径归一（声明 contextWindow 进引擎阈值 + session-checkpoint-policy 处置）+ 真会话复测 ARGP 实际触发图剪（P1，改判后精确化）；③cites 块显示层剥离（P2，随显示层修复走）。
