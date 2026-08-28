@@ -174,3 +174,72 @@ test('P5 臂 C 等价：不读工厂直接 ctx.plugin(ArgpGraphEngine) = 纯基�
     await ctx.fiber.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// P0 双引擎生产挂载：config.peratom 自挂载块（docs/webui-liaison-2026-08-28.md 发现一）
+// 真宿主 bundle patch 只能声明式挂一个插件入口 → 引擎构造期自挂三管线，与工厂同拓扑。
+
+test('P0 自挂载：config.peratom 块 → 三管线挂载 + injectEdges/onOverflowCompress 内部接线', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, maxOverflowRetries: 3,
+    peratom: {},
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.ok(engine.peratomStack !== null, 'peratom stack handle must be populated')
+    assert.ok(engine.peratomStack!.compressor instanceof PeratomCompressor)
+    assert.ok(engine.peratomStack!.declarer instanceof CiteDeclarer)
+    assert.ok(engine.peratomStack!.zoom instanceof RecallZoom)
+    assert.ok(engine.injectEdges !== undefined, 'declarer must be wired into injectEdges')
+
+    // 行为级：溢出第②步经内部接线调用 compressor（disabled → no-endpoint 记录）。
+    const { session } = buildOverflowSession('self-mount-wired')
+    engine.setSession(session)
+    const agent = stubAgent(session)
+    await emitRequestError(ctx, agent, overflowFailure())
+    await emitRequestError(ctx, agent, overflowFailure())
+    assert.ok(engine.peratomStack!.compressor!.records.length >= 1, 'step-2 must invoke internally wired onOverflowCompress')
+    assert.equal(engine.peratomStack!.compressor!.records.at(-1)?.error, 'no-endpoint', 'disabled compressor records no-endpoint without throwing')
+  } finally {
+    await ctx.fiber.dispose()
+    restoreEnv()
+  }
+})
+
+test('P0 自挂载：管线开关 false 生效；显式 injectEdges 与 peratom 并存时被忽略（告警不抛错）', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, recencyGuard: 0, maxPasses: 16,
+    peratom: { declarer: false, zoom: false },
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.ok(engine.peratomStack!.compressor instanceof PeratomCompressor, 'default compressor on')
+    assert.equal(engine.peratomStack!.declarer, null, 'declarer:false → null')
+    assert.equal(engine.peratomStack!.zoom, null, 'zoom:false → null')
+    assert.equal(engine.injectEdges, undefined, 'declarer off → injectEdges not wired')
+    assert.ok(engine.onOverflowCompress !== undefined, 'compressor on → overflow wired')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+
+  // peratom + 显式 injectEdges 并存：忽略显式键（warn）而非冲突抛错。
+  const ctx2 = await makeCtx()
+  await ctx2.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, recencyGuard: 0, maxPasses: 16,
+    injectEdges: () => [],
+    peratom: { compressor: false },
+  })
+  const engine2 = ctx2.compaction as ArgpGraphEngine
+  try {
+    assert.ok(engine2.peratomStack !== null)
+    assert.equal(engine2.peratomStack!.compressor, null, 'compressor:false → null')
+    assert.equal(engine2.onOverflowCompress, undefined, 'compressor off → overflow not wired')
+  } finally {
+    await ctx2.fiber.dispose()
+    restoreEnv()
+  }
+})
