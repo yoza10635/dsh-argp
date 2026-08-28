@@ -13,7 +13,7 @@
     "cordis.patch.yml"
   ],
   "type": "module",
-  "description": "ARGP (Atomic Reference Graph Pruning): a logical-chain context-compaction engine for DeepSeek Harness (dsh) — reference-dependency pruning with zero LLM calls, mounted as a third-party CompactionEngine.",
+  "description": "Guarded context compaction for DeepSeek Harness (dsh): the LLM proposes, deterministic guards dispose — eager per-atom shrink (extract/summary/false under verbatim guards) + lazy reference-graph eviction (0-LLM) + byte-exact recall from an append-only log. 压缩率精确兑现，历史永不销毁。",
   "license": "MIT",
   "repository": {
     "type": "git",

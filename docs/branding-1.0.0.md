@@ -23,4 +23,13 @@
 
 ## 关联物料清单（拍板后一次改齐）
 
-README 首段（已按候选 A 落地）、repo description（上）、npm description、Discussion 帖标题、市场 topic。npm `description` 字段改动需随 1.0.0 publish 一起发。
+> **2026-08-28 用户拍板：方案 A。** 落地状态：
+- [x] README 首段（已按候选 A 落地）
+- [x] package.json `description`（已换 A 文案，随 1.0.0 publish 生效）
+- [ ] **GitHub repo description（About）——需手动**（本机无 gh CLI）：About 一句话改为下文 EN 文案 + 中文尾巴
+- [ ] npm `description` 字段：随 1.0.0 publish 自动带出（即 package.json 本次改动）
+- [ ] Discussion 帖标题、市场 topic：随 1.0.0 发帖时改
+
+About 建议文案（EN + 中文尾巴）：
+`Guarded context compaction for DeepSeek Harness: the LLM proposes, deterministic guards dispose — eager per-atom shrink (eager) + reference-graph eviction (0-LLM, lazy) + byte-exact recall from an append-only log. 压缩率精确兑现，历史永不销毁。`
+（注意上句 "eager per-atom shrink (eager)" 在 package.json 里已修正为 "eager per-atom shrink (extract/summary/false under verbatim guards)"，About 手动改时用 package.json 版。）
