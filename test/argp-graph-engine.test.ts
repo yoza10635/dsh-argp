@@ -418,6 +418,37 @@ test('buildGraph dedup: injected edge identical to reply-cites edge is dropped (
   }
 })
 
+test('pressure accounting: usage anchor (incl. cacheWriteTokens) + increment drives pruning above chars heuristic', async () => {
+  const { ctx, engine } = await makeEngine({ windowTokens: 200, retainTokens: 50 })
+  try {
+    const session = Session.create(SessionId('anchor-accounting-test'))
+    // 测试环境不桥接 session/event 总线（真宿主由 app 接线）——手动模拟 host 桥接，
+    // 使引擎的 usage 锚点 handler 收到事件。
+    const bridge = (ev: unknown): void => { (ctx as unknown as { emit: (n: string, ...a: unknown[]) => void }).emit('session/event', session, ev) }
+    appendUser(session, 'user anchor')
+    bridge(session.events[session.events.length - 1])
+    // 锚点事件：assistant/message 携带 provider usage；cacheWriteTokens 必须计入
+    // 锚点和（Anthropic 风格 provider）——本例 30+0+45=75，缺 cacheWrite 则 30，
+    // 两种口径下只有含 cacheWrite 的锚定估计能过 200 触发线。
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'a' }] }),
+      usage: { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 45 },
+    }, { surfaceOp: 'append' })
+    bridge(session.events[session.events.length - 1])
+    appendAssistant(session, 'B2:' + 'x'.repeat(247), 2)
+    appendAssistant(session, 'B3:' + 'y'.repeat(247), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    // chars 全量启发式 ≈ 512 chars / 3.5 = 147 < 200（不会触发）；
+    // 锚定 = 75 + ceil(500/3.5)=143 → 218 ≥ 200（触发并剪 turn2）。
+    assert.equal(engine.records.length, 1, 'anchored estimate crossed threshold and pruned')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 
 test('ask-exempt U: covered ask U can be pruned when no cross refs', async () => {
   const { ctx, engine } = await makeEngine()
