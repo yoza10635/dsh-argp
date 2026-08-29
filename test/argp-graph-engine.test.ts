@@ -316,6 +316,88 @@ test('reserveTokens: blocks pruning when contextTokens below effective threshold
   }
 })
 
+// ---- citesObligation（回复级 cites 义务门控）----
+
+type SectionedAssembly = { sections: { name: string }[] }
+
+async function sectionNames(ctx: Context): Promise<string[]> {
+  const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<SectionedAssembly> } }).systemPrompt
+  const assembly = await sp.assemble()
+  return assembly.sections.map(s => s.name)
+}
+
+test('citesObligation auto: default mount keeps argp-cites (no declarer)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    assert.equal(engine.citesObligation, true)
+    assert.ok((await sectionNames(ctx)).includes('argp-cites'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('citesObligation auto: armed declarer drops argp-cites, keeps contract+catalog', async () => {
+  const { ctx, engine } = await makeEngine({
+    peratom: { compressor: false, zoom: false, declarer: { endpoint: 'http://declarer.test/v1', apiKey: 'test-key' } },
+  })
+  try {
+    assert.equal(engine.peratomStack?.declarer?.armed, true)
+    assert.equal(engine.citesObligation, false)
+    const names = await sectionNames(ctx)
+    assert.ok(!names.includes('argp-cites'), 'argp-cites should be absent under armed declarer')
+    assert.ok(names.includes('argp-contract'))
+    assert.ok(names.includes('argp-catalog'))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('citesObligation auto: unarmed declarer keeps argp-cites (edge sources never both zero)', async () => {
+  const savedKey = process.env['DEEPSEEK_API_KEY']
+  const savedSource = process.env['ARGP_MODEL_SOURCE']
+  delete process.env['DEEPSEEK_API_KEY']
+  delete process.env['ARGP_MODEL_SOURCE']
+  try {
+    const { ctx, engine } = await makeEngine({ peratom: { compressor: false, zoom: false, declarer: {} } })
+    try {
+      assert.equal(engine.peratomStack?.declarer?.armed, false)
+      assert.equal(engine.citesObligation, true)
+      assert.ok((await sectionNames(ctx)).includes('argp-cites'))
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  } finally {
+    if (savedKey !== undefined) process.env['DEEPSEEK_API_KEY'] = savedKey
+    if (savedSource !== undefined) process.env['ARGP_MODEL_SOURCE'] = savedSource
+  }
+})
+
+test('citesObligation explicit overrides win over auto', async () => {
+  // 强制关（无 peratom）
+  {
+    const { ctx, engine } = await makeEngine({ citesObligation: false })
+    try {
+      assert.equal(engine.citesObligation, false)
+      assert.ok(!(await sectionNames(ctx)).includes('argp-cites'))
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+  // 强制开（declarer 已武装，A₁-A₃ 实验臂形态）
+  {
+    const { ctx, engine } = await makeEngine({
+      citesObligation: true,
+      peratom: { compressor: false, zoom: false, declarer: { endpoint: 'http://declarer.test/v1', apiKey: 'test-key' } },
+    })
+    try {
+      assert.equal(engine.citesObligation, true)
+      assert.ok((await sectionNames(ctx)).includes('argp-cites'))
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+})
+
 
 test('ask-exempt U: covered ask U can be pruned when no cross refs', async () => {
   const { ctx, engine } = await makeEngine()

@@ -187,6 +187,17 @@ export interface ArgpGraphConfig {
     zoom?: RecallZoomConfig | false
   }
   /**
+   * 回复级 cites 义务开关（argp-cites system section，order 151）。
+   * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
+   * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
+   * UI 显示泄漏，见 docs/webui-liaison-2026-08-28.md 发现三证据链）。
+   * 显式 true/false 覆盖 auto：边价值实验 A₁-A₃ 臂依赖回复级 cites 时强制开；
+   * 双保险关闭时强制关。declarer 挂载但未武装（无 LLM 后端）时 auto 保持开启
+   * （两种边来源不能同时归零）。buildGraph 的 cites 解析不受影响——协议关闭后
+   * 模型偶发残留的 cites 尾仍被剥离并作为加菜边消费，引擎侧 flush 剥离恒开。
+   */
+  citesObligation?: boolean
+  /**
    * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
    * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
    * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
@@ -374,6 +385,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined = undefined
   /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
   disableCiteEdges = false
+  /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
+  readonly citesObligation: boolean
   /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
   readonly peratomStack: {
     compressor: PeratomCompressor | null
@@ -479,6 +492,11 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
       this.peratomStack = { compressor, declarer, zoom }
     }
+
+    // 回复级 cites 义务 auto 口径：declarer 已武装（有 LLM 后端）→ 结构化旁路建边
+    // 接管，回复协议关闭；显式 true/false 覆盖。declarer 挂载但未武装时保持开启，
+    // 避免"两种边来源同时归零"（见 citesObligation 配置注释）。
+    this.citesObligation = config.citesObligation ?? !(this.peratomStack?.declarer?.armed === true)
 
     const recallTool = defineTool({
       name: 'recall_pruned',
@@ -668,6 +686,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
+    // 挂载受 citesObligation 门控（auto：declarer 已武装即不注册——边声明走结构化旁路，
+    // 回复不再携带 cites 尾，源头消灭 UI 显示泄漏）。协议关闭不影响引擎侧剥离与
+    // buildGraph 解析：模型偶发残留的 cites 尾仍被剥离并作为加菜边消费。
     // V4 措辞（spike/24 实测）：明示"读了工具结果并作答 = 必须引用该结果"，
     // 比旧版"if used ... append"的被动式显著提升 t-long 类任务下的声明率。
     // V5 措辞（2026-08 修 UI 残留）：空引用时"完全不输出 block"而非写 {"cites":[]}。
@@ -675,19 +696,21 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 见 core session surface.ts "replacement copies stay model-only"），surface
     // 剥离永远改不到 UI 显示；空块对引用图零信息（无入边），只能在源头不产出。
     // 引擎侧对"无块"本就是常态（§4.7），citeStats 对空/无块均不计 declared。
-    ctx.systemPrompt.section({
-      name: 'argp-cites',
-      order: 151,
-      text: () => 'Citation declaration (ARGP):\n'
-        + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
-        + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
-        + '{"cites":[...]}\n'
-        + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
-        + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
-        + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
-        + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
-        + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
-    })
+    if (this.citesObligation) {
+      ctx.systemPrompt.section({
+        name: 'argp-cites',
+        order: 151,
+        text: () => 'Citation declaration (ARGP):\n'
+          + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
+          + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
+          + '{"cites":[...]}\n'
+          + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
+          + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
+          + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
+          + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
+          + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
+      })
+    }
 
     ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/start') this.recallCallsThisTurn = 0
