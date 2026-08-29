@@ -1,7 +1,7 @@
 /**
  * spike 38 — info 压缩契约服从率实测（本地 Qwen3.6-35B-A3B @ :8080，免费）
  *
- * 背景（2026-08-27）：commit e9194ee 补实现设计 §10 决策 1——splits 扩 infoLevel/infoText，
+ * 背景（2026-08-27）：commit cc4dfae 补实现设计 §10 决策 1——splits 扩 infoLevel/infoText，
  * 模型须在拆分调用里顺带产出资料压缩（false/summary/extract + infoText）。本 spike 用
  * 真实 compressCurrentTurn 全链路（收集→LLM→normalizeDecision→planReplacements→flush）
  * 验证三类内容的档位服从与保真：

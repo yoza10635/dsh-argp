@@ -174,11 +174,11 @@ VK-ratio 从"4 模型全 FAIL"到全绿，共经历 4 轮修复，每轮对应�
 - `fidelityGuard` 按 level 分级：extract 维持硬拒；**summary 审计式放行**——被概括丢弃的高信号 token 逐条入账 `CompressRecord.summaryDropped` 供 LLM/人工审核。
 - spike36 新增 T7b 纯叙述事故复盘靶子（`docs/postmortem.md`，零 load-bearing）。验证：log/yaml/runbook → extract（verbatim 子集 fid=0）；**postmortem → summary**（421 字，事实全保留，sumDrop=0）。自选语义成立。
 
-### 8.5 压缩率改为按原子度量（commit 9d43394）
+### 8.5 压缩率改为按原子度量（commit 82c715a）
 - 用户定义修正：压缩率按**每个被压缩原子**计算（origChars vs newChars），非按 turn/全局——全局 ratio 被链副本/assistant 回复稀释。
 - 新判决 **VK-atom** = 被压原子聚合收益 `1-Σnew/Σorig ≥ 50%`；全局 ratio 降为参考。首测 90.7% PASS（T1:extract 97.0%、T7b:summary 85.1%；T3/T7 近 0% 因全 load-bearing 属正确保留）。
 
-### 8.6 拿不准选 false，禁全文照抄（commit 87c66de）
+### 8.6 拿不准选 false，禁全文照抄（commit 72c00ef）
 - 用户指示：拿不准时该原子不出现在输出里（保原文），避免 extract 全文照抄——output token 白花且压缩率 0。
 - 效果：T3 yaml → 模型选 false 不压（空 tools，零 token 浪费）；T7 runbook → 伪压缩 0.1% 变真 summary **65.7%**（5 条命令 verbatim、散文概括）；**VK-atom 90.7% → 94.7%**（剔除伪压缩原子后更高）。
 - 行为三层齐：extract（T1）/ summary（T7、T7b）/ false（T3）——模型按内容性质自选成立。
