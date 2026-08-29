@@ -94,3 +94,13 @@ P1 插件侧修复落地（发现二的 ARGP 部分）：①引擎缓存 `reques
 - **设计修订并注明**：`compaction/prune` 仍是唯一权威账本（accounting 只读它），summary 仅供 UI 展示；对应测试改名守护，3 处位置敏感断言随事务序列更新，186/186 绿。
 - **实测**：rc.2 部署宿主节点显示「已压缩 2 条历史记录（约 1720 tokens）」——替换型压缩事务首次在 UI 可见且带真实计量。
 - 剩余边界：peratom 纯 tool extract 事务（无 user 替换）无 checkpoint 消息 → 无节点（summary 事件已落账，UI 侧展示需宿主支持 summary-only 节点，可并入上游清单）。
+
+## §9 citesObligation 门控：回复级协议退役（2026-08-29，commit e8e9ea0）
+
+用户追问"双引擎建边应搭压缩便车，回复里不该有 cites，是不是旧版残留"→ 全链路核查结论：
+
+1. **不是残留，是双轨并行的现状**。`argp-cites` system section（order 151）自 v0.3.x 起无条件注册，从未有"declarer 上线即退役回复协议"的实现；设计 §7 的"搭便车主方案"也未落地（compressor OUTPUT_SCHEMA 只有 splits/tools，无 cites 字段），declarer 实为独立 aux 调用。
+2. **UI 泄漏根因升级（并入上游清单②证据）**：rc.2 上游只发货了 `AssistantDisplayService` 类（`packages/client/ui-conversation/lib/types/client/assistant-display.js`，注释点名 citation JSON 场景）但**零接线**——无实例化、无 provide、渲染路径无 `.apply()`（实测页面加载的 ui-conversation 与 cordis-client-runner 服务 bundle 中 0 引用）。client 过滤器注册时 `ctx.get('assistantDisplay')` 为 undefined，按设计优雅降级。工作区 rc.5 快照连类都没有 → rc.2 是"类已进、接线未做"的中间态。
+3. **实现（用户拍板：declarer 在即默认关）**：`ArgpGraphConfig.citesObligation?: boolean`，缺省 auto——`peratomStack.declarer.armed`（dsh-llm/endpoint 任一解析到）即不注册 `argp-cites` 段；未武装保持开启（两种边来源不能同时归零）；显式 true/false 覆盖（A₁-A₃ 实验臂强制开）。协议关闭不影响引擎侧 flush 剥离与 buildGraph cites 解析（偶发残留尾仍被消费为加菜边）。
+4. **实测（rc.2 部署宿主，重装同步+重启后）**：同任务形态（read_file→回答 timeout），回复 **零 cites 尾**；服务端日志 `declarer: turn 1 from=5 to=0 (dsh-llm=true)` 确认结构化旁路建边接管；`compressor: turn 1 candidates=2u+1r` 正常；窗口 threshold 25600 贯穿（P1 持续有效）。质量门禁 190/190（+4 citesObligation 单测）。
+5. **部署同步教训（再验证）**：pnpm 对 file: 依赖按 package.json 版本判变更，版本不 bump 时 `pnpm install`/`dsh plugin add` 均 "Already up to date" 不刷新副本——**必须手动整包复制**（rm + cp + 清 .git/node_modules）后重启宿主。
