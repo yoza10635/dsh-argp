@@ -2,36 +2,45 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
-## [Unreleased] — 1.0.0 候选（双引擎落地版）
+## [1.0.0] - 2026-08-29（双引擎落地版）
 
-> **发版门槛（AGENTS.md 版本策略 + 2026-08-28 精确化）**：双引擎"落地验收"= ① `docs/p5bis-turn-amplification.md` 预注册判据实测（G1-G6，轮次放大主判据）；② DeepSeek/v4-flash 复核三项（绝对 95% 前缀命中、溢出存活 ≥3×、D 臂摘要保真衰减）。两项未过线前不 bump、不 push、不 release。本节为骨架，⚠️ 标记处待数字填空。
+> **发版门槛结案（2026-08-29）**：① 轮次放大判据实测 **PASS 8.57×**（溢出存活：A 臂 60/60 轮零中止 vs E 臂零压缩 T8 死亡；8K 窗预注册压测，产物 `spike/out/37-three-arm-{E,A}-2026-08-29T07-04-*`，判决 `docs/local-recheck-verdict-2026-08-29.md`）。② 复核三项经用户拍板（2026-08-29，DeepSeek 额度不足）改为**本地机制验证**：引擎稳态缓存零税（healthy 峰 86-87% ≡ E 对照 84.7%，三次测量两模型两窗口交叉钉死；双峰口径修正见审计脚本头注）、保真判据未受压（D 7/7）。DeepSeek/v4-flash 标定降级为 post-1.0.0 可选补充；对外措辞按三禁规则执行（数字带窗口/任务/模型三要素）。同日独立 review 两处坐实缺陷修复（见 Fixed）。
 
 ### Added — 双引擎（Stage-1 per-atom，此前的 0.x 版本只有 Stage-2 graph）
 
 - **PeratomCompressor**（eager 轮末熵降）：确定性门控（`gate.ts` 判"是否可压"）+ 单次 LLM 调用逐原子决策（`extract` 逐字摘录 / `summary` 概括入账 / `false` 显式不压）；长 user 消息 dialog 抄写拆分 + U-info 聚合（空隙归 info，spike 32 实测定案）；tail-only 替换 + 前缀指纹不变断言（缓存经济生命线）。
 - **CiteDeclarer**（轮末边声明）：模型按近 10 轮窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2 建图——实测召回效率 ≈ 无边臂 2.6×。
 - **RecallZoom**（两级召回）：`recall_summary` / `recall_detail`（日志原文逐字节一致，sha256 测试锁定）+ 4 倍制预算（超限引导不硬拒）。
-- **Stage-2 对接 + 溢出三步**（P4）：U-info 按 R 待遇参剪（唯一引擎改动点，五处触点枚举测试）；context-overflow 恢复环插入 forcePrune→compress→forcePrune 序列；生产挂载工厂（`mountPeratomStack`）。
-- **dsh-llm 生产适配器**：compressor/declarer `config.llm = {provider, model}` 走宿主 LlmRuntime（`purpose='compaction'`、usage 入 record、多模型分工独立指定）；fetch 遗产路径行为不变作 fallback。
-- spike/37 五臂 harness（A/B/C/D/E）+ K_no 死亡检测 + 反事实轨迹 + 放大倍数计算（P5-bis 就绪）；spike/atom-audit.mjs 逐原子审计工具。
+- **Stage-2 对接 + 溢出三步**（P4）：U-info 按 R 待遇参剪（唯一引擎改动点，五处触点枚举测试）；context-overflow 恢复环插入 forcePrune→compress→forcePrune 序列；生产挂载工厂（`mountPeratomStack`）+ 引擎 `config.peratom` 自挂载块（bundle patch 单插件入口，P0）。
+- **dsh-llm 生产适配器**：compressor/declarer `config.llm = {provider, model}` 走宿主 LlmRuntime（`purpose='compaction'`、usage 入 record、多模型分工独立指定）；fetch 遗产路径行为不变作 fallback；严格宿主下免 inject 解析（`resolveLlmRuntime` 双通道）。
+- **压缩事务 UI checkpoint**：peratom user 替换携带 compact checkpoint 署名 + 双管线事务追加 `compaction/summary` 展示事件（诚实计量；`compaction/prune` 仍是唯一权威账本）——替换型压缩首次在 WebUI 可见并显示真实计量。
+- **citesObligation 门控**：回复级 cites 协议退役——declarer 已武装（解析到 LLM 后端）时不再注入 `argp-cites` system section，边声明走结构化旁路，回复正文不再携带 `{"cites":...}` 尾；显式 true/false 覆盖（A₁-A₃ 实验臂可强制开）。
+- **预算手动旋钮显式化**：`windowRatio` / `retainRatio`（或绝对值 `windowTokens` / `retainTokens`）+ 压力测量来源标注（`anchored`/`tokenMeter`/`config`/`chars`，进压力日志供实验审计）。
+- spike/37 五臂 harness（A/B/C/D/E）+ K_no 死亡检测 + 反事实轨迹 + 放大倍数计算（P5-bis 就绪）；spike/atom-audit.mjs 逐原子审计、cache-waste-audit.mjs 缓存归因审计（双峰口径内建）。
 
 ### Fixed
 
 - **no-op replace**：模型对源码类 tool-result 全文照抄（收益 ≤5%）时 fidelityGuard 平凡通过 → 零收益 replace；新增 no-op 守卫视同 false 拒绝（spike 37 两次跑批 6 例实锤，计数 `skippedNoopGain` 可观测）。
+- **溢出三步第②步默认失效（review 坐实，严重）**：`maxOverflowRetries` 缺省 1 时事件#2 在重试上限守卫直接保留原错误，per-atom 降熵在默认配置下永不触发（测试显式传值掩盖、生产挂载无人设值）。修复：挂载 compressor 且未显式配置时缺省提到 3；耗尽判定独立存在不空转。
+- **溢出第②步轮归属错配（review 坐实，中等）**：原接线压"最新闭合轮"，但溢出发生在当前 open turn——与设计 §8「对当前轮大原子降熵」不符。修复：新增 `collectOpenTurn`/`compressOpenTurn`（过滤同款），两处接线改压 open turn，doneTurns 防闭合后重压。
+- **边合并双计**：模型残留 cites 尾与 declarer 声明同 (from,to) 时 inDegree 双计——injectEdges 合并按边去重（先到优先）。
+- **锚定口径加固**：usage 锚点和补 `cacheWriteTokens`（与 UI ContextMeter 分子同口径）；声明窗口缓存（request/context 权威口径，物理探测 7.7× 口径差根除）。
+- 早期 0.3.x 系列发布级修复（压缩静默失效、跨轮缓存全断）见 [0.3.2]/[0.3.1]。
 
 ### Changed
 
 - per-atom prompt 定义式迭代：资料定义改开放集（"一切非指令内容"）、quotes 规则强化（粘贴物正文的建议性表述算资料）、tools false 档（"不压"为显式信号）、info 压缩落地（设计 §10 决策 1）。
 - shadowed 账本只认 compaction/prune——per-atom 压缩 replace 不再谎报为剪枝（catalog "Compression removed N" 不再误增）。
-- 验收判据回勾：per-atom 实现计划 P0-P5 全部条目核对关闭（2026-08-28）；askCover 动态复核回归用例建档（test/askcover-recheck.test.ts）。
+- 14 处裸 console 直调收敛至 ctx.logger 门面；产物命名规范（INVALID-* 隔离污染 run）。
+- 定位换轨（方案 A，2026-08-28 拍板）："确定性剪枝工具" → "带守卫的上下文虚拟化"；ARGP 降级为产品词，README/package description 已按「the LLM proposes, deterministic guards dispose」落地。
 
 ### Verified
 
 - P5 四臂对照 **GO**（2026-08-26，spike 37/37b）：A 臂 30/30 零 error、探针 7/7、成本 A≤C 全分量；D 臂（摘要基线）最便宜但探针 5/7——保真优先于成本校准定调。
 - 60 轮放开对比：末轮水位 A=E 的 40%（模型可见口径）；E vs A 30 轮末轮降幅 59.8%。
-- ⚠️ P5-bis 轮次放大实测：待跑（判据预注册 `docs/p5bis-turn-amplification.md`；外推 16K 档 ≈2.8×）。
-- ⚠️ DeepSeek/v4-flash 复核三项：待跑。
-- 质量门禁基线：`npm run check` 全绿（2026-08-28，见 §0.3.2 后历次提交）。
+- 本地复核三件（2026-08-29）：溢出存活 **8.57×**；稳态缓存零税（healthy 86-87% ≡ E）；保真判据未受压。判据、产物与口径修正全记录于 `docs/local-recheck-verdict-2026-08-29.md`。
+- 真宿主联调（2026-08-28/29，rc.2 部署 + ModelScope）：验收三项闭环（双引擎挂载、窗口口径、cites 剥离）、checkpoint 节点实测、回复协议退役实测（新轮次零 cites 尾 + declarer 建边开火）。`docs/webui-liaison-2026-08-28.md`。
+- 质量门禁：`npm run check` **195/195 全绿**（2026-08-29）。
 
 ## [0.3.2] - 2026-08-22
 
