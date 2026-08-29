@@ -117,7 +117,7 @@ Stage-1 组件默认跟随环境变量解析端点（`DEEPSEEK_API_KEY`）；生
 | 合成 0-LLM | `npm run spike8a` | 单事务零 LLM 调用 |
 | 逐原子审计 | `node spike/atom-audit.mjs <产物目录>` | 事件驱动逐原子压缩/剪枝明细 |
 
-`npm run check` = typecheck + smoke + 单测（2026-08-28 基线 184 用例）。每个数字都带产物路径（见 `docs/publication-plan.md` 台账与各实验记录）。
+`npm run check` = typecheck + smoke + 单测（195/195 全绿，2026-08-29）。每个数字都带产物路径（见 `docs/publication-plan.md` 台账与各实验记录）。
 
 ## 平台缺口反馈（给 dsh）
 
