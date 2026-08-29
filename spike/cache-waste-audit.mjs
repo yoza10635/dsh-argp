@@ -7,6 +7,19 @@
 //      快照差分(相位错位:轨迹在轮末记,usage 在请求时记,tool-result 归属会错一拍)。
 //   3. 灾难请求 = prompt>2000 且 hit%<5%(近全重算);剔除后得"干净命中率"——
 //      引擎逐请求前缀稳定性的真实读数(灾难事件单独归因)。
+//   4. ⚠️ genΔ 标签的定义盲区(2026-08-29 双槽审计虚惊后记账):genDelta 统计的是
+//      surface.replaceGeneration 换代计数器,而**闭包摘除([elided closure] 墓碑写入)
+//      不 bump 换代**——剪枝发生在有请求的轮时,"genΔ0 = 零改写"会漏标。等价且严格
+//      的口径:改写轮 = 该请求区间内的 surface 写操作数(append+replace 事件数);
+//      无闭包摘除时两者相等(8/29 run2 实测 T32: 159=159)。读 genΔ0 的分支时先核
+//      对该轮剪枝事务数,或直接改用事件计数。
+//   5. ⚠️ 分布形态(2026-08-29 双槽审计方法论修正):命中率是**双峰分布**(healthy 峰
+//      ~87% + pinned 离散事件峰),对全体取均值会把两峰混成一个无物理意义的数
+//      (healthy 笔均 miss ~700 tok vs pinned 3.5-13K tok,token 加权下少数 pinned
+//      主导均值)。正确读法:healthy 峰(>70%)vs E 臂对照 = 引擎稳态税;pinned 峰
+//      单独归因(冷启动 T1 定义性 0-hit 应剔除;"hit 恒定钉死跨多轮" = 槽粘性冻结
+//      指纹,双槽 LCP 选错槽专属;崩塌前池驱逐 = server 侧)。pinned 成分跨 run
+//      不同,跨 run 平均会混淆机制。
 //
 // 用法:node spike/cache-waste-audit.mjs <产物目录A> [产物目录B] ...
 import { readFileSync } from 'fs'
