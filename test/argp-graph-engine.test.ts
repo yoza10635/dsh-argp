@@ -372,8 +372,7 @@ test('citesObligation auto: unarmed declarer keeps argp-cites (edge sources neve
   }
 })
 
-test('citesObligation explicit overrides win over auto', async () => {
-  // 强制关（无 peratom）
+test('citesObligation explicit overrides win over auto', async () => {  // 强制关（无 peratom）
   {
     const { ctx, engine } = await makeEngine({ citesObligation: false })
     try {
@@ -395,6 +394,27 @@ test('citesObligation explicit overrides win over auto', async () => {
     } finally {
       await ctx.fiber.dispose()
     }
+  }
+})
+
+test('buildGraph dedup: injected edge identical to reply-cites edge is dropped (first-come wins)', async () => {
+  const { ctx, engine } = await makeEngine({
+    injectEdges: () => [{ from: 1, to: 0, level: 'critical' }],
+  })
+  try {
+    const session = Session.create(SessionId('edge-dedup-test'))
+    appendUser(session, 'The answer is 42.')
+    appendAssistant(session, 'The answer is 42.\n{"cites":["The answer is 42."]}', 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const same = engine.lastEdges.filter(e => e.from === 1 && e.to === 0)
+    assert.equal(same.length, 1, 'duplicate (from,to) collapsed to a single edge')
+    assert.equal(same[0]?.level, 'supporting', 'reply-level edge kept (first-come priority)')
+    assert.equal(engine.citeStats.resolved, 1)
+  } finally {
+    await ctx.fiber.dispose()
   }
 })
 

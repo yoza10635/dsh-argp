@@ -1208,10 +1208,18 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
     }
     // 边价值实验 A₃：合并注入的 oracle 边（离线辅助 LLM 组图）。校验 from/to 合法且非自环。
+    // 去重（2026-08-29，citesObligation 退役回复协议后）：模型残留 cites 尾仍会被
+    // 上方解析建边，declarer 可能对同一 (from,to) 声明同一条边——只保留先到者
+    // （回复级逐字前缀是最强证据），防 inDegree 双计污染判决与守卫计数。
     if (this.injectEdges !== undefined) {
       const validIds = new Set(atoms.map(a => a.id))
+      const seen = new Set(edges.map(e => `${e.from}\u0000${e.to}`))
       for (const e of this.injectEdges(atoms)) {
-        if (e.from !== e.to && validIds.has(e.from) && validIds.has(e.to)) edges.push(e)
+        if (e.from === e.to || !validIds.has(e.from) || !validIds.has(e.to)) continue
+        const key = `${e.from}\u0000${e.to}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        edges.push(e)
       }
     }
     this.lastEdges = edges
