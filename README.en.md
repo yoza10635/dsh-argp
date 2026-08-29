@@ -1,144 +1,134 @@
-> ⚠️ **This English version still describes the v0.3.x single-engine story and is pending update to the 1.0.0 dual-engine narrative. The Chinese [README.md](README.md) is authoritative.**
-
 [中文](README.md) | English
 
-# dsh-argp — Logical-Chain Atomic Reference-Graph Pruning Compaction Engine
+# dsh-argp — Two-engine context compaction: guarded per-atom shrink + deterministic reference-graph eviction
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp (ARGP = **A**tomic **R**eference **G**raph **P**runing) is a third-party `CompactionEngine` for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that performs **selective forgetting driven by the logical chain (reference-dependency topology)**: atoms that are *depended on* are kept per the citation graph, while *isolated* atoms are evicted in reverse topological order — **without any LLM calls**, instead of rewriting history into a summary.
+dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its 1.0.0 two-engine form:
 
-- **0 LLM in the compression phase** — pure graph rules, deterministic and convergent.
-- **Decided by the logical chain** — pruning follows reference-dependency topology ("what is depended on"), not recency or model preference.
-- **Selective forgetting, not rewriting** — pruned content stays in the append-only session log and is retrievable via built-in `recall_pruned` / `recall` tools.
-- **Engine-agnostic seam** — mounted as a drop-in replacement for `compaction-basic` through the standard `CompactionEngine` interface.
-- **Exact compression ratio** — measured 200K context → 160K trigger → 32K retained; output size is controlled.
-
-> Status: research/validation stage. The full pipeline (mount → prune → recall, transaction invariants) is validated on dsh `0.1.0-rc.7` with DeepSeek v4-flash over 50-turn runs; declarative production mounting is verified (loaded via the `dsh plugin` CLI).
+- **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
+- **Stage-2 reference-graph eviction (lazy, at pressure)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly.
+- **The append-only log is the single source of truth** — originals of everything shrunk or evicted stay in the log forever; two-tier recall `recall_summary` / `recall_detail` (byte-exact, hash-locked by tests) brings them back on demand. The context is a rendered view of the log, not the history itself.
 
 ## Why
 
-Summarizer-based compaction (e.g. `compaction-basic`) rewrites history with an LLM at compression time: cost scales with context, information is lossy, and compression ratio is not controllable. ARGP takes the opposite route: dependencies are captured structurally while the conversation happens (a small per-turn annotation), and compaction only *evicts* atoms in reverse topological order of the citation graph — every atom's token count is known, pruning is deterministic, and the degradation chain converges to budget.
+Summarizer-based compaction (an LLM rewriting history) pays three prices:
+
+1. **Lossy** — exact tokens (paths, error codes, config values) die first in any rewrite, and are unrecoverable;
+2. **Cache wipeout** — rewritten history changes the system+prefix every turn, invalidating cross-turn KV/prefix caches from the change point on;
+3. **Uncontrolled ratio** — summary length is at the model's whim; the budget is never honored.
+
+ARGP's answer: **the LLM stays in the loop, but in chains** — its output is always an untrusted input proposal, and guards adjudicate under verbatim discipline; **forgetting is deterministic** — 0-LLM graph rules guarantee convergence and budget; **history is immutable** — the append-only log carries every original, backed by the recall contract (never guess).
+
+Measured (30-turn synthetic multi-turn coding task, four-arm comparison, spike 37): the only arm that achieves both **7/7 probe fidelity** and lower cost than the active baseline is the dual-engine arm (A); the traditional summary baseline (D) is cheapest but scores 5/7 — it swallows exact strings and key gist. **The selling point is not "cheapest" but "cheapest under fidelity"** (A's full cost components ≤ baseline C; 3.39× more expensive than D — that gap is the price of fidelity, priced openly).
 
 ## Core mechanics
 
-1. **Atomization** — history is decomposed into atoms (user / assistant / tool-result). dsh's surface has no standalone tool/call nodes, so call blocks live inside assistant atoms.
-2. **Graph building** — deterministic edges (assistant → its tool results, via `toolCallId`) plus semantic edges from citation prefixes the assistant declares in its output (`{"cites": [...]}`).
-3. **Topological pruning** — repeatedly evict atoms with in-degree 0, ordered by edge level → effective importance → last-reference round. Citations to a pruned atom unlock it (dynamic effective in-degree, per pass). `U` (user) atoms and tombstones are never pruned.
-4. **Closure lifecycle** — completed task closures (roots anchored on task-type user atoms) can be evicted whole, with tombstones that feed the recall index.
-5. **Recall** — `recall_pruned(seq)` retrieves pruned atoms from the log; `list_pruned` shows the pruned-node index. Budget: ≤3 calls/turn, ≤5% window per call, ≤10% total.
-6. **Version dedup** — exact-duplicate assistant atoms / same-issuer tool results are pruned in pairs (simplified form of the design's θ=0.8 chain dedup).
+### Stage-1: PeratomCompressor (eager entropy reduction)
 
-Design details, invariants, and implementation-vs-design deviations are tracked in [`docs/`](docs/).
+1. **Deterministic gating** (`gate.ts`): pure predicates decide *whether* a turn is compressible (long user messages / tool results over 512 chars / non-version-chain members); the LLM only decides *how*.
+2. **Per-atom decisions**: a single LLM call returns `{seq, level, text}` decisions — `extract` (verbatim subset; the guard hard-rejects missing tokens) / `summary` (allowed; every dropped token is itemized into `summaryDropped` for audit) / `false` (explicitly keep the original); long user messages go through splitting (dialog verbatim transcription + remainder aggregated as U-info, gaps assigned to info).
+3. **No-op guard**: full-copy proposals with ≤5% gain count as `false` — no replace event is emitted (a zero-gain replacement wastes a surface generation for nothing).
+4. **Tail-only replacement**: replacements must satisfy sourceEventSeqs ⊆ the current turn's range (out-of-range is a bug, locked by assertion); prefix-fingerprint tests prove request-prefix stability across N turns of per-turn compression — the lifeline of cache economy.
 
-## Model requirement (edge density is tied to instruction following)
+### Stage-2: ArgpGraphEngine (lazy graph eviction, 0-LLM)
 
-Semantic edges come from the `{"cites": [...]}` declarations the model emits per the prompt contract during conversation — **edge density is a direct function of the model's instruction-following capability**:
+1. **Atomization + graph building**: deterministic edges (assistant → its tool results, via `toolCallId`) + semantic edges (the model outputs `{"cites":[{"t":"prefix","l":"c|s|x"}]}` per contract, four levels: critical/supporting/contextual/isolated).
+2. **Topological eviction**: repeatedly evict in-degree-0 atoms (ordered by edge level → effective importance → last-reference turn); evicted atoms' outgoing edges vanish and downstream atoms unlock pass by pass; the closure lifecycle (ACTIVE→COMPLETED→PRUNABLE→PRUNED) retires finished task closures whole.
+3. **Budget honored exactly**: window = contextWindow×0.8 trigger, retain = window×0.2 target; the degradation chain lifecycle→summarize→force→fail converges to budget or fails explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
 
-- **Strong instruction following**: cites are declared as contracted → the citation graph reflects real dependencies → high pruning selectivity
-- **Weak instruction following**: under-declaration (sparse graph, deterministic edges only) or erratic declaration (over-dense graph) → lower pruning selectivity and changed transaction shape
+### Bridging and recall
 
-Measured contrast (50-turn t-long, same engine and parameters, **same task prompt**): DeepSeek v4-flash (high) declared 0 cites, ~34–35 atoms per transaction (sparse graph); Qwen3.8-27B declared 547, only ~4 atoms per transaction across 37 transactions (dense graph) — **the same engine shows different pruning shapes on different models**, yet L1/L2/L3 invariants pass on both.
+- **CiteDeclarer** (per turn): the model declares cross-turn reference edges over its window, fed to Stage-2 through the `injectEdges` channel — measured recall efficiency ≈ 2.6× the edgeless arm (zoom pinpoints the right atoms).
+- **RecallZoom**: `recall_summary(seq)` (compressed state) / `recall_detail(seq)` (byte-exact log original); 4:1 budgeting (summary budget = 4× detail) — over-budget calls return guidance text instead of a hard refusal. Atoms evicted from history are additionally served by `recall_pruned` / `list_pruned`.
 
-A key model difference (measured): the t-long task prompt itself says "reply with exactly one line and nothing else" (which conflicts with the citation contract). **DeepSeek v4-flash ranks the system prompt below user instructions** — "nothing else" suppresses its cites declarations (declared=0); **Qwen3.8-27B ranks the system prompt above user instructions and declares more robustly** — even when told "nothing else", it still appends cites after its reply (declared=547). **Which side wins when system and user prompts conflict is determined by model training, not by prompt wording** — this is the deeper cause of edge-density differences, and prompt-template tuning has a hard ceiling on compliance (measured ≤40% across templates).
+## Model requirements (honest version)
 
-**Warning for users**: DeepSeek-family models are more easily suppressed by user instructions when system and user prompts conflict — if your task/tool prompt happens to contain wording like "nothing else" or strict output-format requirements that clash with the citation contract, DeepSeek may end up with zero edges for the whole session. This does not affect compaction (see the zero-edge guarantee below); it only loses semantic selectivity. Once the task prompt leaves room for the citation block (measured over 10 turns), the declaration rate recovers to 43.6% with 100% resolution.
+The quality of per-atom split/shrink decisions depends on the model's instruction-following ability; **the guards guarantee "never compresses badly" on any model (errors only ever err toward compressing less), but the benefit scales with compliance**:
 
-Implication: pairing with a model that follows instructions well is recommended; on weaker models compaction stays safe (0-LLM determinism + `U`-anchor protection + `recall` fallback hold on any model), only the selectivity benefit is reduced.
-
-**An important guarantee: even with zero edges for the entire session (cites declared=0, the semantic-reference layer entirely absent), all other pruning-priority mechanisms keep working normally.** Semantic edges are only an *enhancement signal* for compaction decisions, not a requirement — the core pruning paths (deterministic-edge pairing, `eff` importance ranking, `U`-anchor never-pruned, lastRef recency, density ordering, closure lifecycle, version-chain dedup) all operate independently of cites declarations. The DeepSeek v4-flash run (declared=0, 50 turns) is full evidence of this guarantee: L1/L2/L3 all pass, exact compression ratio, recall fallback intact — **with the cross-turn logical chain absent, the engine degrades to "deterministic edges + position/importance ordering" ordinary pruning: fully functional, only the selectivity gain disappears**.
+- Measured baseline: local Qwen3.6-35B-A3B / Qwen3.8-27B, full pipeline over 30/60 turns with 0 errors and 7/7 probes; parse failures of the split-transcription notation 0% (vs 72% for interval locating).
+- **Known DeepSeek-family trait**: when the system prompt conflicts with user instructions (e.g. a task prompt saying "nothing else"), cites declarations can drop to 0 — semantic selectivity goes to zero, but Stage-1 guarded compression and Stage-2 deterministic eviction keep working and all invariants pass (50-turn v4-flash evidence). Once the task prompt leaves room for cites, the declaration rate recovers (43.6% measured over 10 turns).
+- The spike 38 probe (info-contract compliance) will be measured on DeepSeek in the post-1.0.0 recheck round.
 
 ## Install & mount
 
-### Declarative CLI mount (verified)
-
-Install from the **npm registry** (currently `v0.2.8`):
+Install from npm (the `v1.0.0` two-engine form):
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
 ```
 
-Upgrade to the latest version (`dsh plugin` is a pnpm forwarder, so `update` pulls the new release straight from the npm registry):
-
-```bash
-dsh plugin --profile <name> update dsh-argp
-```
-
-Alternative: install the same version straight from GitHub (source checkout, no npm):
-
-```bash
-dsh plugin --profile <name> add github:yoza10635/dsh-argp
-```
-
-Then disable the stock summarizer and tune the engine in the profile's `cordis.patch.yml`:
+Disable the stock summarizer in the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: compaction-basic
   disabled: true
+```
+
+> Mounting is handled by the package's own bundle patch (`cordis.patch.yml`) (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
+
+### Two-engine configuration (1.0.0 form)
+
+Stage-1 components resolve their endpoint from environment variables by default (`DEEPSEEK_API_KEY`); in production, point them explicitly at the host dsh-llm:
+
+```yaml
 - id: dsh-argp
-  config: { maxPasses: 16 }   # budgets are ratio-driven by default
+  config:
+    compressor:
+      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm backend
+    declarer:
+      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # may point at a separate lite tier
 ```
 
-> ⚠️ **Mounting happens in the package's own bundle patch** (`cordis.patch.yml`): it `insert`s the `id=dsh-argp` entry — a bundle include only applies the patch, it does NOT create an entry for the package itself. So after `dsh plugin add`, never `insert` dsh-argp in the profile layer again (that crashes with `duplicate loader entry id`); a plain `dsh-argp` row there only overrides config.
+Without `llm` config, it falls back to OpenAI-compatible direct connection via `endpoint`/`apiKey` config or environment variables (the local llama.cpp experiment form; behavior unchanged). Stage-2 budgets are ratio-driven by default (window=ctx×0.8 / retain=window×0.2); no hardcoding needed.
 
-After boot, `ctx.compaction` is the ARGP engine.
+## Validation results
 
-### Ratio-driven budgets (default)
+### Four-arm comparison (30-turn synthetic multi-turn coding, local Qwen3.6-35B-A3B, spike 37)
 
-- `windowTokens = contextWindow × 0.8` (trigger at 80% of context)
-- `retainTokens = windowTokens × 0.2` (1/5 compression ratio)
+| Arm | Configuration | Probes | Cost (idle pricing) | Verdict |
+|---|---|---|---|---|
+| **A dual-engine full** | compressor + declarer + graph + zoom | **7/7** | ¥0.454 | The only 7/7 arm at ≤ baseline cost |
+| B edgeless | declarer off | 7/7 | ¥0.556 | 31 recalls vs A's 12 (declarer ≈2.6× cheaper) |
+| C active baseline | graph only (evicts at overflow) | 6/7 (R2 missed) | ¥0.802 | A's full cost components ≤ C |
+| D summary baseline | dsh stock BasicCompactionEngine | 5/7 (loses exact tokens + gist) | ¥0.134 | Cheapest but loses fidelity — the foil for "cheapest under fidelity" |
 
-The context capacity comes from the model adapter declaration and adapts automatically when the model changes; explicit overrides are also supported (see [config](src/argp-graph-engine.ts)).
+Anti-interference: zero replacements of append-origin originals across arms A/B/C (A 140 / B 154 / C 216 events); prefix stability: A's 21 main requests share one fingerprint.
 
-### Local development
+### Water level and turn amplification
 
-```bash
-npm install
-npm run check        # typecheck + local smoke + unit tests
-```
+- E (zero compaction) vs A (30 turns, model-visible caliber): final-turn water level A = 40% of E (a 59.8% reduction), mean reduction 39.2%; the gap widens monotonically from T11.
+- 60-turn open-ended comparison: final-turn gap 32.6%, mean 36.6%; per-atom defers the graph engine's first hard prune by 5 turns (T14→T19) and holds a lower water level after it.
+- **Turn amplification (fixed window → N× turns, P5-bis measured 2026-08-28, local Qwen3.6-35B-A3B, B=16K tok)**: the zero-compaction control **hits the window and dies at turn 20**; the dual engine **survives 60 turns on full budget without touching the ceiling** (peak live water level only 70% of the window) → **sustainable turns ≥3.2× (censored lower bound)**, probes 6/7 (exact dependencies 4/4). Cache caliber: after excluding catastrophic recompute requests, the **clean hit rate is 84.8%, on par with the zero-compaction control (84.7%)** — zero degradation in per-request prefix stability; the full-sample hit-rate gap (76.1% vs 83.1%) comes entirely from 16 catastrophic events (11 linked to compaction generations + 5 server-native; see [`docs/p5bis-turn-amplification.md`](docs/p5bis-turn-amplification.md) §7.3). **The discriminating experiment is closed (same day, `-np 2` dual-slot rerun)**: catastrophic events **16→4 (4× collapse)**, and per-event attribution of the remaining 4 shows all non-aux-eviction (task-native / one-time graph-prune tax / server floor noise) — the main catastrophic cluster was a single-slot deployment artifact; the engine's inherent cache cost = the one-time graph-prune tax + floor noise (§7.5). **Never cite bare multipliers; always carry window/task/model.**
 
-DeepSeek-backed validation requires a dsh API credential (standard dsh credential location):
+### Graph engine historical validation (v0.3.x, DeepSeek v4-flash / Qwen3.8-27B)
 
-```bash
-npm run smoke:deepseek   # 10a + 10b + 10d single-turn smokes
-```
-
-## Validation
-
-DeepSeek v4-flash, 50-turn t-long task; full numbers with artifact paths in [`docs/experiment-2026-08-16-separated-contract-probe.md`](docs/experiment-2026-08-16-separated-contract-probe.md).
-
-| Metric | dsh-argp | compaction-basic (high, same task) |
-|---|---|---|
-| budget mode | ratio-driven (200K → 160K trigger → 32K retain) | fixed 32K intent, uncontrolled |
-| transactions / errors | 4 / 0 | 30 / 23 (77%, empty streams) |
-| U anchors preserved | 7/7 | 7/7 |
-| needles recovered | 7/7 (5/7 via recall) | 0/7 (unrecoverable) |
-| compression target | exact (32K) | 67K actual (uncontrolled) |
-| cost (idle pricing) | ¥2.695 | ¥3.087 |
-
-Research-scale comparison: dsh-argp ¥0.355 (U 7/7 R 7/7) vs `compaction-basic` ¥0.911 (U 0/7 R 0/7).
+50-turn t-long: U anchors 7/7, needles 7/7 (5/7 recovered via recall), 4 transactions 0 errors, compression target honored exactly (32K); 200K mainline cost ¥2.695 vs baseline high ¥3.087 (that baseline contains 77% empty-stream errors — a platform B-5 defect; read the contrast under this caliber, the disabled tier ¥3.19 is the cleaner control).
 
 ## Reproduce
 
-| Run | Command | What it validates |
+| Experiment | Command | What it validates |
 |---|---|---|
-| 50-turn t-long (high thinking) | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 invariants, 7/7 anchors, 7/7 needles via recall |
-| 160K mainline | `ARGP_CONTEXT_WINDOW=200000 ARGP_CHUNK_LINES=600 node spike/06-tlong.ts` | Exact compression ratio, ratio-driven budgets |
-| Baseline (compaction-basic) | `node spike/07-baseline.ts` | Same task with the stock summarizer for contrast |
-| Synthetic 0-LLM | `npm run spike8a` | 28-atom single-transaction pruning with zero LLM calls |
+| Four-arm comparison (needs a local model) | `ARGP_ARM=A\|B\|C\|D\|E node spike/37-peratom-three-arm.ts` | Probe fidelity, cost triplet, anti-interference, K_no / amplification |
+| per-atom soak | `npm run spike36` | Eight verdicts: gating / chain / conservation / prefix / VK-atom |
+| 50-turn t-long | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 invariants, anchors/needles, exact budget |
+| Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
+| Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
 
-Every number carries its artifact path (see the experiment record).
+`npm run check` = typecheck + smoke + unit tests (195/195 green as of 2026-08-29). Every number carries its artifact path (see `docs/publication-plan.md` and the individual experiment records).
 
-## Known platform gaps (feedback to dsh)
+## Platform gap feedback (for dsh)
 
-Developing a non-LLM compaction backend surfaced four extensibility gaps in the compaction seam. Details and repro scripts in [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md):
+No structured metadata channel for tool/result replacement (B-1), compaction/prune outside the transaction state machine (B-3), headless test assembly silently disables tokenMeter (B-4), summarizer empty streams (B-5), window truncation leaves no trace (B-6) — details in [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md).
 
-1. **No structured metadata channel on tool/result replacement** — placeholders must clone the original message and may only swap content.
-2. **`compaction/prune` is outside the transaction invariant state machine** — no native event type for algorithmic eviction; third-party engines must borrow `summary` semantics with pseudo fields.
-3. **Headless test assembly silently disables the pressure path** — `mountAgentLoopTestDependencies` does not register `tokenMeter`, and the pre-step catch swallows the error.
-4. **Intermittent empty streams on summarizer calls (B-5)** — 77% of transactions failed with empty streams under high thinking effort; `maxTokens=32768` does not help; likely a streaming connection race.
+## Known limitations
+
+- **B-6 window-truncation blind spot**: live nodes not replaced by ARGP get their oldest part silently truncated by the request-assembly layer as the context nears contextWindow — `recall_pruned` cannot recover them. Mitigation: ratio budgets trigger earlier; the root fix is on the dsh side (B-6 filed upstream).
+- **Model dependence (honest version, above)**: guards guarantee safety; benefits depend on compliance. The lite-tier multi-model split's compliance is unmeasured (ledger D21).
+- **per-atom output tax**: Stage-1's per-turn compression call is a side-channel cost (7.2K completion tokens over 30 turns, measured; it never enters the context but counts toward total cost); usage from the dsh-llm backend is recorded, and the spike aggregation caliber is being wired up.
+- **Two-hop tombstone recall**: as placeholder text drifts across turns the original seq can be lost; `recall_pruned(seq)` needs the correct numbering (eliminated together once B-6 lands).
 
 ## License
 
