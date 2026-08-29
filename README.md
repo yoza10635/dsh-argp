@@ -54,7 +54,7 @@ per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫�
 
 ## 安装与挂载
 
-从 npm 安装（当前发布版 `v0.3.2` 单引擎形态；双引擎形态随 1.0.0 发布，本仓库 HEAD 已含）：
+从 npm 安装（`v1.0.0` 双引擎形态）：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
