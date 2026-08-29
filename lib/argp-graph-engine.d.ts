@@ -335,7 +335,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
     private readonly overflowAgents;
-    /** 最近一次请求的真实 prompt token（usage.inputTokens + cacheReadTokens，provider 回报）。
+    /** 最近一次请求的真实 prompt token（usage.inputTokens + cacheReadTokens + cacheWriteTokens，
+     *  provider 回报，与 UI ContextMeter 分子同口径）。
      *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
      *  导致迟触发/窗口保护失效，2026-08-23）。 */
     private lastRealPromptTokens;
@@ -419,7 +420,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private visibleChars;
     /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
      *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
-     *  dsh tokenMeter / 配置函数 / 字符估算。 */
+     *  dsh tokenMeter / 配置函数 / 字符估算。source 标注估计来源（2026-08-29：
+     *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。 */
     private measureTokens;
     /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
     private static lineOverlap;
