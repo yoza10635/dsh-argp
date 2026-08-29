@@ -208,12 +208,33 @@ export declare class PeratomCompressor {
      * 无再压缩路径：U-info 副本 / plugin checkpoint 一律跳过（决策⑦）。
      */
     collectCurrentTurn(session: Session): CurrentTurnCollect | null;
+    /**
+     * 收集当前开放轮（最后一条 turn/start 之后、尚无 turn/end）的可压原子。
+     * P4 溢出三步路径②专用：溢出发生在 open turn 的请求上，第②步要降熵的正是
+     * 这个 open turn——closed-turn 口径会错压上一闭合轮（2026-08-29 review 中项，
+     * 与 per-atom 设计 §8「对当前轮大原子降熵」的意图不符）。过滤与闭合轮完全
+     * 同款（中断/版本链/大小门控；U-info/checkpoint 跳过）；open turn 无 turn/end，
+     * 不会出现在中断集里。无 turn/start（会话头）返回 null。
+     */
+    collectOpenTurn(session: Session): CurrentTurnCollect | null;
+    /** 窗口→候选的共享尾部（中断/版本链/大小门控 + 原子化）。closed/open 两口径共用。 */
+    private collectFromWindow;
     /** idle 触发段：记账防重 → 收集 → 门控 → LLM → 暂存待发射。返回观测记录。 */
     prepareCurrentTurn(session: Session): Promise<CompressRecord | null>;
     /** 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口（同步追加，吞错记账）。 */
     flushStashed(session: Session): void;
     /** 公开入口（P4 溢出三步路径② / 单测）：立即收集+调用+发射，绕过两段式延迟。 */
     compressCurrentTurn(session: Session): Promise<CompressRecord | null>;
+    /**
+     * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
+     * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
+     * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
+     * open turn 压缩后标记 doneTurns——该轮闭合时 idle prepare 因已 done 跳过
+     * （替换副本本就被 plugin-source 排除，双保险防重压缩）。
+     */
+    compressOpenTurn(session: Session): Promise<CompressRecord | null>;
+    /** 共享压缩尾部：防重记账 + 中断/无候选短路 + callAndStash + 立即 flush。 */
+    private compressCollect;
     private callAndStash;
     private flushEntry;
 }

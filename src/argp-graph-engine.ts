@@ -148,9 +148,11 @@ export interface ArgpGraphConfig {
    */
   turnBasis?: 'semantic' | 'all'
   /**
-   * 上下文溢出恢复的最大重试次数（context-overflow trigger，默认 1，对齐官方
-   * compaction-basic 的 maxOverflowRetries）。每次「模型请求 400 exceed_context_size
-   * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
+   * 上下文溢出恢复的最大重试次数（context-overflow trigger）。缺省口径（2026-08-29
+   * review 修复）：未挂 peratom compressor 时默认 1（对齐官方 compaction-basic）；
+   * 挂载时自动提到 3——否则三步序列的第②步（事件#2）在重试上限守卫处被跳过，
+   * 溢出三步退化为"① + 保留错误"。显式配置始终优先。每次「模型请求 400
+   * exceed_context_size → 恢复步 → retry」消耗 1 次；超限后保留原始请求错误。
    */
   maxOverflowRetries?: number
   /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
@@ -199,7 +201,7 @@ export interface ArgpGraphConfig {
   citesObligation?: boolean
   /**
    * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
-   * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
+   * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
    * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
    * 再次 forcePrune 收尾。未注入（undefined）时退化为现役两步
    * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
@@ -429,9 +431,14 @@ export class ArgpGraphEngine extends CompactionEngine {
   private shadowedSession: Session | null = null
   private shadowedSet: Set<number> = new Set()
   private shadowedScanned = 0
+  /** 结构化日志门面（构造期自 ctx 捕获）。 */
+  private readonly log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
 
   constructor(ctx: Context, config: ArgpGraphConfig = {}) {
     super(ctx)
+    // 结构化日志门面（2026-08-29 review 轻微项）：替换裸 console 直调，日志进宿主
+    // 统一管道（ctx.logger 门面；warn/error/info 三级均被 cordis logger 支持）。
+    this.log = ctx.logger
     // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
     // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。
     this.windowTokens = config.windowTokens ?? 16_384
@@ -480,7 +487,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // ctx.compaction 接收 injectEdges / onOverflowCompress）。
     if (config.peratom !== undefined) {
       if (config.onOverflowCompress !== undefined || config.injectEdges !== undefined) {
-        console.warn('[argp-graph] peratom block set; explicit injectEdges/onOverflowCompress ignored (wired internally)')
+        this.log.warn('[argp-graph] peratom block set; explicit injectEdges/onOverflowCompress ignored (wired internally)')
       }
       const compressor = config.peratom.compressor === false ? null : new PeratomCompressor(ctx, config.peratom.compressor ?? {})
       const declarer = config.peratom.declarer === false ? null : new CiteDeclarer(ctx, config.peratom.declarer ?? {})
@@ -488,10 +495,21 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (declarer !== null) this.injectEdges = (atoms) => declarer.buildInjectEdges(atoms)
       if (compressor !== null) {
         this.onOverflowCompress = async (session: Session): Promise<void> => {
-          await compressor.compressCurrentTurn(session)
+          // 溢出发生在当前 open turn 的请求上——第②步要降熵的正是它。closed-turn
+          // 口径会错压上一闭合轮（2026-08-29 review 中项），改用 open-turn 入口。
+          await compressor.compressOpenTurn(session)
         }
       }
       this.peratomStack = { compressor, declarer, zoom }
+    }
+
+    // P4 修复（2026-08-29 review，严重项）：peratom 第②步（onOverflowCompress）挂载时，
+    // 重试上限缺省从 1 提到 3——否则事件#2（retries=1）在重试上限守卫处直接保留原错误，
+    // 三步序列的第②步在默认配置下永不触发（测试显式传 3/5 掩盖了缺口，生产挂载路径
+    // 无人设值）。显式配置始终优先；耗尽判定（retries≥2，见 request-error 钩子）独立于
+    // 本上限，第③步后照旧收束，不会多空转。未挂 compressor（第②步不存在）时维持 1。
+    if (config.maxOverflowRetries === undefined && this.onOverflowCompress !== undefined) {
+      this.maxOverflowRetries = 3
     }
 
     // 回复级 cites 义务 auto 口径：declarer 已武装（有 LLM 后端）→ 结构化旁路建边
@@ -724,7 +742,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (typeof declared === 'number' && declared > 0) {
           const previous = this.declaredContextWindows.get(session)
           if (previous !== undefined && previous !== declared) {
-            console.log(`[argp-graph] declared contextWindow changed: ${previous} -> ${declared}`)
+            this.log.info(`[argp-graph] declared contextWindow changed: ${previous} -> ${declared}`)
           }
           this.declaredContextWindows.set(session, declared)
         }
@@ -735,7 +753,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (event.type === 'compaction/start') {
         const cid = (event.data as { compactionId?: string } | undefined)?.compactionId
         if (typeof cid === 'string' && !cid.startsWith('argp-')) {
-          console.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${(event.data as { turn?: number }).turn ?? '?'})`
+          this.log.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${(event.data as { turn?: number }).turn ?? '?'})`
             + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt graph pruning'
             + ' (see docs/webui-liaison-2026-08-28.md 发现二)')
         }
@@ -845,7 +863,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           await this.compactIfNeeded(agent, 'pressure', signal)
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
-          console.error('[argp-graph] pressure prune FAILED: ' + message + (error instanceof Error && error.stack ? '\n' + error.stack.split('\n').slice(0, 6).join('\n') : ''))
+          this.log.error('[argp-graph] pressure prune FAILED: ' + message + (error instanceof Error && error.stack ? '\n' + error.stack.split('\n').slice(0, 6).join('\n') : ''))
           ctx.logger.warn(`argp-graph pressure prune failed: ${message}; continuing the turn`)
         }
       }
@@ -1264,7 +1282,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         return { contextTokens: m.totalTokens, surfaceTokens: m.surfaceTokens, source: 'tokenMeter' }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        console.warn('[argp-graph] tokenMeter.measure failed, falling back: ' + message)
+        this.log.warn('[argp-graph] tokenMeter.measure failed, falling back: ' + message)
       }
     }
     if (this.tokenMeterFn !== undefined) return { ...this.tokenMeterFn(session), source: 'config' }
@@ -1716,7 +1734,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const declaredKnown = explicitWindow !== undefined
       || (contextWindow !== undefined && contextWindow > 0)
     if (!declaredKnown) {
-      console.log('[argp-graph] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
+      this.log.info('[argp-graph] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
     }
     const scaled = scaleBudgets(contextWindow, {
       explicitWindow, explicitRetain,
@@ -1748,7 +1766,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const { windowTokens, retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) {
-      console.log('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
+      this.log.info('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
       return null
     }
     const retainChars = retainTokens * this.charsPerToken
@@ -1756,11 +1774,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 声明窗口未知时的早检跳过（2026-08-28）：物理口径宁可不用（宁缺勿错）；
     // context-overflow 触发除外——那是 provider 确认的真实溢出，必须处置。
     if (trigger !== 'context-overflow' && !declaredKnown) {
-      console.log('[argp-graph] pressure check: declared contextWindow unknown, skip (will check after first request/context)')
+      this.log.info('[argp-graph] pressure check: declared contextWindow unknown, skip (will check after first request/context)')
       return null
     }
     if (trigger !== 'context-overflow' && measurement.contextTokens < thresholdTokens) {
-      console.log('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' (source=' + measurement.source + ') < threshold=' + thresholdTokens + ', skip')
+      this.log.info('[argp-graph] pressure check: contextTokens=' + measurement.contextTokens + ' (source=' + measurement.source + ') < threshold=' + thresholdTokens + ', skip')
       return null
     }
 
