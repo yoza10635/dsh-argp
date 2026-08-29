@@ -1167,3 +1167,33 @@ test('A8 narrowed ask detection: CJK ask U exempted and prunable via coverage (Q
   }
 })
 
+
+test('overflow retries default: 3 when peratom compressor wired, 1 otherwise, explicit wins', async () => {
+  // 无 peratom：维持官方 compaction-basic 口径 1
+  {
+    const { ctx, engine } = await makeEngine()
+    try {
+      assert.equal(engine.maxOverflowRetries, 1)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+  // 挂载 compressor（第②步存在）：缺省自动提到 3，三步序列可达
+  {
+    const { ctx, engine } = await makeEngine({ peratom: { compressor: {}, declarer: false, zoom: false } })
+    try {
+      assert.equal(engine.maxOverflowRetries, 3)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+  // 显式配置始终优先
+  {
+    const { ctx, engine } = await makeEngine({ maxOverflowRetries: 5, peratom: { compressor: {}, declarer: false, zoom: false } })
+    try {
+      assert.equal(engine.maxOverflowRetries, 5, 'explicit config wins over auto default')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+})

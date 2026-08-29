@@ -729,11 +729,62 @@ export class PeratomCompressor {
       if (event.seq < startSeq) startSeq = event.seq
       if (event.seq > endSeq) endSeq = event.seq
     }
+    return this.collectFromWindow(session, closed, turnEvents, startSeq, endSeq)
+  }
+
+  /**
+   * 收集当前开放轮（最后一条 turn/start 之后、尚无 turn/end）的可压原子。
+   * P4 溢出三步路径②专用：溢出发生在 open turn 的请求上，第②步要降熵的正是
+   * 这个 open turn——closed-turn 口径会错压上一闭合轮（2026-08-29 review 中项，
+   * 与 per-atom 设计 §8「对当前轮大原子降熵」的意图不符）。过滤与闭合轮完全
+   * 同款（中断/版本链/大小门控；U-info/checkpoint 跳过）；open turn 无 turn/end，
+   * 不会出现在中断集里。无 turn/start（会话头）返回 null。
+   */
+  collectOpenTurn(session: Session): CurrentTurnCollect | null {
+    const events = session.events
+    let openSeq = -1
+    let openTurn: number | null = null
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type === 'turn/start') {
+        openSeq = event.seq
+        openTurn = (event.data as { turn: number }).turn
+        break
+      }
+    }
+    if (openTurn === null || openSeq < 0) return null
+    // open 窗口 = 最后一条 turn/start 之后的全部事件。user/message 按位置归属；
+    // assistant/tool 事件自带 turn 字段做二次校验（应恒等于 openTurn）。
+    const turnEvents: SessionEvent[] = []
+    let startSeq = Number.MAX_SAFE_INTEGER
+    let endSeq = -1
+    for (const event of events) {
+      if (event.seq <= openSeq) continue
+      if (event.type !== 'user/message' && event.type !== 'turn/end') {
+        const turn = (event.data as { turn?: unknown } | undefined)?.turn
+        if (typeof turn === 'number' && turn !== openTurn) continue
+      }
+      turnEvents.push(event)
+      if (event.seq < startSeq) startSeq = event.seq
+      if (event.seq > endSeq) endSeq = event.seq
+    }
+    return this.collectFromWindow(session, openTurn, turnEvents, startSeq, endSeq)
+  }
+
+  /** 窗口→候选的共享尾部（中断/版本链/大小门控 + 原子化）。closed/open 两口径共用。 */
+  private collectFromWindow(
+    session: Session,
+    turn: number,
+    turnEvents: SessionEvent[],
+    startSeq: number,
+    endSeq: number,
+  ): CurrentTurnCollect | null {
+    const events = session.events
     if (endSeq < 0) return null
 
-    const interrupted = collectInterruptedTurns(events).has(closed)
+    const interrupted = collectInterruptedTurns(events).has(turn)
     const collect: CurrentTurnCollect = {
-      turn: closed,
+      turn,
       startSeq,
       endSeq,
       interrupted,
@@ -754,7 +805,7 @@ export class PeratomCompressor {
         if (source === 'plugin') continue
         const text = projectSurfaceText(event)
         if (userIsLong(text, this.splitThresholdChars)) {
-          rawAtoms.push({ kind: 'user-long', seq: event.seq, turn: closed, text })
+          rawAtoms.push({ kind: 'user-long', seq: event.seq, turn, text })
         }
         continue
       }
@@ -763,7 +814,7 @@ export class PeratomCompressor {
         const text = projectSurfaceText(event)
         // 工具种类名（callId→name 反查）：tool 对照表 / 作者声明的查找键（设计 §6-2）。
         const toolName = callId !== undefined ? nameByCall.get(callId) : undefined
-        rawAtoms.push({ kind: 'tool-result', seq: event.seq, turn: closed, text, callId, toolName })
+        rawAtoms.push({ kind: 'tool-result', seq: event.seq, turn, text, callId, toolName })
       }
       // assistant/message 不压缩（设计 §1）。
     }
@@ -822,6 +873,23 @@ export class PeratomCompressor {
   /** 公开入口（P4 溢出三步路径② / 单测）：立即收集+调用+发射，绕过两段式延迟。 */
   async compressCurrentTurn(session: Session): Promise<CompressRecord | null> {
     const collect = this.collectCurrentTurn(session)
+    return this.compressCollect(session, collect)
+  }
+
+  /**
+   * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
+   * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
+   * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
+   * open turn 压缩后标记 doneTurns——该轮闭合时 idle prepare 因已 done 跳过
+   * （替换副本本就被 plugin-source 排除，双保险防重压缩）。
+   */
+  async compressOpenTurn(session: Session): Promise<CompressRecord | null> {
+    const collect = this.collectOpenTurn(session)
+    return this.compressCollect(session, collect)
+  }
+
+  /** 共享压缩尾部：防重记账 + 中断/无候选短路 + callAndStash + 立即 flush。 */
+  private async compressCollect(session: Session, collect: CurrentTurnCollect | null): Promise<CompressRecord | null> {
     if (collect === null) return null
     const done = this.doneTurns.get(session) ?? new Set<number>()
     this.doneTurns.set(session, done)
@@ -860,7 +928,7 @@ export class PeratomCompressor {
         userLong: collect.userLong.map(u => u.seq),
         toolResults: collect.toolResults.map(t => t.seq),
       }
-      console.log(`[argp-peratom] compressor: turn ${collect.turn} candidates=${collect.userLong.length}u+${collect.toolResults.length}r (dsh-llm=${this.dshLlm !== null})`)
+      this.ctx.logger.info(`[argp-peratom] compressor: turn ${collect.turn} candidates=${collect.userLong.length}u+${collect.toolResults.length}r (dsh-llm=${this.dshLlm !== null})`)
       let raw: string
       let ms = Date.now() - started
       if (this.dshLlm !== null) {
@@ -894,10 +962,10 @@ export class PeratomCompressor {
       const extract = decision.tools.filter(t => t.level === 'extract').length
       const summary = decision.tools.filter(t => t.level === 'summary').length
       const falseActions = decision.tools.filter(t => t.level === 'false').length
-      console.log(`[argp-peratom] compressor: turn ${collect.turn} decision splits=${decision.splits.length} extract=${extract} summary=${summary} false=${falseActions} ms=${record.ms ?? '?'}`)
+      this.ctx.logger.info(`[argp-peratom] compressor: turn ${collect.turn} decision splits=${decision.splits.length} extract=${extract} summary=${summary} false=${falseActions} ms=${record.ms ?? '?'}`)
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error)
-      console.warn(`[argp-peratom] compressor: turn ${collect.turn} LLM call failed: ${record.error}`)
+      this.ctx.logger.warn(`[argp-peratom] compressor: turn ${collect.turn} LLM call failed: ${record.error}`)
     }
     return record
   }

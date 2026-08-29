@@ -814,3 +814,38 @@ test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文�
   assert.equal(meta.summary, compressedInfo, '单档 summary 元数据 = 压缩文本')
   assert.equal(infoEvent?.surfaceOp, 'append')
 })
+
+test('compressOpenTurn：溢出场景压当前 open turn（无 turn/end），closed 口径不触及', async t => {
+  const h = await makeHarness()
+  t.after(() => dispose(h))
+  const session = Session.create(SessionId('pc-open-turn'))
+  buildCompressibleTurn(session, 1, 'c0')
+  // open turn 2：有 turn/start、无 turn/end——溢出发生在此轮的请求上。
+  // 文本与闭合轮互异：全等 user 文本与同 tool+args 的 R 都会触发版本链硬排除（设计口径）。
+  session.append('turn/start', { turn: 2 })
+  const openU = appendUser(session, LONG_USER + '\nopen-turn-variant：补充段落使文本与闭合轮互异。')
+  appendAssistantWithToolCall(session, 2, 'c1', 'read_file', '{"path":"log2.txt"}')
+  const openR = appendToolResult(session, 2, 'c1', ('EADDRINUSE stack line '.padEnd(40, '.') + '\n').repeat(20) + 'open-variant tail')
+  // closed 口径只看最新闭合轮 1，不碰 open turn 2
+  assert.equal(h.compressor.collectCurrentTurn(session)?.turn, 1)
+  assert.equal(h.compressor.collectOpenTurn(session)?.turn, 2)
+  h.respond({
+    splits: [{ seq: openU, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'open-turn compressed info' }],
+    tools: [{ seq: openR, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const record = await h.compressor.compressOpenTurn(session)
+  assert.equal(record?.turn, 2, '第②步压的是 open turn（2026-08-29 review 中项修复）')
+  assert.equal(record?.appliedReplaces, 2, 'open turn 的 dialog + tool 均被替换')
+  assert.equal(record?.atomSeqs?.userLong?.[0], openU)
+  // 幂等：open turn 已 done，重入不再调用
+  const again = await h.compressor.compressOpenTurn(session)
+  assert.equal(again, null)
+})
+
+test('compressOpenTurn：无 turn/start（会话头）返回 null 不抛', async t => {
+  const h = await makeHarness()
+  t.after(() => dispose(h))
+  const session = Session.create(SessionId('pc-open-empty'))
+  appendUser(session, LONG_USER)
+  assert.equal(await h.compressor.compressOpenTurn(session), null)
+})

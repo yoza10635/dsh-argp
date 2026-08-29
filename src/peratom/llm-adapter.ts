@@ -70,7 +70,7 @@ export async function completeViaDshLlm(
 ): Promise<PeratomLlmResult> {
   const llm = resolveLlmRuntime(ctx)
   if (llm === undefined) throw new Error('dsh-llm backend: host has no llm service')
-  console.log(`[argp-peratom] dsh-llm call: provider=${spec.provider} model=${spec.model} prompt=${prompt.length} chars`)
+  ctx.logger.info(`[argp-peratom] dsh-llm call: provider=${spec.provider} model=${spec.model} prompt=${prompt.length} chars`)
   const stream = llm.stream({
     provider: spec.provider,
     model: spec.model,
@@ -91,7 +91,7 @@ export async function completeViaDshLlm(
       }
     }
   } finally {
-    console.log(`[argp-peratom] dsh-llm done: chunks=${chunks} text=${text.length} chars usage=${usage !== undefined ? 'yes' : 'no'}`)
+    ctx.logger.info(`[argp-peratom] dsh-llm done: chunks=${chunks} text=${text.length} chars usage=${usage !== undefined ? 'yes' : 'no'}`)
   }
   return { text, usage }
 }

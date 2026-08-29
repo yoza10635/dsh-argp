@@ -113,9 +113,11 @@ export interface ArgpGraphConfig {
      */
     turnBasis?: 'semantic' | 'all';
     /**
-     * 上下文溢出恢复的最大重试次数（context-overflow trigger，默认 1，对齐官方
-     * compaction-basic 的 maxOverflowRetries）。每次「模型请求 400 exceed_context_size
-     * → 强制剪枝 → retry」消耗 1 次；超限后保留原始请求错误，不再循环。
+     * 上下文溢出恢复的最大重试次数（context-overflow trigger）。缺省口径（2026-08-29
+     * review 修复）：未挂 peratom compressor 时默认 1（对齐官方 compaction-basic）；
+     * 挂载时自动提到 3——否则三步序列的第②步（事件#2）在重试上限守卫处被跳过，
+     * 溢出三步退化为"① + 保留错误"。显式配置始终优先。每次「模型请求 400
+     * exceed_context_size → 恢复步 → retry」消耗 1 次；超限后保留原始请求错误。
      */
     maxOverflowRetries?: number;
     /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
@@ -164,7 +166,7 @@ export interface ArgpGraphConfig {
     citesObligation?: boolean;
     /**
      * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
-     * 回调对当前轮做 per-atom 降熵（PeratomCompressor.compressCurrentTurn：
+     * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
      * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
      * 再次 forcePrune 收尾。未注入（undefined）时退化为现役两步
      * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
@@ -356,6 +358,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private shadowedSession;
     private shadowedSet;
     private shadowedScanned;
+    /** 结构化日志门面（构造期自 ctx 捕获）。 */
+    private readonly log;
     constructor(ctx: Context, config?: ArgpGraphConfig);
     /**
      * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定

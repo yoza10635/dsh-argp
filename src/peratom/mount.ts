@@ -72,12 +72,13 @@ export async function mountPeratomStack(ctx: Context, config: PeratomStackConfig
   if (declarer !== null) {
     graphConfig.injectEdges = (atoms: Atom[]) => declarer.buildInjectEdges(atoms)
   }
-  // P4 接线：溢出三步第②步 = 当前轮 per-atom 降熵（顺带补 cites）。
-  // compressCurrentTurn 失败隔离内建（endpoint 缺失/网络错误只记 record 不抛），
-  // 钩子侧另有 try/catch 双保险。
+  // P4 接线：溢出三步第②步 = 当前 open turn 的 per-atom 降熵（顺带补 cites）。
+  // 溢出发生在 open turn 的请求上，必须压它——closed 口径会错压上一闭合轮
+  // （2026-08-29 review 中项）。compressOpenTurn 失败隔离内建（endpoint 缺失/
+  // 网络错误只记 record 不抛），钩子侧另有 try/catch 双保险。
   if (compressor !== null) {
     graphConfig.onOverflowCompress = async (session: Session): Promise<void> => {
-      await compressor.compressCurrentTurn(session)
+      await compressor.compressOpenTurn(session)
     }
   }
   await ctx.plugin(ArgpGraphEngine, graphConfig)
