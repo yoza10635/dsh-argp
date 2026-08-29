@@ -153,6 +153,8 @@ export declare class CiteDeclarer {
     readonly records: CiteRecord[];
     /** 缓存中的声明边数（测试断言用）。 */
     get cachedEdgeCount(): number;
+    /** 是否已解析到 LLM 后端（dsh-llm 或 endpoint 任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
+    get armed(): boolean;
     constructor(ctx: Context, config?: CiteDeclarerConfig);
     /**
      * idle 触发段（公开入口供单测 / P4 直驱）：幂等记账 → 中断轮短路 → 孤立原子门控
