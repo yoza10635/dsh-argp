@@ -15,7 +15,7 @@
 
 - `disabled: true` 关闭 dsh 自带的摘要压缩引擎（`compaction-basic`），由 ARGP 接管。
 - `insert:` 是新增 entry 的正确语法——patch 顶层数组按 `id` 匹配**已加载**的 entry，新增必须用 `insert`（直接给 `id`+`name` 会报 "entry not found"）。
-- 预算默认**比例驱动**：`windowTokens = contextWindow × 0.8`、`retainTokens = windowTokens × 0.2`，上下文容量由模型适配器（其他插件）声明提供；需要显式覆盖时在 `config` 里写 `windowTokens` / `retainTokens`。
+- 预算默认**比例驱动**：`windowTokens = contextWindow × windowRatio(默认0.8)`、`retainTokens = windowTokens × retainRatio(默认0.2)`，上下文容量由模型适配器（其他插件）声明提供。手动旋钮（2026-08-29 显式化）：`windowRatio` / `retainRatio` 直接在 `config` 里设百分比；要绝对值则传 `windowTokens` / `retainTokens`（显式值优先于比例）。contextWindow 在 dsh settings 的 models 条目声明——它是 UI ContextMeter 分母与 ARGP 触发线的共同锚点，与模型原生上限（能力元数据，Qwen3.8-Flash-Next=256K）是两个不同的数，不要混设。
 
 ## 验证（2026-08-17 实测通过）
 
