@@ -44,7 +44,7 @@ ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"
 - **CiteDeclarer**（每轮）：模型按窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2——实测召回效率 ≈ 无边臂的 2.6×（zoom 精准定位）。
 - **RecallZoom**：`recall_summary(seq)`（读压缩态）/ `recall_detail(seq)`（日志原文逐字节）；4 倍制预算（summary 预算 = 4×detail），超限返回引导文案而非硬拒。历史被剪原子另有 `recall_pruned` / `list_pruned`。
 
-## 模型要求（如实版）
+## 模型要求
 
 per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫保证任何模型上都"不会压坏"（错误方向只往少压错），但收益随服从率缩放**：
 
