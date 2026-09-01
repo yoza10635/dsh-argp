@@ -2,6 +2,12 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.0.2] - 2026-09-01（KV 前缀缓存击穿修复）
+
+### Fixed
+
+- **每步 assemble 重求值 argp-catalog 致整段前缀缓存 KV 失效（2026-09-01 定位）**：`argp-catalog`（order 9999）原为动态 PromptSection，每步 `systemPrompt.assemble()` 重求值；ARGP `agent/pre-step` 每步 `compactIfNeeded('pressure')`，剪枝压力下 `shadowedSeqsOf` 增长使 `catalogText` 输出变化，改动单条被前缀缓存的 system message 块 → 整块 KV 丢弃（剪枝压力在轮末达峰，故"最后一步"显形，用户报"所有 KV 缓存丢失"）。修复：catalog 改为**全程冻结快照**——`bindSession` 拍初值、`argp-catalog` section 回放 `frozenCatalog`、唯一刷新点在 `pruneIntervals` 落剪成功末尾（恰在可见上下文因剪枝换代之后）。无剪枝整段对话 system 块逐字节一致 → 前缀缓存全段命中；剪枝那一步的失效是上下文真实变更的必然代价（与摘要式压缩同源权衡）。`npm run check` 全绿（196/196 PASS）。
+
 ## [1.0.1] - 2026-09-01（resume 投影契约修复 + 反馈通道补齐）
 
 ### Fixed
