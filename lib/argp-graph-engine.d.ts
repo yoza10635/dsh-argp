@@ -333,6 +333,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private closureLastRecalled;
     private recallCallsThisTurn;
     private recallCharsUsed;
+    /**
+     * 冻结的 catalog 文本快照：system 块是单条被前缀缓存的消息，块内任何字节变化都会
+     * 让整块 KV 失效。故 catalog 不与每步 assemble 联动，而是"全程冻结、仅在真正落剪时刷新一次"
+     * （见 bindSession 初值 + pruneIntervals 末尾刷新）。无剪枝的整段对话里 system 块逐字节一致，
+     * 前缀缓存全段命中；剪枝本身已改动可见上下文，那一步的缓存失效是必然代价。
+     */
+    private frozenCatalog;
     /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */

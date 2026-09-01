@@ -405,6 +405,13 @@ export class ArgpGraphEngine extends CompactionEngine {
   private closureLastRecalled = new Map<number, number>()
   private recallCallsThisTurn = 0
   private recallCharsUsed = 0
+  /**
+   * 冻结的 catalog 文本快照：system 块是单条被前缀缓存的消息，块内任何字节变化都会
+   * 让整块 KV 失效。故 catalog 不与每步 assemble 联动，而是"全程冻结、仅在真正落剪时刷新一次"
+   * （见 bindSession 初值 + pruneIntervals 末尾刷新）。无剪枝的整段对话里 system 块逐字节一致，
+   * 前缀缓存全段命中；剪枝本身已改动可见上下文，那一步的缓存失效是必然代价。
+   */
+  private frozenCatalog: string | null = null
   /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
   private readonly overflowRetries = new WeakMap<Agent, number>()
   /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
@@ -701,7 +708,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     ctx.systemPrompt.section({
       name: 'argp-catalog',
       order: 9999,
-      text: () => this.catalogText(20, 70),
+      // 冻结快照：catalog 是动态内容，若每步重新求值会随被剪集合变化而改动 system 块、
+      // 打穿前缀缓存。故只回放 frozenCatalog（bindSession 初值 + pruneIntervals 落剪时刷新），
+      // 不引用实时状态。fallback 仅在尚未绑定 session 时退化为实时值。
+      text: () => this.frozenCatalog ?? this.catalogText(20, 70),
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
@@ -884,6 +894,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     try {
       this.rebuildLedgerFromLog() // 懒触发：仅当 records 空 + 日志含事务事件时真正重建
     } catch { /* 重建失败不阻断 turn */ }
+    // 冻结 catalog 初值：session 绑定即拍一次快照，整段对话（直到下次真正落剪）复用同一文本，
+    // 使 system 块逐字节稳定、前缀缓存可命中。resume 场景也能立即反映已存在的被剪清单。
+    this.frozenCatalog = this.catalogText(20, 70)
   }
 
   setSession(session: Session): void {
@@ -2321,6 +2334,9 @@ export class ArgpGraphEngine extends CompactionEngine {
       const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
       this.lastRealPromptTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
       this.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : this.lastRealAnchorSeq
+      // 落剪成功 → 刷新冻结 catalog 快照（唯一刷新点）。system 块仅在此刻、且恰在可见上下文
+      // 已因剪枝换代之后变化一次，前缀缓存的该次失效是上下文真实变更的必然代价；其余步骤复用旧快照。
+      this.frozenCatalog = this.catalogText(20, 70)
       return {
         compactionId,
         startSeq: startEvent.seq,
