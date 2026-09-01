@@ -6,7 +6,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（1.0.0 候选，双引擎形态）：
+dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（1.0.0 双引擎形态）：
 
 - **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
 - **Stage-2 引用图剪枝（lazy，超阈值时）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现。
@@ -129,6 +129,11 @@ tool/result 替换无结构化元数据通道（B-1）、compaction/prune 游离
 - **模型依赖（如实版，见上）**：守卫保证安全，收益依赖服从率；lite 档多模型分工的服从率未实测（台账 D21）。
 - **per-atom 输出税**：Stage-1 每轮的压缩调用是 side-channel 成本（30 轮实测 completion 7.2K tokens，不进上下文但计入总成本）；dsh-llm 后端的 usage 已入 record，spike 汇总口径接入中。
 - **tombstone 两跳召回**：占位文本经多轮演化后原 seq 可能丢失，`recall_pruned(seq)` 需正确编号（B-6 落地后一并消除）。
+
+## 问题反馈
+
+- **Bug**：开 [Issue](https://github.com/yoza10635/dsh-argp/issues)。附 `dsh --version`、本包版本、profile 配置（`windowTokens`/`retainTokens` 等）与最小复现步骤，定位会快很多。
+- **设计讨论 / 使用问题**：开 [Discussion](https://github.com/yoza10635/dsh-argp/discussions)。
 
 ## License
 

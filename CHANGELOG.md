@@ -2,6 +2,20 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.0.1] - 2026-09-01（resume 投影契约修复 + 反馈通道补齐）
+
+### Fixed
+
+- **graph 剪枝违反宿主 shadow-price 严格相等契约，导致 WebUI resume 投影 throw（2026-09-01 定位）**：`pruneIntervals` 原发「一个总跨度 `compaction/prune`（shadowedRange=全区间 first..last）+ N 个逐区间 replace」，而宿主 `token-meter/surface-projection.ts foldSurfaceProjection` 要求 shadow-price 事件的范围与紧随其后的 surface replace **严格相等**，否则重放投影 throw（`"token surface: replace at seq N ... no adjacent shadow price (armed claim covers A-B)"`）。alpha.2 新增 per-turn usage 投影（dsh #3005）接入 resume 路径后该矛盾首次暴露（rc.2 同数据可正常 resume，故长期未被发现）。修复：对齐宿主官方 `compaction-tool-result-pruner` 的逐节点模式——**每区间 1 个 `compaction/prune`（shadowedRange=该单区间）+ 紧邻该区间 replace**；末尾 `compaction/summary`（总范围，off-surface）保留，其 claim 被紧随的 off-surface `compaction/end` 清掉。`rebuildLedgerFromLog` 同步改为合并事务内全部 prune（兼容旧单 prune 日志）。新增 fold 契约回归测试（复刻宿主 fold 判定，旧结构必 throw / 新结构必过）。存量脏会话日志有配套修复脚本（不改 `shadowedSeqs`，recall/账本能力保留，宿主真实 fold 函数金标准验证零 throw）。
+
+### Added
+
+- **peerDependencies 补 `@deepseek-ai/dsh-agent: 0.1.1-rc.2`**（与其余 dsh-* peer 对齐，此前漏列）。
+
+### Docs
+
+- **反馈通道补齐**：README（中/英）新增「问题反馈 / Reporting issues」节（Bug→Issue，设计讨论/使用问题→Discussion，附 dsh 版本 + 本包版本 + 最小复现指引）；`package.json` 补 `bugs.url`（npm 详情页直接挂报错入口）；CONTRIBUTING 反馈渠道改为「Bug 开 Issue，讨论开 Discussion」——修正此前「不启用 Issues」的表述（仓库 Issues 实际开启中）。
+
 ## [1.0.0] - 2026-08-29（双引擎落地版）
 
 > **发版门槛结案（2026-08-29）**：① 轮次放大判据实测 **PASS 8.57×**（溢出存活：A 臂 60/60 轮零中止 vs E 臂零压缩 T8 死亡；8K 窗预注册压测，产物 `spike/out/37-three-arm-{E,A}-2026-08-29T07-04-*`，）。② 复核三项经用户拍板（2026-08-29，DeepSeek 额度不足）改为**本地机制验证**：引擎稳态缓存零税（healthy 峰 86-87% ≡ E 对照 84.7%，三次测量两模型两窗口交叉钉死；双峰口径修正见审计脚本头注）、保真判据未受压（D 7/7）。DeepSeek/v4-flash 标定降级为 post-1.0.0 可选补充；对外措辞按三禁规则执行（数字带窗口/任务/模型三要素）。同日独立 review 两处坐实缺陷修复（见 Fixed）。

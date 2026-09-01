@@ -80,4 +80,4 @@ npm publish               # 发布 npm registry（prepublishOnly 自动跑 typec
 
 ## 反馈渠道
 
-- Bug / 建议：GitHub [Discussions](https://github.com/yoza10635/dsh-argp/discussions)（本项目不启用 Issues）
+- Bug / 建议：GitHub [Issues](https://github.com/yoza10635/dsh-argp/issues)（Bug 开 Issue；设计讨论 / 使用问题开 [Discussions](https://github.com/yoza10635/dsh-argp/discussions)）。附 `dsh --version`、本包版本与最小复现步骤。

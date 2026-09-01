@@ -130,6 +130,11 @@ No structured metadata channel for tool/result replacement (B-1), compaction/pru
 - **per-atom output tax**: Stage-1's per-turn compression call is a side-channel cost (7.2K completion tokens over 30 turns, measured; it never enters the context but counts toward total cost); usage from the dsh-llm backend is recorded, and the spike aggregation caliber is being wired up.
 - **Two-hop tombstone recall**: as placeholder text drifts across turns the original seq can be lost; `recall_pruned(seq)` needs the correct numbering (eliminated together once B-6 lands).
 
+## Reporting issues
+
+- **Bugs**: open an [Issue](https://github.com/yoza10635/dsh-argp/issues) with `dsh --version`, this package's version, your profile config (`windowTokens`/`retainTokens` etc.), and a minimal reproduction.
+- **Design discussion / usage questions**: open a [Discussion](https://github.com/yoza10635/dsh-argp/discussions).
+
 ## License
 
 MIT
