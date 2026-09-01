@@ -352,6 +352,58 @@ test('citesObligation auto: armed declarer drops argp-cites, keeps contract+cata
   }
 })
 
+// ---- argp-catalog 冻结（KV 前缀缓存保护，2026-09-01 修复）----
+// 根因：argp-catalog 是动态 section，每步 assemble() 重求值 → 单条被前缀缓存的 system 块字节变 → 整块 KV 失效。
+// 修复：catalog 只回放 frozenCatalog（bindSession 初值 + pruneIntervals 落剪时刷新），不引用实时账本。
+
+async function catalogTextOf(ctx: Context): Promise<string> {
+  const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
+  const assembly = await sp.assemble()
+  return assembly.sections.find(s => s.name === 'argp-catalog')?.text ?? ''
+}
+
+test('argp-catalog is frozen: section text does not re-evaluate live when a prune is logged', async () => {
+  const { ctx, engine } = await makeEngine({ windowTokens: 8000, retainTokens: 4000 })
+  try {
+    const session = Session.create(SessionId('frozen-catalog-live'))
+    appendUser(session, 'user anchor content')
+    appendAssistant(session, 'assistant reply', 1)
+    engine.setSession(session) // bindSession 拍初值：无剪枝 → frozenCatalog = ''
+    const before = await catalogTextOf(ctx)
+    assert.equal(before, '', 'frozen catalog must be empty before any prune')
+    // 直接往日志注入 compaction/prune 事件（不走 pruneIntervals，故不会刷新 frozenCatalog）
+    session.append('compaction/prune', { shadowedSeqs: [0] } as never)
+    // sanity：live catalogText 此刻会反映被剪节点
+    assert.ok(engine.catalogText(20, 70).length > 0, 'live catalogText must reflect the injected prune')
+    // 冻结段必须保持 bind 时的快照，不随实时账本变化（旧实现这里会跟着变 → 缓存击穿）
+    const after = await catalogTextOf(ctx)
+    assert.equal(after, before, 'argp-catalog section must stay frozen (not re-evaluated live) after a prune is logged')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('argp-catalog refreshes exactly once after a real prune', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('frozen-catalog-refresh'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    assert.equal(await catalogTextOf(ctx), '', 'no catalog before prune')
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, 'a prune should occur under pressure')
+    const after = await catalogTextOf(ctx)
+    assert.ok(after.length > 0, 'frozen catalog must refresh to reflect pruned nodes after a real prune')
+    // 再次 assemble 不应再变（无新剪枝）
+    assert.equal(await catalogTextOf(ctx), after, 'frozen catalog stays stable after the single refresh')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 test('citesObligation auto: unarmed declarer keeps argp-cites (edge sources never both zero)', async () => {
   const savedKey = process.env['DEEPSEEK_API_KEY']
   const savedSource = process.env['ARGP_MODEL_SOURCE']
