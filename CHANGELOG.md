@@ -2,6 +2,22 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.0.3] - 2026-09-01（KV 前缀缓存击穿深层修复：永久冻结 catalog）
+
+### Fixed
+
+- **1.0.2 的「冻结-on-剪枝」仍漏：agent/pre-step 每步重绑 session 致 catalog 段非剪枝轮显隐（2026-09-01 定位）**：`agent/pre-step` 每步调 `bindSession(agent.session)`，dsh 每步传入的 session 对象可能换新身份 → `if (this.session === session) return` 对象恒等守卫失效 → `bindSession` 重跑 → `frozenCatalog` 被重算成当时 `catalogText` 值（某些步返回 `''`）→ `argp-catalog` 段在**非剪枝轮**凭空消失/重现 → system 块字节变、整块 KV 丢弃（用户报「glob 后重新注入提示词」）。证据：实时会话 `session-ef109049-…` 里 5 个 `request/header` 事件 system 块变 3 次、且**全部在非剪枝步**；`compaction/prune` 全挤在 seq 16707–16721、落在两个字节完全相同的稳定请求之间 → 变化与剪枝不同步，变化文本即 `[context] Compression removed N` catalog 块。修复：**永久冻结**——`bindSession` 仅在 `frozenCatalog === null`（首次绑定）拍一次快照；`pruneIntervals` 落剪不再刷新；`argp-catalog` section fallback 为 `''`（极端 null 也恒定，不再 live 重算）。system 块全程逐字节恒定、KV 100% 命中（含真实落剪轮——剪枝那步失效本是压缩固有权衡，catalog 文本不再额外变一次）。
+
+### Verified
+
+- `npm run check` 全绿（198/198 PASS），含 2 条回归测试（catalog 永久冻结、跨真实落剪仍恒定）。
+- 端到端 spike `verify-frozen-catalog-cache.ts`：12 轮 / 4 次真实落剪 / **system 块变化 0 次 [PASS]**。
+- 多引擎审计：peratom/recall（`recall-engine.ts`、`peratom/recall-zoom.ts`）的 system section 均为静态字面量、pre-step 不碰 system；bundle 仅挂载 `ArgpGraphEngine`，`ArgpRecallEngine` 与之互斥不共存 → 无多引擎叠加 KV 威胁。
+
+### Docs
+
+- 代价说明：catalog 冻结在首次绑定时刻值（全新会话通常 `''`），inline "Compression removed N" 目录不再显示；`recall_pruned` / `list_pruned` 仍扫原始日志、发现能力不丢。
+
 ## [1.0.2] - 2026-09-01（KV 前缀缓存击穿修复）
 
 ### Fixed
