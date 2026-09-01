@@ -708,10 +708,11 @@ export class ArgpGraphEngine extends CompactionEngine {
     ctx.systemPrompt.section({
       name: 'argp-catalog',
       order: 9999,
-      // 冻结快照：catalog 是动态内容，若每步重新求值会随被剪集合变化而改动 system 块、
-      // 打穿前缀缓存。故只回放 frozenCatalog（bindSession 初值 + pruneIntervals 落剪时刷新），
-      // 不引用实时状态。fallback 仅在尚未绑定 session 时退化为实时值。
-      text: () => this.frozenCatalog ?? this.catalogText(20, 70),
+      // 永久冻结快照：catalog 只在首次 bindSession 拍一次（见 bindSession / pruneIntervals 注释），
+      // 之后全程回放 frozenCatalog，绝不引用实时状态——否则每步重求值会改 system 块、打穿前缀缓存。
+      // fallback 用空串而非 catalogText：即便极端情况下 frozenCatalog 为 null，也返回空而非 live 重算，
+      // 保证 system 块恒定。
+      text: () => this.frozenCatalog ?? '',
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
@@ -894,9 +895,13 @@ export class ArgpGraphEngine extends CompactionEngine {
     try {
       this.rebuildLedgerFromLog() // 懒触发：仅当 records 空 + 日志含事务事件时真正重建
     } catch { /* 重建失败不阻断 turn */ }
-    // 冻结 catalog 初值：session 绑定即拍一次快照，整段对话（直到下次真正落剪）复用同一文本，
-    // 使 system 块逐字节稳定、前缀缓存可命中。resume 场景也能立即反映已存在的被剪清单。
-    this.frozenCatalog = this.catalogText(20, 70)
+    // 永久冻结 catalog：仅在首次绑定（frozenCatalog 仍为 null）时拍一次快照。
+    // 后续任何重绑（agent/pre-step 每步传来的 session 对象可能换新身份，见 line 870）或落剪
+    // 都不再改写 —— 这是 1.0.2 仍漏的 bug：session 对象换位时 bindSession 重跑会把
+    // frozenCatalog 重算成当时 catalogText 值（有时返回 ''），导致 catalog 段在非剪枝步骤
+    // 凭空消失/重现、打穿前缀缓存。现改为"只冻一次"，system 块全程逐字节恒定、KV 100% 命中。
+    // 代价：catalog 文本停在首绑时刻（recall_pruned / list_pruned 仍扫原始日志，发现能力不丢）。
+    if (this.frozenCatalog === null) this.frozenCatalog = this.catalogText(20, 70)
   }
 
   setSession(session: Session): void {
@@ -2334,9 +2339,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
       this.lastRealPromptTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
       this.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : this.lastRealAnchorSeq
-      // 落剪成功 → 刷新冻结 catalog 快照（唯一刷新点）。system 块仅在此刻、且恰在可见上下文
-      // 已因剪枝换代之后变化一次，前缀缓存的该次失效是上下文真实变更的必然代价；其余步骤复用旧快照。
-      this.frozenCatalog = this.catalogText(20, 70)
+      // 永久冻结：落剪不再刷新 frozenCatalog（见 bindSession 注释）。剪枝本身已让可见上下文换代，
+      // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。
       return {
         compactionId,
         startSeq: startEvent.seq,

@@ -354,7 +354,8 @@ test('citesObligation auto: armed declarer drops argp-cites, keeps contract+cata
 
 // ---- argp-catalog 冻结（KV 前缀缓存保护，2026-09-01 修复）----
 // 根因：argp-catalog 是动态 section，每步 assemble() 重求值 → 单条被前缀缓存的 system 块字节变 → 整块 KV 失效。
-// 修复：catalog 只回放 frozenCatalog（bindSession 初值 + pruneIntervals 落剪时刷新），不引用实时账本。
+// 修复：catalog 永久冻结——只在首次 bindSession 拍一次快照，之后重绑/落剪都不再改写，
+// system 块全程逐字节恒定、前缀缓存 100% 命中。
 
 async function catalogTextOf(ctx: Context): Promise<string> {
   const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
@@ -383,7 +384,7 @@ test('argp-catalog is frozen: section text does not re-evaluate live when a prun
   }
 })
 
-test('argp-catalog refreshes exactly once after a real prune', async () => {
+test('argp-catalog stays frozen across a real prune (permanent freeze, no KV invalidation)', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('frozen-catalog-refresh'))
@@ -392,13 +393,16 @@ test('argp-catalog refreshes exactly once after a real prune', async () => {
     appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
     engine.setSession(session)
-    assert.equal(await catalogTextOf(ctx), '', 'no catalog before prune')
+    const before = await catalogTextOf(ctx)
+    assert.equal(before, '', 'no catalog before prune (frozen empty at first bind)')
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null, 'a prune should occur under pressure')
     const after = await catalogTextOf(ctx)
-    assert.ok(after.length > 0, 'frozen catalog must refresh to reflect pruned nodes after a real prune')
-    // 再次 assemble 不应再变（无新剪枝）
-    assert.equal(await catalogTextOf(ctx), after, 'frozen catalog stays stable after the single refresh')
+    // 永久冻结：即便真实落剪，catalog 段也绝不改写（system 块字节恒定，前缀缓存不失效）。
+    // 旧实现（每步 bindSession 重冻 / pruneIntervals 刷新）会在此让 catalog 凭空变化 → 缓存击穿。
+    assert.equal(after, before, 'argp-catalog section must stay frozen (unchanged) even after a real prune')
+    // 再次 assemble 仍稳定
+    assert.equal(await catalogTextOf(ctx), after, 'frozen catalog stays stable after the prune')
   } finally {
     await ctx.fiber.dispose()
   }

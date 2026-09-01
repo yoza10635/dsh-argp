@@ -71,11 +71,12 @@ for (let turn = 1; turn <= TURNS; turn += 1) {
   )
 }
 
-// 断言：system 块变化的轮数 == 真正落剪的轮数（即只在剪枝时变，其余稳定）
-const ok = changes === pruneSteps
+// 断言（永久冻结）：system 块在任何轮都不许变化（含真实落剪轮）——这是 KV 前缀缓存
+// 100% 保住的充分条件。changes 应为 0。
+const ok = changes === 0
 console.log('-----+---------+--------+-------------+-------------')
 console.log(`prune steps=${pruneSteps}  block changes=${changes}`)
 console.log(ok
-  ? '[PASS] system block changes ONLY on prune steps (byte-stable across non-prune turns → prefix cache survives)'
-  : '[FAIL] system block changed on a turn with no prune (spurious cache invalidation)')
+  ? '[PASS] system block is byte-stable across ALL turns (incl. real prunes) → prefix cache survives end-to-end'
+  : '[FAIL] system block changed on some turn (cache invalidation)')
 if (!ok) process.exit(1)
