@@ -706,7 +706,60 @@ test('production-like: repeated synthetic pruning yields multiple transactions w
       assert.ok(engine.records.every(r => r.prunedAtoms.every(a => a.type !== 'U')))
     }
     const pruneEvents = [...session.events].filter(e => e.type === 'compaction/prune')
-    assert.equal(pruneEvents.length, engine.records.length)
+    // 2026-09-01：pruneIntervals 改为逐区间发 prune（每区间一个 shadow-price 事件，对齐宿主
+    // foldSurfaceProjection 严格相等契约）。每事务 prune 数 = 该事务 intervals 数，
+    // 总 prune 数 = 各事务 intervals 之和（单区间事务仍为 1）。
+    const totalIntervals = engine.records.reduce((sum, r) => sum + r.intervals.length, 0)
+    assert.equal(pruneEvents.length, totalIntervals)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// 回归守护（2026-09-01）：宿主 token-meter foldSurfaceProjection 要求每个 compaction/prune|summary
+// armed 的 shadow-price claim 与紧随其后的 surface replace 范围严格相等，否则重放 throw
+// （resume 报 "no adjacent shadow price"）。本测试 inline 复刻该 fold，对 ARGP 剪枝后的真实事件流
+// 逐事件重放，断言零矛盾——旧"单总 claim + 逐区间 replace"结构必 throw，逐区间成对结构必通过。
+test('regression: prune event stream survives host foldSurfaceProjection replay (strict range contract)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('fold-contract-test'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, 'must have pruned at least one interval')
+    // 复刻 packages/llm/token-meter/src/surface-projection.ts foldSurfaceProjection 的判定路径：
+    //   compaction/prune|summary → arm claim(shadowedRange)；
+    //   非 surface 事件 → 清 claim；
+    //   surface append → 清 claim；
+    //   surface replace → claim 存在且范围 ≠ replace 范围 → throw（此处记矛盾）
+    type Claim = { start: number; end: number; at: number; kind: string }
+    const SURFACE = new Set(['user/message', 'assistant/message', 'tool/result'])
+    let claim: Claim | undefined
+    const contradictions: string[] = []
+    for (const e of session.events) {
+      if (e.type === 'compaction/summary' || e.type === 'compaction/prune') {
+        const d = e.data as { shadowedRange?: { start?: number; end?: number } }
+        if (d.shadowedRange?.start !== undefined && d.shadowedRange?.end !== undefined) {
+          claim = { start: d.shadowedRange.start, end: d.shadowedRange.end, at: e.seq, kind: e.type }
+        }
+        continue
+      }
+      const so = (e as { surfaceOp?: { op?: string; start?: number; end?: number } }).surfaceOp
+      if (!so || !SURFACE.has(e.type)) { claim = undefined; continue }
+      if (so.op === 'append') { claim = undefined; continue }
+      if (so.op === 'replace' && claim !== undefined) {
+        if (claim.start !== so.start || claim.end !== so.end) {
+          contradictions.push('replace ' + so.start + '-' + so.end + ' @seq=' + e.seq
+            + ' vs ' + claim.kind + '@' + claim.at + ' covers ' + claim.start + '-' + claim.end)
+        }
+        claim = undefined
+      }
+    }
+    assert.deepEqual(contradictions, [], 'no shadow-price claim/replace range mismatch (host resume would throw)')
   } finally {
     await ctx.fiber.dispose()
   }
