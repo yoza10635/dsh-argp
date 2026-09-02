@@ -11,7 +11,23 @@
  * 并携带状态标签（shadowed / live / off-surface），使模型知道取回的内容当前是否可见
  * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
  */
-import type { Session } from '@deepseek-ai/dsh-session';
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+/**
+ * 跨宿主版本兼容的事件日志读取（P1 → 1.0.2 升级阻断修复）。
+ *
+ * dsh 0.1.2-alpha.4 的 breaking 重构 `27bf1039db refactor(session)!: distinguish
+ * event seqs from log offsets` 移除了 `Session.events` getter（运行时 `undefined`），
+ * 替代为 `snapshotEvents()`（frozen 全日志快照）/ `eventAt(seq)`。rc.2 仍有 `events`
+ * getter。为同时兼容两个宿主，本 helper 运行时探测：
+ *
+ *   - 宿主 Session 提供 `snapshotEvents`（alpha.4+）→ 调 `snapshotEvents()`
+ *   - 否则回退到 legacy `session.events`（rc.2）
+ *
+ * 两个路径都返回 frozen 数组，语义完全一致（不可变、与后续 append 解耦）。
+ * 本 helper 是 ARGP 全代码库唯一允许直接触碰"事件日志"的入口——任何新增
+ * `session.events[...]` / `for ... of session.events` 都视为违规。
+ */
+export declare function sessionEvents(session: Session): readonly SessionEvent[];
 /**
  * 节点相对可见上下文的状态：
  *  - `shadowed`：已被 surfaceOp replace 遮蔽（ARGP 剪枝产物），确定不在可见上下文里。

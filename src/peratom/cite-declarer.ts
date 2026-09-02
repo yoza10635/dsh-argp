@@ -34,6 +34,7 @@ import {
   userIsLong,
 } from './gate.js'
 import type { GateAtom } from './gate.js'
+import { sessionEvents } from '../log-access.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import type { DshLlmSpec } from './llm-adapter.js'
@@ -336,7 +337,7 @@ function capPromptText(text: string): string {
  * user/message 无 turn 字段（rc.2）→ 归属当前开放 turn；assistant/tool 自带 turn。
  */
 export function collectDeclAtoms(session: Session, windowTurns: number, splitThresholdChars: number): DeclCollect | null {
-  const events = session.events
+  const events = sessionEvents(session)
   let closed: number | null = null
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i]
@@ -478,7 +479,7 @@ export class CiteDeclarer {
       this.records.push(record)
       return record // 中断轮：半成品原子不进引用声明（宁全勿漏）
     }
-    if (!turnCompressible(collect.gateAtoms, buildVersionChainIndex(session.events))) {
+    if (!turnCompressible(collect.gateAtoms, buildVersionChainIndex(sessionEvents(session)))) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'gate-skipped' }
       this.records.push(record)
       return record // 孤立原子规则：纯 dialog / 全版本链 / 全小结果 → 零调用、零建边

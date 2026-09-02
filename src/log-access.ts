@@ -11,8 +11,31 @@
  * 并携带状态标签（shadowed / live / off-surface），使模型知道取回的内容当前是否可见
  * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
  */
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { isArgpUserInfo } from './peratom/types.js'
+
+/**
+ * 跨宿主版本兼容的事件日志读取（P1 → 1.0.2 升级阻断修复）。
+ *
+ * dsh 0.1.2-alpha.4 的 breaking 重构 `27bf1039db refactor(session)!: distinguish
+ * event seqs from log offsets` 移除了 `Session.events` getter（运行时 `undefined`），
+ * 替代为 `snapshotEvents()`（frozen 全日志快照）/ `eventAt(seq)`。rc.2 仍有 `events`
+ * getter。为同时兼容两个宿主，本 helper 运行时探测：
+ *
+ *   - 宿主 Session 提供 `snapshotEvents`（alpha.4+）→ 调 `snapshotEvents()`
+ *   - 否则回退到 legacy `session.events`（rc.2）
+ *
+ * 两个路径都返回 frozen 数组，语义完全一致（不可变、与后续 append 解耦）。
+ * 本 helper 是 ARGP 全代码库唯一允许直接触碰"事件日志"的入口——任何新增
+ * `session.events[...]` / `for ... of session.events` 都视为违规。
+ */
+export function sessionEvents(session: Session): readonly SessionEvent[] {
+  const modern = (session as unknown as { snapshotEvents?: () => readonly SessionEvent[] }).snapshotEvents
+  if (typeof modern === 'function') return modern.call(session)
+  const legacy = (session as unknown as { events?: readonly SessionEvent[] }).events
+  if (legacy !== undefined) return legacy
+  throw new Error('dsh-argp: session exposes neither events nor snapshotEvents; check dsh version compatibility')
+}
 
 /**
  * 节点相对可见上下文的状态：
@@ -35,7 +58,7 @@ export type NodeState = 'shadowed' | 'live' | 'off-surface'
  */
 export function scanShadowedSeqs(session: Session): Set<number> {
   const shadowed = new Set<number>()
-  for (const event of session.events) {
+  for (const event of sessionEvents(session)) {
     if (event.type !== 'compaction/prune') continue
     const seqs = (event.data as { shadowedSeqs?: number[] }).shadowedSeqs
     if (Array.isArray(seqs)) {
@@ -69,8 +92,8 @@ export function recallFromLog(
   isShadowed: (seq: number) => boolean,
   textOf: (session: Session, seq: number) => string,
 ): RecallOutcome {
-  const total = session.events.length
-  if (!Number.isInteger(seq) || seq < 0 || seq >= total || session.events[seq] === undefined) {
+  const total = session.seq
+  if (!Number.isInteger(seq) || seq < 0 || seq >= total || sessionEvents(session)[seq] === undefined) {
     return { ok: false, reason: 'out-of-range', total }
   }
   const state = nodeStateOf(session, seq, isShadowed)
@@ -154,14 +177,15 @@ export function queryLogRange(
   isShadowed: (seq: number) => boolean,
   textOf: (session: Session, seq: number) => string,
 ): LogRangeResult {
-  const total = session.events.length
+  const total = session.seq
+  const events = sessionEvents(session)
   const from = Math.max(0, Math.min(query.fromSeq, total - 1))
   const to = Math.max(from, Math.min(query.toSeq, total - 1))
   const rows: LogRow[] = []
   let scanned = 0
   let truncated = false
   for (let seq = from; seq <= to; seq += 1) {
-    const event = session.events[seq]
+    const event = events[seq]
     if (event === undefined) continue
     scanned += 1
     const data = event.data as Record<string, unknown> | undefined

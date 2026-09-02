@@ -49,7 +49,7 @@ export class ArgpProbeEngine extends CompactionEngine {
     _signal: AbortSignal,
   ): Promise<CompactionResult | null> {
     const surfaceNodes = agent.session.surface.nodes.length
-    const eventCount = agent.session.events.length
+    const eventCount = agent.session.seq
     this.calls.push({ at: new Date().toISOString(), method: 'compactIfNeeded', trigger, surfaceNodes, eventCount })
     this.ctx.logger.info(
       `[argp-probe] compactIfNeeded trigger=${trigger} surfaceNodes=${surfaceNodes} events=${eventCount}`,
@@ -65,7 +65,7 @@ export class ArgpProbeEngine extends CompactionEngine {
       at: new Date().toISOString(),
       method: 'compactNow',
       surfaceNodes: agent.session.surface.nodes.length,
-      eventCount: agent.session.events.length,
+      eventCount: agent.session.seq,
     })
     this.ctx.logger.info('[argp-probe] compactNow invoked (no-op in spike 1)')
     return null

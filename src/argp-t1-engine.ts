@@ -32,7 +32,7 @@ import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { formatRecallOutcome, recallFromLog } from './log-access.js'
+import { formatRecallOutcome, recallFromLog, sessionEvents } from './log-access.js'
 import type { NodeState } from './log-access.js'
 
 export interface ArgpT1Config {
@@ -67,7 +67,7 @@ export interface PruneRecord {
 /** 收集当前日志里全部被遮蔽的 surface seq（replace 事件 sourceEventSeqs 的并集）。 */
 function shadowedSeqs(session: Session): Set<number> {
   const shadowed = new Set<number>()
-  for (const event of session.events) {
+  for (const event of sessionEvents(session)) {
     const op = (event as { surfaceOp?: unknown }).surfaceOp
     if (op !== undefined && op !== 'append') {
       for (const seq of (event as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []) {
@@ -80,7 +80,7 @@ function shadowedSeqs(session: Session): Set<number> {
 
 /** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 块不算）。 */
 function eventText(session: Session, seq: number): string {
-  const event = session.events[seq]
+  const event = sessionEvents(session)[seq]
   if (event === undefined) return ''
   const message = deriveEventMessage(event)
   if (message === null) return ''
@@ -110,8 +110,9 @@ function visibleChars(session: Session): number {
 
 /** 日志尾部的 open turn（pre-step 时刻用于 compaction 括号的 owner）。 */
 function detectOpenTurn(session: Session): number | null {
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const event = session.events[index]
+  const events = sessionEvents(session)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
     if (event === undefined) continue
     if (event.type === 'turn/start') return (event.data as { turn: number }).turn
     if (event.type === 'turn/end') return null
@@ -262,8 +263,9 @@ export class ArgpT1Engine extends CompactionEngine {
     const candidates = seqs.slice(0, Math.max(0, seqs.length - this.recencyGuard))
     let span: number[] = []
     let spanChars = 0
+    const events = sessionEvents(session)
     for (const seq of candidates) {
-      const event = session.events[seq]
+      const event = events[seq]
       if (event === undefined || event.type === 'user/message') {
         // 小 span 跳过而非终止：避免微节点挡住后面大 span（确定性不变）
         if (span.length > 0 && spanChars >= this.minSpanChars) return span

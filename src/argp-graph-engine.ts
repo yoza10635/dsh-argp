@@ -23,7 +23,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, stateHeader } from './log-access.js'
+import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
@@ -232,7 +232,7 @@ export interface GraphPruneRecord {
 
 /** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。 */
 export function eventText(session: Session, seq: number): string {
-  const event = session.events[seq]
+  const event = sessionEvents(session)[seq]
   if (event === undefined) return ''
   const data = event.data as Record<string, unknown> | undefined
   const parts: string[] = []
@@ -538,7 +538,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (this.recallCallsThisTurn >= 3) return 'recall_pruned: per-turn budget exceeded (3 calls)'
         this.recallCallsThisTurn += 1
         // P1 修复 (b)：不再用 shadowedSeqsOf 门控。数据路径本来就是全日志级的
-        // （eventText 直接索引 session.events[seq]），只有越界才算失败；返回值带状态标签，
+        // （eventText 直接索引 sessionEvents(session)[seq]），只有越界才算失败；返回值带状态标签，
         // 使掉出可见上下文但未被 ARGP 替换的节点（适配器窗口丢弃 / 从不进 surface）也可召回。
         const shadowed = this.shadowedSeqsOf(this.session)
         const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
@@ -556,7 +556,7 @@ export class ArgpGraphEngine extends CompactionEngine {
               + '\n[version-chain redirect: seq ' + seq + ' was superseded by newer version seq ' + redirect + ' of the same path; returning the latest]\n'
               + this.budgetRecallText(latestOutcome.text)
             this.recallSourceSeq = seq
-            this.recallResultSeq = this.session.events.length
+            this.recallResultSeq = this.session.seq
             return result
           }
         }
@@ -564,7 +564,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
         // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
         this.recallSourceSeq = seq
-        this.recallResultSeq = this.session.events.length
+        this.recallResultSeq = this.session.seq
         return result
       },
     })
@@ -599,7 +599,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         // P1 修复 (b) 的另一半：区间模式 = 发现原语。去门控只解决"知道 seq 就能取"，
         // 掉出渲染窗口的 live 节点没有 tombstone 也不带 seq，模型需要能按区间查全日志补集。
         if (filters.fromSeq !== undefined || filters.toSeq !== undefined) {
-          const total = this.session.events.length
+          const total = this.session.seq
           const limit = Math.max(1, Math.min(200, filters.limit ?? 50))
           const range = queryLogRange(this.session, {
             fromSeq: filters.fromSeq ?? 0,
@@ -630,7 +630,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         const lines: string[] = []
         const seqs = [...shadowed].sort((a, b) => a - b)
         for (const seq of seqs) {
-          const event = this.session.events[seq]
+          const event = sessionEvents(this.session)[seq]
           if (event === undefined) continue
           const data = event.data as Record<string, unknown> | undefined
           const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
@@ -917,7 +917,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     let usedChars = 0
     for (const seq of shadowed) {
       if (entries.length >= maxItems) break
-      const event = this.session.events[seq]
+      const event = sessionEvents(this.session)[seq]
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
       let type: AtomType
@@ -952,7 +952,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     interface Hit { seq: number; score: number; text: string; type: AtomType; turn: number }
     const hits: Hit[] = []
     for (const seq of shadowed) {
-      const event = this.session.events[seq]
+      const event = sessionEvents(this.session)[seq]
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
       const text = eventText(this.session, seq)
@@ -988,8 +988,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.shadowedSet = new Set()
       this.shadowedScanned = 0
     }
-    for (let index = this.shadowedScanned; index < session.events.length; index += 1) {
-      const event = session.events[index]
+    for (let index = this.shadowedScanned; index < session.seq; index += 1) {
+      const event = sessionEvents(session)[index]
       if (event === undefined) continue
       // 权威剪枝账本：只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，
       // 且 shadowedSeqs 即被剪 surface seq 的权威清单）。不再靠「replace 形态推断」：
@@ -1009,7 +1009,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
       }
     }
-    this.shadowedScanned = session.events.length
+    this.shadowedScanned = session.seq
     return this.shadowedSet
   }
 
@@ -1050,7 +1050,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   atomize(session: Session): Atom[] {
     const atoms: Atom[] = []
     for (const seq of session.surface.nodes) {
-      const event = session.events[seq]
+      const event = sessionEvents(session)[seq]
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
       const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
@@ -1374,7 +1374,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       // A3 N1 fix：R 去重键 = issuer A 的 tool name + arguments JSON（callId 缺失时退化为 r.text）
       const issuer = r.toolCallIds[0] !== undefined ? issuerByCall.get(r.toolCallIds[0]) : undefined
       if (issuer === undefined) return 'text|' + r.text.trim()
-      const issuerEvent = this.session?.events[issuer.seq]
+      const issuerEvent = this.session === null ? undefined : sessionEvents(this.session)[issuer.seq]
       const content = (issuerEvent?.data as { message?: { content?: unknown[] } } | undefined)
         ?.message?.content as Array<{ type?: string; id?: string; name?: string; arguments?: unknown }> | undefined
       const tc = content?.find(b => b.type === 'tool-call' && b.id === r.toolCallIds[0])
@@ -1451,7 +1451,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   latestTurnOf(session: Session): number {
     let max = 0
     for (const seq of session.surface.nodes) {
-      const event = session.events[seq]
+      const event = sessionEvents(session)[seq]
       if (event === undefined) continue
       const data = event.data as Record<string, unknown> | undefined
       if (this.turnBasis === 'semantic' && event.type === 'user/message'
@@ -2256,7 +2256,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         const ts = resolvedTombstones[i]
         if (ts !== undefined && ts.type === 'tool' && iv.seqs.length === 1) {
           // tool 占位墓碑：克隆原 R data，只改 tool-result block 的 inner text
-          const origEvent = session.events[ts.seq] as { data?: Record<string, unknown> } | undefined
+          const origEvent = sessionEvents(session)[ts.seq] as { data?: Record<string, unknown> } | undefined
           const origData = origEvent?.data
           const origMsg = origData?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
           const origBlock = origMsg?.content?.[0]
@@ -2371,7 +2371,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   rebuildLedgerFromLog(): void {
     if (this.session === null) return
-    const events = this.session.events
+    const events = sessionEvents(this.session)
     const starts: { seq: number; compactionId: string; lifecycle: Record<string, unknown> }[] = []
     const prunes: { seq: number; start: number; end: number; shadowedSeqs: number[]; shadowedTokenCount: number }[] = []
     const ends = new Set<number>()
@@ -2397,7 +2397,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 事件类型反查（问题 8）：从日志真实事件反推原子类型/轮次，不再一律占位 'A'/turn 0。
     // 分类口径与 atomize 一致：统一走 classifyUserMessage（先 data[argp].info → U，再 plugin 源 → X）。
     const typeOfSeq = (seq: number): AtomType => {
-      const event = this.session?.events[seq]
+      const event = this.session === null ? undefined : sessionEvents(this.session)[seq]
       if (event === undefined) return 'X'
       if (event.type === 'user/message') return classifyUserMessage(event.data)
       if (event.type === 'assistant/message') return 'A'
@@ -2405,7 +2405,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       return 'X'
     }
     const turnOfSeq = (seq: number): number => {
-      const event = this.session?.events[seq]
+      const event = this.session === null ? undefined : sessionEvents(this.session)[seq]
       const turn = (event?.data as { turn?: unknown } | undefined)?.turn
       return typeof turn === 'number' ? turn : 0
     }
@@ -2472,8 +2472,8 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 日志尾部的 open turn（pre-step 时刻用于 compaction 括号的 owner）。 */
   private detectOpenTurn(session: Session): number | null {
-    for (let index = session.events.length - 1; index >= 0; index -= 1) {
-      const event = session.events[index]
+    for (let index = session.seq - 1; index >= 0; index -= 1) {
+      const event = sessionEvents(session)[index]
       if (event === undefined) continue
       if (event.type === 'turn/start') return (event.data as { turn: number }).turn
       if (event.type === 'turn/end') return null

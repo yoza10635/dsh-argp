@@ -28,6 +28,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { compactCheckpointSource, CompactionId } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { sessionEvents } from '../log-access.js'
 import { ARG_NS, SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import type { DshLlmSpec } from './llm-adapter.js'
@@ -594,8 +595,9 @@ interface PendingEntry {
 
 /** 日志尾部的 open turn（flush 时刻 compaction 括号的 owner；null=standalone）。 */
 function detectOpenTurn(session: Session): number | null {
-  for (let index = session.events.length - 1; index >= 0; index -= 1) {
-    const event = session.events[index]
+  const events = sessionEvents(session)
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
     if (event === undefined) continue
     if (event.type === 'turn/start') return (event.data as { turn: number }).turn
     if (event.type === 'turn/end') return null
@@ -702,7 +704,7 @@ export class PeratomCompressor {
    * 无再压缩路径：U-info 副本 / plugin checkpoint 一律跳过（决策⑦）。
    */
   collectCurrentTurn(session: Session): CurrentTurnCollect | null {
-    const events = session.events
+    const events = sessionEvents(session)
     let closed: number | null = null
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i]
@@ -741,7 +743,7 @@ export class PeratomCompressor {
    * 不会出现在中断集里。无 turn/start（会话头）返回 null。
    */
   collectOpenTurn(session: Session): CurrentTurnCollect | null {
-    const events = session.events
+    const events = sessionEvents(session)
     let openSeq = -1
     let openTurn: number | null = null
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -779,7 +781,7 @@ export class PeratomCompressor {
     startSeq: number,
     endSeq: number,
   ): CurrentTurnCollect | null {
-    const events = session.events
+    const events = sessionEvents(session)
     if (endSeq < 0) return null
 
     const interrupted = collectInterruptedTurns(events).has(turn)
@@ -840,7 +842,7 @@ export class PeratomCompressor {
     if (done.has(collect.turn)) return null // 防重复 turn 处理
     done.add(collect.turn)
 
-    const chain = buildVersionChainIndex(session.events)
+    const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
       this.records.push(record)
@@ -895,7 +897,7 @@ export class PeratomCompressor {
     this.doneTurns.set(session, done)
     if (done.has(collect.turn)) return null
     done.add(collect.turn)
-    const chain = buildVersionChainIndex(session.events)
+    const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
       this.records.push(record)
@@ -973,7 +975,7 @@ export class PeratomCompressor {
   // -- 事务括号发射（仿 t1：start..end，双事件/多事件发射，断言内联）-------
 
   private flushEntry(session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord): void {
-    const plan = planReplacements(collect, decision, session.events)
+    const plan = planReplacements(collect, decision, sessionEvents(session))
     if (plan.steps.length === 0) {
       // 全部动作被拒（保真守卫/回退）或零动作：不开空事务，但统计直接落账到本次记录。
       record.skippedFallbackDialog = plan.skippedFallbackDialog

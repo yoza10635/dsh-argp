@@ -44,7 +44,7 @@ function buildSession(): Session {
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'COOKIE-FACT: it was the dog.' }] }),
   }, { surfaceOp: 'append' })
-  const a1 = session.events.length - 1 // seq 2：assistant/message A1
+  const a1 = session.seq - 1 // seq 2：assistant/message A1
   // 权威剪枝事务：compaction/prune 携带 shadowedSeqs（shadowedSeqsOf 的唯一账本来源）
   session.append('compaction/prune', { shadowedRange: { start: a1, end: a1 }, shadowedSeqs: [a1], shadowedTokenCount: 10 })
   session.append('user/message', createUserMessage({

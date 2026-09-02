@@ -13,7 +13,7 @@ import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { Context } from '@deepseek-ai/cordis'
-import { formatRecallOutcome, recallFromLog } from './log-access.js'
+import { formatRecallOutcome, recallFromLog, sessionEvents } from './log-access.js'
 import type { NodeState } from './log-access.js'
 
 export interface RecallHandle {
@@ -26,7 +26,7 @@ export interface RecallHandle {
 /** 收集当前日志里全部被遮蔽的 surface seq（replace 事件 sourceEventSeqs 的并集）。 */
 function shadowedSeqs(session: Session): Set<number> {
   const shadowed = new Set<number>()
-  for (const event of session.events) {
+  for (const event of sessionEvents(session)) {
     const op = (event as { surfaceOp?: unknown }).surfaceOp
     if (op !== undefined && op !== 'append') {
       for (const seq of (event as { sourceEventSeqs?: number[] }).sourceEventSeqs ?? []) {
@@ -39,7 +39,7 @@ function shadowedSeqs(session: Session): Set<number> {
 
 /** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text）。 */
 function eventText(session: Session, seq: number): string {
-  const event = session.events[seq]
+  const event = sessionEvents(session)[seq]
   if (event === undefined) return ''
   const message = deriveEventMessage(event)
   if (message === null) return ''

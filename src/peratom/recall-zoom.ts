@@ -29,7 +29,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { eventText } from '../argp-graph-engine.js'
-import { formatRecallOutcome, recallFromLog, scanShadowedSeqs, stateHeader } from '../log-access.js'
+import { formatRecallOutcome, recallFromLog, scanShadowedSeqs, sessionEvents, stateHeader } from '../log-access.js'
 import type { NodeState } from '../log-access.js'
 import { ARG_NS } from './types.js'
 import type { ArgpUserMeta } from './types.js'
@@ -90,7 +90,7 @@ export interface RecallZoomConfig {
  * 无正文返回 null。
  */
 export function resolveSummaryText(session: Session, seq: number): SummaryResolution | null {
-  const event = session.events[seq]
+  const event = sessionEvents(session)[seq]
   if (event === undefined) return null
 
   // 1) 该事件自身携带存储 summary（U-info 副本本身被直接引用）
@@ -98,9 +98,10 @@ export function resolveSummaryText(session: Session, seq: number): SummaryResolu
   if (own !== null) return own
 
   // 2) 找引用此 seq 的压缩副本（自新到旧；U-info 副本优先其存储 summary）
-  for (let i = session.events.length - 1; i >= 0; i -= 1) {
+  const events = sessionEvents(session)
+  for (let i = events.length - 1; i >= 0; i -= 1) {
     if (i === seq) continue
-    const copy = session.events[i]
+    const copy = events[i]
     if (copy === undefined) continue
     const srcs = (copy as { sourceEventSeqs?: number[] }).sourceEventSeqs
     if (srcs === undefined || !srcs.includes(seq)) continue
@@ -118,7 +119,7 @@ export function resolveSummaryText(session: Session, seq: number): SummaryResolu
 
 /** 读某事件的 `data[ARG_NS].summary`；缺失 / 空串返回 null。 */
 function summaryOfEvent(session: Session, seq: number): SummaryResolution | null {
-  const event = session.events[seq]
+  const event = sessionEvents(session)[seq]
   if (event === undefined) return null
   const meta = (event.data as Record<string, unknown> | undefined)?.[ARG_NS] as ArgpUserMeta | undefined
   if (meta?.summary !== undefined && meta.summary !== '') return { text: meta.summary, source: 'stored' }
