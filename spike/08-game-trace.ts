@@ -25,7 +25,7 @@
  *   ARGP_WINDOW_TOKENS（默认 80000）/ ARGP_RETAIN_TOKENS（默认 16000）
  *   ARGP_CONTEXT_WINDOW（默认 200000）/ ARGP_MAX_TURNS（默认 10）
  *   ARGP_DEEPSEEK_THINKING=enabled 时 reasoning=high（观察 cites 档位效应）
- *   ARGP_GAME_HTML（game.html 源路径，默认 C:/Users/LDH/Desktop/game.html）
+ *   ARGP_GAME_HTML（game.html 源路径，必填；未设置则报错退出——实验素材为本机私有文件）
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -48,7 +48,12 @@ const retainTokens = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 16_000)
 const maxPasses = Number(process.env['ARGP_MAX_PASSES'] ?? 256)
 const contextWindow = Number(process.env['ARGP_CONTEXT_WINDOW'] ?? 200_000)
 const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 10)
-const GAME_HTML_SOURCE = process.env['ARGP_GAME_HTML'] ?? 'C:/Users/LDH/Desktop/game.html'
+// game.html 为本机私有实验素材，不设个人路径默认值；缺 env 直接报错退出。
+const GAME_HTML_SOURCE = process.env['ARGP_GAME_HTML']
+if (!GAME_HTML_SOURCE) {
+  console.error('[FATAL] 缺少 ARGP_GAME_HTML（game.html 源路径）——实验素材为本机私有文件，请设置 env 后重跑')
+  process.exit(2)
+}
 
 const watchdog = setTimeout(() => {
   console.log('[FATAL] spike 8 watchdog timeout (150 min)')

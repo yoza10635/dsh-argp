@@ -2,7 +2,7 @@
  * 双引擎生产挂载工厂（P4）：把三条 per-atom 管线与 Stage-2 图引擎组装为一个
  * 声明式可挂载的整体，作为 `ctx.compaction` 位的 compaction 插件入口。
  *
- * 装配拓扑（与 docs/per-atom-implementation-plan.md §0 一致）：
+ * 装配拓扑（与 per-atom-implementation-plan.md §0 一致（已迁出公开仓库））：
  *   PeratomCompressor（普通 cordis 服务，idle 触发）────┐
  *   CiteDeclarer（普通 cordis 服务，idle 触发）──┐      │
  *   RecallZoom（普通 cordis 服务，注册工具）    │      │

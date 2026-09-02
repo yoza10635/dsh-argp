@@ -1,7 +1,7 @@
 /**
  * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
  *
- * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 docs/design-vs-impl-trace.md）：
+ * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 design-vs-impl-trace.md（已迁出公开仓库））：
  *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
  *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
  *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
@@ -1955,7 +1955,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (candidateGroups.length === 0) {
         // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原 tryPruneClosures
         // 的 return 把正常候选 + 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），
-        // 25 次压缩剪除率 0-2%（"压缩饿死"，见 docs/engine-fix-2026-08-22-compaction-starvation.md）。
+        // 25 次压缩剪除率 0-2%（"压缩饿死"，见 engine-fix-2026-08-22-compaction-starvation.md（已迁出公开仓库））。
         // fail 保持设计语义（§5.9/§5.11：资源用尽/超窗 → 报警终止，全有或全无、不产出）。
         // lifecycle（默认）：闭包生命周期（选择并入 pruned，含 root U 退休，排除已剪）→
         // summarize（默认关，独立事务）→ force_prune（忽略入度，剪到达标为止）；

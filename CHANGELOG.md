@@ -100,7 +100,7 @@
 ## [0.3.0] - 2026-08-20
 
 ### Added
-- **assessment-v2 A 轨实现（docs/assessment-v2.md §4，12 项 A1–A12）**：基于逻辑链（引用依赖拓扑）的上下文压缩引擎重大功能升级。
+- **assessment-v2 A 轨实现（12 项 A1–A12，评估文档已迁出公开仓库）**：基于逻辑链（引用依赖拓扑）的上下文压缩引擎重大功能升级。
   - **A1 V6 分级 cites**：`parseCitesBlock` 返回 `{text, level}`，严格等级匹配（`c`/`critical`、`x`/`contextual`、裸字符串/非法值回退 `supporting`，禁止子串误判）；critical 边激活闭包守卫不变量 2′（仅 external critical 边计入 `inDegreeByClosure`）。
   - **A2 前缀守卫**：默认 `citeMinPrefixLen=4`，统一 `ascii + wide*2` 折算（`"the"` 拒 / `"读书"` 放行）；歧义消解取最长公共前缀最深原子。
   - **A3 R 版本键修复（N1）**：issuer A 工具名 + 参数 JSON（原 issuer 文本），修复同措辞不同参数误归链。

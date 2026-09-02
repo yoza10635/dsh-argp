@@ -9,7 +9,10 @@ import { readFileSync } from 'node:fs'
 import { load } from 'js-yaml'
 import type { Context } from '@deepseek-ai/cordis'
 
-const profileDir = 'C:/Users/LDH/.dsh/profiles/web'
+// profile 目录：默认 ~/.dsh/profiles/web（dsh 固定 home），可用 ARGP_WEB_PROFILE 覆盖。
+// 不用个人绝对路径默认值，保证脚本在任意机器可跑。
+const profileDir = process.env['ARGP_WEB_PROFILE'] ??
+  (process.env['HOME'] ?? process.env['USERPROFILE']) + '/.dsh/profiles/web'
 const rootConfig = profileDir + '/cordis.yml'
 const patchYaml = readFileSync(profileDir + '/cordis.patch.yml', 'utf8')
 const patches = (load(patchYaml) as unknown[]).filter(p => p !== null && typeof p === 'object')

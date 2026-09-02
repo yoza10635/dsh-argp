@@ -117,7 +117,7 @@ Anti-interference: zero replacements of append-origin originals across arms A/B/
 | Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
 | Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
 
-`npm run check` = typecheck + smoke + unit tests (195/195 green as of 2026-08-29). Every number carries its artifact path (see `docs/publication-plan.md` and the individual experiment records).
+`npm run check` = typecheck + smoke + unit tests (195/195 green as of 2026-08-29). Every number carries its artifact path (see `CHANGELOG.md` and the individual `spike/out/` experiment records).
 
 ## Platform gap feedback (for dsh)
 

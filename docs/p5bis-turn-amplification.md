@@ -3,7 +3,7 @@
 > 状态：**已执行（2026-08-28，本地 Qwen3.6-35B-A3B 单 slot 串行 E→A，B=16K/56000 chars，MAX_TURNS=60）**。判据对照与偏差见 §7；本文 §2 判据在开跑前定稿，未回改。
 > 背景：2026-08-27 用户校准——P5 四臂（成本三元组 + 探针保真）未触达最初设计初衷「相同上下文长度下，pre-turn 压缩使可支撑轮次扩大数倍」。本实验补上这个主判据。harness 支持已落地（`spike/37-peratom-three-arm.ts`，本文 §3）。
 
-## 1. 定义（口径全部遵循 docs/visible-context-calibration.md 的 visLen）
+## 1. 定义（口径全部遵循内部 visLen 校准文档——`visible-context-calibration.md`，已迁出公开仓库——的 visLen）
 
 | 记号 | 定义 |
 |---|---|

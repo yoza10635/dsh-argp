@@ -2,7 +2,7 @@
  * spike 18：离线排序策略模拟 —— 单位 token 重要性（密度排序） + 版本链存活代表 eff 叠加
  *
  * 目的：不调 API、纯本地复刻引擎剪枝决策核心，对比三种排序配置在合成场景下的剪枝效率，
- * 量化"预算密度排序"与"版本链叠加"两个设计提案（design-vs-impl-trace.md §3）的增益。
+ * 量化"预算密度排序"与"版本链叠加"两个设计提案（design-vs-impl-trace.md §3，已迁出公开仓库）的增益。
  *
  * 复刻范围（与 src/argp-graph-engine.ts 对齐）：
  *  - 原子：U/A/R（id/seq/turn/type/text/toolCallIds/cites）

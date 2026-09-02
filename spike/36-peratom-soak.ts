@@ -21,7 +21,7 @@
  * "结构化 load-bearing 行（守卫必留）+ 叙事/注释段（守卫不拦、可合法丢弃）"。
  * 这样 extract 有**真实净缩减空间**，VK-ratio 的 85% 阈值才有牙齿：做行级 verbatim
  * 保留 + 丢叙事的模型能破阈；做摘要式压缩的会被保真守卫拒而诚实 FAIL（不再是
- * 修复前那种"无论怎么压都到不了"的死裁判）。详见 docs/review-spike36-2026-08-25.md。
+ * 修复前那种"无论怎么压都到不了"的死裁判）。详见内部评审记录 review-spike36-2026-08-25.md（已迁出公开仓库）。
  *
  * 度量：
  *   - 每轮：压缩前后 surface 可见字符；未压缩反事实（append 起源事件投影和）
@@ -120,7 +120,7 @@ const watchdog = setTimeout(() => {
  *   ② 叙事段（纯散文、无 key=value/trace/标识符）→ 守卫不拦，competent extract 可合法丢弃。
  * 这样 extract 存在**真实的净缩减空间**（丢叙事、留结构化）——VK-ratio 是"可裁判"的：
  * 能压的模型能破阈，压不动的弱模型诚实 FAIL。修复前语料 100% load-bearing 且占比过小，
- * 是"死裁判"（无论怎么压都到不了 85%，见 docs/review-spike36-2026-08-25.md 严重发现 #1）。
+ * 是"死裁判"（无论怎么压都到不了 85%，见内部评审记录 review-spike36-2026-08-25.md 严重发现 #1（已迁出公开仓库））。
  */
 function makeLog(): string {
   // 结构化行（高信号 token 密集：pid/req_id/latency/trace/file:line）——用户问"有哪些错误"，

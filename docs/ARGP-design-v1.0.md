@@ -8,7 +8,7 @@
 | 状态 | 待外部验证 |
 | 代号 | ARGP — Atomic Reference Graph Pruning |
 
-> **实现差异注记（2026-08-24，外部审计比对补记）**：本文档为 pi 时代设计基准（V1.8）。实际落地形态为 dsh 迁移版（见 `ARGP-dsh-migration-design.md`），与本文档的主要差异如下（决策依据见决策台账 D2/D5/D19 与 `design-vs-impl-trace.md`，原文未删，逐处加注）：
+> **实现差异注记（2026-08-24，外部审计比对补记）**：本文档为 pi 时代设计基准（V1.8）。实际落地形态为 dsh 迁移版（见 `ARGP-dsh-migration-design.md`），与本文档的主要差异如下（决策依据见决策台账 D2/D5/D19，逐处加注）：
 > 1. **编号内联已废弃**（D5）：编号前缀被实证为 in-context 仿写污染源；定稿形态 = 无编号视图 + cites 尾部声明契约 + catalog（list_pruned）+ recall；
 > 2. **refs JSON 声明改为 cites 契约**（D2）：refs+importance 自由对话流服从率实测 0–25%，importance 未采集（自评用类型常量 A=5/U=3/R=0），语义边一律 supporting 级；
 > 3. **§5.9 层级 0 reserve 语义偏移**（D19）：25% 输出预留 → 比例预算（触发 0.8×contextWindow / 保留 0.2×触发线，2026-08-18 定调）+ 溢出恢复路径（400 → force-prune → retry，D16）；
@@ -198,7 +198,7 @@ while Σtokens(K) > T:
     force-prune 后仍不达标 → fail
 ```
 - **三硬终止条件（防死循环）**：① 单原子 token > T（超窗）→ 直接 fail；② summarize 上限 N 用尽仍不达标 → 转 force-prune；③ force-prune 后仍不达标（理论极端）→ fail。
-- **实现对齐注记（2026-08-22）**：降级链已全通——修复了候选耗尽时 `tryPruneClosures` 的 `return` 丢弃累积 pruned（正常候选 + 版本重复）的缺陷（此前每次压缩只剪 1 个闭包 2–10 原子、剪不到达标，见 `docs/engine-fix-2026-08-22-compaction-starvation.md`）。现按本降级顺序真正执行：**正常候选剪（主循环）→ 闭包叶序（5.11，候选耗尽后）→ summarize-critical（默认关）→ force-prune（剪到达标为止）→ fail（全有或全无，不产出）**；fail 语义保持本设计（资源用尽/超窗终止），未改为部分产出。
+- **实现对齐注记（2026-08-22）**：降级链已全通——修复了候选耗尽时 `tryPruneClosures` 的 `return` 丢弃累积 pruned（正常候选 + 版本重复）的缺陷（此前每次压缩只剪 1 个闭包 2–10 原子、剪不到达标；该修复的完整记录已迁出公开仓库）。现按本降级顺序真正执行：**正常候选剪（主循环）→ 闭包叶序（5.11，候选耗尽后）→ summarize-critical（默认关）→ force-prune（剪到达标为止）→ fail（全有或全无，不产出）**；fail 语义保持本设计（资源用尽/超窗终止），未改为部分产出。
 - **层级 1 生命周期剪除（首选，0 LLM，V1.5）**：按 5.11 剪 PRUNABLE 闭包（已完成任务、无外部依赖），整体移除 + 写墓碑；**常态 0-LLM 路径**。
 - **层级 2 summarize-critical（次选，1 次 LLM）**：仅当无 PRUNABLE 闭包（全部是活跃任务）时才触发。对最老 critical 链（lastRefRound 最小的闭包连通子图，规模 ≤10 原子且 ≤2×超预算量）调一次 LLM 生成**摘要原子 S**：
   ① 只重定向外部入边 e=(x→y, critical)（x∉chain, x∈K）为 e'=(x→S)，chain 内边入摘要日志；

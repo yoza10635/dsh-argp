@@ -73,7 +73,7 @@ const RETAIN_TOKENS = Number(process.env['ARGP_RETAIN_TOKENS'] ?? 4_000)
 // ARGP_MAX_TURNS 可调：30=原剧本；60=拉长 filler 看水位差距（探针块固定沉在最后）
 const MAX_TURNS = Number(process.env['ARGP_MAX_TURNS'] ?? 30)
 // P5-bis 轮次放大：有效窗口 B（E 臂死亡线 / K_no 判定），默认= WINDOW_TOKENS。
-// 口径：surface 活原子 visLen（模型可见，不含 reasoning；见 docs/visible-context-calibration.md），
+// 口径：surface 活原子 visLen（模型可见，不含 reasoning；见内部校准文档 visible-context-calibration.md（已迁出公开仓库）），
 // ×3.5 折 chars；不含 system/persona（与引擎 surfaceTokens 口径一致，臂间公平）。
 const EFF_WINDOW_TOKENS = Number(process.env['ARGP_EFF_WINDOW_TOKENS'] ?? WINDOW_TOKENS)
 const CHARS_PER_TOKEN = 3.5

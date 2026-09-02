@@ -35,7 +35,7 @@
 ## P3. 降级链补全 + 生产硬化
 
 1. ✅ summarize-critical 作为**末环**（默认关，config 开关；闭包剪除在前）——降级链 lifecycle→summarize→force→fail 闭合
-   - **2026-08-22 补**：降级链**真正可达**验证——修复 `tryPruneClosures` 候选耗尽时 `return` 丢弃累积 pruned 的缺陷（此前 force 被短路、每次压缩只剪 1 个闭包、剪不到 retain 目标，见 `docs/engine-fix-2026-08-22-compaction-starvation.md`）。重放验证单次压缩 2 原子/0.06% → 56 原子/59%，链条推进到 retain 目标或耗尽。
+   - **2026-08-22 补**：降级链**真正可达**验证——修复 `tryPruneClosures` 候选耗尽时 `return` 丢弃累积 pruned 的缺陷（此前 force 被短路、每次压缩只剪 1 个闭包、剪不到 retain 目标；修复记录已迁出公开仓库）。重放验证单次压缩 2 原子/0.06% → 56 原子/59%，链条推进到 retain 目标或耗尽。
 2. ✅ recall 预算闸门（每轮 ≤3 次 / 单次 ≤5% window / 累计 ≤10% / truncated 标注）——2026-08-17 已实现
 3. ⬜ askCover 动态复核回归用例（P0-3 失败模式：跨轮引用到达 → 豁免失效）——实现已有（askCoverage 动态复核），回归用例未单独建档
 
@@ -52,7 +52,7 @@
 
 ## P5. 证据补充与发文
 
-1. ✅ 同压力档基线重跑（B-4 已修：显式挂 TokenMeter）——2026-08-17 已完成：50/50 轮、117 compaction / 85 error、U 0/7、R 0/7（产物 `spike/out/07-baseline-deepseek-2026-08-17T01-55-34-648Z/`，记录见 experiment-2026-08-16-separated-contract-probe.md 追加）
+1. ✅ 同压力档基线重跑（B-4 已修：显式挂 TokenMeter）——2026-08-17 已完成：50/50 轮、117 compaction / 85 error、U 0/7、R 0/7（产物 `spike/out/07-baseline-deepseek-2026-08-17T01-55-34-648Z/`，实验记录已迁出公开仓库）
 2. ✅ **160K 主流档三档定稿（2026-08-17）**——ARGP A（¥2.695 U7/7 R7/7 精确 32K）vs 基线 disabled（¥3.19 U4/7 R0/7）vs 基线 high（¥3.087 U7/7 R0/7 23 error 空流）；反事实证明成本优势鲁棒（详见 experiment 记录 + publication-plan 台账）
 3. ⬜ 公开基准 pilot（LongMemEval 子抽样，待拍板）
 4. ✅ 卡点向上建议打包（B-1/B-3/B-4/**B-5**）——2026-08-17 已提交 `docs/dsh-api-feedback-2026-08-17.md`（B-5 空流实证：maxTokens=32768 无效，23 error 全 0 usage）
