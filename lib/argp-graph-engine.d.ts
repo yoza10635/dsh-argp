@@ -139,7 +139,7 @@ export interface ArgpGraphConfig {
      */
     disableCiteEdges?: boolean;
     /**
-     * P0 双引擎生产挂载（2026-08-28，docs/webui-liaison-2026-08-28.md 发现一）：非空时
+     * P0 双引擎生产挂载（2026-08-28，webui-liaison 台账发现一，已迁出公开仓库）：非空时
      * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
      * injectEdges/onOverflowCompress 由内部接线——显式传入的同名 config 键被忽略并告警。
      * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
@@ -157,7 +157,7 @@ export interface ArgpGraphConfig {
      * 回复级 cites 义务开关（argp-cites system section，order 151）。
      * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
      * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
-     * UI 显示泄漏，见 docs/webui-liaison-2026-08-28.md 发现三证据链）。
+     * UI 显示泄漏，见 webui-liaison 台账发现三证据链，已迁出公开仓库）。
      * 显式 true/false 覆盖 auto：边价值实验 A₁-A₃ 臂依赖回复级 cites 时强制开；
      * 双保险关闭时强制关。declarer 挂载但未武装（无 LLM 后端）时 auto 保持开启
      * （两种边来源不能同时归零）。buildGraph 的 cites 解析不受影响——协议关闭后
@@ -386,7 +386,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private shadowedSeqsOf;
     /**
      * 程序化 recall（RecallHandle 语义）：**仅**命中被遮蔽节点，未命中返回 null。
-     * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（spike/11/12/13/16 的
+     * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（历史 spike 系列的
      * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
      * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
      * 程序化的全日志入口是 recallAnyState()。

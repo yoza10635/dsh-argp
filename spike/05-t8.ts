@@ -254,7 +254,7 @@ for (let i = 0; i < prompts.length; i += 1) {
 const events = [...agent.session.events]
 
 // turn 映射（判决用）：prompt 序号 ≠ dsh 真实 turn 号（重试轮会错位，四跑实测 G6 误判 FAIL）。
-// 改与 05-rejudge.ts 同源：按文案 marker 匹配 user/message（无 turn 字段），
+// 与历史 05-rejudge.ts（已清理）同源：按文案 marker 匹配 user/message（无 turn 字段），
 // 取该 seq 之前最近一个 turn/start 为所属轮；重试的重复消息取最后一次（成功轮）。
 const turnOf = new Map<string, number>()
 {

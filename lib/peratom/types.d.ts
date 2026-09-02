@@ -2,7 +2,7 @@
  * Per-Atom 压缩引擎（Stage-1）共享类型与常量。
  *
  * 依据：per-atom-implementation-plan.md P0（已迁出公开仓库；2026-08-24 表示法定案：原文抄写 + 空隙归 info）
- * 与 docs/per-atom-compression-engine-design.md §1/§10。
+ * 与 per-atom-compression-engine-design.md §1/§10（已迁出公开仓库）。
  *
  * 本模块是叶子模块：只有常量、接口与纯类型守卫，零依赖——引擎（Stage-2）与
  * 后续管线（P1 compressor / P3 recall）可双向引用而不引入环。

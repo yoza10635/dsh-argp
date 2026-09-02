@@ -24,6 +24,8 @@ ARGP's answer: **the LLM stays in the loop, but in chains** — its output is al
 
 Measured (30-turn synthetic multi-turn coding task, four-arm comparison, spike 37): the only arm that achieves both **7/7 probe fidelity** and lower cost than the active baseline is the dual-engine arm (A); the traditional summary baseline (D) is cheapest but scores 5/7 — it swallows exact strings and key gist. **The selling point is not "cheapest" but "cheapest under fidelity"** (A's full cost components ≤ baseline C; 3.39× more expensive than D — that gap is the price of fidelity, priced openly).
 
+> How it works (dual-engine pipeline, reverse-topological pruning, shadow-price contract, module map) — see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Core mechanics
 
 ### Stage-1: PeratomCompressor (eager entropy reduction)
@@ -50,7 +52,7 @@ The quality of per-atom split/shrink decisions depends on the model's instructio
 
 - Measured baseline: local Qwen3.6-35B-A3B / Qwen3.8-27B, full pipeline over 30/60 turns with 0 errors and 7/7 probes; parse failures of the split-transcription notation 0% (vs 72% for interval locating).
 - **Known DeepSeek-family trait**: when the system prompt conflicts with user instructions (e.g. a task prompt saying "nothing else"), cites declarations can drop to 0 — semantic selectivity goes to zero, but Stage-1 guarded compression and Stage-2 deterministic eviction keep working and all invariants pass (50-turn v4-flash evidence). Once the task prompt leaves room for cites, the declaration rate recovers (43.6% measured over 10 turns).
-- The spike 38 probe (info-contract compliance) will be measured on DeepSeek in the post-1.0.0 recheck round.
+- The information-contract compliance probe (info-contract) will be measured on DeepSeek in the post-1.0.0 recheck round.
 
 ## Install & mount
 
@@ -99,9 +101,10 @@ Anti-interference: zero replacements of append-origin originals across arms A/B/
 
 ### Water level and turn amplification
 
-- E (zero compaction) vs A (30 turns, model-visible caliber): final-turn water level A = 40% of E (a 59.8% reduction), mean reduction 39.2%; the gap widens monotonically from T11.
-- 60-turn open-ended comparison: final-turn gap 32.6%, mean 36.6%; per-atom defers the graph engine's first hard prune by 5 turns (T14→T19) and holds a lower water level after it.
-- **Turn amplification (fixed window → N× turns, P5-bis measured 2026-08-28, local Qwen3.6-35B-A3B, B=16K tok)**: the zero-compaction control **hits the window and dies at turn 20**; the dual engine **survives 60 turns on full budget without touching the ceiling** (peak live water level only 70% of the window) → **sustainable turns ≥3.2× (censored lower bound)**, probes 6/7 (exact dependencies 4/4). Cache caliber: after excluding catastrophic recompute requests, the **clean hit rate is 84.8%, on par with the zero-compaction control (84.7%)** — zero degradation in per-request prefix stability; the full-sample hit-rate gap (76.1% vs 83.1%) comes entirely from 16 catastrophic events (11 linked to compaction generations + 5 server-native; see [`docs/p5bis-turn-amplification.md`](docs/p5bis-turn-amplification.md) §7.3). **The discriminating experiment is closed (same day, `-np 2` dual-slot rerun)**: catastrophic events **16→4 (4× collapse)**, and per-event attribution of the remaining 4 shows all non-aux-eviction (task-native / one-time graph-prune tax / server floor noise) — the main catastrophic cluster was a single-slot deployment artifact; the engine's inherent cache cost = the one-time graph-prune tax + floor noise (§7.5). **Never cite bare multipliers; always carry window/task/model.**
+Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 2026-08-28 — evidence detail in `CHANGELOG` and `spike/out/`):
+
+- **Turn count amplified substantially**: the zero-compaction control dies at ~20 turns on the window ceiling; the dual engine survives to full budget under the same window (~60-turn scale) — sustainable turns under a fixed window improve by an order of magnitude (lower-bound caliber; never cite bare multipliers — always carry window/task/model).
+- **Zero per-request prefix-stability degradation**: the dual engine's per-request prefix fingerprint distribution matches the zero-compaction control; compaction events add only a one-time recompute tax, no cumulative degradation.
 
 ### Graph engine historical validation (v0.3.x, DeepSeek v4-flash / Qwen3.8-27B)
 
@@ -121,7 +124,7 @@ Anti-interference: zero replacements of append-origin originals across arms A/B/
 
 ## Platform gap feedback (for dsh)
 
-No structured metadata channel for tool/result replacement (B-1), compaction/prune outside the transaction state machine (B-3), headless test assembly silently disables tokenMeter (B-4), summarizer empty streams (B-5), window truncation leaves no trace (B-6) — details in [`docs/dsh-api-feedback-2026-08-17.md`](docs/dsh-api-feedback-2026-08-17.md).
+No structured metadata channel for tool/result replacement (B-1), compaction/prune outside the transaction state machine (B-3), headless test assembly silently disables tokenMeter (B-4), summarizer empty streams (B-5), window truncation leaves no trace (B-6) — the formal record lives in [dsh Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) (#1090 and related threads).
 
 ## Known limitations
 
