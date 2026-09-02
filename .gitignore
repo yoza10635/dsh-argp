@@ -15,5 +15,8 @@ docs/publication-plan.md
 blocker-log.md
 run-baseline.bat
 
+# AI 工作台账（本机会话记忆，不进公开仓库）
+.workbuddy/
+
 # 发布物料草稿（内部）
 release-post-draft.md
