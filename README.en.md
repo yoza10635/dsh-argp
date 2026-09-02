@@ -101,7 +101,7 @@ Anti-interference: zero replacements of append-origin originals across arms A/B/
 
 ### Water level and turn amplification
 
-Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 2026-08-28 — evidence detail in `CHANGELOG` and `spike/out/`):
+Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 2026-08-28 — evidence detail in `CHANGELOG`):
 
 - **Turn count amplified substantially**: the zero-compaction control dies at ~20 turns on the window ceiling; the dual engine survives to full budget under the same window (~60-turn scale) — sustainable turns under a fixed window improve by an order of magnitude (lower-bound caliber; never cite bare multipliers — always carry window/task/model).
 - **Zero per-request prefix-stability degradation**: the dual engine's per-request prefix fingerprint distribution matches the zero-compaction control; compaction events add only a one-time recompute tax, no cumulative degradation.
@@ -120,7 +120,7 @@ Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 
 | Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
 | Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
 
-`npm run check` = typecheck + smoke + unit tests (195/195 green as of 2026-08-29). Every number carries its artifact path (see `CHANGELOG.md` and the individual `spike/out/` experiment records).
+`npm run check` = typecheck + smoke + unit tests (202/202 green as of 2026-09-02). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
 
 ## Platform gap feedback (for dsh)
 

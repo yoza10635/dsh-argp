@@ -21,5 +21,5 @@
 
 1. `dsh plugin --profile <name> add file:<本仓库路径>` 安装（或市场收录后 `add <包名>`）
 2. `dsh --profile <name> --dump-config` → 确认 `compaction-basic` 已禁用、`dsh-argp` 已插入
-3. 实例化检查：boot 后 `ctx.compaction.constructor === ArgpGraphEngine`（`spike/22-declarative-mount-check.ts`）
+3. 实例化检查：boot 后 `ctx.compaction.constructor === ArgpGraphEngine`（验证方法见 `ARCHITECTURE.md` §4 双引擎生产挂载）
 4. WebUI 可正常启动（`dsh web`，端口 3080），真会话剪枝/recall 流程待实际对话验证
