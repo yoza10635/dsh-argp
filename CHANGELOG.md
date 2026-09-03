@@ -2,6 +2,27 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.0.4] - 2026-09-03（dsh 0.1.2-alpha.4 兼容 + 仓库定位收敛）
+
+### Fixed
+
+- **dsh 0.1.2-alpha.4 升级阻断：`Session.events` getter 被移除（breaking `27bf1039db`），插件崩溃 `Cannot read properties of undefined (reading 'length')`（2026-09-02 定位）**：全库事件日志读取原直接访问 `session.events`（rc.2 专属 API）。修复：新增 `sessionEvents(session)` helper（`log-access.ts`，运行时探测 `snapshotEvents`→alpha.4 / 回退 `events`→rc.2），作为全库唯一事件日志入口；事件计数 `.length` 改读 `session.seq`。8 文件 46 处收口，`npm run check` 202/202 全绿 + 双宿主实证（legacy `events`=alpha.1 WebUI 真挂载；modern `snapshotEvents`=alpha.4 探针）。`SESSION_FORMAT_VERSION` 仍为 0，存量会话字节兼容。
+- **spike 基建误伤（1cb4f18）**：1.0.3 后的 spike 精简误删了仍被 8 个存留 harness import 的共享挂载工具 `spike/deepseek.ts` / `spike/model-mount.ts`（`npm run smoke:deepseek`、spike6/7/8/26 全部悬空）→ 自 `eb99d74` 恢复。
+
+### Changed
+
+- **peerDependencies 放宽为 `^0.1.1-rc.2`**（原为精确钉死），兼容 rc.2 → 0.1.2-alpha.4 双宿主（eb99d74）。
+
+### Docs（仓库定位收敛：面向直接安装用户的非学术仓库）
+
+- 新增根级 **`ARCHITECTURE.md`**：面向使用者的实现说明（事件原子化与引用边 / 反向拓扑剪枝不变式 / 双引擎生产挂载 / shadow-price 契约 / sessionEvents 双宿主 / recall zoom / 不变式清单），与 README 的特性介绍分工。
+- README（中/英）定性化改写：水位与轮次放大改定性口径；测试数更新为 202/202（2026-09-03 实测）；证据落点收敛到 CHANGELOG（`spike/out/` 为 gitignored 本地产物目录，外部读者不可见）。
+- 内部台账（设计基准/证据链/上游投递稿，15 篇 docs + 11 个零引用 spike 脚本）迁出公开仓库；`docs/` 仅保留 `dsh-argp-mount-example.md` 与 `dsh-llm-adapter.md` 两篇用户向文档；spike/ 收敛至 26 个有活引用的脚本。
+
+### Verified
+
+- `npm run check` 全绿（202/202 PASS，2026-09-03）。
+
 ## [1.0.3] - 2026-09-01（KV 前缀缓存击穿深层修复：永久冻结 catalog）
 
 ### Fixed
