@@ -33,6 +33,66 @@ import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compr
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js'
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
 import { ARG_NS, isArgpUserInfo } from './peratom/types.js'
+import z from '@deepseek-ai/schemastery'
+// NOTE: intentionally NO import of `installSettingsSection` / `settingsNamespace`
+// from `@deepseek-ai/dsh-settings`: dsh 0.1.2-alpha.1 deleted both. A missing
+// NAMED EXPORT is not a missing service — an ESM named import that resolves to
+// nothing is a SyntaxError at module evaluation, which cordis reports as a
+// failed entry and the host exits 1 (installing this plugin stops the host
+// booting at all). Verified against the reference implementation
+// (dshmarket/src/settings.ts) and confirmed by live probe on this host:
+// `@deepseek-ai/dsh-settings` resolves but exports only
+// SettingsConflictError / SettingsProvider / default / redactSecrets.
+// The `settings` SERVICE itself never changed, so we call
+// `settings.register(ns, schema, { base })` through `ctx.inject` — the
+// graceful-degradation boundary — and validate the namespace locally.
+
+/**
+ * UI 设置页可调旋钮（Settings → Plugins → Configurable → ARGP）。
+ * 服务端经 ctx.inject(['settings']) → settings.register('dsh-argp', schema, { base })
+ * 注册 namespace，base=引擎 cordis 配置；客户端 ArgpConfigCard 经 ctx.settingsScope.bind 读写。
+ * 字段即引擎构造期读取的顶层旋钮。
+ */
+export interface ArgpUserSettings {
+  windowRatio: number
+  retainRatio: number
+  maxPasses: number
+  recencyGuard: number
+  turnGuard: number
+  minSpanChars: number
+  enableSummarize: boolean
+  sortMode: 'legacy' | 'density' | 'density-chain'
+  charsPerToken: number
+}
+
+/** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
+export const ARG_SETTINGS_KEY = 'dsh-argp'
+
+/** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
+export const ArgpUserSettingsSchema = z.object({
+  windowRatio: z.number().min(0.1).max(1).default(0.8),
+  retainRatio: z.number().min(0.05).max(1).default(0.2),
+  maxPasses: z.number().step(1).min(1).default(16),
+  recencyGuard: z.number().step(1).min(0).default(4),
+  turnGuard: z.number().step(1).min(0).default(1),
+  minSpanChars: z.number().step(1).min(0).default(0),
+  enableSummarize: z.boolean().default(false),
+  sortMode: z.string().default('density'),
+  charsPerToken: z.number().min(0.5).max(8).default(3.5),
+}) as z<ArgpUserSettings>
+
+/**
+ * The namespace pattern `settingsNamespace` enforced before it was removed.
+ * Kept as a literal check rather than an import (see the note above).
+ */
+const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
+
+/** Namespace the card on the browser side keys itself to. */
+const ARG_SETTINGS_NS: string = ARG_SETTINGS_KEY
+
+if (!NAMESPACE_PATTERN.test(ARG_SETTINGS_NS)) {
+  throw new TypeError(`settings namespace "${ARG_SETTINGS_NS}" must match ${String(NAMESPACE_PATTERN)}`)
+}
 
 export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
@@ -339,25 +399,32 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   readonly windowTokens: number
   readonly retainTokens: number
-  readonly windowRatio: number
-  readonly retainRatio: number
   /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
   private readonly explicitWindowTokens: boolean
   /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
   private readonly explicitRetainTokens: boolean
   /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
   private resolvedWindowTokens = 16_384
-  readonly recencyGuard: number
-  readonly turnGuard: number
-  readonly minSpanChars: number
-  readonly charsPerToken: number
-  readonly maxPasses: number
   readonly reserveTokens: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  readonly enableSummarize: boolean
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
-  readonly sortMode: 'legacy' | 'density' | 'density-chain'
   readonly turnBasis: 'semantic' | 'all'
+  /**
+   * UI 设置页可调旋钮的实时解析值（Settings → Plugins → Configurable → ARGP）。
+   * 构造期为 cordis 配置基线；ctx.inject(['settings']) 注册后随用户写入实时更新。
+   */
+  private argpSettings: ArgpUserSettings
+  /** settings 源 thunk：ctx.inject(['settings']) 注册后置为 scope.get()，否则回退 cordis 基线。 */
+  private settingsSource: () => ArgpUserSettings = () => this.argpSettings
+  get windowRatio(): number { return this.argpSettings.windowRatio }
+  get retainRatio(): number { return this.argpSettings.retainRatio }
+  get recencyGuard(): number { return this.argpSettings.recencyGuard }
+  get turnGuard(): number { return this.argpSettings.turnGuard }
+  get minSpanChars(): number { return this.argpSettings.minSpanChars }
+  get charsPerToken(): number { return this.argpSettings.charsPerToken }
+  get maxPasses(): number { return this.argpSettings.maxPasses }
+  get enableSummarize(): boolean { return this.argpSettings.enableSummarize }
+  get sortMode(): 'legacy' | 'density' | 'density-chain' { return this.argpSettings.sortMode }
   readonly maxOverflowRetries: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
   readonly onOverflowCompress?: (session: Session) => Promise<void>
@@ -452,19 +519,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.retainTokens = config.retainTokens ?? 8_192
     this.explicitWindowTokens = config.windowTokens !== undefined
     this.explicitRetainTokens = config.retainTokens !== undefined
-    this.windowRatio = config.windowRatio ?? 0.8
-    this.retainRatio = config.retainRatio ?? 0.2
-    this.recencyGuard = config.recencyGuard ?? 4
-    // turnGuard：最近 N 个完整 turn 不参剪。真会话中一个 turn 常有多个 surface 节点
-    //（user / assistant-tool-call / tool-result / assistant-text），recencyGuard 只按节点
-    // 位置保护可能截断当前轮，turnGuard 提供更自然的"最近 N 轮对话"语义保护。
-    // 默认 1（等价于原 `a.turn >= latestTurn` 行为），真会话配置可提高到 2。
-    this.turnGuard = config.turnGuard ?? 1
-    // 微剪枝下限默认 0：大上下文下若保留 >0 阈值，小于该值的剪枝区间会被放回，
-    // 导致可见量始终高于 retain 目标，触发连续压缩循环。如需启用请显式传入。
-    this.minSpanChars = config.minSpanChars ?? 0
-    this.charsPerToken = config.charsPerToken ?? 3.5
-    this.maxPasses = config.maxPasses ?? 16
+    // 顶层旋钮（windowRatio/retainRatio/recencyGuard/turnGuard/minSpanChars/charsPerToken/
+    // maxPasses/enableSummarize/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
+    // （见下方 settings 注册块），此处不再逐字段赋值；getter 读取 this.argpSettings。
     this.reserveTokens = config.reserveTokens ?? 0
     this.tokenMeterFn = config.measureTokens
     // tokenMeter 不作为 required inject（避免测试/最小化组合缺少该服务时构造失败），
@@ -474,12 +531,53 @@ export class ArgpGraphEngine extends CompactionEngine {
     } catch {
       this.tokenMeter = undefined
     }
-    this.enableSummarize = config.enableSummarize ?? false
     this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
     // 2026-08-23 拍板：默认 density（spike 18 离线 + spike 19 真实验证：同达成度下 recall 2→0、
     // 保留集单位信息量更高；eff 同档大 token 先剪 = 分数背包贪心）。需回退可显式传 sortMode:'legacy'。
-    this.sortMode = config.sortMode ?? 'density'
     this.turnBasis = config.turnBasis ?? 'semantic'
+
+    // ── UI 设置页注册（Settings → Plugins → Configurable → ARGP）──
+    // 构造期基线 = cordis 配置（windowRatio 等顶层旋钮）；ctx.inject(['settings']) 在 settings 服务
+    // 存在时注册 namespace=`dsh-argp`（base=基线），并把源 thunk 指向 scope.get()；用户经 UI 写入
+    // 后 onChange 实时刷新 this.argpSettings，getter 透出即时生效（无需重启）。settings 服务缺失时
+    // 优雅回退到 cordis 基线（settingsSource 保持 () => this.argpSettings）。
+    const settingsEntry: ArgpUserSettings = {
+      windowRatio: config.windowRatio ?? 0.8,
+      retainRatio: config.retainRatio ?? 0.2,
+      maxPasses: config.maxPasses ?? 16,
+      recencyGuard: config.recencyGuard ?? 4,
+      turnGuard: config.turnGuard ?? 1,
+      minSpanChars: config.minSpanChars ?? 0,
+      enableSummarize: config.enableSummarize ?? false,
+      sortMode: config.sortMode ?? 'density',
+      charsPerToken: config.charsPerToken ?? 3.5,
+    }
+    this.argpSettings = settingsEntry
+    this.settingsSource = () => settingsEntry
+    // `inject` is the graceful-degradation boundary: on a host with no settings
+    // service the callback never runs and the composed entry stands.
+    ctx.inject(['settings'], (scopedCtx: Context) => {
+      const scoped = scopedCtx as unknown as Context & {
+        settings: {
+          register: (
+            ns: string,
+            schema: z<ArgpUserSettings>,
+            options: { base: ArgpUserSettings },
+          ) => { get: () => ArgpUserSettings; watch: (listener: () => void) => void }
+        }
+      }
+      const scope = scoped.settings.register(ARG_SETTINGS_NS, ArgpUserSettingsSchema, { base: settingsEntry })
+      this.settingsSource = () => scope.get()
+      const apply = (): void => { this.argpSettings = this.settingsSource() }
+      // Unload restores the composed entry, so a disabled section cannot leave
+      // the engine reading a value nobody can see or change any more.
+      scoped.effect(() => () => {
+        this.settingsSource = () => settingsEntry
+        apply()
+      })
+      apply()
+      scope.watch(apply)
+    })
     this.maxOverflowRetries = config.maxOverflowRetries ?? 1
     this.onOverflowCompress = config.onOverflowCompress
     this.closureWindowK = config.closureWindowK ?? 2

@@ -10,6 +10,28 @@ export type { ParsedCite, CiteLevel } from './cites-strip.js';
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js';
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js';
+import z from '@deepseek-ai/schemastery';
+/**
+ * UI 设置页可调旋钮（Settings → Plugins → Configurable → ARGP）。
+ * 服务端经 ctx.inject(['settings']) → settings.register('dsh-argp', schema, { base })
+ * 注册 namespace，base=引擎 cordis 配置；客户端 ArgpConfigCard 经 ctx.settingsScope.bind 读写。
+ * 字段即引擎构造期读取的顶层旋钮。
+ */
+export interface ArgpUserSettings {
+    windowRatio: number;
+    retainRatio: number;
+    maxPasses: number;
+    recencyGuard: number;
+    turnGuard: number;
+    minSpanChars: number;
+    enableSummarize: boolean;
+    sortMode: 'legacy' | 'density' | 'density-chain';
+    charsPerToken: number;
+}
+/** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
+export declare const ARG_SETTINGS_KEY = "dsh-argp";
+/** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
+export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;
 export type AtomType = 'U' | 'A' | 'R' | 'X';
 export interface Atom {
     id: number;
@@ -253,28 +275,35 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     static inject: string[];
     readonly windowTokens: number;
     readonly retainTokens: number;
-    readonly windowRatio: number;
-    readonly retainRatio: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
     private readonly explicitWindowTokens;
     /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
     private readonly explicitRetainTokens;
     /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
     private resolvedWindowTokens;
-    readonly recencyGuard: number;
-    readonly turnGuard: number;
-    readonly minSpanChars: number;
-    readonly charsPerToken: number;
-    readonly maxPasses: number;
     readonly reserveTokens: number;
     readonly tokenMeterFn?: (session: Session) => {
         contextTokens: number;
         surfaceTokens: number;
     };
-    readonly enableSummarize: boolean;
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
-    readonly sortMode: 'legacy' | 'density' | 'density-chain';
     readonly turnBasis: 'semantic' | 'all';
+    /**
+     * UI 设置页可调旋钮的实时解析值（Settings → Plugins → Configurable → ARGP）。
+     * 构造期为 cordis 配置基线；ctx.inject(['settings']) 注册后随用户写入实时更新。
+     */
+    private argpSettings;
+    /** settings 源 thunk：ctx.inject(['settings']) 注册后置为 scope.get()，否则回退 cordis 基线。 */
+    private settingsSource;
+    get windowRatio(): number;
+    get retainRatio(): number;
+    get recencyGuard(): number;
+    get turnGuard(): number;
+    get minSpanChars(): number;
+    get charsPerToken(): number;
+    get maxPasses(): number;
+    get enableSummarize(): boolean;
+    get sortMode(): 'legacy' | 'density' | 'density-chain';
     readonly maxOverflowRetries: number;
     /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
     readonly onOverflowCompress?: (session: Session) => Promise<void>;

@@ -7,8 +7,11 @@
  * the factory — the exact shape tsdown's shared client preset produces for the
  * platform client packages (see deepseek-harness packages/client/tsdown.client.ts).
  *
- * This bundle is fully self-contained: it imports only package-local code
- * (src/cites-strip.js), so there are no externals to keep external.
+ * `react` and `react/jsx-runtime` are externalized: the dsh web shell preloads
+ * them as platform modules (PLATFORM_MODULES), so the shell resolves them at
+ * load time. The card is written with `React.createElement` (no JSX syntax),
+ * keeping the bundle free of any host `@deepseek-ai/dsh-client-*` dependency
+ * (those packages are not installed here).
  */
 import { build } from 'esbuild'
 
@@ -21,6 +24,9 @@ await build({
   platform: 'browser',
   target: 'es2022',
   outfile: 'lib/client.js',
+  jsx: 'automatic',
+  jsxImportSource: 'react',
+  external: ['react', 'react/jsx-runtime'],
   banner: {
     js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {\n`
       + 'var module = { exports: {} }; var exports = module.exports;',
