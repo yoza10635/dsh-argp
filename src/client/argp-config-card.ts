@@ -32,12 +32,18 @@ export interface ArgpCardProps {
 
 const h = React.createElement
 
+// All chrome uses the host theme's `--dsw-alias-*` custom properties (defined
+// for both light and dark in ui-theme design-platform.css). Fallbacks are
+// LIGHT-theme values: an unknown var must degrade to a readable card, never
+// to the dark constants the first version shipped (black-on-black in light
+// theme, because `var(--bg-elevated, #1e1e22)` always fell back — the host
+// never defined that name).
 const cardStyle: Record<string, string | number> = {
   listStyle: 'none',
-  border: '1px solid var(--border, #2a2a2e)',
-  borderRadius: 8,
+  border: '0.5px solid var(--dsw-alias-border-l4, rgba(0, 0, 0, 0.16))',
+  borderRadius: 16,
   margin: '8px 0',
-  background: 'var(--bg-elevated, #1e1e22)',
+  background: 'var(--dsw-alias-bg-layer-3, #ffffff)',
   overflow: 'hidden',
 }
 const headerStyle: Record<string, string | number> = {
@@ -54,27 +60,27 @@ const headerStyle: Record<string, string | number> = {
 }
 const nameStyle: Record<string, string | number> = {
   fontWeight: 600,
-  fontSize: 14,
+  fontSize: 15,
+  color: 'var(--dsw-alias-label-primary, #17181a)',
 }
 const descriptionStyle: Record<string, string | number> = {
-  opacity: 0.7,
-  fontSize: 12,
+  fontSize: 13,
+  color: 'var(--dsw-alias-label-tertiary, #6b6f76)',
   flex: 1,
   minWidth: 0,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 }
 const pendingStyle: Record<string, string | number> = {
   fontSize: 11,
-  color: 'var(--accent, #6ea8fe)',
-  border: '1px solid currentColor',
-  borderRadius: 4,
-  padding: '1px 6px',
+  fontWeight: 500,
+  whiteSpace: 'nowrap',
+  borderRadius: 999,
+  padding: '1px 8px',
+  background: 'var(--dsw-alias-bg-module-platform, rgba(0, 0, 0, 0.06))',
+  color: 'var(--dsw-alias-label-secondary, #4c5057)',
 }
 const bodyStyle: Record<string, string | number> = {
-  padding: '4px 14px 14px',
-  borderTop: '1px solid var(--border, #2a2a2e)',
+  padding: '4px 16px 14px',
+  borderTop: '0.5px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))',
 }
 const fieldStyle: Record<string, string | number> = {
   margin: '12px 0',
@@ -92,14 +98,14 @@ const labelStyle: Record<string, string | number> = {
 const badgeStyle: Record<string, string | number> = {
   fontSize: 10,
   opacity: 0.8,
-  border: '1px solid var(--border, #2a2a2e)',
+  border: '1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))',
   borderRadius: 4,
   padding: '0 5px',
 }
 const resetStyle: Record<string, string | number> = {
   fontSize: 10,
   background: 'transparent',
-  border: '1px solid var(--border, #2a2a2e)',
+  border: '1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))',
   borderRadius: 4,
   color: 'inherit',
   cursor: 'pointer',
@@ -110,14 +116,14 @@ const inputStyle: Record<string, string | number> = {
   boxSizing: 'border-box',
   padding: '6px 8px',
   borderRadius: 6,
-  border: '1px solid var(--border, #2a2a2e)',
-  background: 'var(--bg-input, #161618)',
-  color: 'inherit',
+  border: '1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))',
+  background: 'var(--dsw-alias-bg-layer-2, #ffffff)',
+  color: 'var(--dsw-alias-label-primary, #17181a)',
   fontSize: 13,
 }
 const inputInvalidStyle: Record<string, string | number> = {
   ...inputStyle,
-  borderColor: 'var(--danger, #f0686b)',
+  borderColor: 'var(--dsw-alias-label-error, #d64550)',
 }
 const hintStyle: Record<string, string | number> = {
   margin: '4px 0 0',
@@ -138,25 +144,25 @@ const readOnlyStyle: Record<string, string | number> = {
 }
 const failedStyle: Record<string, string | number> = {
   fontSize: 12,
-  color: 'var(--danger, #f0686b)',
+  color: 'var(--dsw-alias-label-error, #d64550)',
   margin: '0 0 0 auto',
 }
 const btnBase: Record<string, string | number> = {
-  padding: '6px 14px',
-  borderRadius: 6,
-  border: '1px solid var(--border, #2a2a2e)',
+  padding: '5px 14px',
+  borderRadius: 8,
+  border: '1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))',
   cursor: 'pointer',
   fontSize: 13,
 }
 const discardBtn: Record<string, string | number> = {
   ...btnBase,
   background: 'transparent',
-  color: 'inherit',
+  color: 'var(--dsw-alias-label-secondary, #4c5057)',
 }
 const saveBtn: Record<string, string | number> = {
   ...btnBase,
-  background: 'var(--accent, #6ea8fe)',
-  color: 'var(--accent-fg, #08121f)',
+  background: 'var(--dsw-alias-label-primary, #17181a)',
+  color: 'var(--dsw-alias-bg-layer-3, #ffffff)',
   borderColor: 'transparent',
   fontWeight: 600,
 }
