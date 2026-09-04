@@ -9,3 +9,5 @@ export { RecallZoom, DEFAULT_BUDGET_RATIO, resolveSummaryText, default as Recall
 export type { RecallZoomConfig, RecallZoomRecord, SummaryResolution, SummarySource, } from './peratom/recall-zoom.js';
 export { mountPeratomStack } from './peratom/mount.js';
 export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js';
+export { cleanShippedPresets, DEFAULT_STRIP_ROWS, dropEmptyGroups, stripPresetRows } from './preset-cleaner.js';
+export type { PresetCleanOptions, PresetCleanOutcome, PresetCleanReport, PresetRosterLike, PresetRow, } from './preset-cleaner.js';

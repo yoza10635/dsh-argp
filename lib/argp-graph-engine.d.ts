@@ -7,6 +7,8 @@ import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
 import type { ParsedCite } from './cites-strip.js';
 export type { ParsedCite, CiteLevel } from './cites-strip.js';
+import { type PresetCleanOptions } from './preset-cleaner.js';
+export type { PresetCleanOptions, PresetCleanReport, PresetRow } from './preset-cleaner.js';
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js';
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js';
@@ -175,6 +177,19 @@ export interface ArgpGraphConfig {
         declarer?: CiteDeclarerConfig | false;
         zoom?: RecallZoomConfig | false;
     };
+    /**
+     * Preset 净化器（2026-09-04 Q8 收口）。rc.2 起 agent 组成迁入 preset 平面，
+     * standard/cordis/ptc 的 compaction 组各挂一份 compaction-basic——宿主 profile 的
+     * `disabled: true` 管不到 preset 子树，官方摘要器与 ARGP 双引擎并存（外来 lossy
+     * 摘要先于图剪 + 英文 checkpoint 拉偏会话语言）。启用后引擎挂载期对 roster 中每个
+     * 含 stock compaction 的 shipped preset 经官方 authoring API 生成净化副本
+     * `<id>-argp`（摘除 compaction-basic/tool-result-pruner，保留 command-compact——
+     * 其 `compaction` inject 沿 realm 链向上解析到本引擎的 `ctx.compaction`，
+     * `/compact` 自动指向 ARGP 图剪）。幂等、fail-soft、只写 `~/.dsh/.agent-presets/`。
+     * `false` 关闭；对象可调 strip 集合/后缀/源白名单（见 PresetCleanOptions）。
+     * 依赖 roster 服务：无 agentPresets 的部署（headless 等）静默跳过。
+     */
+    presetClean?: false | PresetCleanOptions;
     /**
      * 回复级 cites 义务开关（argp-cites system section，order 151）。
      * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——

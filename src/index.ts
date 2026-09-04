@@ -44,3 +44,13 @@ export type {
 // 双引擎生产挂载工厂（P4）：三管线 + Stage-2 图引擎组装为声明式可挂载整体；P5 三臂开关
 export { mountPeratomStack } from './peratom/mount.js'
 export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js'
+// Preset 净化器（Q8 收口）：安装期自动生成 `<id>-argp` 净化 preset，摘除 stock
+// compaction-basic/tool-result-pruner，/compact 经 realm 链解析到 ARGP 图剪
+export { cleanShippedPresets, DEFAULT_STRIP_ROWS, dropEmptyGroups, stripPresetRows } from './preset-cleaner.js'
+export type {
+  PresetCleanOptions,
+  PresetCleanOutcome,
+  PresetCleanReport,
+  PresetRosterLike,
+  PresetRow,
+} from './preset-cleaner.js'
