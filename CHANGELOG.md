@@ -2,6 +2,21 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.0.5] - 2026-09-04（preset 净化自动生成 + WebUI 设置卡片）
+
+### Added
+
+- **Preset 净化器（Q8 双引擎收口）：引擎挂载期自动生成 `<id>-argp` 净化 preset（`preset-cleaner.ts`，commit 2881669）**：dsh rc.2 把 agent 组成迁入 preset 平面后，standard/cordis/ptc 各自在隔离 realm 内挂官方 `compaction-basic`，宿主 profile 的 `disabled: true` 物理管不到（平面错位，非 loader bug）→ 官方摘要器与 ARGP 双引擎同秒抢 `agent/pre-step`，有损摘要抢跑图剪。修复：`ArgpGraphEngine` 构造期经 `ctx.inject(['agentPresets'])` 触发 `cleanShippedPresets()`——对每个仍挂 stock compaction 的 shipped preset 走官方 `copy()` API 生成 `<id>-argp` 副本（落 `~/.dsh/.agent-presets/`），缩进感知行手术摘除 `compaction-basic` + `tool-result-pruner`（零 YAML 依赖，`!!js` 行不触碰）；**保留 `command-compact`**——realm 内 `compaction` 服务沿 scope 链解析到宿主平面 ARGP 引擎，`/compact` 自动指向确定性 `compactNow`，零额外接线。幂等 + 漂移自愈 + fail-soft，写回靠 standing-mount 文件戳热生效（新会话免重启）。`config.presetClean: false` 可关。shipped preset 源文件逐字不动（单测断言），净化是增项不是替换。首启实证（2026-09-04）：`cordis-argp`/`ptc-argp`/`standard-argp` 三副本落盘，stock 行 grep 零命中。
+- **WebUI 设置卡片（commit 5e1ec38）**：Settings → 插件 → 插件配置新增 ARGP 卡（`src/client/`，自绘 React 无 JSX），编辑 9 个引擎旋钮（windowRatio/retainRatio/maxPasses/recencyGuard/turnGuard/minSpanChars/enableSummarize/sortMode/charsPerToken），含 overridden 徽标 + 单字段 reset、脏态暂存与保存/放弃。
+
+### Fixed
+
+- **设置卡片浅色主题黑底不可读（commit f5c341f）**：卡片内联样式引用宿主不存在的变量（`--bg-elevated`/`--border`/`--bg-input`/`--accent`/`--danger` 等），全部落到暗色回退字面量 → 浅色主题下黑底黑字。改用宿主 `--dsw-alias-*` 主题体系（浅/深双套自动适配），回退字面量全部换浅色安全值，chrome 对齐宿主 `PluginCard`。
+
+### Verified
+
+- `npm run check` 全绿（209/209 PASS，2026-09-04），含 preset-cleaner 7 条单测（缩进手术幂等/漂移自愈/源文件不变式/白名单）。
+
 ## [1.0.4] - 2026-09-03（dsh 0.1.2-alpha.4 兼容 + 仓库定位收敛）
 
 ### Fixed
