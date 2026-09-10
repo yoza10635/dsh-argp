@@ -90,16 +90,39 @@ ctx.compaction === ArgpGraphEngine（peratom 已武装）
 
 **固有权衡**：任何压缩都会丢一次 KV 缓存（摘要式同样），属设计接受的成本，非缺陷。
 
-## 6. sessionEvents 双宿主兼容
+## 6. 宿主版本兼容与 V3 会话信封
+
+### 6.1 事件日志读取（`sessionEvents`）
 
 ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking 变化：
 
 | 宿主版本 | 事件日志 API |
 |---|---|
 | rc.2（0.1.1） | `session.events`（getter，返回全日志数组） |
-| alpha.4（0.1.2+） | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
+| alpha.4（0.1.2+）～0.1.3 | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
+| **0.1.5+（1.1.0 起唯一受支持）** | `snapshotEvents()`；`events` 已彻底不存在 |
 
 `log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**：运行时探测 `snapshotEvents`（modern）/ 回退 `events`（legacy），两者皆无则 throw。所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
+
+**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。
+
+### 6.2 V3 `SurfaceOp` 键名（`startSeq`/`endSeq`）
+
+ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5 前是 `start`/`end`——**两代都强制 `Object.keys(surfaceOp).length === 3`，同时写两套键会被双方拒绝**，因此一个构建无法同时服务两代宿主。
+
+失败模式值得记住：`Session.append()` 内部**同步**调用 `surfaceManager.validateNext()` → `surfaceOpOf()`，不认即 `throw`。所以键名写错不是"剪枝静默失效"，而是**在 compaction 事务中途抛错**——`compaction/start` 已落盘而 tombstone 未写，事务半开。
+
+### 6.3 `SessionSeq` 品牌类型与收窄边界
+
+0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`，裸 `number` 不再可赋值。ARGP 的约定：
+
+- **内部模型（原子/区间/账目/预算）一律裸 `number`**——内部要做加减与区间比较，品牌类型在算术上寸步难行；
+- **只在写入/查询 dsh API 的边界**经 `asSeq()` / `asSeqs()`（`log-access.ts`）收窄；
+- 收窄处**不做运行时校验**：宿主 `Session.append` 已有权威校验，重复校验只会把错误信息推离现场，并制造第二份需同步维护的真相。
+
+### 6.4 node 0 系统提示保护
+
+0.1.5 把系统提示表示为 surface node 0 的 `system/message`，宿主 `assertSystemHeadRewrite` 硬性保护该位置（覆盖 node 0 的 replace 必须是恰好覆盖该单节点的 `system/message`）。`atomize` 只识别 `user/message` / `assistant/message` / `tool/result`，`system/message` **静默跳过、不产出原子** → node 0 永不进入剪枝区间。这是有意依赖而非巧合，已写进 `atomize` 的文档注释并由测试钉死。
 
 ## 7. recall 两级 zoom
 

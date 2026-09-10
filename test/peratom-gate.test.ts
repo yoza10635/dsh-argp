@@ -23,11 +23,11 @@ import type { NeedCompress } from '../src/peratom/gate.ts'
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantWithToolCall(session: Session, turn: number, callId: string, name: string, args: string, text = 'working'): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: {
@@ -40,7 +40,7 @@ function appendAssistantWithToolCall(session: Session, turn: number, callId: str
       ],
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -54,7 +54,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendTurnEnd(session: Session, turn: number, kind: string): void {
@@ -86,7 +86,7 @@ test('collectInterruptedTurns：扫描 turn/end 与 assistant/message 双落点'
   const session = Session.create(SessionId('gate-interrupted'))
   session.append('turn/start', { turn: 1 })
   appendUser(session, 'hi')
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: {
@@ -103,7 +103,7 @@ test('collectInterruptedTurns：扫描 turn/end 与 assistant/message 双落点'
   appendAssistantWithToolCall(session, 2, 'c1', 'read_file', '{"path":"a.ts"}')
   appendTurnEnd(session, 2, 'completed')
 
-  const turns = collectInterruptedTurns(session.events)
+  const turns = collectInterruptedTurns(session.snapshotEvents())
   assert.deepEqual([...turns].sort((a, b) => a - b), [1])
 })
 
@@ -118,7 +118,7 @@ test('filterInterruptedAtoms：被中断轮次的原子整轮排除，其余轮�
     { seq: u1, turn: 1, text: 'a' },
     { seq: u2, turn: 2, text: 'b' },
   ]
-  const filtered = filterInterruptedAtoms(atoms, session.events)
+  const filtered = filterInterruptedAtoms(atoms, session.snapshotEvents())
   assert.equal(filtered.length, 1)
   assert.equal(filtered[0]?.seq, u2)
 
@@ -126,7 +126,7 @@ test('filterInterruptedAtoms：被中断轮次的原子整轮排除，其余轮�
   const clean = Session.create(SessionId('gate-clean'))
   appendUser(clean, 'x')
   appendTurnEnd(clean, 1, 'completed')
-  assert.equal(filterInterruptedAtoms(atoms, clean.events).length, 2)
+  assert.equal(filterInterruptedAtoms(atoms, clean.snapshotEvents()).length, 2)
 })
 
 test('filterInterruptedAtoms：空日志 / 无 turn 字段原子宽容处理', () => {
@@ -146,7 +146,7 @@ test('buildVersionChainIndex：同 tool+args 键出现 ≥2 次即成员；不�
   appendAssistantWithToolCall(session, 3, 'c3', 'read_file', '{"path":"b.ts"}')
   appendToolResult(session, 3, 'c3', 'other file')
 
-  const chain = buildVersionChainIndex(session.events)
+  const chain = buildVersionChainIndex(session.snapshotEvents())
   assert.equal(chain.isMember('c1', 'content v1'), true, '旧快照是链成员')
   assert.equal(chain.isMember('c2', 'content v2'), true, '新快照同键也是成员（压缩侧保守：全组保 verbatim）')
   assert.equal(chain.isMember('c3', 'other file'), false, '不同参数是独立调用')
@@ -156,7 +156,7 @@ test('buildVersionChainIndex：callId 缺 issuer 时退化为 text| 键；单次
   const session = Session.create(SessionId('gate-chain-text'))
   appendToolResult(session, 1, 'orphan-1', 'same output')
   appendToolResult(session, 1, 'orphan-2', 'same output')
-  const chain = buildVersionChainIndex(session.events)
+  const chain = buildVersionChainIndex(session.snapshotEvents())
   assert.equal(chain.isMember('orphan-1', 'same output'), true, '无 issuer 相同文本重复 → text| 回退键成链')
   assert.equal(chain.isMember(undefined, 'unique'), false)
 })
@@ -174,7 +174,7 @@ test('rNeedCompress：版本链硬排除优先于一切；大小启发式其次�
   appendToolResult(chainSession, 1, 'k1', BIG)
   appendAssistantWithToolCall(chainSession, 2, 'k2', 'run', '{"q":"a"}')
   appendToolResult(chainSession, 2, 'k2', BIG)
-  const chain = buildVersionChainIndex(chainSession.events)
+  const chain = buildVersionChainIndex(chainSession.snapshotEvents())
 
   assert.equal(rNeedCompress({ text: BIG, callId: 'k1' }, chain), false, '① 链成员强制 false')
 
@@ -214,7 +214,7 @@ test('buildToolNameIndex：callId→工具名取自 assistant tool-call 块；�
   appendAssistantWithToolCall(session, 1, 'c1', 'read_file', '{"path":"a.ts"}')
   appendToolResult(session, 1, 'c1', 'content v1')
   appendToolResult(session, 1, 'orphan-1', 'no issuer')
-  const idx = buildToolNameIndex(session.events)
+  const idx = buildToolNameIndex(session.snapshotEvents())
   assert.equal(idx.get('c1'), 'read_file')
   assert.equal(idx.has('orphan-1'), false)
 })
@@ -238,7 +238,7 @@ test('turnCompressible：纯 dialog 轮 false；长 user 或可压 tool 任一�
   appendToolResult(chainSession, 1, 'm1', BIG)
   appendAssistantWithToolCall(chainSession, 2, 'm2', 'get', '{"u":"x"}')
   appendToolResult(chainSession, 2, 'm2', BIG + 'v2')
-  const chain = buildVersionChainIndex(chainSession.events)
+  const chain = buildVersionChainIndex(chainSession.snapshotEvents())
   assert.equal(turnCompressible([
     { kind: 'tool-result', seq: 3, turn: 2, text: BIG + 'v2', callId: 'm2' },
   ], chain), false)
@@ -294,9 +294,9 @@ test('fidelityGuard：缺任一 token 即拒绝；全含则放行', () => {
 test('projectSurfaceText：user 文本 / tool 内层文本 / reasoning 排除', () => {
   const session = Session.create(SessionId('gate-project'))
   const uSeq = appendUser(session, 'user text')
-  assert.equal(projectSurfaceText(session.events[uSeq]!), 'user text')
+  assert.equal(projectSurfaceText(session.snapshotEvents()[uSeq]!), 'user text')
 
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: {
@@ -309,8 +309,8 @@ test('projectSurfaceText：user 文本 / tool 内层文本 / reasoning 排除', 
       ],
     },
   } as never, { surfaceOp: 'append' })
-  assert.equal(projectSurfaceText(session.events[session.events.length - 1]!), 'visible')
+  assert.equal(projectSurfaceText(session.snapshotEvents()[session.snapshotEvents().length - 1]!), 'visible')
 
   const rSeq = appendToolResult(session, 1, 'p1', 'tool body')
-  assert.equal(projectSurfaceText(session.events[rSeq]!), 'tool body')
+  assert.equal(projectSurfaceText(session.snapshotEvents()[rSeq]!), 'tool body')
 })

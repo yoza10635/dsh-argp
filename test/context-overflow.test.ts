@@ -23,7 +23,7 @@ import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp context-overflow test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp context-overflow test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -68,7 +68,7 @@ function emitRequestError(
   agent: Agent,
   failure: LlmFailure,
 ): Promise<{ kind: 'retry' } | undefined> {
-  const turn = agent.session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 1
+  const turn = agent.session.snapshotEvents().findLast(event => event.type === 'turn/start')?.data.turn ?? 1
   return agentEvents(ctx, agent).waterfall(
     'agent/request-error',
     { turn, step: 1, provider: 'test', failure, retryPolicy: undefined, signal: new AbortController().signal },

@@ -18,11 +18,12 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp manual-compact test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp manual-compact test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -35,7 +36,7 @@ function appendUser(session: Session, text: string, turn: number): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }),
@@ -77,8 +78,8 @@ test('/compact: 可剪会话返回结果，只剪最老 A/R 块（U/X 不参剪�
     assert.ok(engine.records.length >= 1)
     const surface = new Set(session.surface.nodes)
     // seq 布局（无 turn/start，U1=0）：0=U1, 1=A1, 2=A2, 3=U2, 4=A3
-    assert.ok(!surface.has(1) && !surface.has(2), 'A1/A2 must be pruned')
-    assert.ok(surface.has(0) && surface.has(3) && surface.has(4), 'U anchors and latest A must survive')
+    assert.ok(!surface.has(asSeq(1)) && !surface.has(asSeq(2)), 'A1/A2 must be pruned')
+    assert.ok(surface.has(asSeq(0)) && surface.has(asSeq(3)) && surface.has(asSeq(4)), 'U anchors and latest A must survive')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -110,7 +111,7 @@ test('/compact: sourceCommandId 透传到事务事件与台账', async () => {
     assert.ok(record !== undefined)
     assert.equal(record.sourceCommandId, 'cmd-compact-42', 'record must carry the initiating command id')
     // 事务事件（compaction/start）data 带 sourceCommandId
-    const startEvent = session.events.find(e => e.type === 'compaction/start')
+    const startEvent = session.snapshotEvents().find(e => e.type === 'compaction/start')
     assert.ok(startEvent !== undefined)
     assert.equal((startEvent.data as { sourceCommandId?: string }).sourceCommandId, 'cmd-compact-42')
     // 自动压缩路径不受污染：连续 compactIfNeeded 后新记录无 sourceCommandId

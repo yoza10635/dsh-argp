@@ -89,11 +89,11 @@ const LONG_USER = '帮我修复这个报错，服务起不来了，先看日志�
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', { role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantWithToolCall(session: Session, turn: number, callId: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: {
@@ -106,7 +106,7 @@ function appendAssistantWithToolCall(session: Session, turn: number, callId: str
       ],
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -120,7 +120,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function buildCompressibleTurn(session: Session, turn: number, callId: string): { uSeq: number; aSeq: number; rSeq: number } {

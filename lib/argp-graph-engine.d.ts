@@ -446,7 +446,18 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     } | null;
     /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。 */
     nodeState(seq: number): NodeStateLabel | null;
-    /** 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。 */
+    /**
+     * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
+     *
+     * node 0 保护（2026-09-10，dsh 0.1.5 起）：宿主把 system prompt 表示为 surface node 0 的
+     * `system/message`，并在 surface.ts `assertSystemHeadRewrite` 里硬性保护——任何覆盖 node 0 的
+     * replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
+     * 本函数的 switch 只认 `user/message` / `assistant/message` / `tool/result`，其余类型（含
+     * `system/message`）**静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
+     * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
+     * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
+     * 「system prompt at surface node 0 is never selected for pruning」。
+     */
     atomize(session: Session): Atom[];
     /**
      * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，

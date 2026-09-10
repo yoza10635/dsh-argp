@@ -14,7 +14,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, CallId, createAssistantMessage, createUserMessage, type LlmFailure } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, ToolCallId, createAssistantMessage, createUserMessage, type LlmFailure } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { ArgpGraphEngine, type Atom } from '../src/argp-graph-engine.ts'
@@ -25,7 +25,7 @@ import { RecallZoom } from '../src/peratom/recall-zoom.ts'
 
 async function makeCtx(): Promise<Context> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'mount test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'mount test' } })
   return ctx
 }
 
@@ -38,7 +38,7 @@ function overflowFailure(): LlmFailure {
 }
 
 function emitRequestError(ctx: Context, agent: Agent, failure: LlmFailure): Promise<{ kind: 'retry' } | undefined> {
-  const turn = agent.session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 1
+  const turn = agent.session.snapshotEvents().findLast(event => event.type === 'turn/start')?.data.turn ?? 1
   return agentEvents(ctx, agent).waterfall(
     'agent/request-error',
     { turn, step: 1, provider: 'test', failure, retryPolicy: undefined, signal: new AbortController().signal },
@@ -55,14 +55,14 @@ function buildOverflowSession(id: string): { session: Session; bigR: number } {
     session.append('user/message', { turn, ...createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }) } as never, { surfaceOp: 'append' })
   }
   const appendAssistant = (turn: number, text: string, cid: string) => {
-    session.append('assistant/message', { turn, ...createAssistantMessage({ content: [{ type: 'text', text }, { type: 'tool-call', id: cid, name: 'run', arguments: {} }] } as never) } as never, { surfaceOp: 'append' })
+    session.append('assistant/message', { stream: [],  turn, ...createAssistantMessage({ content: [{ type: 'text', text }, { type: 'tool-call', id: cid, name: 'run', arguments: {} }] } as never) } as never, { surfaceOp: 'append' })
   }
   const appendToolResult = (turn: number, callId: string, text: string): number => {
     session.append('tool/result', {
       turn, step: 1,
       message: { role: 'user', content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text }], isError: false }], source: { kind: 'tool', callId }, id: 'm_' + callId },
     } as never, { surfaceOp: 'append' })
-    return session.events.length - 1
+    return session.snapshotEvents().length - 1
   }
   appendTurnStart(1)
   appendUser(1, '旧请求')

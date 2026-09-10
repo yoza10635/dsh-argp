@@ -12,11 +12,12 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { CompactionEngine, CompactionId } from '@deepseek-ai/dsh-compaction'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp 0-llm test persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp 0-llm test persona' } })
   await ctx.plugin(ArgpGraphEngine, {
     windowTokens: 100,
     retainTokens: 50,
@@ -33,28 +34,28 @@ function appendUser(session: Session, text: string): void {
 
 /** 模拟真实事务事件形状：compaction/start → compaction/prune → tombstone(replace) → compaction/end */
 function pushTransaction(session: Session, id: string): { startSeq: number; pruneSeq: number; endSeq: number; shadowedSeqs: number[] } {
-  const u1 = session.events.length
+  const u1 = session.snapshotEvents().length
   appendUser(session, 'shadowed user text ' + id)
-  const a1 = session.events.length
+  const a1 = session.snapshotEvents().length
   appendUser(session, 'shadowed answer text ' + id)
   const shadowedSeqs = [u1, a1]
-  const startSeq = session.events.length
+  const startSeq = session.snapshotEvents().length
   session.append('compaction/start', { compactionId: CompactionId(id), turn: 1 })
-  const pruneSeq = session.events.length
+  const pruneSeq = session.snapshotEvents().length
   session.append('compaction/prune', {
-    shadowedRange: { start: u1, end: a1 },
-    shadowedSeqs,
+    shadowedRange: { start: asSeq(u1), end: asSeq(a1) },
+    shadowedSeqs: asSeqs(shadowedSeqs),
     shadowedTokenCount: 10,
   })
-  const tombstoneSeq = session.events.length
+  const tombstoneSeq = session.snapshotEvents().length
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=' + u1 + '..' + a1 + ']' }],
     source: { kind: 'plugin', plugin: 'argp-graph' },
   }), {
-    surfaceOp: { op: 'replace', start: u1, end: a1 },
-    sourceEventSeqs: [startSeq, pruneSeq, ...shadowedSeqs],
+    surfaceOp: { op: 'replace', startSeq: asSeq(u1), endSeq: asSeq(a1) },
+    sourceEventSeqs: asSeqs([startSeq, pruneSeq, ...shadowedSeqs]),
   })
-  const endSeq = session.events.length
+  const endSeq = session.snapshotEvents().length
   session.append('compaction/end', { compactionId: CompactionId(id), turn: 1 })
   return { startSeq, pruneSeq, endSeq, shadowedSeqs }
 }
@@ -76,7 +77,7 @@ test('rebuildLedgerFromLog: unclosed start produces audit warning (A7)', async (
     const session = Session.create(SessionId('crash-unclosed'))
     engine.setSession(session)
     // 只注入 compaction/start，没有 prune/end → 未闭合（崩溃注入场景）
-    const startSeq = session.events.length
+    const startSeq = session.snapshotEvents().length
     session.append('compaction/start', { compactionId: CompactionId('c1'), turn: 1 })
     assert.equal(engine.records.length, 0)
     engine.rebuildLedgerFromLog()
@@ -114,7 +115,7 @@ test('rebuildLedgerFromLog: complete transaction rebuilds records + prunedNodeIn
     }
     // shadowed 集合包含被剪节点（recall 能查到）
     const shadowed = (engine as unknown as { shadowedSeqsOf(s: Session): Set<number> }).shadowedSeqsOf(session)
-    for (const seq of shadowedSeqs) assert.ok(shadowed.has(seq), 'seq=' + seq + ' in shadowedSeqs')
+    for (const seq of shadowedSeqs) assert.ok(shadowed.has(asSeq(seq)), 'seq=' + seq + ' in shadowedSeqs')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -161,18 +162,18 @@ test('resume flow: new engine binding an old session auto-rebuilds ledger via bi
     // 先造一个含完整事务的 session（模拟崩溃前写入的日志）
     session = Session.create(SessionId('crash-resume'))
     writer.setSession(session)
-    const u1 = session.events.length
+    const u1 = session.snapshotEvents().length
     appendUser(session, 'shadowed resume user ' + 'x'.repeat(40))
-    const a1 = session.events.length
+    const a1 = session.snapshotEvents().length
     appendUser(session, 'shadowed resume answer ' + 'y'.repeat(40))
     const shadowedSeqs = [u1, a1]
-    const startSeq = session.events.length
+    const startSeq = session.snapshotEvents().length
     session.append('compaction/start', { compactionId: CompactionId('tx-resume'), turn: 1 })
-    session.append('compaction/prune', { shadowedRange: { start: u1, end: a1 }, shadowedSeqs, shadowedTokenCount: 10 })
+    session.append('compaction/prune', { shadowedRange: { start: asSeq(u1), end: asSeq(a1) }, shadowedSeqs: asSeqs(shadowedSeqs), shadowedTokenCount: 10 })
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[elided seq=' + u1 + '..' + a1 + ']' }],
       source: { kind: 'plugin', plugin: 'argp-graph' },
-    }), { surfaceOp: { op: 'replace', start: u1, end: a1 }, sourceEventSeqs: [startSeq, ...shadowedSeqs] })
+    }), { surfaceOp: { op: 'replace', startSeq: asSeq(u1), endSeq: asSeq(a1) }, sourceEventSeqs: asSeqs([startSeq, ...shadowedSeqs]) })
     session.append('compaction/end', { compactionId: CompactionId('tx-resume'), turn: 1 })
     // writer 已通过 setSession 绑定该 session（此时 setSession 时日志为空，无重建）
     // 现在模拟崩溃：新 engine 实例绑定同一 session（resume 流程）→ 必须自动重建
@@ -186,7 +187,7 @@ test('resume flow: new engine binding an old session auto-rebuilds ledger via bi
     const rec = resumed.records[0]!
     assert.equal(rec.compactionId, 'tx-resume')
     assert.equal(rec.startEventSeq, 2)
-    assert.ok(rec.shadowedSeqs.includes(0) && rec.shadowedSeqs.includes(1))
+    assert.ok(rec.shadowedSeqs.includes(asSeq(0)) && rec.shadowedSeqs.includes(asSeq(1)))
     // type/turn 反查（问题 8）：被剪节点类型为 U（两个都是 user/message，非 plugin 源）
     const idx = resumed.prunedNodeIndex
     for (const seq of [0, 1]) {

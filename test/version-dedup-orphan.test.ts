@@ -17,11 +17,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp version-dedup orphan test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp version-dedup orphan test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -31,16 +32,16 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolCallAssistant(session: Session, turn: number, callId: string, argumentsStr: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -48,7 +49,7 @@ function appendToolCallAssistant(session: Session, turn: number, callId: string,
       content: [{ type: 'tool-call', id: callId as never, name: 'read_file', arguments: argumentsStr }],
     }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -57,7 +58,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
     step: 1,
     message: createToolResultMessage({ callId: callId as never, content: [{ type: 'text', text }], isError: false }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 /** wire 配对不变式：surface 上每个存活 tool-call 都有应答（含占位），无孤儿。 */
@@ -65,7 +66,7 @@ function assertNoOrphan(session: Session): void {
   const callIds = new Set<string>()
   const resultIds = new Set<string>()
   for (const seq of session.surface.nodes) {
-    const ev = session.events[seq] as { type: string; data?: { message?: { content?: { type: string; id?: string; toolCallId?: string }[]; source?: { callId?: string } } } }
+    const ev = session.snapshotEvents()[seq] as { type: string; data?: { message?: { content?: { type: string; id?: string; toolCallId?: string }[]; source?: { callId?: string } } } }
     const blocks = ev.data?.message?.content ?? []
     for (const b of blocks) {
       if (b.type === 'tool-call' && b.id !== undefined) callIds.add(b.id)
@@ -101,9 +102,9 @@ test('version-dedup: issuer A with cited R — A+R pruned together, no orphan (�
 
     const surface = new Set(session.surface.nodes)
     // 方案 A：A_old 与 R_old 同生共死（连带剪），无孤儿；新版本 A_new 保留（其 R 若被剪走占位墓碑）
-    assert.equal(surface.has(aOld), false, 'A_old should be deduped (连带剪 R_old)')
-    assert.equal(surface.has(rOld), false, 'R_old should be pruned together with A_old')
-    assert.ok(surface.has(aNew), 'newer A_new stays as representative')
+    assert.equal(surface.has(asSeq(aOld)), false, 'A_old should be deduped (连带剪 R_old)')
+    assert.equal(surface.has(asSeq(rOld)), false, 'R_old should be pruned together with A_old')
+    assert.ok(surface.has(asSeq(aNew)), 'newer A_new stays as representative')
 
     // 核心不变式：无孤儿（A_new 的 tool-call 必有应答，含 R_new 占位墓碑）
     assertNoOrphan(session)
@@ -136,8 +137,8 @@ test('version-dedup: uncited R — A+R deduped, no orphan (方案 A baseline)', 
     assert.ok(result !== null, 'compaction must trigger')
 
     const surface = new Set(session.surface.nodes)
-    assert.equal(surface.has(aOld), false, 'uncited A_old should be deduped')
-    assert.equal(surface.has(rOld), false, 'uncited R_old should be deduped with its issuer')
+    assert.equal(surface.has(asSeq(aOld)), false, 'uncited A_old should be deduped')
+    assert.equal(surface.has(asSeq(rOld)), false, 'uncited R_old should be deduped with its issuer')
 
     assertNoOrphan(session)
   } finally {

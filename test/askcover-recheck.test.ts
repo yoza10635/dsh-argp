@@ -21,7 +21,7 @@ import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp askcover-recheck test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp askcover-recheck test' } })
   await ctx.plugin(ArgpGraphEngine, {
     windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0,
     turnGuard: 2, closureWindowK: 999, maxPasses: 16, ...config,
@@ -34,7 +34,7 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }),
@@ -54,9 +54,9 @@ test('ask-exempt 基线：被首个 A 覆盖且无跨轮引用的 ask U，过保
   try {
     const session = Session.create(SessionId('askcover-baseline'))
     appendUser(session, '请把 DEPLOY-A7K3 的端口改回 8080？')
-    const uAsk = session.events.length - 1
+    const uAsk = session.snapshotEvents().length - 1
     appendAssistant(session, '已核对当前配置并给出回滚步骤。' + 'x'.repeat(280) + '\n{"cites":["DEPLOY-A7K3"]}', 1)
-    const a1 = session.events.length - 1
+    const a1 = session.snapshotEvents().length - 1
     appendAnchor(session, 9)
     engine.setSession(session)
 
@@ -75,9 +75,9 @@ test('P0-3 回归：跨轮引用到达（后来者 A 也 cites 该 U）→ 豁�
   try {
     const session = Session.create(SessionId('askcover-crossref'))
     appendUser(session, '请把 DEPLOY-A7K3 的端口改回 8080？')
-    const uAsk = session.events.length - 1
+    const uAsk = session.snapshotEvents().length - 1
     appendAssistant(session, '已核对当前配置并给出回滚步骤。' + 'x'.repeat(280) + '\n{"cites":["DEPLOY-A7K3"]}', 1)
-    const a1 = session.events.length - 1
+    const a1 = session.snapshotEvents().length - 1
     // 跨轮引用者：turn 9 再次 cites 同一 U → U 的保留入边不再全部来自覆盖者
     appendAssistant(session, '补记部署讨论结论。' + 'y'.repeat(280) + '\n{"cites":["DEPLOY-A7K3"]}', 9)
     appendAnchor(session, 10)
@@ -98,9 +98,9 @@ test('dialog U（非 ask）不经 ask-exempt 参剪：即使被 A cites 也只�
   try {
     const session = Session.create(SessionId('askcover-dialog'))
     appendUser(session, '背景说明：服务沿用 DEPLOY-B9X2 的部署参数，端口约定见配置库。')
-    const uDialog = session.events.length - 1
+    const uDialog = session.snapshotEvents().length - 1
     appendAssistant(session, '收到背景信息。' + 'z'.repeat(280) + '\n{"cites":["DEPLOY-B9X2"]}', 1)
-    const a1 = session.events.length - 1
+    const a1 = session.snapshotEvents().length - 1
     appendAnchor(session, 9)
     engine.setSession(session)
 

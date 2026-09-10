@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ARG_NS } from '../src/peratom/types.ts'
 import { PeratomCompressor, normalizeDecision, planReplacements } from '../src/peratom/compressor.ts'
 import type { CompressDecision, CurrentTurnCollect } from '../src/peratom/compressor.ts'
@@ -20,11 +21,11 @@ const LONG_USER = LONG_DIALOG + LONG_PASTE // dialog + 资料，>100 字符
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantWithToolCall(session: Session, turn: number, callId: string, name: string, args: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: {
@@ -37,7 +38,7 @@ function appendAssistantWithToolCall(session: Session, turn: number, callId: str
       ],
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -51,7 +52,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendTurnEnd(session: Session, turn: number, kind = 'completed'): void {
@@ -126,7 +127,7 @@ test('纯对话轮零调用（调用计数器断言）：短 user + 回复不触
   const session = Session.create(SessionId('pc-pure-dialog'))
   session.append('turn/start', { turn: 1 })
   appendUser(session, '在吗？')
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: {
@@ -139,12 +140,12 @@ test('纯对话轮零调用（调用计数器断言）：短 user + 回复不触
   appendTurnEnd(session, 1)
 
   const genBefore = session.surface.replaceGeneration
-  const eventsBefore = session.events.length
+  const eventsBefore = session.snapshotEvents().length
   const record = await h.compressor.compressCurrentTurn(session)
 
   assert.equal(record?.called, false)
   assert.equal(h.compressor.calls, 0, '零调用断言')
-  assert.equal(session.events.length, eventsBefore, '无任何事件追加')
+  assert.equal(session.snapshotEvents().length, eventsBefore, '无任何事件追加')
   assert.equal(session.surface.replaceGeneration, genBefore)
 })
 
@@ -167,7 +168,7 @@ test('中断轮零调用：turn/end aborted 的轮次整轮排除，即使含长
   assert.equal(record?.called, false)
   assert.equal(record?.skipReason, 'interrupted', '中断轮单独标记，与门控 no-candidate 区分')
   assert.equal(h.compressor.calls, 0)
-  assert.equal(session.events.find(e => e.type === 'compaction/start'), undefined, '无事务')
+  assert.equal(session.snapshotEvents().find(e => e.type === 'compaction/start'), undefined, '无事务')
 })
 
 test('assistant/message.interrupted 直挂标记同样使轮次排除（rc.2 流中取消前缀）', async t => {
@@ -176,7 +177,7 @@ test('assistant/message.interrupted 直挂标记同样使轮次排除（rc.2 流
   const session = Session.create(SessionId('pc-am-interrupted'))
   session.append('turn/start', { turn: 1 })
   appendUser(session, LONG_USER)
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: {
@@ -226,21 +227,21 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal(rf?.json_schema?.name, 'argp_peratom_turn')
 
   // 事务括号：compaction/start..end 配对且 end 无 error
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   const startIdx = kinds.lastIndexOf('compaction/start')
   const endIdx = kinds.lastIndexOf('compaction/end')
   assert.ok(startIdx > 0 && endIdx === kinds.length - 1, `start..end 括号收尾：${kinds.slice(-4).join(',')}`)
-  assert.equal((session.events[endIdx]?.data as { error?: string }).error, undefined)
+  assert.equal((session.snapshotEvents()[endIdx]?.data as { error?: string }).error, undefined)
 
   // 事件 ①：dialog replace（原位替换，compact checkpoint 署名——UI 节点关联，无 ARG_NS 标记）
-  const dialogEvent = session.events[endIdx! - 4]
+  const dialogEvent = session.snapshotEvents()[endIdx! - 4]
   assert.equal(dialogEvent?.type, 'user/message')
   const dData = dialogEvent?.data as unknown as { source?: { plugin?: string; compactionId?: string }; content?: { text: string }[]; [k: string]: unknown }
   // 2026-08-28：user 替换副本 source = compact checkpoint（宿主 CompactionNodeView 关联）
   assert.equal(dData.source?.plugin, 'compact')
   assert.ok(dData.source?.compactionId?.startsWith('argp-peratom-'), 'checkpoint carries per-atom compactionId')
   assert.equal(isArgpUserInfo(dData), false, 'dialog 副本不带 info 标记（永不剪）')
-  assert.deepEqual((dialogEvent as unknown as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp, { op: 'replace', start: uSeq, end: uSeq })
+  assert.deepEqual((dialogEvent as unknown as { surfaceOp: { op: string; startSeq: number; endSeq: number } }).surfaceOp, { op: 'replace', startSeq: asSeq(uSeq), endSeq: asSeq(uSeq) })
   assert.deepEqual(dialogEvent?.sourceEventSeqs, [uSeq])
   const expectedDialog = DIALOG_QUOTE
   assert.equal(
@@ -250,7 +251,7 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   )
 
   // 事件 ②：U-info append（info 标记 + sourceSeq + summary）
-  const infoEvent = session.events[endIdx! - 3]
+  const infoEvent = session.snapshotEvents()[endIdx! - 3]
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { [k: string]: unknown }
   assert.equal(isArgpUserInfo(iData), true, 'U-info 标记落盘')
@@ -261,7 +262,7 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal(infoEvent?.surfaceOp, 'append')
 
   // 事件 ③：tool replace 副本（dsh-session 硬约束：只许改 content，故无 ARG_NS 元数据）
-  const toolEvent = session.events[endIdx! - 2]
+  const toolEvent = session.snapshotEvents()[endIdx! - 2]
   assert.equal(toolEvent?.type, 'tool/result')
   const tData = toolEvent?.data as unknown as {
     message?: { content?: { toolCallId?: string; content?: { text: string }[] }[] }
@@ -270,14 +271,14 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal(tData.message?.content?.[0]?.content?.[0]?.text, extractText)
   assert.equal(tData.message?.content?.[0]?.toolCallId, 'c1', 'callId 配对语义保持')
   assert.equal(ARG_NS in tData, false, 'tool/result replace 只允许改 content（多键即被宿主拒绝）')
-  assert.deepEqual((toolEvent as unknown as { surfaceOp: { op: string; start: number } }).surfaceOp.op, 'replace')
+  assert.deepEqual((toolEvent as unknown as { surfaceOp: { op: string; startSeq: number } }).surfaceOp.op, 'replace')
 
   // 断言已在 flush 内联执行（未抛错）；replaceGeneration 增量 = 2 个 replace
   assert.equal(session.surface.replaceGeneration - genBefore, 2)
   // 原文仍在 append-only 日志（防干涉底座）
-  assert.ok((session.events[uSeq]!.data as { content: { text: string }[] }).content[0]!.text.includes('EADDRINUSE'), '原始 user 全文留日志')
+  assert.ok((session.snapshotEvents()[uSeq]!.data as { content: { text: string }[] }).content[0]!.text.includes('EADDRINUSE'), '原始 user 全文留日志')
   assert.equal(
-    (session.events[rSeq]!.data as { message: { content: { content: { text: string }[] }[] } }).message.content[0]!.content[0]!.text.length,
+    (session.snapshotEvents()[rSeq]!.data as { message: { content: { content: { text: string }[] }[] } }).message.content[0]!.content[0]!.text.length,
     ('EADDRINUSE stack line '.padEnd(40, '.') + '\n').repeat(20).length,
     '原始 tool result verbatim 留日志',
   )
@@ -290,14 +291,14 @@ test('两段式发射：prepareCurrentTurn 只暂存不落盘，flushStashed 才
   const { rSeq } = buildCompressibleTurn(session, 1, 'c1')
   h.respond({ splits: [], tools: [{ seq: rSeq, level: 'extract', text: 'EADDRINUSE short extract' }] })
 
-  const eventsBefore = session.events.length
+  const eventsBefore = session.snapshotEvents().length
   const record = await h.compressor.prepareCurrentTurn(session)
   assert.equal(record?.called, true)
   assert.equal(h.compressor.calls, 1)
-  assert.equal(session.events.length, eventsBefore, 'idle 阶段不动日志（tool/result replace 需 open turn）')
+  assert.equal(session.snapshotEvents().length, eventsBefore, 'idle 阶段不动日志（tool/result replace 需 open turn）')
 
   h.compressor.flushStashed(session)
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   assert.ok(kinds.includes('compaction/start') && kinds[kinds.length - 1] === 'compaction/end', 'pre-step 窗口发射事务')
 
   // 异形 decision（seq 未收集）→ 无可落地动作 → 不开空事务
@@ -306,7 +307,7 @@ test('两段式发射：prepareCurrentTurn 只暂存不落盘，flushStashed 才
   h.respond({ splits: [{ seq: 9999, quotes: [] }], tools: [] }) // 异形 seq 全部丢弃
   await h.compressor.prepareCurrentTurn(session2)
   h.compressor.flushStashed(session2)
-  assert.equal(session2.events.filter(e => e.type === 'compaction/start').length, 0, '零动作不开发务括号')
+  assert.equal(session2.snapshotEvents().filter(e => e.type === 'compaction/start').length, 0, '零动作不开发务括号')
 })
 
 // ---------------------------------------------------------------------------
@@ -327,12 +328,12 @@ test('定位失败整条回退 dialog：该消息零替换，tool 照常压缩�
   assert.equal(record?.skippedFallbackDialog, 1)
   assert.equal(record?.appliedReplaces, 1, '仅 tool replace')
 
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   const endIdx = kinds.lastIndexOf('compaction/end')
   // user 原位未被替换：end 前只有 tool/result 一个 replace 事件
   let userReplaces = 0
   for (let i = endIdx! - 1; i >= 0; i -= 1) {
-    const ev = session.events[i]!
+    const ev = session.snapshotEvents()[i]!
     if (ev.type === 'compaction/start') break
     if (ev.type === 'user/message') userReplaces += 1
   }
@@ -350,7 +351,7 @@ test('解析失败静默跳过：parseFailed 记账、零事件、不抛错', as
   assert.equal(record?.called, true)
   assert.equal(record?.parseFailed, true)
   assert.equal(h.compressor.calls, 1)
-  assert.equal(session.events.filter(e => e.type.startsWith('compaction/')).length, 0, '零事务')
+  assert.equal(session.snapshotEvents().filter(e => e.type.startsWith('compaction/')).length, 0, '零事务')
 })
 
 test('response_format 被拒时降级裸 prompt 重试一次并成功解析', async t => {
@@ -381,12 +382,12 @@ test('防重复 turn 处理：同一轮第二次 compress 直接跳过（不再�
   const first = await h.compressor.compressCurrentTurn(session)
   assert.equal(first?.called, true)
   const callsAfterFirst = h.compressor.calls
-  const eventsAfterFirst = session.events.length
+  const eventsAfterFirst = session.snapshotEvents().length
 
   const second = await h.compressor.compressCurrentTurn(session)
   assert.equal(second, null, '记账命中 → null')
   assert.equal(h.compressor.calls, callsAfterFirst)
-  assert.equal(session.events.length, eventsAfterFirst)
+  assert.equal(session.snapshotEvents().length, eventsAfterFirst)
   void uSeq
 })
 
@@ -463,7 +464,7 @@ test('无再压缩路径：U-info 副本 / checkpoint 不进候选（决策⑦�
   session.append('turn/start', { turn: 1 })
   const base = createUserMessage({ content: [{ type: 'text', text: '很长的资料聚合副本'.repeat(30) }], source: { kind: 'plugin', plugin: 'dsh-argp' } })
   session.append('user/message', { ...base, [ARG_NS]: { info: true, sourceSeq: 1, summary: 's' } } as never, { surfaceOp: 'append' })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: {
@@ -778,13 +779,13 @@ test('端到端：tools level=false（完整源码模块）→ 不替换保原�
   assert.equal(record?.appliedReplaces, 1, '仅 dialog replace（tool 因 false 跳过）')
   assert.equal(record?.skippedFalse, 1, 'skippedFalse 落账到 CompressRecord')
   // 原始 tool result 内容应原样保留在 surface（无 replace 事件）
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   const startIdx = kinds.lastIndexOf('compaction/start')
   const endIdx = kinds.lastIndexOf('compaction/end')
   let toolReplaces = 0
   for (let i = startIdx!; i <= endIdx!; i += 1) {
-    const sop = (session.events[i] as { surfaceOp?: unknown })?.surfaceOp
-    if (sop && (sop as { op: string }).op === 'replace' && (session.events[i] as { type: string }).type === 'tool/result') toolReplaces += 1
+    const sop = (session.snapshotEvents()[i] as { surfaceOp?: unknown })?.surfaceOp
+    if (sop && (sop as { op: string }).op === 'replace' && (session.snapshotEvents()[i] as { type: string }).type === 'tool/result') toolReplaces += 1
   }
   assert.equal(toolReplaces, 0, 'compaction 事务内无 tool/result replace')
   void srcMod
@@ -802,11 +803,11 @@ test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文�
   })
   const record = await h.compressor.compressCurrentTurn(session)
   assert.equal(record?.appliedReplaces, 2, 'dialog replace + tool replace')
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   const endIdx = kinds.lastIndexOf('compaction/end')
   // compaction/summary 在最后一个事务步与 end 之间（2026-08-28 UI 节点文本通道）
   assert.equal(kinds[endIdx! - 1], 'compaction/summary', 'display summary event precedes end')
-  const infoEvent = session.events[endIdx! - 3]
+  const infoEvent = session.snapshotEvents()[endIdx! - 3]
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { content?: { text: string }[]; [k: string]: unknown }
   assert.equal(iData.content?.[0]?.text, compressedInfo, 'U-info surface = 模型压缩 extract 文本')

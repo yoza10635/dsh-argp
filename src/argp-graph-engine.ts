@@ -23,7 +23,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
+import { asSeq, asSeqs, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
@@ -370,8 +370,12 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
     message: { ...(msg as object), content: newContent },
     argpCites: cites,
   } as never, {
-    surfaceOp: { op: 'replace', start: event.seq, end: event.seq },
-    sourceEventSeqs: [event.seq],
+    surfaceOp: { op: 'replace', startSeq: asSeq(event.seq), endSeq: asSeq(event.seq) },
+    // 不给 sourceEventSeqs：dsh 0.1.5 起 assistant/message 自带 provider stream，
+    // 类型层为 `sourceEventSeqs?: never`、运行时 assertProvenance 亦直接 throw
+    // （"assistant/message embeds its source stream and cannot carry sourceEventSeqs"）。
+    // 安全性：shadowedSeqsOf 已改为只认 compaction/prune.shadowedSeqs 权威账本，
+    // 不再从 replace 事件推断被遮节点，故本处省略不影响剪枝账目。
   })
 }
 
@@ -814,10 +818,14 @@ export class ArgpGraphEngine extends CompactionEngine {
         + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.',
     })
 
-    // 被剪目录（动态部分）：每轮变化的“被剪节点列表”沉到 system message 最末尾（order 9999），
-    // 让 persona + argp-contract 正文 + argp-cites 等静态 section 构成稳定前缀、可被 prefix cache 复用。
+    // 被剪目录：沉到 system message 尾部（order 9999），使 persona + argp-contract 正文 +
+    // argp-cites 等静态 section 构成稳定前缀。
     // 根因修复：原实现把动态 catalog 拼进 order:150 的契约段，导致 system message 前缀每轮变、
     // 缓存从 catalog 处断开（2026-08-22 发现，A 臂测试缓存零命中）。recall 协议不依赖其在 system 靠前。
+    // 位置说明（2026-09-10 核实）：本段文本恒为空串（frozenCatalog 首绑即冻成 ''，见 bindSession 与
+    // test/argp-graph-engine.test.ts:374/397 断言），故 order 取值对本段的缓存影响实为零——保持 9999
+    // 仅为保守不动既有排布。注意 dsh 0.1.5-rc.1 起 HARNESS_SOURCE/WEB_SURFACE/DEPLOYMENT_PERSONA_SUFFIX
+    // 被排到 10000/10100/10200，本段不再字面意义上"最后"，但三段均为会话内静态、不构成每轮 cache-miss。
     ctx.systemPrompt.section({
       name: 'argp-catalog',
       order: 9999,
@@ -1188,7 +1196,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     return nodeStateOf(this.session, seq, s => shadowed.has(s))
   }
 
-  /** 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。 */
+  /**
+   * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
+   *
+   * node 0 保护（2026-09-10，dsh 0.1.5 起）：宿主把 system prompt 表示为 surface node 0 的
+   * `system/message`，并在 surface.ts `assertSystemHeadRewrite` 里硬性保护——任何覆盖 node 0 的
+   * replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
+   * 本函数的 switch 只认 `user/message` / `assistant/message` / `tool/result`，其余类型（含
+   * `system/message`）**静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
+   * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
+   * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
+   * 「system prompt at surface node 0 is never selected for pruning」。
+   */
   atomize(session: Session): Atom[] {
     const atoms: Atom[] = []
     for (const seq of session.surface.nodes) {
@@ -1756,7 +1775,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const chosen = candidates[0]
     if (chosen === undefined) return null
     const surfaceSeqs = session.surface.nodes
-    const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
+    const position = new Map<number, number>(surfaceSeqs.map((seq, i) => [seq, i]))
     const chosenSet = new Set(chosen.prunableSeqs)
     const bySeq = new Map(atoms.map(a => [a.seq, a]))
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
@@ -1949,7 +1968,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // B 须等全部引用方被剪才解锁，天然正确；重复 cites 也按边数逐条减。
     let curInDegree = inDegree
     const surfaceSeqs = [...session.surface.nodes]
-    const position = new Map(surfaceSeqs.map((seq, i) => [seq, i]))
+    const position = new Map<number, number>(surfaceSeqs.map((seq, i) => [seq, i]))
     const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     // P4：U-info 按 R 待遇（eff=0，无 selfImportance，靠边权重/排序）；普通 U=3。
@@ -2292,8 +2311,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     signal?.throwIfAborted()
     const session = agent.session
     const nodes = session.surface.nodes
-    const startIdx = nodes.indexOf(start)
-    const endIdx = nodes.indexOf(end)
+    const startIdx = nodes.indexOf(asSeq(start))
+    const endIdx = nodes.indexOf(asSeq(end))
     if (startIdx === -1) throw new Error('compactRegion: start seq ' + start + ' not found in surface')
     if (endIdx === -1) throw new Error('compactRegion: end seq ' + end + ' not found in surface')
     if (startIdx > endIdx) throw new Error('compactRegion: start seq ' + start + ' is after end seq ' + end + ' on the surface')
@@ -2390,8 +2409,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 事件，范围=该单区间，与官方 compaction-tool-result-pruner 同模式；末尾 summary 的
         // 总范围 claim 被紧随的 off-surface compaction/end 清掉，无契约冲突。
         const intervalPrune = session.append('compaction/prune', {
-          shadowedRange: { start, end },
-          shadowedSeqs: iv.seqs,
+          shadowedRange: { start: asSeq(start), end: asSeq(end) },
+          shadowedSeqs: asSeqs(iv.seqs),
           shadowedTokenCount: Math.ceil(iv.chars / this.charsPerToken),
         })
         if (firstPruneSeq === undefined) firstPruneSeq = intervalPrune.seq
@@ -2415,8 +2434,8 @@ export class ArgpGraphEngine extends CompactionEngine {
                 }],
               },
             } as never, {
-              surfaceOp: { op: 'replace', start: ts.seq, end: ts.seq },
-              sourceEventSeqs: [startEvent.seq, intervalPrune.seq, ...iv.seqs],
+              surfaceOp: { op: 'replace', startSeq: asSeq(ts.seq), endSeq: asSeq(ts.seq) },
+              sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
             })
             intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
             continue
@@ -2432,8 +2451,8 @@ export class ArgpGraphEngine extends CompactionEngine {
           content: [{ type: 'text', text }],
           source: compactCheckpointSource(compactionId),
         }), {
-          surfaceOp: { op: 'replace', start, end },
-          sourceEventSeqs: [startEvent.seq, intervalPrune.seq, ...iv.seqs],
+          surfaceOp: { op: 'replace', startSeq: asSeq(start), endSeq: asSeq(end) },
+          sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
         })
         intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
       }
@@ -2485,13 +2504,13 @@ export class ArgpGraphEngine extends CompactionEngine {
       // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。
       return {
         compactionId,
-        startSeq: startEvent.seq,
-        summarySeq: firstPruneSeq ?? startEvent.seq,
-        endSeq: endEvent.seq,
+        startSeq: asSeq(startEvent.seq),
+        summarySeq: asSeq(firstPruneSeq ?? startEvent.seq),
+        endSeq: asSeq(endEvent.seq),
         summary: resolvedTombstones.map(ts => ({ type: 'text', text: ts.type === 'tool'
           ? '[elided tool result; recall_pruned(seq) retrieves original]' : ts.text })),
-        shadowedRange: { start: first, end: last },
-        shadowedSeqs: allSeqs,
+        shadowedRange: { start: asSeq(first), end: asSeq(last) },
+        shadowedSeqs: asSeqs(allSeqs),
         shadowedTokenCount,
       }
     } catch (error: unknown) {

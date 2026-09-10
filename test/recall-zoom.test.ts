@@ -15,8 +15,9 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { eventText } from '../src/argp-graph-engine.ts'
 import { PeratomCompressor } from '../src/peratom/compressor.ts'
 import { RecallZoom } from '../src/peratom/recall-zoom.ts'
@@ -36,7 +37,7 @@ const BIG_ORIGINAL =
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -50,7 +51,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendTurnStart(session: Session, turn: number): void {
@@ -84,7 +85,7 @@ interface ZoomHarness {
 
 async function makeZoom(config: Record<string, unknown> = {}): Promise<ZoomHarness> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'recall-zoom test persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'recall-zoom test persona' } })
   const zoom = new RecallZoom(ctx, { detailBudgetTokens: 2000, ...config })
   return { ctx, zoom }
 }
@@ -92,7 +93,7 @@ async function makeZoom(config: Record<string, unknown> = {}): Promise<ZoomHarne
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
   const res = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId('rz-' + name + '-' + Math.random().toString(36).slice(2)),
+    callId: ToolCallId('rz-' + name + '-' + Math.random().toString(36).slice(2)),
     name,
     arguments: args,
   })
@@ -158,7 +159,7 @@ test('recall_summary 档1（stored）：U-info 副本 data[ARG_NS].summary 直�
   // U-info 副本（replace 原文，携带 ARG_NS.summary）
   const copyMsg = createUserMessage({ content: [{ type: 'text', text: '（U-info 副本）' }], source: { kind: 'plugin', plugin: 'peratom-compressor' } })
   session.append('user/message', { ...copyMsg, [ARG_NS]: { info: true, sourceSeq: origU, summary: 'INFO-SUMMARY-ABC：用户粘贴了配置资料' } } as never,
-    { surfaceOp: { op: 'replace', start: origU, end: origU }, sourceEventSeqs: [origU] })
+    { surfaceOp: { op: 'replace', startSeq: asSeq(origU), endSeq: asSeq(origU) }, sourceEventSeqs: asSeqs([origU]) })
   appendTurnEnd(session, 1)
   h.zoom.setSession(session)
 
@@ -179,13 +180,13 @@ test('recall_summary 档2（copy）：tool/result extract 副本正文（无 ARG
   h.zoom.setSession(session)
   const rSeq = 2
   // extract 副本（replace 原文 R，正文=extract，无 ARG_NS；保留 type: 'tool-result' 使 eventText 可投影）
-  const origData = session.events[rSeq]!.data as unknown as { message: { content: Array<Record<string, unknown>> } }
+  const origData = session.snapshotEvents()[rSeq]!.data as unknown as { message: { content: Array<Record<string, unknown>> } }
   const origMsg = origData.message
   const origBlock = origMsg.content[0]!
   session.append('tool/result', {
-    ...(session.events[rSeq]!.data as object),
+    ...(session.snapshotEvents()[rSeq]!.data as object),
     message: { ...origMsg, content: [{ ...origBlock, content: [{ type: 'text', text: 'EXTRACT-ONLY: EADDRINUSE at port 3000' }] }] },
-  } as never, { surfaceOp: { op: 'replace', start: rSeq, end: rSeq }, sourceEventSeqs: [rSeq] })
+  } as never, { surfaceOp: { op: 'replace', startSeq: asSeq(rSeq), endSeq: asSeq(rSeq) }, sourceEventSeqs: asSeqs([rSeq]) })
 
   const out = await runTool(h.ctx, 'recall_summary', { seq: rSeq })
   assert.ok(out.includes('EXTRACT-ONLY'), 'must return the extract copy text: ' + out)
@@ -349,7 +350,7 @@ test('enabled=false：不注册工具（直驱入口仍可用）', async t => {
   // 工具未注册 → 路由返回 unknown tool 错误（探针实证：不抛错，返回 isError 结果）
   const res = await h.ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId('rz-disabled-' + Math.random().toString(36).slice(2)),
+    callId: ToolCallId('rz-disabled-' + Math.random().toString(36).slice(2)),
     name: 'recall_detail',
     arguments: { seq: 2 },
   })

@@ -2,13 +2,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp 0-llm test persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp 0-llm test persona' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -18,7 +19,7 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -73,10 +74,10 @@ test('extractCites: bare JSON, fenced JSON, empty cites, invalid, absent', () =>
 test('eventText: user/assistant/tool-result/tool-call and reasoning exclusion', () => {
   const session = Session.create(SessionId('event-text-test'))
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'user text' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  const uSeq = session.events.length - 1
+  const uSeq = session.snapshotEvents().length - 1
   assert.equal(eventText(session, uSeq), 'user text')
 
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: createAssistantMessage({
@@ -84,7 +85,7 @@ test('eventText: user/assistant/tool-result/tool-call and reasoning exclusion', 
       content: [{ type: 'reasoning', text: 'hidden' }, { type: 'text', text: 'assistant text' }],
     }),
   }, { surfaceOp: 'append' })
-  const aSeq = session.events.length - 1
+  const aSeq = session.snapshotEvents().length - 1
   assert.equal(eventText(session, aSeq), 'assistant text')
 
   session.append('tool/result', {
@@ -97,11 +98,11 @@ test('eventText: user/assistant/tool-result/tool-call and reasoning exclusion', 
       id: 'm_1',
     },
   } as never, { surfaceOp: 'append' })
-  const rSeq = session.events.length - 1
+  const rSeq = session.snapshotEvents().length - 1
   assert.equal(eventText(session, rSeq), 'tool text')
 
   session.append('tool/call', { turn: 1, name: 'read_file', arguments: '{"path":"x"}' } as never)
-  const tSeq = session.events.length - 1
+  const tSeq = session.snapshotEvents().length - 1
   assert.equal(eventText(session, tSeq), '[tool-call read_file({"path":"x"})]')
 })
 
@@ -111,7 +112,7 @@ test('atomize: U/A/R/X types, cites stripping, toolCallIds', async () => {
     const session = Session.create(SessionId('atomize-test'))
     appendUser(session, 'question')
     appendAssistant(session, 'answer\n{"cites":["question"]}', 1)
-    const aSeq = session.events.length - 1
+    const aSeq = session.snapshotEvents().length - 1
     const atoms = engine.atomize(session)
     assert.equal(atoms.length, 2)
     assert.equal(atoms[0]?.type, 'U')
@@ -173,9 +174,9 @@ test('compactIfNeeded: prunes old A nodes, never U, and records one transaction'
     }
     assert.ok(record.shadowedSeqs.length >= 2)
     const stillSurface = new Set(session.surface.nodes)
-    const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
+    const userSeq = [...session.snapshotEvents()].findIndex(e => e.type === 'user/message')
     if (engine.closurePrunes.length === 0) {
-      assert.ok(stillSurface.has(userSeq))
+      assert.ok(stillSurface.has(asSeq(userSeq)))
     }
     for (const a of record.prunedAtoms) {
       assert.equal(engine.recall(a.seq) !== null, true)
@@ -217,9 +218,9 @@ test('compactRegion: prunes a balanced A/R span and leaves U on surface', async 
     appendUser(session, 'user anchor')
     const a1Text = 'A1:' + 'x'.repeat(200)
     appendAssistant(session, a1Text, 1)
-    const a1Seq = session.events.length - 1
+    const a1Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A2:' + 'y'.repeat(200), 2)
-    const a2Seq = session.events.length - 1
+    const a2Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A3:' + 'z'.repeat(200), 3)
     engine.setSession(session)
     const result = await engine.compactRegion(a1Seq, a2Seq, { session } as never)
@@ -227,14 +228,14 @@ test('compactRegion: prunes a balanced A/R span and leaves U on surface', async 
     assert.equal(engine.records.length, 1)
     const record = engine.records[0]
     assert.ok(record !== undefined)
-    assert.equal(record.shadowedSeqs.includes(a1Seq), true)
-    assert.equal(record.shadowedSeqs.includes(a2Seq), true)
+    assert.equal(record.shadowedSeqs.includes(asSeq(a1Seq)), true)
+    assert.equal(record.shadowedSeqs.includes(asSeq(a2Seq)), true)
     assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
     const stillSurface = new Set(session.surface.nodes)
-    const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
-    assert.ok(stillSurface.has(userSeq))
-    assert.ok(!stillSurface.has(a1Seq))
-    assert.ok(!stillSurface.has(a2Seq))
+    const userSeq = [...session.snapshotEvents()].findIndex(e => e.type === 'user/message')
+    assert.ok(stillSurface.has(asSeq(userSeq)))
+    assert.ok(!stillSurface.has(asSeq(a1Seq)))
+    assert.ok(!stillSurface.has(asSeq(a2Seq)))
   } finally {
     await ctx.fiber.dispose()
   }
@@ -260,8 +261,8 @@ test('compactNow: selects oldest A/R block and prunes it without LLM', async () 
     assert.ok(record !== undefined)
     assert.equal(record.prunedAtoms.every(a => a.type === 'A'), true)
     const stillSurface = new Set(session.surface.nodes)
-    const userSeq = [...session.events].findIndex(e => e.type === 'user/message')
-    assert.ok(stillSurface.has(userSeq))
+    const userSeq = [...session.snapshotEvents()].findIndex(e => e.type === 'user/message')
+    assert.ok(stillSurface.has(asSeq(userSeq)))
   } finally {
     await ctx.fiber.dispose()
   }
@@ -277,7 +278,7 @@ test('prune emits compaction/prune (ledger) + compaction/summary (UI display)', 
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
     engine.setSession(session)
     await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
-    const events = [...session.events]
+    const events = [...session.snapshotEvents()]
     const pruneEvents = events.filter(e => e.type === 'compaction/prune')
     const summaryEvents = events.filter(e => e.type === 'compaction/summary')
     assert.equal(pruneEvents.length, 1)
@@ -373,7 +374,7 @@ test('argp-catalog is frozen: section text does not re-evaluate live when a prun
     const before = await catalogTextOf(ctx)
     assert.equal(before, '', 'frozen catalog must be empty before any prune')
     // 直接往日志注入 compaction/prune 事件（不走 pruneIntervals，故不会刷新 frozenCatalog）
-    session.append('compaction/prune', { shadowedSeqs: [0] } as never)
+    session.append('compaction/prune', { shadowedSeqs: asSeqs([0]) } as never)
     // sanity：live catalogText 此刻会反映被剪节点
     assert.ok(engine.catalogText(20, 70).length > 0, 'live catalogText must reflect the injected prune')
     // 冻结段必须保持 bind 时的快照，不随实时账本变化（旧实现这里会跟着变 → 缓存击穿）
@@ -482,17 +483,17 @@ test('pressure accounting: usage anchor (incl. cacheWriteTokens) + increment dri
     // 使引擎的 usage 锚点 handler 收到事件。
     const bridge = (ev: unknown): void => { (ctx as unknown as { emit: (n: string, ...a: unknown[]) => void }).emit('session/event', session, ev) }
     appendUser(session, 'user anchor')
-    bridge(session.events[session.events.length - 1])
+    bridge(session.snapshotEvents()[session.snapshotEvents().length - 1])
     // 锚点事件：assistant/message 携带 provider usage；cacheWriteTokens 必须计入
     // 锚点和（Anthropic 风格 provider）——本例 30+0+45=75，缺 cacheWrite 则 30，
     // 两种口径下只有含 cacheWrite 的锚定估计能过 200 触发线。
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [], 
       turn: 1,
       step: 1,
       message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'a' }] }),
       usage: { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 45 },
     }, { surfaceOp: 'append' })
-    bridge(session.events[session.events.length - 1])
+    bridge(session.snapshotEvents()[session.snapshotEvents().length - 1])
     appendAssistant(session, 'B2:' + 'x'.repeat(247), 2)
     appendAssistant(session, 'B3:' + 'y'.repeat(247), 3)
     engine.setSession(session)
@@ -549,7 +550,7 @@ test('version dedup: older duplicate A is pruned while newer copy stays eligible
     appendUser(session, 'user anchor')
     const dupText = 'DUP:' + 'x'.repeat(30)
     appendAssistant(session, dupText, 1)
-    const oldSeq = session.events.length - 1
+    const oldSeq = session.snapshotEvents().length - 1
     appendAssistant(session, dupText, 2)
     appendAssistant(session, 'A3:' + 'y'.repeat(300), 3)
     appendAssistant(session, 'A4:' + 'z'.repeat(300), 4)
@@ -593,13 +594,13 @@ test('regression: per-atom in-place compression is NOT counted as pruned (no fal
   try {
     const session = Session.create(SessionId('peratom-not-pruned'))
     appendUser(session, 'original user content ' + 'x'.repeat(50))
-    const uSeq = session.events.length - 1
+    const uSeq = session.snapshotEvents().length - 1
     // per-atom 原地压缩形态：user 副本 replace 原文（start===end、sourceEventSeqs=[原 seq]），
     // **不**发 compaction/prune（peratom/compressor.ts 的写回路径无剪枝事务）。
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[compressed copy]' }],
       source: { kind: 'plugin', plugin: 'dsh-argp' },
-    }), { surfaceOp: { op: 'replace', start: uSeq, end: uSeq }, sourceEventSeqs: [uSeq] })
+    }), { surfaceOp: { op: 'replace', startSeq: asSeq(uSeq), endSeq: asSeq(uSeq) }, sourceEventSeqs: asSeqs([uSeq]) })
     engine.setSession(session)
 
     // 剪枝账本必须为空：压缩原子不算被剪
@@ -622,17 +623,17 @@ test('regression: real prune transaction (compaction/prune) IS counted as pruned
     const session = Session.create(SessionId('real-prune-transaction'))
     appendUser(session, 'user anchor')
     appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
-    const aSeq = session.events.length - 1
+    const aSeq = session.snapshotEvents().length - 1
     // 模拟 pruneIntervals 的权威事务：compaction/prune 携带 shadowedSeqs + tombstone replace
-    session.append('compaction/prune', { shadowedRange: { start: aSeq, end: aSeq }, shadowedSeqs: [aSeq], shadowedTokenCount: 50 })
+    session.append('compaction/prune', { shadowedRange: { start: asSeq(aSeq), end: asSeq(aSeq) }, shadowedSeqs: asSeqs([aSeq]), shadowedTokenCount: 50 })
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[elided seq=' + aSeq + ': pruned by ARGP]' }],
       source: { kind: 'plugin', plugin: 'argp-test' },
-    }), { surfaceOp: { op: 'replace', start: aSeq, end: aSeq }, sourceEventSeqs: [aSeq] })
+    }), { surfaceOp: { op: 'replace', startSeq: asSeq(aSeq), endSeq: asSeq(aSeq) }, sourceEventSeqs: asSeqs([aSeq]) })
     engine.setSession(session)
 
     const shadowed = (engine as unknown as { shadowedSeqsOf(s: Session): Set<number> }).shadowedSeqsOf(session)
-    assert.ok(shadowed.has(aSeq), 'real pruned node must be in the shadowed ledger')
+    assert.ok(shadowed.has(asSeq(aSeq)), 'real pruned node must be in the shadowed ledger')
     assert.ok(engine.catalogText().includes('[context] Compression removed'), 'catalog must report the real removal')
     assert.ok(engine.recall(aSeq) !== null, 'recall must hit a genuinely pruned node')
   } finally {
@@ -645,7 +646,7 @@ test('compactRegion: balanced tool-call/result span can be pruned without orphan
   try {
     const session = Session.create(SessionId('pairing-region-test'))
     appendUser(session, 'user anchor')
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [], 
       turn: 1,
       step: 1,
       message: createAssistantMessage({
@@ -653,13 +654,13 @@ test('compactRegion: balanced tool-call/result span can be pruned without orphan
         content: [{ type: 'tool-call', id: 'call_1' as never, name: 'read_file', arguments: '{"path":"x"}' }],
       }),
     }, { surfaceOp: 'append' })
-    const aToolSeq = session.events.length - 1
+    const aToolSeq = session.snapshotEvents().length - 1
     session.append('tool/result', {
       turn: 1,
       step: 1,
       message: createToolResultMessage({ callId: 'call_1' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
     }, { surfaceOp: 'append' })
-    const rSeq = session.events.length - 1
+    const rSeq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
     engine.setSession(session)
     const result = await engine.compactRegion(aToolSeq, rSeq, { session } as never)
@@ -682,7 +683,7 @@ test('orphan fix: solo-R adjacent to prunable atom keeps own tool tombstone (no 
     const session = Session.create(SessionId('orphan-mixed-interval-test'))
     appendUser(session, 'user anchor')
     // issuer A1：带 tool-call，本身不被剪（新近/入度保护不重要，只要不在 pruned 集）
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [], 
       turn: 1,
       step: 1,
       message: createAssistantMessage({
@@ -690,24 +691,24 @@ test('orphan fix: solo-R adjacent to prunable atom keeps own tool tombstone (no 
         content: [{ type: 'tool-call', id: 'call_1' as never, name: 'read_file', arguments: '{"path":"x"}' }],
       }),
     }, { surfaceOp: 'append' })
-    const aSeq = session.events.length - 1
+    const aSeq = session.snapshotEvents().length - 1
     // 大 R（未被 cites 引用）——与后续 A2 位置连续，旧代码会合并成混剪区间
     session.append('tool/result', {
       turn: 1,
       step: 1,
       message: createToolResultMessage({ callId: 'call_1' as never, content: [{ type: 'text', text: 'R1:' + 'r'.repeat(300) }], isError: false }),
     }, { surfaceOp: 'append' })
-    const rSeq = session.events.length - 1
+    const rSeq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
-    const a2Seq = session.events.length - 1
+    const a2Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A3: latest anchor.', 3)
     engine.setSession(session)
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null)
-    assert.ok(result.shadowedSeqs.includes(rSeq))
-    assert.ok(session.surface.nodes.includes(aSeq), 'issuer A must survive')
+    assert.ok(result.shadowedSeqs.includes(asSeq(rSeq)))
+    assert.ok(session.surface.nodes.includes(asSeq(aSeq)), 'issuer A must survive')
     // R 的墓碑必须是 tool 占位（replace 事件，保 callId），而不是 user/message 文本墓碑
-    const toolTombstone = [...session.events].find(e => {
+    const toolTombstone = [...session.snapshotEvents()].find(e => {
       const ev = e as { type?: string; surfaceOp?: { op?: string }; data?: { message?: { source?: { callId?: string } } } }
       return ev.type === 'tool/result' && ev.surfaceOp?.op === 'replace' && ev.data?.message?.source?.callId === 'call_1'
     })
@@ -724,7 +725,7 @@ test('orphan fix: solo-R adjacent to prunable atom keeps own tool tombstone (no 
     const callIds = new Set<string>()
     const resultIds = new Set<string>()
     for (const seq of session.surface.nodes) {
-      const ev = session.events[seq] as { type: string; data?: { message?: { content?: { type: string; id?: string; toolCallId?: string }[]; source?: { callId?: string } } } }
+      const ev = session.snapshotEvents()[seq] as { type: string; data?: { message?: { content?: { type: string; id?: string; toolCallId?: string }[]; source?: { callId?: string } } } }
       const blocks = ev.data?.message?.content ?? []
       for (const b of blocks) {
         if (b.type === 'tool-call' && b.id !== undefined) callIds.add(b.id)
@@ -761,7 +762,7 @@ test('production-like: repeated synthetic pruning yields multiple transactions w
     if (engine.closurePrunes.length === 0) {
       assert.ok(engine.records.every(r => r.prunedAtoms.every(a => a.type !== 'U')))
     }
-    const pruneEvents = [...session.events].filter(e => e.type === 'compaction/prune')
+    const pruneEvents = [...session.snapshotEvents()].filter(e => e.type === 'compaction/prune')
     // 2026-09-01：pruneIntervals 改为逐区间发 prune（每区间一个 shadow-price 事件，对齐宿主
     // foldSurfaceProjection 严格相等契约）。每事务 prune 数 = 该事务 intervals 数，
     // 总 prune 数 = 各事务 intervals 之和（单区间事务仍为 1）。
@@ -796,7 +797,7 @@ test('regression: prune event stream survives host foldSurfaceProjection replay 
     const SURFACE = new Set(['user/message', 'assistant/message', 'tool/result'])
     let claim: Claim | undefined
     const contradictions: string[] = []
-    for (const e of session.events) {
+    for (const e of session.snapshotEvents()) {
       if (e.type === 'compaction/summary' || e.type === 'compaction/prune') {
         const d = e.data as { shadowedRange?: { start?: number; end?: number } }
         if (d.shadowedRange?.start !== undefined && d.shadowedRange?.end !== undefined) {
@@ -804,18 +805,61 @@ test('regression: prune event stream survives host foldSurfaceProjection replay 
         }
         continue
       }
-      const so = (e as { surfaceOp?: { op?: string; start?: number; end?: number } }).surfaceOp
+      const so = (e as { surfaceOp?: { op?: string; startSeq?: number; endSeq?: number } }).surfaceOp
       if (!so || !SURFACE.has(e.type)) { claim = undefined; continue }
       if (so.op === 'append') { claim = undefined; continue }
       if (so.op === 'replace' && claim !== undefined) {
-        if (claim.start !== so.start || claim.end !== so.end) {
-          contradictions.push('replace ' + so.start + '-' + so.end + ' @seq=' + e.seq
+        if (claim.start !== so.startSeq || claim.end !== so.endSeq) {
+          contradictions.push('replace ' + so.startSeq + '-' + so.endSeq + ' @seq=' + e.seq
             + ' vs ' + claim.kind + '@' + claim.at + ' covers ' + claim.start + '-' + claim.end)
         }
         claim = undefined
       }
     }
     assert.deepEqual(contradictions, [], 'no shadow-price claim/replace range mismatch (host resume would throw)')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// node-0 保护（2026-09-10，dsh 0.1.5 起）：宿主把 system prompt 表示为 surface node 0 的
+// `system/message`，并在 core session surface.ts 的 assertSystemHeadRewrite 里硬性保护——覆盖
+// node 0 的 replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
+// 本测试同时守护两件事：① ARGP 的 atomize 跳过 system 节点、不产出原子；
+// ② 真实剪枝成功落地（宿主断言未触发）且任何 replace 都不覆盖 node 0。
+test('system prompt at surface node 0 is never selected for pruning (host-protected head)', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('node0-protect-test'))
+    session.append('system/message', {
+      turn: 0,
+      step: 0,
+      message: createSystemMessage('you are a deterministic compaction test agent', 'argp-test'),
+    }, { surfaceOp: 'append' })
+    const headSeq = session.snapshotEvents()[0]!.seq
+    assert.equal(session.surface.nodes[0], headSeq, 'system/message must occupy surface node 0')
+
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+
+    const atoms = engine.atomize(session)
+    assert.equal(atoms.some(a => a.seq === headSeq), false, 'system/message must not become an atom')
+
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, 'must have pruned at least one interval')
+
+    const replaces = [...session.snapshotEvents()]
+      .map(e => (e as { surfaceOp?: { op?: string; startSeq?: number; endSeq?: number } }).surfaceOp)
+      .filter((so): so is { op: string; startSeq: number; endSeq: number } =>
+        so !== undefined && so.op === 'replace')
+    assert.ok(replaces.length > 0, 'prune must have emitted replace ops')
+    for (const so of replaces) {
+      assert.notEqual(so.startSeq, headSeq, 'replace must never start at the system prompt node')
+      assert.notEqual(so.endSeq, headSeq, 'replace must never end at the system prompt node')
+    }
   } finally {
     await ctx.fiber.dispose()
   }
@@ -926,11 +970,11 @@ test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async
   try {
     const session = Session.create(SessionId('closure-prune-test'))
     appendUser(session, 'task one')
-    const u1Seq = session.events.length - 1
+    const u1Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
-    const a1Seq = session.events.length - 1
+    const a1Seq = session.snapshotEvents().length - 1
     appendUser(session, 'task two')
-    const u2Seq = session.events.length - 1
+    const u2Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
     engine.setSession(session)
     const atoms = engine.atomize(session)
@@ -941,9 +985,9 @@ test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async
     const record = engine.records[0]
     assert.ok(record !== undefined)
     const stillSurface = new Set(session.surface.nodes)
-    assert.ok(!stillSurface.has(u1Seq))
-    assert.ok(!stillSurface.has(a1Seq))
-    assert.ok(stillSurface.has(u2Seq)) // task two user
+    assert.ok(!stillSurface.has(asSeq(u1Seq)))
+    assert.ok(!stillSurface.has(asSeq(a1Seq)))
+    assert.ok(stillSurface.has(asSeq(u2Seq))) // task two user
   } finally {
     await ctx.fiber.dispose()
   }
@@ -954,13 +998,13 @@ test('closure lifecycle: dependent closure with incoming edge is not pruned firs
   try {
     const session = Session.create(SessionId('closure-dependent-test'))
     appendUser(session, 'task one')
-    const u1Seq = session.events.length - 1
+    const u1Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
-    const a1Seq = session.events.length - 1
+    const a1Seq = session.snapshotEvents().length - 1
     appendUser(session, 'task two')
-    const u2Seq = session.events.length - 1
+    const u2Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
-    const a2Seq = session.events.length - 1
+    const a2Seq = session.snapshotEvents().length - 1
     engine.setSession(session)
     const atoms = engine.atomize(session)
     const a1 = atoms.find(a => a.seq === a1Seq)
@@ -973,9 +1017,9 @@ test('closure lifecycle: dependent closure with incoming edge is not pruned firs
     assert.equal(engine.closurePrunes.length, 1)
     assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq)
     const stillSurface = new Set(session.surface.nodes)
-    assert.ok(stillSurface.has(u2Seq))
-    assert.ok(stillSurface.has(a2Seq))
-    assert.ok(!stillSurface.has(u1Seq))
+    assert.ok(stillSurface.has(asSeq(u2Seq)))
+    assert.ok(stillSurface.has(asSeq(a2Seq)))
+    assert.ok(!stillSurface.has(asSeq(u1Seq)))
   } finally {
     await ctx.fiber.dispose()
   }
@@ -994,7 +1038,7 @@ test('closure tombstone: includes closure id and root preview', async () => {
     const { edges, inDegree } = engine.buildGraph(atoms)
     const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
     assert.ok(result !== null)
-    const tombstone = [...session.events].find(e => e.type === 'user/message'
+    const tombstone = [...session.snapshotEvents()].find(e => e.type === 'user/message'
       && (e.data as { content?: { type: string; text: string }[] }).content?.some(b => b.text.includes('[elided closure')))
     assert.ok(tombstone !== undefined)
     const text = (tombstone.data as { content: { type: string; text: string }[] }).content.map(b => b.text).join('')
@@ -1031,18 +1075,18 @@ test('buildGraph prefix guard: ASCII>=4 or CJK>=2 chars (Q5)', async () => {
   try {
     const session = Session.create(SessionId('prefix-guard-test'))
     appendUser(session, 'the quick brown fox jumps over the lazy dog')
-    const uSeq = session.events.length - 1
+    const uSeq = session.snapshotEvents().length - 1
     // 过短 ASCII 前缀（“the”=3 < 4）→ 拒
     appendAssistant(session, 'ans1 {"cites":[{"t":"the","l":"s"}]}', 1)
-    const aShortSeq = session.events.length - 1
+    const aShortSeq = session.snapshotEvents().length - 1
     // 长前缀（“the quick” >= 4）→ 放行
     appendAssistant(session, 'ans2 {"cites":[{"t":"the quick","l":"s"}]}', 2)
-    const aLongSeq = session.events.length - 1
+    const aLongSeq = session.snapshotEvents().length - 1
     // CJK 双字（“读书”=2 wide）→ 放行且命中含中文的 U
     appendUser(session, '读书使人进步')
-    const uCjkSeq = session.events.length - 1
+    const uCjkSeq = session.snapshotEvents().length - 1
     appendAssistant(session, 'ans3 {"cites":[{"t":"读书","l":"s"}]}', 3)
-    const aCjkSeq = session.events.length - 1
+    const aCjkSeq = session.snapshotEvents().length - 1
     const atoms = engine.atomize(session)
     const { edges } = engine.buildGraph(atoms)
     const aShort = atoms.find(a => a.seq === aShortSeq)
@@ -1066,7 +1110,7 @@ test('A10 narrow guard: tool A with R group and no external refs stays protected
     const session = Session.create(SessionId('a10-narrow-test'))
     appendUser(session, 'user anchor')
     // 工具 A：带 R 组但漏 cites → 无外部入边 → 结构性保护（不可剪）
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [], 
       turn: 1, step: 1,
       message: createAssistantMessage({
         source: { provider: 'test', model: 'test' },
@@ -1076,22 +1120,22 @@ test('A10 narrow guard: tool A with R group and no external refs stays protected
         ],
       }),
     }, { surfaceOp: 'append' })
-    const aSeq = session.events.length - 1
+    const aSeq = session.snapshotEvents().length - 1
     session.append('tool/result', {
       turn: 1, step: 1,
       message: createToolResultMessage({ callId: 'call_a' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
     }, { surfaceOp: 'append' })
-    const rSeq = session.events.length - 1
+    const rSeq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A3:' + 'y'.repeat(300), 3)
     appendAssistant(session, 'A4:' + 'z'.repeat(300), 4)
     engine.setSession(session)
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null, 'session must prune something (protected nodes are excluded from candidates)')
-    assert.ok(!result.shadowedSeqs.includes(aSeq), 'protected tool A must not be in shadowed set')
+    assert.ok(!result.shadowedSeqs.includes(asSeq(aSeq)), 'protected tool A must not be in shadowed set')
     // 2026-08-23 半拆组：R 独立可剪（tool 占位墓碑配对 A 的 tool_calls，协议安全），
     // A10 结构性保护只落在 A 上；A 无论 R 是否被剪都必须保留（闭包不整体消失）。
     const surface = new Set(session.surface.nodes)
-    assert.ok(surface.has(aSeq), 'tool A stays in surface whether or not R is pruned')
+    assert.ok(surface.has(asSeq(aSeq)), 'tool A stays in surface whether or not R is pruned')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -1102,7 +1146,7 @@ test('A10 narrow guard: tool A with externally-cited R becomes prunable (Q1 cont
   try {
     const session = Session.create(SessionId('a10-narrow-test2'))
     appendUser(session, 'user anchor')
-    session.append('assistant/message', {
+    session.append('assistant/message', { stream: [], 
       turn: 1, step: 1,
       message: createAssistantMessage({
         source: { provider: 'test', model: 'test' },
@@ -1116,7 +1160,7 @@ test('A10 narrow guard: tool A with externally-cited R becomes prunable (Q1 cont
       turn: 1, step: 1,
       message: createToolResultMessage({ callId: 'call_b' as never, content: [{ type: 'text', text: 'file body' }], isError: false }),
     }, { surfaceOp: 'append' })
-    const r2Seq = session.events.length - 1
+    const r2Seq = session.snapshotEvents().length - 1
     // 另一个 A cites 该 R → R 有外部语义入边
     appendAssistant(session, 'later cites R {"cites":[{"t":"file body","l":"s"}]}', 2)
     appendAssistant(session, 'A5:' + 'y'.repeat(300), 5)
@@ -1143,7 +1187,7 @@ test('A4 chainLen: 3 identical R versions collapse to survivor chainLen=3, dup=2
     }
     // 对应的三个 issuer A（同文本 → A 去重成一条链）
     for (let i = 0; i < 3; i += 1) {
-      session.append('assistant/message', {
+      session.append('assistant/message', { stream: [], 
         turn: 1, step: 1,
         message: createAssistantMessage({
           source: { provider: 'test', model: 'test' },
@@ -1178,13 +1222,13 @@ test('critical closure guard: cross-closure critical edge blocks target closure;
   try {
     const session = Session.create(SessionId('critical-closure-test'))
     appendUser(session, 'closure one root')
-    const u1Seq = session.events.length - 1
+    const u1Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
-    const a1Seq = session.events.length - 1
+    const a1Seq = session.snapshotEvents().length - 1
     appendUser(session, 'closure two root')
-    const u2Seq = session.events.length - 1
+    const u2Seq = session.snapshotEvents().length - 1
     appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
-    const a2Seq = session.events.length - 1
+    const a2Seq = session.snapshotEvents().length - 1
     // 第三个 U：让 closure2 不是「最后一个 root」（最后一个 root 永远不剪）
     appendUser(session, 'closure three root')
     appendAssistant(session, 'A3:' + 'w'.repeat(50), 3)
@@ -1206,8 +1250,8 @@ test('critical closure guard: cross-closure critical edge blocks target closure;
     assert.equal(engine.closurePrunes.length, 1)
     assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq, 'closure1 pruned, not closure2')
     const stillSurfaceCrit = new Set(session.surface.nodes)
-    assert.ok(stillSurfaceCrit.has(u2Seq), 'closure2 (critical in-edge) must stay on surface')
-    assert.ok(stillSurfaceCrit.has(a2Seq))
+    assert.ok(stillSurfaceCrit.has(asSeq(u2Seq)), 'closure2 (critical in-edge) must stay on surface')
+    assert.ok(stillSurfaceCrit.has(asSeq(a2Seq)))
 
     // 同结构 supporting 边：跨闭包 supporting 不计入 inDegreeByClosure → 无守卫。
     // 用独立 engine 验证（closurePrunes 是实例数组，跨 session 累计）
@@ -1215,13 +1259,13 @@ test('critical closure guard: cross-closure critical edge blocks target closure;
     try {
       const session2 = Session.create(SessionId('critical-closure-test2'))
       appendUser(session2, 'closure one root')
-      const u1b = session2.events.length - 1
+      const u1b = session2.snapshotEvents().length - 1
       appendAssistant(session2, 'A1:' + 'x'.repeat(50), 1)
-      const a1b = session2.events.length - 1
+      const a1b = session2.snapshotEvents().length - 1
       appendUser(session2, 'closure two root')
-      const u2b = session2.events.length - 1
+      const u2b = session2.snapshotEvents().length - 1
       appendAssistant(session2, 'A2:' + 'y'.repeat(50), 2)
-      const a2b = session2.events.length - 1
+      const a2b = session2.snapshotEvents().length - 1
       appendUser(session2, 'closure three root')
       appendAssistant(session2, 'A3:' + 'w'.repeat(50), 3)
       engine2.setSession(session2)
@@ -1262,7 +1306,7 @@ test('A8 narrowed ask detection: CJK ask U exempted and prunable via coverage (Q
     // 中文 ask 句（帮我…）→ askCoverage 覆盖 → U 可随组剪（收窄后中文问句仍豁免）
     const session = Session.create(SessionId('ask-narrow-test'))
     appendUser(session, '帮我看看这个报错')
-    const uAskSeq = session.events.length - 1
+    const uAskSeq = session.snapshotEvents().length - 1
     appendAssistant(session, '报错原因是配置错误。\n{"cites":[{"t":"帮我看看这个报错","l":"s"}]}', 1)
     appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)

@@ -14,13 +14,14 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp recall-log-access test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp recall-log-access test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -39,18 +40,18 @@ function buildSession(): Session {
   const session = Session.create(SessionId('recall-log-access'))
   session.append('turn/start', { turn: 1 })
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'who ate the cookie?' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 1,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'COOKIE-FACT: it was the dog.' }] }),
   }, { surfaceOp: 'append' })
   const a1 = session.seq - 1 // seq 2：assistant/message A1
   // 权威剪枝事务：compaction/prune 携带 shadowedSeqs（shadowedSeqsOf 的唯一账本来源）
-  session.append('compaction/prune', { shadowedRange: { start: a1, end: a1 }, shadowedSeqs: [a1], shadowedTokenCount: 10 })
+  session.append('compaction/prune', { shadowedRange: { start: asSeq(a1), end: asSeq(a1) }, shadowedSeqs: asSeqs([a1]), shadowedTokenCount: 10 })
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=2: pruned by ARGP; recall_pruned(seq) to retrieve]' }],
     source: { kind: 'plugin', plugin: 'argp-test' },
-  }), { surfaceOp: { op: 'replace', start: a1, end: a1 }, sourceEventSeqs: [a1] })
+  }), { surfaceOp: { op: 'replace', startSeq: asSeq(a1), endSeq: asSeq(a1) }, sourceEventSeqs: asSeqs([a1]) })
   session.append('turn/start', { turn: 2 })
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'and the milk?' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
   return session
@@ -59,7 +60,7 @@ function buildSession(): Session {
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
   const res = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId('recall-log-' + name + '-' + Math.random().toString(36).slice(2)),
+    callId: ToolCallId('recall-log-' + name + '-' + Math.random().toString(36).slice(2)),
     name,
     arguments: args,
   })

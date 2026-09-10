@@ -32,7 +32,7 @@ import { deriveEventMessage } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
-import { formatRecallOutcome, recallFromLog, sessionEvents } from './log-access.js'
+import { asSeq, asSeqs, formatRecallOutcome, recallFromLog, sessionEvents } from './log-access.js'
 import type { NodeState } from './log-access.js'
 
 export interface ArgpT1Config {
@@ -300,8 +300,8 @@ export class ArgpT1Engine extends CompactionEngine {
       const summaryEvent = session.append('compaction/summary', {
         ...lifecycle,
         summary: [{ type: 'text', text: tombstoneText }],
-        shadowedRange: { start, end },
-        shadowedSeqs: seqs,
+        shadowedRange: { start: asSeq(start), end: asSeq(end) },
+        shadowedSeqs: asSeqs(seqs),
         shadowedTokenCount,
         provider: 'argp',
         model: 'algorithmic-tombstone',
@@ -310,8 +310,8 @@ export class ArgpT1Engine extends CompactionEngine {
         content: [{ type: 'text', text: tombstoneText }],
         source: compactCheckpointSource(compactionId),
       }), {
-        surfaceOp: { op: 'replace', start, end },
-        sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...seqs],
+        surfaceOp: { op: 'replace', startSeq: asSeq(start), endSeq: asSeq(end) },
+        sourceEventSeqs: asSeqs([startEvent.seq, summaryEvent.seq, ...seqs]),
       })
       const endEvent = session.append('compaction/end', lifecycle)
       const charsAfter = visibleChars(session)
@@ -333,8 +333,8 @@ export class ArgpT1Engine extends CompactionEngine {
         summarySeq: summaryEvent.seq,
         endSeq: endEvent.seq,
         summary: [{ type: 'text', text: tombstoneText }],
-        shadowedRange: { start, end },
-        shadowedSeqs: seqs,
+        shadowedRange: { start: asSeq(start), end: asSeq(end) },
+        shadowedSeqs: asSeqs(seqs),
         shadowedTokenCount,
       }
     } catch (error: unknown) {

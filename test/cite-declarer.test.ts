@@ -27,11 +27,11 @@ const THINK_CLOSE = '\u003c/think\u003e'
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantText(session: Session, turn: number, text: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -39,11 +39,11 @@ function appendAssistantText(session: Session, turn: number, text: string): numb
       content: [{ type: 'text', text }],
     }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantWithToolCall(session: Session, turn: number, callId: string, name: string, args: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: {
@@ -56,7 +56,7 @@ function appendAssistantWithToolCall(session: Session, turn: number, callId: str
       ],
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -70,7 +70,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendTurnStart(session: Session, turn: number): void {
@@ -137,7 +137,7 @@ async function makeDeclarer(config: Record<string, unknown> = {}): Promise<Decla
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'cite-declarer test persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'cite-declarer test persona' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -145,9 +145,9 @@ async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: 
 /** Stage-2 剪枝基线会话（与 argp-graph-engine.test.ts compact-test 同构）。 */
 function buildCompactFixture(session: Session): void {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'user anchor' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  session.append('assistant/message', { turn: 1, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A1:' + 'x'.repeat(300) }] }) }, { surfaceOp: 'append' })
-  session.append('assistant/message', { turn: 2, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A2:' + 'y'.repeat(300) }] }) }, { surfaceOp: 'append' })
-  session.append('assistant/message', { turn: 3, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A3:' + 'z'.repeat(300) }] }) }, { surfaceOp: 'append' })
+  session.append('assistant/message', { stream: [],  turn: 1, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A1:' + 'x'.repeat(300) }] }) }, { surfaceOp: 'append' })
+  session.append('assistant/message', { stream: [],  turn: 2, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A2:' + 'y'.repeat(300) }] }) }, { surfaceOp: 'append' })
+  session.append('assistant/message', { stream: [],  turn: 3, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'A3:' + 'z'.repeat(300) }] }) }, { surfaceOp: 'append' })
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ test('解析失败静默跳过：裸文本响应 → parse-failed、无边、不
   assert.equal(record?.error, 'parse-failed')
   assert.equal(record?.accepted, undefined)
   assert.equal(h.declarer.cachedEdgeCount, 0, '无边入缓存')
-  assert.equal(session.events.find(e => e.type === 'compaction/start'), undefined, 'declarer 零事件副作用')
+  assert.equal(session.snapshotEvents().find(e => e.type === 'compaction/start'), undefined, 'declarer 零事件副作用')
 })
 
 test('response_format 被拒 → 裸 prompt 静默重试一次（compressor 同款降级）', async t => {
@@ -520,7 +520,7 @@ test('验收②：declarer LLM 故障注入（重试耗尽）不影响同轮 com
   const compRecord = await compressor.compressCurrentTurn(session)
   assert.equal(compRecord?.called, true)
   assert.ok(compRecord?.appliedReplaces !== undefined && compRecord.appliedReplaces >= 2, `熵降完成：appliedReplaces=${compRecord?.appliedReplaces}`)
-  const kinds = session.events.map(e => e.type)
+  const kinds = session.snapshotEvents().map(e => e.type)
   const startIdx = kinds.lastIndexOf('compaction/start')
   const endIdx = kinds.lastIndexOf('compaction/end')
   assert.ok(startIdx > 0 && endIdx === kinds.length - 1, '压缩事务括号完整')
@@ -553,7 +553,7 @@ test('验收③：挂载 disabled declarer（injectEdges 通道）的剪枝结�
     })
     let channelCalls = 0
     const ctx2 = new Context()
-    await mountAgentLoopTestDependencies(ctx2, { systemPrompt: { persona: 'cite-declarer eq persona' } })
+    await mountAgentLoopTestDependencies(ctx2, { systemPrompt: { personaPrefix: 'cite-declarer eq persona' } })
     await ctx2.plugin(ArgpGraphEngine, {
       windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16,
       injectEdges: (atoms: Atom[]) => { channelCalls += 1; return declarer.buildInjectEdges(atoms) },

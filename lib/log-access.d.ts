@@ -11,7 +11,7 @@
  * 并携带状态标签（shadowed / live / off-surface），使模型知道取回的内容当前是否可见
  * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
  */
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
+import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session';
 /**
  * 跨宿主版本兼容的事件日志读取（P1 → 1.0.2 升级阻断修复）。
  *
@@ -23,11 +23,36 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
  *   - 宿主 Session 提供 `snapshotEvents`（alpha.4+）→ 调 `snapshotEvents()`
  *   - 否则回退到 legacy `session.events`（rc.2）
  *
+ * **1.1.0 起（2026-09-10）支持基线上移到 0.1.5-rc.1**：该版本 `events` getter 已彻底
+ * 移除、`snapshotEvents()` 是唯一真实路径，故 legacy 分支在受支持范围内**不可达**，
+ * 仅作为宿主形态回退的防御保留（由 stub 用例覆盖，见
+ * test/session-events-compat.test.ts「legacy 分支回退 events getter」）。将来若要
+ * 清理，须同步删掉该 stub 用例，否则会失去"宿主回退形态"的哨兵。
+ *
  * 两个路径都返回 frozen 数组，语义完全一致（不可变、与后续 append 解耦）。
  * 本 helper 是 ARGP 全代码库唯一允许直接触碰"事件日志"的入口——任何新增
  * `session.events[...]` / `for ... of session.events` 都视为违规。
  */
 export declare function sessionEvents(session: Session): readonly SessionEvent[];
+/**
+ * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
+ *
+ * 分工约定：**ARGP 内部模型（原子、区间、账目、预算）一律用裸 `number`**——内部要做
+ * 加减与区间比较，品牌类型在算术上寸步难行；只在**写入/查询 dsh API 的边界**经此收窄。
+ *
+ * 这里刻意只做类型层收窄、不做运行时校验：宿主 `Session.append` 内部对 seq 有权威校验
+ * （非安全整数、越界、非更早事件都即 throw），重复校验只会把错误信息推离现场、
+ * 并把 dsh 的校验口径抄进 ARGP 造成第二份需要同步维护的真相。
+ * @param value - ARGP 内部计算的 seq。
+ * @returns 同一数值，类型收窄为 SessionSeq。
+ */
+export declare function asSeq(value: number): SessionSeq;
+/**
+ * {@link asSeq} 的数组版本，用于 `sourceEventSeqs` / `shadowedSeqs` 等 seq 列表字段。
+ * @param values - ARGP 内部计算的 seq 列表。
+ * @returns 同序新数组，元素类型收窄为 SessionSeq。
+ */
+export declare function asSeqs(values: readonly number[]): SessionSeq[];
 /**
  * 节点相对可见上下文的状态：
  *  - `shadowed`：已被 surfaceOp replace 遮蔽（ARGP 剪枝产物），确定不在可见上下文里。

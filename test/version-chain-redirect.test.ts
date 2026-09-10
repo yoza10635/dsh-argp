@@ -12,13 +12,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp version-chain redirect test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp version-chain redirect test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -28,7 +28,7 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendToolCallAssistant(session: Session, turn: number, callId: string, argumentsStr: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -36,7 +36,7 @@ function appendToolCallAssistant(session: Session, turn: number, callId: string,
       content: [{ type: 'tool-call', id: callId as never, name: 'read_file', arguments: argumentsStr }],
     }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -45,11 +45,11 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
     step: 1,
     message: createToolResultMessage({ callId: callId as never, content: [{ type: 'text', text }], isError: false }),
   }, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }),
@@ -59,7 +59,7 @@ function appendAssistant(session: Session, text: string, turn: number): void {
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
   const res = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: CallId('verchain-redirect-' + Math.random().toString(36).slice(2)),
+    callId: ToolCallId('verchain-redirect-' + Math.random().toString(36).slice(2)),
     name,
     arguments: args,
   })

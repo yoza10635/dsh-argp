@@ -28,7 +28,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { compactCheckpointSource, CompactionId } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { sessionEvents } from '../log-access.js'
+import { asSeq, asSeqs, sessionEvents } from '../log-access.js'
 import { ARG_NS, SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import type { DshLlmSpec } from './llm-adapter.js'
@@ -996,6 +996,16 @@ export class PeratomCompressor {
       session.append('compaction/start', lifecycle)
       try {
         let replaceCount = 0
+        // dsh 0.1.5 起 `Session.append` 的 opts 是条件元组（`assistant/message` 禁带
+        // sourceEventSeqs、其余 surface 事件允许），而 `step.type` 是
+        // 'user/message' | 'tool/result' 的联合 → TS 无法为联合选定单一重载。
+        // 该联合本身已保证两者都允许 sourceEventSeqs，故仅在类型层收窄掉泛型分派；
+        // 运行时仍走 `Session.append` 同一条校验路径（品牌校验、surface 计划、provenance）。
+        const appendSurface = session.append.bind(session) as (
+          type: string,
+          data: unknown,
+          opts: { surfaceOp: unknown; sourceEventSeqs: readonly unknown[] },
+        ) => unknown
         for (const step of plan.steps) {
           // UI checkpoint 关联（2026-08-28）：user/message 替换副本的 source 换为
           // compact checkpoint（与图剪墓碑同款）——宿主 CompactionNodeView 据此把事务
@@ -1014,9 +1024,9 @@ export class PeratomCompressor {
         }
         if (step.kind === 'replace') {
           const g0 = session.surface.replaceGeneration
-          session.append(step.type, step.data as never, {
-            surfaceOp: { op: 'replace', start: step.at, end: step.at },
-            sourceEventSeqs: step.sourceEventSeqs,
+          appendSurface(step.type, step.data, {
+            surfaceOp: { op: 'replace', startSeq: asSeq(step.at), endSeq: asSeq(step.at) },
+            sourceEventSeqs: asSeqs(step.sourceEventSeqs),
           })
           const g1 = session.surface.replaceGeneration
           // 断言 2：每次 replace 必须推进 replaceGeneration（替换真实落地）。
@@ -1025,9 +1035,9 @@ export class PeratomCompressor {
           }
           replaceCount += 1
         } else {
-          session.append(step.type, step.data as never, {
+          appendSurface(step.type, step.data, {
             surfaceOp: 'append',
-            sourceEventSeqs: step.sourceEventSeqs,
+            sourceEventSeqs: asSeqs(step.sourceEventSeqs),
           })
         }
       }

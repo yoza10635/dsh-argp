@@ -14,7 +14,7 @@ import { ArgpGraphEngine, scaleBudgets } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'budget-scale test persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'budget-scale test persona' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -23,7 +23,7 @@ function appendUser(session: Session, text: string): void {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
 }
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', { turn, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }) }, { surfaceOp: 'append' })
+  session.append('assistant/message', { stream: [],  turn, step: 1, message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }) }, { surfaceOp: 'append' })
 }
 
 function fakeAgent(session: Session): never {

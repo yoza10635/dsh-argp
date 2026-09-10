@@ -19,11 +19,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp closure-debounce test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp closure-debounce test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -33,7 +34,7 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text }] }),
@@ -49,13 +50,13 @@ function appendAssistant(session: Session, text: string, turn: number): void {
  */
 function buildClosureSession(session: Session): { u1: number; a1: number; a2: number; u2: number } {
   appendUser(session, 'C1 user anchor')
-  const u1 = session.events.length - 1
+  const u1 = session.snapshotEvents().length - 1
   appendAssistant(session, 'A1: ' + 'x'.repeat(280) + '\n{"cites":["C1-ANCHOR"]}', 1)
-  const a1 = session.events.length - 1
+  const a1 = session.snapshotEvents().length - 1
   appendAssistant(session, 'A2 content: C1-ANCHOR ' + 'y'.repeat(280), 1)
-  const a2 = session.events.length - 1
+  const a2 = session.snapshotEvents().length - 1
   appendUser(session, 'C2 user anchor')
-  const u2 = session.events.length - 1
+  const u2 = session.snapshotEvents().length - 1
   appendAssistant(session, 'B1: ' + 'z'.repeat(280), 2)
   appendAssistant(session, 'A5 latest: ' + 'w'.repeat(280), 5)
   return { u1, a1, a2, u2 }
@@ -90,7 +91,7 @@ test('P2 write-side: noteRecallHit 以 rootSeq 为 key 写入防抖（旧 closur
     const second = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     for (const r of engine.records.slice(1)) {
       for (const seq of [u1, a1, a2]) {
-        assert.ok(!r.shadowedSeqs.includes(seq), 'recalled closure node ' + seq + ' must not be re-pruned')
+        assert.ok(!r.shadowedSeqs.includes(asSeq(seq)), 'recalled closure node ' + seq + ' must not be re-pruned')
       }
     }
   } finally {

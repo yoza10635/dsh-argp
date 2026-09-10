@@ -50,11 +50,11 @@ function makeHarness(): {
 
 function appendUser(session: Session, text: string): number {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendAssistantWithToolCall(session: Session, turn: number, callId: string, args: string): number {
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     step: 1,
     message: {
@@ -67,7 +67,7 @@ function appendAssistantWithToolCall(session: Session, turn: number, callId: str
       ],
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendToolResult(session: Session, turn: number, callId: string, text: string): number {
@@ -81,7 +81,7 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 function appendTurnEnd(session: Session, turn: number): void {
@@ -91,7 +91,7 @@ function appendTurnEnd(session: Session, turn: number): void {
 /** 指纹流：surface 逐节点的真实消息投影（与请求装配同源）序列化。 */
 function fingerprint(session: Session): string[] {
   return session.surface.nodes.map(seq => {
-    const event = session.events[seq]
+    const event = session.snapshotEvents()[seq]
     if (event === undefined) return '<missing>'
     return JSON.stringify(deriveEventMessage(event))
   })
@@ -151,10 +151,10 @@ test('P1 前缀不变断言：三轮逐轮熵降，每轮压缩后历史前缀�
   // 轮 1：长 user + 大 tool（可压）
   session.append('turn/start', { turn: 1 })
   const u1 = appendUser(session, LONG_USER)
-  originals.set(u1, JSON.stringify(session.events[u1]?.data))
+  originals.set(u1, JSON.stringify(session.snapshotEvents()[u1]?.data))
   appendAssistantWithToolCall(session, 1, 'c1', '{"path":"log.txt"}')
   const r1 = appendToolResult(session, 1, 'c1', 'EADDRINUSE stack '.padEnd(40, '.') + 'x'.repeat(520))
-  originals.set(r1, JSON.stringify(session.events[r1]?.data))
+  originals.set(r1, JSON.stringify(session.snapshotEvents()[r1]?.data))
   appendTurnEnd(session, 1)
   await compressJustBuiltTurn(1)
   countCallsSoFar = h.compressor.calls
@@ -162,10 +162,10 @@ test('P1 前缀不变断言：三轮逐轮熵降，每轮压缩后历史前缀�
   // 轮 2：短对话 + 大 tool 不同参数（可压，且与轮 1 不同键 → 不触发链排除）
   session.append('turn/start', { turn: 2 })
   const u2 = appendUser(session, '继续看另一个文件')
-  originals.set(u2, JSON.stringify(session.events[u2]?.data))
+  originals.set(u2, JSON.stringify(session.snapshotEvents()[u2]?.data))
   appendAssistantWithToolCall(session, 2, 'c2', '{"path":"other.txt"}')
   const r2 = appendToolResult(session, 2, 'c2', 'OTHER '.padEnd(40, '.') + 'y'.repeat(520))
-  originals.set(r2, JSON.stringify(session.events[r2]?.data))
+  originals.set(r2, JSON.stringify(session.snapshotEvents()[r2]?.data))
   appendTurnEnd(session, 2)
   // 校正轮 2 应答里的 tool seq（建轮前无法预知）
   h.requests.length = 0
@@ -181,7 +181,7 @@ test('P1 前缀不变断言：三轮逐轮熵降，每轮压缩后历史前缀�
   // 轮 3：纯对话轮（短 user + 回复，无工具）→ 门控 false 零调用
   session.append('turn/start', { turn: 3 })
   appendUser(session, '好的收到')
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn: 3,
     step: 1,
     message: {
@@ -196,7 +196,7 @@ test('P1 前缀不变断言：三轮逐轮熵降，每轮压缩后历史前缀�
 
   // 判据③：版本链成员与全部原文零替换 —— 事件数据 JSON 哈希比对
   for (const [seq, hash] of originals) {
-    assert.equal(JSON.stringify(session.events[seq]?.data), hash, `seq ${seq} 原文在日志中零替换`)
+    assert.equal(JSON.stringify(session.snapshotEvents()[seq]?.data), hash, `seq ${seq} 原文在日志中零替换`)
   }
 })
 

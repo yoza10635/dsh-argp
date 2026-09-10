@@ -19,9 +19,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, CallId, createAssistantMessage, createUserMessage, type LlmFailure } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, ToolCallId, createAssistantMessage, createUserMessage, type LlmFailure } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
+import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { RecallZoom } from '../src/peratom/recall-zoom.ts'
 import { ARG_NS } from '../src/peratom/types.ts'
@@ -36,7 +37,7 @@ function appendUser(session: Session, turn: number, text: string): number {
     turn,
     ...createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 /** U-info 聚合副本（source: plugin + data[ARG_NS]；atomize → U 且 sourceSeq 有值 → R 待遇参剪）。 */
@@ -46,18 +47,18 @@ function appendUInfo(session: Session, turn: number, text: string, sourceSeq: nu
     ...createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-argp-peratom' } }),
     [ARG_NS]: { info: true, sourceSeq, summary },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 /** assistant 消息（可带 tool-call）。 */
 function appendAssistant(session: Session, turn: number, text: string, toolCallId?: string): number {
   const content: unknown[] = [{ type: 'text', text }]
   if (toolCallId !== undefined) content.push({ type: 'tool-call', id: toolCallId, name: 'run', arguments: {} })
-  session.append('assistant/message', {
+  session.append('assistant/message', { stream: [], 
     turn,
     ...createAssistantMessage({ content } as never),
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 /** tool result（应答 tool-call）。 */
@@ -72,12 +73,12 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
       id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' })
-  return session.events.length - 1
+  return session.snapshotEvents().length - 1
 }
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'argp p4 test' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp p4 test' } })
   await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
@@ -91,7 +92,7 @@ function overflowFailure(): LlmFailure {
 }
 
 function emitRequestError(ctx: Context, agent: Agent, failure: LlmFailure): Promise<{ kind: 'retry' } | undefined> {
-  const turn = agent.session.events.findLast(event => event.type === 'turn/start')?.data.turn ?? 1
+  const turn = agent.session.snapshotEvents().findLast(event => event.type === 'turn/start')?.data.turn ?? 1
   return agentEvents(ctx, agent).waterfall(
     'agent/request-error',
     { turn, step: 1, provider: 'test', failure, retryPolicy: undefined, signal: new AbortController().signal },
@@ -112,7 +113,7 @@ function buildUInfoSession(id: string, marker: string): {
   const dialogSeq = appendUser(session, 1, '把端口改成 8080')
   const origUserSeq = appendUser(session, 1, '完整配置：' + marker + '; PORT=3000; DB=mysql://host/db')
   const uinfoSeq = appendUInfo(session, 1, '资料摘要：本消息为用户粘贴的配置资料，含 PORT 与 DB 两项', origUserSeq, '配置含 ' + marker)
-  appendAssistant(session, 2, '好的，我来改', CallId(id + 'a1'))
+  appendAssistant(session, 2, '好的，我来改', ToolCallId(id + 'a1'))
   appendToolResult(session, 2, id + 'a1', 'done')
   return { session, dialogSeq, origUserSeq, uinfoSeq }
 }
@@ -129,9 +130,9 @@ test('U-info（sourceSeq 有值）按 R 待遇参剪；dialog / 原始用户（s
     const result = await engine.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
     assert.ok(result !== null, 'context-overflow must produce a prune')
     const shadowed = new Set(result!.shadowedSeqs)
-    assert.ok(shadowed.has(uinfoSeq), 'U-info (sourceSeq present) must be pruned as an R-treated candidate')
-    assert.ok(!shadowed.has(dialogSeq), 'dialog U (sourceSeq absent, ask-exempt) must never be pruned')
-    assert.ok(!shadowed.has(origUserSeq), 'original user U (sourceSeq absent, ask-exempt) must never be pruned')
+    assert.ok(shadowed.has(asSeq(uinfoSeq)), 'U-info (sourceSeq present) must be pruned as an R-treated candidate')
+    assert.ok(!shadowed.has(asSeq(dialogSeq)), 'dialog U (sourceSeq absent, ask-exempt) must never be pruned')
+    assert.ok(!shadowed.has(asSeq(origUserSeq)), 'original user U (sourceSeq absent, ask-exempt) must never be pruned')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -149,7 +150,7 @@ test('U-info 被剪后 recall_detail(sourceSeq) 逐字节恢复原用户消息',
     engine.setSession(session)
     const result = await engine.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
     assert.ok(result !== null, 'a prune must occur')
-    assert.ok(result!.shadowedSeqs.includes(uinfoSeq), 'U-info must be the pruned atom')
+    assert.ok(result!.shadowedSeqs.includes(asSeq(uinfoSeq)), 'U-info must be the pruned atom')
 
     // U-info 被剪后，模型据 data[ARG_NS].sourceSeq 调 recall_detail 取回原文全文
     const zoom = new RecallZoom(ctx, {})
@@ -167,15 +168,15 @@ test('U-info 被剪后 recall_detail(sourceSeq) 逐字节恢复原用户消息',
 
 test('溢出三步：超大 R 直超窗 → ①forcePrune → ②compress+③forcePrune（compress 恰调一次）', async () => {
   const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'p4 overflow persona' } })
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'p4 overflow persona' } })
   const session = Session.create(SessionId('p4-overflow-3step'))
   // turn1：可剪的旧内容（R 候选，turnGuard 不保护）
   appendUser(session, 1, '旧的请求')
-  appendAssistant(session, 1, '运行一下', CallId('p4old1'))
+  appendAssistant(session, 1, '运行一下', ToolCallId('p4old1'))
   appendToolResult(session, 1, 'p4old1', 'old result ' + 'x'.repeat(200))
   // turn2（当前轮，turnGuard 保护）：单条超大 R 直超窗口
   appendUser(session, 2, '再看这个日志')
-  appendAssistant(session, 2, '读日志', CallId('p4big1'))
+  appendAssistant(session, 2, '读日志', ToolCallId('p4big1'))
   const bigR = appendToolResult(session, 2, 'p4big1', 'BIG-LOG-' + 'y'.repeat(4000))
 
   let compressCalls = 0
@@ -185,13 +186,13 @@ test('溢出三步：超大 R 直超窗 → ①forcePrune → ②compress+③for
       // 模拟 PeratomCompressor.compressCurrentTurn：克隆原 R data、只改 inner text
       // （dsh 硬约束：tool/result replace 只能改 content），surface 换代
       compressCalls += 1
-      const origData = s.events[bigR]?.data as unknown as { message: { content: Array<Record<string, unknown>> } }
+      const origData = s.snapshotEvents()[bigR]?.data as unknown as { message: { content: Array<Record<string, unknown>> } }
       const origMsg = origData.message
       const origBlock = origMsg.content[0]
       s.append('tool/result', {
-        ...(s.events[bigR]?.data as object),
+        ...(s.snapshotEvents()[bigR]?.data as object),
         message: { ...origMsg, content: [{ ...origBlock, content: [{ type: 'text', text: 'extract: EADDRINUSE' }] }] },
-      } as never, { surfaceOp: { op: 'replace', start: bigR, end: bigR }, sourceEventSeqs: [bigR] })
+      } as never, { surfaceOp: { op: 'replace', startSeq: asSeq(bigR), endSeq: asSeq(bigR) }, sourceEventSeqs: asSeqs([bigR]) })
     },
   })
   const engine = ctx.compaction as ArgpGraphEngine
@@ -211,7 +212,7 @@ test('溢出三步：超大 R 直超窗 → ①forcePrune → ②compress+③for
   // 收敛断言：超大 R 已被 extract 替换（surface 上不再含 BIG-LOG- 原文）
   let surfaceHasBig = false
   for (const seq of session.surface.nodes) {
-    const ev = session.events[seq]
+    const ev = session.snapshotEvents()[seq]
     const text = (ev?.data as { message?: { content?: Array<{ content?: Array<{ text?: string }> }> } } | undefined)
       ?.message?.content?.[0]?.content?.[0]?.text ?? ''
     if (text.includes('BIG-LOG-')) surfaceHasBig = true

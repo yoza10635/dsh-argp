@@ -31,7 +31,7 @@ test('strips trailing {"cites":[...]} from the last text block and stashes argpC
   assert.equal(content.length, 1)
   assert.equal(content[0]!.text, 'Here is the answer.', 'cites JSON must be gone from text')
   assert.deepEqual(a.data.argpCites, [{ text: 'earlier claim A', level: 'supporting' }], 'cites preserved in argpCites (V6 graded)')
-  assert.equal((a.opts as { surfaceOp: { op: string; start: number; end: number } }).surfaceOp.op, 'replace')
+  assert.equal((a.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number } }).surfaceOp.op, 'replace')
 })
 
 test('no-op when message has no trailing cites block', () => {
