@@ -2,6 +2,36 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.1.0] - 2026-09-10（dsh 0.1.5 支持：V3 会话信封迁移）— **BREAKING**
+
+> **宿主兼容性跳代。** 1.1.0 起要求 **dsh ≥ 0.1.5-alpha.1**；rc.2 ~ 0.1.3-alpha.2 宿主请继续使用 **1.0.5**。两代不兼容，且无法在同一个构建内兼容——详见下方「为什么不能两代通吃」。
+
+### Added
+
+- **`asSeq` / `asSeqs` 边界收窄 helper（`log-access.ts`）**：dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>` 是品牌类型，而 ARGP 内部模型（原子/区间/账目/预算）一律用裸 `number` 做算术。约定：**内部永远裸 number，只在写入/查询 dsh API 的边界收窄**，不做重复运行时校验（宿主 `Session.append` 已对 seq 做权威校验，重复校验只会把错误信息推离现场、并制造第二份需同步维护的真相）。
+- **node-0 系统提示保护用例 + `atomize` 显式注释**：0.1.5 把系统提示表示为 surface node 0 的 `system/message`，宿主 `assertSystemHeadRewrite` 硬性保护该位置。`atomize` 只认 user/assistant/tool-result、`system/message` 静默跳过 → node 0 永不进入剪枝区间。原先这是隐式依赖，现已写进注释并由测试钉死（`argp-graph-engine.test.ts`）。
+
+### Changed — 迁移到 V3 会话信封
+
+- **`SurfaceOp` 判别键改名 `start`/`end` → `startSeq`/`endSeq`**（dsh commit `657e68186a`，V3 canonical session envelopes），5 处 production 写点 + 12 处测试同步改名。
+- **`assistant/message` 禁止携带 `sourceEventSeqs`**（类型层 `?: never` + 运行时 `assertProvenance` throw）。删掉 cites 剥离写回处的该字段——安全性由「`shadowedSeqsOf` 只认 `compaction/prune.shadowedSeqs` 权威账本」保证，不再从 replace 事件反推被遮节点。
+- **`Session.events` 彻底消失**：1.0.4 引入的 `sessionEvents()` 双分支中，legacy 分支在受支持基线上已不可达，仅作防御保留（改由 stub 用例覆盖）。
+- **`assistant/message` 新增必填 `stream` 字段**、`testkit` 的 `systemPrompt.persona` → `personaPrefix`、`dsh-llm` 的 `CallId` → `ToolCallId`。
+- **依赖基线整体升到 `0.1.5-rc.1`**（peer + dev 全部）；`cordis` 保持 `^4.0.1`（master 用 4.0.2，caret 已覆盖）。
+
+### 为什么不能两代通吃
+
+两代都强制 `Object.keys(surfaceOp).length === 3`（rc.2 认 `op/start/end`，0.1.5 认 `op/startSeq/endSeq`），**同时写两套键必然被拒**。一个构建要同时支持两代只能加运行时版本嗅探——对主打确定性的引擎而言是不必要的不确定性来源，故取舍为：**1.0.5 守住老宿主，1.1.0 走新格式。**
+
+### Verified
+
+- `npm run check` 全绿（**211/211**，2026-09-10），新增/改写用例含：node-0 保护、`sessionEvents` 当前基线实证 + legacy stub、V3 键名全链路。
+- 依赖基线换代前的红灯对照：只改代码不改依赖时 209 总 / 133 过 / **76 失败**（全部 `carries an invalid replace surfaceOp`）——这是「测试基线落后于目标宿主」的直证，也是本次必须同步升依赖的原因。
+
+### Known
+
+- 0.1.5 起 dsh 默认模型切到 **DeepSeek-V41-Flash**（V4-Flash 仍保留可选）。ARGP 既有的 v4-flash 成本标定数字**不得外推**到新默认档。
+
 ## [1.0.5] - 2026-09-04（preset 净化自动生成 + WebUI 设置卡片）
 
 ### Added
