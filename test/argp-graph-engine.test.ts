@@ -4,8 +4,9 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { asSeq, asSeqs } from '../src/log-access.ts'
-import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
+import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
@@ -1020,6 +1021,75 @@ test('closure lifecycle: dependent closure with incoming edge is not pruned firs
     assert.ok(stillSurface.has(asSeq(u2Seq)))
     assert.ok(stillSurface.has(asSeq(a2Seq)))
     assert.ok(!stillSurface.has(asSeq(u1Seq)))
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// ── §11.8① tombstone-merge（v1.2.x）──
+
+/** 构造一条与引擎墓碑同形态的 plugin-source user 消息（X 类）。 */
+function appendTombstone(session: Session, text: string): void {
+  session.append('user/message', createUserMessage({
+    content: [{ type: 'text', text }],
+    source: compactCheckpointSource(CompactionId('tombstone-test')),
+  }), { surfaceOp: 'append' })
+}
+
+test('isMergeableTombstone: only ARGP elided tombstones qualify', () => {
+  assert.equal(isMergeableTombstone('[elided seq=8..9: 2 surface nodes pruned by ARGP (graph order, cites-aware); recall_pruned(seq) retrieves original]'), true)
+  assert.equal(isMergeableTombstone('[elided closure closure-2 seqs=1..9: 5 of 10 surface nodes in this closure pruned by ARGP closure lifecycle; recall_pruned(seq) retrieves original]'), true)
+  assert.equal(isMergeableTombstone('[elided consolidated ×12 seqs=8..30: these placeholder nodes were themselves pruned by ARGP (tombstone-merge, §11.8); originals remain recallable via recall_pruned(seq) / list_pruned]'), true)
+  // tool 占位墓碑（缺 pruned by ARGP）与宿主注入 / 官方 checkpoint 均不合并
+  assert.equal(isMergeableTombstone('[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]'), false)
+  assert.equal(isMergeableTombstone('<system-reminder>keep me</system-reminder>'), false)
+  assert.equal(isMergeableTombstone('user instruction that happens to mention recall_pruned(seq)'), false)
+})
+
+test('tombstone-merge: 10 consecutive tombstones consolidate into one aggregated node', async () => {
+  const { ctx, engine } = await makeEngine({ tombstoneMergeMinRun: 8 })
+  try {
+    const session = Session.create(SessionId('tombstone-merge-test'))
+    appendUser(session, 'task anchor')
+    for (let i = 0; i < 10; i += 1) {
+      appendTombstone(session, `[elided seq=${100 + i * 2}..${100 + i * 2}: 1 surface nodes pruned by ARGP (graph order, cites-aware); recall_pruned(seq) retrieves original]`)
+    }
+    appendAssistant(session, 'A-live:' + 'z'.repeat(400), 2)
+    appendAssistant(session, 'A-live2:' + 'w'.repeat(400), 3)
+    engine.setSession(session)
+    const before = session.surface.nodes.length
+    const merged = engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    // 图剪本身也在跑（两发 A 超预算），断言墓碑地板确实被归并：surface 上 elided 形态节点 < 10
+    await merged
+    const tombCount = [...session.surface.nodes]
+      .filter(seq => isMergeableTombstone(eventText(session, seq as number)))
+      .length
+    assert.ok(tombCount < 10, `expected consolidated tombstones, got ${tombCount}`)
+    assert.ok(session.surface.nodes.length < before)
+    // 聚合墓碑自身保持可再归并形态（地板随轮次收敛）
+    const agg = [...session.surface.nodes].find(seq => eventText(session, seq as number).includes('[elided consolidated'))
+    assert.ok(agg !== undefined, 'aggregated tombstone should exist')
+    assert.equal(isMergeableTombstone(eventText(session, agg as number)), true)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('tombstone-merge disabled with minRun=0; short runs untouched', async () => {
+  const { ctx, engine } = await makeEngine({ tombstoneMergeMinRun: 0 })
+  try {
+    const session = Session.create(SessionId('tombstone-merge-off-test'))
+    appendUser(session, 'anchor')
+    for (let i = 0; i < 12; i += 1) {
+      appendTombstone(session, `[elided seq=${200 + i}..${200 + i}: 1 surface nodes pruned by ARGP (graph order, cites-aware); recall_pruned(seq) retrieves original]`)
+    }
+    appendAssistant(session, 'A:' + 'x'.repeat(300), 2)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    // 关闭归并后：原有 12 条墓碑（elided seq=200..211）一条不少（图剪对 A 新增的不算）
+    const surfaceTexts = [...session.surface.nodes].map(seq => eventText(session, seq as number))
+    const origTombCount = surfaceTexts.filter(t => /^\[elided seq=2\d\d\.\./.test(t)).length
+    assert.equal(origTombCount, 12)
   } finally {
     await ctx.fiber.dispose()
   }

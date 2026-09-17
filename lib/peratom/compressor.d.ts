@@ -29,6 +29,21 @@ export interface PeratomCompressorConfig {
      * `setToolPolicy(toolName, policy)` 增改；构造期传入便于单测 / 声明式挂载预置。
      */
     toolPolicies?: ReadonlyMap<string, NeedCompress>;
+    /**
+     * HLS 修复档（PROPOSAL-token-ontology 组件 B，v1.2.0；默认 'trailer'）：
+     * extract 被保真守卫拒收（缺高信号 token）时不再整条丢弃（收益全损），
+     * 改为守卫机械补全——候选文本 + 缺失 token 按原文顺序尾注（`[restored]`），
+     * 硬 token 保真由构造（100%），prose 损失受控（等同 summary 档），
+     * 缺失清单入 `restoredByGuard` 台账（与 summaryDropped 同级可审）。
+     * 'off' = v1.1 行为（拒收即原文保面）。
+     */
+    hlsMode?: 'trailer' | 'off';
+    /**
+     * HLS 经济学门槛 θ（默认 1，见 token-ontology `DEFAULT_HLS_ROI_THRESHOLD`）：
+     * 仅当 ROI = 净释放预算 / 尾注占用 ≥ θ 才修复，否则退回原文保面。
+     * 修复后比原文还长（ROI < 0）在任何 θ ≥ 0 下都被拒——这是代价盲的修正。
+     */
+    hlsRoiThreshold?: number;
     /** fetch 注入点（测试替身；生产缺省 globalThis.fetch）。 */
     fetchImpl?: typeof fetch;
 }
@@ -108,6 +123,21 @@ export interface CompressRecord {
      * 逐条入账，供 LLM 审核 / 人工审核事后评判。空数组/缺省 = 无丢失。
      */
     summaryDropped?: string[];
+    /**
+     * HLS 修复档计数（v1.2.0 组件 B）：extract 副本被拒后经守卫尾注补全落地的数量。
+     * 与 skippedFidelity 互斥语义：前者 = 保真由构造地落地，后者 = 保守回退原文。
+     */
+    hlsRepairs?: number;
+    /**
+     * HLS 审计台账（与 summaryDropped 同级可审）：守卫从原文补进尾注的高信号 token。
+     * 空数组/缺省 = 无修复发生。spike39 用其度量"拒收挽回率"。
+     */
+    restoredByGuard?: string[];
+    /**
+     * HLS 经济学门控拒收数（v1.2.0 门控修正）：缺 token 但 ROI < θ → 退回原文保面。
+     * 空/缺省 = 无门控拦截。用于观测「代价盲区间」（修复越修越长）在真实语料的频率。
+     */
+    hlsRoiSkipped?: number;
     /** 当轮原子 seq 快照（prompt 里给出的值；调试 seq 信任边界用）。 */
     atomSeqs?: {
         userLong: number[];
@@ -155,19 +185,42 @@ interface PlanResult {
     fidelityMissing: string[];
     /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
     summaryDropped: string[];
+    /** HLS 修复档（v1.2.0 组件 B）：extract 被拒后经守卫尾注补全落地的副本数。 */
+    hlsRepairs: number;
+    /** HLS 审计台账：守卫补进尾注的高信号 token（与 summaryDropped 同级可审，spike39 消费）。 */
+    restoredByGuard: string[];
+    /**
+     * HLS 经济学门控拒收数（v1.2.0 门控修正）：候选虽缺 token 但 ROI = 净释放/尾注 < θ
+     * （尾注不划算，修复后接近/超过原文长度）→ 退回原文保面。与 skippedFidelity 同向
+     * （原子保原文），单列以便度量「代价盲区间」（spike39 的 F1/F4 形态）的出现频率。
+     */
+    hlsRoiSkipped: number;
     anomalies: number;
+}
+/**
+ * planReplacements 选项（v1.2.0）：`hlsMode` 对独立调用方缺省 'off'（保守默认，
+ * 既有行为不变）；PeratomCompressor 类显式传自身配置（生产缺省 'trailer'）。
+ */
+export interface PlanOptions {
+    hlsMode?: 'trailer' | 'off';
+    /** HLS 经济学门槛 θ（缺省 1）；仅 trailer 档生效。 */
+    hlsRoiThreshold?: number;
 }
 /**
  * 引擎侧规划：模型输出过信任边界（seq 必须命中本轮收集集，先到先得去重），
  * 用户消息过 resolveSplit 全套保守策略（定位失败回退 dialog / 覆盖率翻转 / 空隙归 info）。
  * 返回落盘步骤序列；steps 为空 = 本轮无可落地动作（不开发务括号）。
  */
-export declare function planReplacements(collect: CurrentTurnCollect, decision: CompressDecision, events: readonly SessionEvent[]): PlanResult;
+export declare function planReplacements(collect: CurrentTurnCollect, decision: CompressDecision, events: readonly SessionEvent[], opts?: PlanOptions): PlanResult;
 export declare class PeratomCompressor {
     static inject: readonly [];
     readonly splitThresholdChars: number;
     readonly smallResultChars: number;
     readonly timeoutMs: number;
+    /** HLS 修复档（v1.2.0 组件 B；生产缺省 'trailer'，'off' = v1.1 硬拒行为）。 */
+    readonly hlsMode: 'trailer' | 'off';
+    /** HLS 经济学门槛 θ（v1.2.0 门控修正；缺省 1）。 */
+    readonly hlsRoiThreshold: number;
     private readonly chatTemplateKwargs;
     private readonly endpoint;
     private readonly dshLlm;

@@ -29,6 +29,7 @@ export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 import type { ParsedCite, CiteLevel } from './cites-strip.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
+import { deriveInferredEdges, type InferredEdgeOptions } from './token-ontology.js'
 import { cleanShippedPresets, type PresetCleanOptions, type PresetRosterLike } from './preset-cleaner.js'
 export type { PresetCleanOptions, PresetCleanReport, PresetRow } from './preset-cleaner.js'
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js'
@@ -117,10 +118,16 @@ export interface Atom {
   sourceSeq?: number
 }
 
-export type EdgeLevel = 'critical' | 'supporting' | 'contextual'
+/**
+ * 语义边级别。v1.2.0 起含 'inferred'（PROPOSAL-token-ontology 组件 A）：
+ * 承重 token 逐字包含派生边——模型声明通道（cites / declarer）空窗时的**保底层**，
+ * 0 LLM、构造性 I-A1（∃ token 双端逐字在场）。保护度低于任何声明档（权重 1 < contextual 2），
+ * 高于无边原子；声明边先行去重（buildGraph 在 cites/inject 之后合并，同 (from,to) 先到者胜）。
+ */
+export type EdgeLevel = 'critical' | 'supporting' | 'contextual' | 'inferred'
 export interface SemanticEdge { from: number; to: number; level: EdgeLevel }
 export interface DeterministicEdge { from: number; to: number }
-export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2 }
+export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2, inferred: 1 }
 const LEVEL_ORDER: Record<string, number> = { isolated: 0, contextual: 1, supporting: 2, critical: 3 }
 
 /** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
@@ -170,6 +177,19 @@ export function looksAskText(text: string): boolean {
 export function classifyUserMessage(data: unknown): 'U' | 'X' {
   if (isArgpUserInfo(data)) return 'U'
   return (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
+}
+
+/**
+ * tombstone 可合并判据（v1.2.x §11.8① 修复）。X 原子中仅「本引擎剪枝墓碑」可安全合并：
+ * 文本以 `[elided` 开头、含 pruned by ARGP 与 recall_pruned 取回提示（覆盖默认区间
+ * 墓碑与 closure 墓碑两种形态；tool 占位墓碑 `[elided: ...` 缺 pruned by ARGP → 不合并，
+ * 且 consolidateTombstoneRuns 只认 user/message 事件，双保险防孤儿 tool_calls）。
+ * 其余 X（宿主 system-reminder、官方摘要 checkpoint、注入型 checkpoint）不可动。
+ * 导出供测试锁定行为。
+ */
+export function isMergeableTombstone(text: string): boolean {
+  const t = text.trimStart()
+  return t.startsWith('[elided') && t.includes('pruned by ARGP') && t.includes('recall_pruned')
 }
 
 export interface ArgpGraphConfig {
@@ -233,8 +253,35 @@ export interface ArgpGraphConfig {
   /**
    * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
    * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
+   * 注意（v1.2.0）：A₁"无边"臂同时**自动隔离推断边**——disableCiteEdges=true 时
+   * 推断边一并关闭，保证该臂零语义边的实验语义不被 0-LLM 派生边污染。
    */
   disableCiteEdges?: boolean
+  /**
+   * 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认 true = 启用）。
+   * 承重 token 逐字包含派生语义边（0 LLM、建图期）：模型声明通道空窗时恢复选择性，
+   * 保护集只增不减（I-A4）。false = 退回 v1.1 行为（语义边仅 cites / inject 两源）。
+   * 独立于 disableCiteEdges（A₁ 臂经后者一并关闭，见上）。
+   */
+  disableInferredEdges?: boolean
+  /** 推断边种子 token 最小长度（默认 6；守卫词表 ≥4 为保真口径，边派生需更强区分度）。 */
+  inferredMinTokenLen?: number
+  /** 推断边停词阈值（默认 0.15）：出现在 >15% 原子中的 token 不派生边。 */
+  inferredStopwordRatio?: number
+  /** 每 A 原子推断边上限（默认 8）。 */
+  inferredMaxEdgesPerAtom?: number
+  /** 推断边声明窗口轮数（默认 20）：仅近 N 轮的 A 原子作边源。 */
+  inferredWindowTurns?: number
+  /**
+   * tombstone 归并阈值（v1.2.x §11.8① 修复，默认 8；0 = 关闭）。
+   * X 原子（剪枝墓碑）在 isAtomCandidate 结构性不可剪 → 墓碑地板单调累积，
+   * 实测两臂复现同形态 CONTEXT_WINDOW_EXCEEDED（141,313+32,768>174,080；
+   * run2 T16 dump：1297/1310 surface 节点是墓碑，284,786 chars ≈ 142K tok）。
+   * ≥N 的连续可合并墓碑段会被归并为单条聚合墓碑（原文仍在 append-only 日志，
+   * recall_pruned(seq) 可取回）。每 pass 至多归并一段——若整段一次事务 replace
+   * 失败，回退范围清晰可查（宁少并不错删）。
+   */
+  tombstoneMergeMinRun?: number
   /**
    * P0 双引擎生产挂载（2026-08-28，webui-liaison 台账发现一，已迁出公开仓库）：非空时
    * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
@@ -398,6 +445,8 @@ export function extractCites(text: string): { body: string; cites: ParsedCite[];
 }
 /** cites 服从率度量台账（C7-cites 判决用）。 */
 export interface CiteStats { aAtoms: number; declared: number; resolved: number; ambiguous: number; failed: number }
+/** 推断边统计（v1.2.0；最近一次 buildGraph 口径，每次建图重置；skippedDup = 与既有声明边同 (from,to) 被去重）。 */
+export interface InferredStats { candidates: number; accepted: number; skippedDup: number }
 
 /** list_pruned 工具的剪枝节点目录条目。 */
 export interface PrunedNodeInfo {
@@ -471,8 +520,18 @@ export class ArgpGraphEngine extends CompactionEngine {
   lastDeterministicEdges: DeterministicEdge[] = []
   /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
   injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined = undefined
-  /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
+  /** 边价值实验 A₁ 离线重放：跳过 cites 边构建（同时隔离推断边，见 config 注释）。 */
   disableCiteEdges = false
+  /** 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认启用）。 */
+  disableInferredEdges = false
+  /** tombstone 归并阈值（§11.8① 修复；默认 8，0=关闭；见 ArgpGraphConfig.tombstoneMergeMinRun）。 */
+  tombstoneMergeMinRun = 8
+  /** 推断边派生参数（config 缺省 6/0.15/8/20；见 InferredEdgeOptions）。 */
+  inferredOpts: InferredEdgeOptions = { minTokenLen: 6, stopwordRatio: 0.15, maxEdgesPerAtom: 8, windowTurns: 20 }
+  /** 推断边统计（最近一次 buildGraph 口径）。 */
+  readonly inferredStats: InferredStats = { candidates: 0, accepted: 0, skippedDup: 0 }
+  /** 最近一次建图的推断边（诊断/测试断言用；同 lastEdges）。 */
+  lastInferredEdges: SemanticEdge[] = []
   /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
   readonly citesObligation: boolean
   /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
@@ -606,6 +665,14 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.enableOverlapChain = config.enableOverlapChain ?? false
     this.injectEdges = config.injectEdges
     this.disableCiteEdges = config.disableCiteEdges ?? false
+    // v1.2.0 组件 A（PROPOSAL-token-ontology）：推断边参数（默认启用，可单独关停）。
+    this.disableInferredEdges = config.disableInferredEdges ?? false
+    // v1.2.x §11.8①：tombstone 归并阈值（默认 8；显式 0 = 关闭，对照组实验用）。
+    if (config.tombstoneMergeMinRun !== undefined) this.tombstoneMergeMinRun = config.tombstoneMergeMinRun
+    if (config.inferredMinTokenLen !== undefined) this.inferredOpts.minTokenLen = config.inferredMinTokenLen
+    if (config.inferredStopwordRatio !== undefined) this.inferredOpts.stopwordRatio = config.inferredStopwordRatio
+    if (config.inferredMaxEdgesPerAtom !== undefined) this.inferredOpts.maxEdgesPerAtom = config.inferredMaxEdgesPerAtom
+    if (config.inferredWindowTurns !== undefined) this.inferredOpts.windowTurns = config.inferredWindowTurns
     // P0 双引擎自挂载：peratom 配置块存在时，Stage-1 三管线在构造期挂载并接线
     // （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
     // ctx.compaction 接收 injectEdges / onOverflowCompress）。
@@ -1422,6 +1489,34 @@ export class ArgpGraphEngine extends CompactionEngine {
         edges.push(e)
       }
     }
+    // v1.2.0 组件 A（PROPOSAL-token-ontology）：推断边——承重 token 逐字包含派生
+    // （0 LLM，I-A1 构造性；停词过滤/每 A 上限/声明窗口见 token-ontology.ts）。
+    // 在 cites / injectEdges 之后合并 → 声明边先行（同 (from,to) 先到者胜，与 inject
+    // 去重同纪律）；A₁ 臂（disableCiteEdges）一并隔离，保零语义边实验语义。
+    this.lastInferredEdges = []
+    if (!this.disableCiteEdges && !this.disableInferredEdges) {
+      const pairs = deriveInferredEdges(atoms, this.inferredOpts)
+      this.inferredStats.candidates = pairs.length
+      const seqToId = new Map<number, number>()
+      for (const a of atoms) seqToId.set(a.seq, a.id)
+      const seenInferred = new Set(edges.map(e => `${e.from}\u0000${e.to}`))
+      let accepted = 0
+      let skippedDup = 0
+      for (const p of pairs) {
+        const from = seqToId.get(p.fromSeq)
+        const to = seqToId.get(p.toSeq)
+        if (from === undefined || to === undefined) continue
+        if (from === to) continue // 防御：seq→id 映射异常（如重复 id）不得产出自环
+        const key = `${from}\u0000${to}`
+        if (seenInferred.has(key)) { skippedDup += 1; continue }
+        seenInferred.add(key)
+        edges.push({ from, to, level: 'inferred' })
+        this.lastInferredEdges.push({ from, to, level: 'inferred' })
+        accepted += 1
+      }
+      this.inferredStats.accepted = accepted
+      this.inferredStats.skippedDup = skippedDup
+    }
     this.lastEdges = edges
     this.lastDeterministicEdges = deterministicEdges
     const inDegree = new Map<number, number>()
@@ -1925,8 +2020,69 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
+   * tombstone 归并（v1.2.x §11.8① 修复）。扫描 surface，找**连续**的「可合并墓碑」X 段
+   * （user/message + isMergeableTombstone 文本），段长 ≥ tombstoneMergeMinRun 时一笔事务
+   * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
+   * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
+   * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
+   * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（不含 pruned by ARGP）
+   * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
+   */
+  private consolidateTombstones(session: Session): number {
+    if (this.tombstoneMergeMinRun <= 0) return 0
+    const nodes = [...session.surface.nodes]
+    // 1) 收集每个 surface 节点的「可合并墓碑」布尔
+    const isTomb: boolean[] = new Array(nodes.length)
+    for (let i = 0; i < nodes.length; i += 1) {
+      const seq = nodes[i]
+      const ev = sessionEvents(session)[seq]
+      if (ev === undefined || ev.type !== 'user/message') { isTomb[i] = false; continue }
+      if (classifyUserMessage(ev.data) !== 'X') { isTomb[i] = false; continue }
+      isTomb[i] = isMergeableTombstone(eventText(session, seq))
+    }
+    // 2) 找第一段长度 ≥ minRun 的连续墓碑
+    const minRun = this.tombstoneMergeMinRun
+    let runStart = -1, runEnd = -1
+    for (let i = 0; i <= nodes.length; i += 1) {
+      const inRun = i < nodes.length && isTomb[i]
+      if (inRun) { if (runStart === -1) runStart = i }
+      else if (runStart !== -1) {
+        const len = i - runStart
+        if (len >= minRun) { runEnd = i - 1; break }
+        runStart = -1
+      }
+    }
+    if (runStart === -1 || runEnd === -1) return 0
+    // 3) 校验事务边界 tool-pairing 平衡（与 compactRegion 同判据），不平衡则放弃归并
+    if (!toolPairingBalancedBefore(session, nodes[runStart]!) || !toolPairingBalancedAfter(session, nodes[runEnd]!)) {
+      this.log.info('[argp-graph] tombstone-merge: boundary not tool-pairing balanced, skip')
+      return 0
+    }
+    const tombSeqs = nodes.slice(runStart, runEnd + 1) as number[]
+    const tombAtoms: Atom[] = tombSeqs.map(seq => ({
+      id: -1, seq, type: 'X' as AtomType, turn: 0,
+      text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false,
+    }))
+    const chars = tombAtoms.reduce((s, a) => s + a.text.length, 0)
+    const interval = { seqs: tombSeqs, chars, atoms: tombAtoms }
+    // 聚合墓碑文本：保持「[elided … pruned by ARGP … recall_pruned」形态（自身可再归并，
+    // 地板随压缩次数收敛到常数；seq 跨度显式保留，被吞聚合的内部 seq 可递归 recall）。
+    const aggText = '[elided consolidated ×' + tombSeqs.length + ' seqs=' + tombSeqs[0] + '..' + tombSeqs[tombSeqs.length - 1]
+      + ': these placeholder nodes were themselves pruned by ARGP (tombstone-merge, §11.8); originals remain recallable via recall_pruned(seq) / list_pruned]'
+    try {
+      this.pruneIntervals(session, [interval], 0, 0, true, [{ type: 'user', text: aggText }], 'tombstone-merge')
+    } catch (error: unknown) {
+      // 归并是「优化地板」的尽力步骤，失败不阻断主图剪（回退：墓碑继续累积，由 overflow 三步序列兜底）
+      this.log.warn('[argp-graph] tombstone-merge failed (non-fatal): ' + (error instanceof Error ? error.message : String(error)))
+      return 0
+    }
+    return tombSeqs.length
+  }
+
+  /**
    * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
-   * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
+   * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；普通 U 仅 ask-exempt 参剪，
+   * X（墓碑/checkpoint）不参剪——但墓碑地板由 §11.8① tombstone-merge 在图剪前归并（见 consolidateTombstones）。
    * 排序键（§4.5）：最低关联语义级别升 → effective_importance 升 → lastRefRound 升 → seq 升。
    * 候选耗尽仍超预算 → force_prune（忽略入度，§4.6.2）。
    *
@@ -1961,12 +2117,27 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
 
+    // v1.2.x §11.8① tombstone-merge：图剪前先把「墓碑地板」压下去。
+    // X 原子在 isAtomCandidate 结构性不可剪（2119 行）→ 每轮剪枝新增墓碑，地板单调累积，
+    // 剪到候选耗尽仍超窗（run1 T17 / run2 T16 同数字 141,313+32,768>174,080 两臂复现；
+    // run2 dump 实测 1297/1310 surface 节点是墓碑，≈142K tok）。归并后原子/图重建，
+    // 后续贪心循环拿到的才是真实可剪面。
+    const mergedTombstones = this.consolidateTombstones(session)
+    if (mergedTombstones > 0) {
+      this.log.info('[argp-graph] tombstone-merge: ' + mergedTombstones + ' tombstone nodes consolidated before graph prune')
+    }
+
     const atoms = this.atomize(session)
     const { edges, deterministicEdges, inDegree } = this.buildGraph(atoms)
     // 动态有效入度（§5.4 反向拓扑链式解锁）：每 pass 从"未被剪原子的边"重推，
     // 剪除引用方后其出边消失 → 目标入度递减。多引用场景（A/C/D 都引用 B）下
     // B 须等全部引用方被剪才解锁，天然正确；重复 cites 也按边数逐条减。
     let curInDegree = inDegree
+    // 实验（2026-09-15）：A10 结构守卫（isAtomCandidate 内）的前提是「R 已被组外的**语义声明**
+    // 保护」，而 `inferred` 边是 0-LLM 机械派生（权重 1、不保证保护力）——若把它计入 A10 的
+    // 外部入边判据，会伪激活「R 已受保护 → A 可剪」→ A 先被剪 → §5.4 链式解锁带走 R，
+    // 净效果是**加边反而多剪**（spike38 A-ON 27 原子 vs A-OFF 23）。故 A10 只看非 inferred 入度。
+    let curInDegreeDecl = new Map<number, number>()
     const surfaceSeqs = [...session.surface.nodes]
     const position = new Map<number, number>(surfaceSeqs.map((seq, i) => [seq, i]))
     const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
@@ -2066,7 +2237,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           const aCitesR = edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
           // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
           const anyRExternalIncoming = groupRs.some(r =>
-            (curInDegree.get(r.id) ?? 0) > 0 || // 语义入度（cites）——已含组外来源
+            (curInDegreeDecl.get(r.id) ?? 0) > 0 || // 语义**声明**入度（cites/inject）——排除 inferred（见上方实验注释）
             deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
           if (!aCitesR && !anyRExternalIncoming) return false
         }
@@ -2104,15 +2275,26 @@ export class ArgpGraphEngine extends CompactionEngine {
     for (let pass = 0; pass < this.maxPasses; pass += 1) {
       // 每 pass 重推有效入度：已剪原子的出边不再计入目标入度（链式解锁）
       curInDegree = new Map<number, number>()
+      curInDegreeDecl = new Map<number, number>()
       for (const e of edges) {
         if (pruned.has(e.from)) continue
         curInDegree.set(e.to, (curInDegree.get(e.to) ?? 0) + 1)
+        // A10 专用：只数非 inferred 入边（见上方实验注释）。
+        if (e.level !== 'inferred') curInDegreeDecl.set(e.to, (curInDegreeDecl.get(e.to) ?? 0) + 1)
       }
       const remaining = atoms.filter(a => !pruned.has(a.id))
       const visible = remaining.reduce((sum, a) => sum + a.text.length, 0)
       if (visible <= retainChars) break
       const liveGroups = groups.filter(g => g.some(a => !pruned.has(a.id)))
       let candidateGroups = liveGroups.filter(g => isGroupCandidate(g, false))
+      if (process.env['ARGP_DEBUG_PASS'] === '1') {
+        const dbg = (m: string): void => { process.stdout.write('[dbg] ' + m + '\n') }
+        dbg('pass=' + pass + ' visible=' + visible + '/' + retainChars + ' prunedSoFar=' + pruned.size)
+        for (const g of liveGroups) {
+          const a = g[0]!
+          dbg('  ' + (isGroupCandidate(g, false) ? 'CAND' : 'skip') + ' seq=' + a.seq + ' ' + a.type + ' t' + a.turn + ' inDeg=' + (curInDegree.get(a.id) ?? 0) + ' chars=' + a.text.length)
+        }
+      }
       if (candidateGroups.length === 0) {
         // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原 tryPruneClosures
         // 的 return 把正常候选 + 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），
@@ -2371,6 +2553,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     candidateCount: number,
     forced: boolean,
     tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
+    summaryKind?: 'graph-prune' | 'tombstone-merge',
   ): CompactionResult {
     const charsBefore = this.visibleChars(session)
     const openTurn = this.detectOpenTurn(session)
@@ -2465,7 +2648,9 @@ export class ArgpGraphEngine extends CompactionEngine {
         ...lifecycle,
         summary: [{
           type: 'text',
-          text: `ARGP 图剪：${prunedCount} 原子 / ${intervals.length} 区间（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+          text: summaryKind === 'tombstone-merge'
+            ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${intervals.length} 区间归并为聚合占位（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
+            : `ARGP 图剪：${prunedCount} 原子 / ${intervals.length} 区间（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
         }],
         shadowedRange: { start: first, end: last },
         shadowedSeqs: allSeqs,

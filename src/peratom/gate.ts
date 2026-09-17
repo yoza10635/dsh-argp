@@ -284,39 +284,14 @@ export function turnCompressible(atoms: readonly GateAtom[], chain: VersionChain
 //
 // spike 34 首轮实测：本地模型对 ALL-CAPS 错误码保真完美（6/6），但对 file:line 定位
 // （2/6）与 key=value 分隔符（victim=txn#8821 被转述成 victim txn#8821）会不自觉改写。
-// 本守卫从原文确定性地提取高信号 token，要求 extract 逐一 verbatim 包含；
-// 缺任一个即拒绝该条替换（原文保面）——错误方向只允许往"少压"错，
-// 与版本链硬排除同一保守哲学。纯函数，可单测。
+// 守卫从原文确定性地提取高信号 token，要求 extract 逐一 verbatim 包含；
+// 缺任一个即拒绝该条替换（原文保面 / v1.2.0 HLS 修复档，由调用方选档）——
+// 错误方向只允许往"少压"错，与版本链硬排除同一保守哲学。纯函数，可单测。
+//
+// v1.2.0：词表与守卫实现迁至 `src/token-ontology.ts`（一套词表、两种机制：
+// 原子内保真 + 原子间推断边共享唯一事实源）；本模块 re-export 保既有 import 兼容。
 // ---------------------------------------------------------------------------
 
-const LOAD_BEARING_PATTERNS: RegExp[] = [
-  /https?:\/\/\S+/g,                                   // URL
-  /\/?\b[\w.@-]+(?:\/[\w.@-]+)+\.\w{1,8}\b/g,          // 带扩展名的路径（绝对或相对，含前导斜杠）
-  /\b[\w-]+\.\w{1,8}:\d+(?::\d+)?\b/g,                 // file:line[:col] 行号定位
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, // UUID
-  /\b[a-f0-9]{32,64}\b/gi,                             // 十六进制哈希
-  /\b[A-Z][A-Z0-9_]{4,}\b/g,                           // ALL_CAPS 错误码
-  /\b[A-Za-z][\w-]{1,28}=[^\s,;'"]{2,}/g,              // key=value（保留原分隔符）
-]
-
-/** 提取原文中必须在压缩副本里 verbatim 存活的高信号 token（去重）。 */
-export function findLoadBearingTokens(text: string): string[] {
-  const out = new Set<string>()
-  for (const re of LOAD_BEARING_PATTERNS) {
-    re.lastIndex = 0
-    let m: RegExpExecArray | null = re.exec(text)
-    while (m !== null) {
-      const tok = m[0].replace(/[.,;)\]}'"]+$/, '')
-      if (tok.length >= 4) out.add(tok)
-      if (m.index === re.lastIndex) re.lastIndex += 1 // 防零宽匹配死循环
-      m = re.exec(text)
-    }
-  }
-  return [...out]
-}
-
-/** 守卫裁决：missing 非空 = 该副本不得落盘（原文保面）。 */
-export function fidelityGuard(originalText: string, compressedText: string): { ok: boolean; missing: string[] } {
-  const missing = findLoadBearingTokens(originalText).filter(tok => !compressedText.includes(tok))
-  return { ok: missing.length === 0, missing }
-}
+export { LOAD_BEARING_PATTERNS, findLoadBearingTokens, fidelityGuard } from '../token-ontology.js'
+export type { InferredEdgeOptions, InferredEdgePair, OntologyAtom } from '../token-ontology.js'
+export { deriveInferredEdges, repairWithTrailer } from '../token-ontology.js'

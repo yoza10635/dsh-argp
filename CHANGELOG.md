@@ -2,6 +2,37 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [Unreleased]
+
+### Fixed
+
+- **§11.8① 墓碑地板不可再剪（tombstone-merge）**：X 原子在 `isAtomCandidate` 结构性不可剪（`type ∉ {A,R,U}` 直接 return false）→ 每次压缩注入的 `[elided …]` 墓碑单调累积成"地板"，剪到候选耗尽仍超窗。受控语料两臂独立复现同形态 `CONTEXT_WINDOW_EXCEEDED`（run1 T17 / run2 T16，provider 报错数字同为 `141,313+32,768>174,080`）；run2 dump 重放投影实测 **1297/1310 surface 节点是墓碑、284,786 chars ≈142K tok、最长连续段 1295**。修复：新增导出纯函数 `isMergeableTombstone`（三判据 `[elided` 开头 + `pruned by ARGP` + `recall_pruned`；宿主注入 / 官方 checkpoint / tool 占位墓碑不合并）+ `consolidateTombstones()`（找第一段 ≥N 连续墓碑，tool-pairing 平衡校验后复用 `pruneIntervals` 事务骨架归并为单条聚合墓碑——聚合碑保持可再归并形态，地板随轮次收敛到常数；失败非致命）；挂点 `compactIfNeeded` 压力门槛后、建图前（热路径零开销）。旋钮 `tombstoneMergeMinRun`（默认 8，**0=关闭**，对照臂 A/B 用）。端到端实测：run2 T16 归并 ×1294 碑 → 1 条 192 字符聚合碑，surface elided 从 1297 节点/285K chars 塌至 6 节点/1459 chars，T16–T22 全部跑完、零再撞墙（237/237 测试绿，新增 4 项）。详见 `docs/corpus-run-spec.md` §11.8.1。
+
+### Added
+
+- **HLS 经济学门控（组件 B 的代价盲修正，I-B5）**：`repairWithTrailer` 原先**无论值不值一律补全**——spike39 实测尾注开销 1003 字符 = 原文 41%、修复后 = 候选的 2.05×，F1/F4 两例 ROI 仅 0.02/0.07（几乎退化为"原文保面"）。新增 `token-ontology.ts` 的 `hlsRepairEconomics()` 纯函数与 `trailerText()`（尾注长度唯一事实源），判据：
+  `B = L_orig − L_cand`（prose 增益）、`C =` 尾注占用、`N = B − C`（净释放）、`ROI = N / C`，仅当 `ROI ≥ θ` 才修复。
+  默认 `θ = DEFAULT_HLS_ROI_THRESHOLD = 1`（尾注须替自己买单）；`N < 0`（越修越长）在任意 `θ ≥ 0` 下都被拒，退回 v1.1「原文保面」。配置面 `hlsRoiThreshold`（`PeratomCompressorConfig` + `PlanOptions`）；新增台账 `hlsRoiSkipped`（plan + `CompressRecord`）度量该区间频率。spike39 六例 ROI：F1=0.02 / F2=1.48 / F3=0.80 / F4=0.07 / F5=0.29 / F6=2.14（聚合 0.49）→ θ=1 下仅 F2/F6 存活。
+- **`spike/40-edge-precision.ts`（`npm run spike40`）——组件 A 误连率实测**：受控植入真值（唯一 handle 数据原子 + A 原子植入"真依赖 T / 仅提及 M"），0-LLM 离线。结论：无噪音基线 precision=recall=1；误连率曲线精确等于 `m/(2+m)`（m=0/1/2/3 → 0%/33.3%/50%/60%）；半公共 handle（DF 13.2% < 15% 停词阈）漏网产生误连（**F40-1 HIGH**：停词是全或无二值，缺 DF 衰减）；`maxEdgesPerAtom` 按 seq 降序截断会丢更旧的真依赖（**F40-2 MEDIUM**）。
+- **`npm run typecheck:spike`（`tsconfig.spike.json`）**：补齐覆盖率缺口——根 `tsconfig.json` 的 `include` 只有 `src/**` + `test/**`，**spike/ 一直不在类型检查内**（spike38 的未定义变量、spike39 的已移除 API 都只能靠运行时暴露）。新增配置把**当前世代 spike（38–42 + `spike/lib`）**纳入检查并挂到 `npm run check`；历史 spike（01–37）因 dsh API 漂移尚有约 130 个既有错误，暂不纳入（待单独清理）。
+- **`spike/42-edge-labels.ts`（`npm run spike42`）——真实边标注工作表 / 打分器**：把真实语料上派生的边做成**盲化**工作表（实测 68 条：单 token 支撑 61 / ≥2 支撑 7），并给出打分器（总 precision + 分层 precision + Wilson 95% CI + 分层差 Δ）。**标注单位 = 配对**（A 摘录 + R 摘录 + 共同 token），**不用整轮对话**——整轮会泄露"后来发生了什么"这条捷径（该 session `read` 144 次 / `recall` 仅 2 次，静默降级是常态）。支撑强度单放 `.key.json` 以保盲化；判读规则先定死（Δ 显著为正才支持"≥k 独立 token 建边"）。**隐私**：工作表写 gitignored 的 `spike/out/labels/`，绝不提交。
+- **`spike/lib/session-corpus.ts` + `spike/41-real-corpus.ts`（`npm run spike41`）——真实 session 语料能力**：本机 `~/.dsh/sessions` 的 session 可作测试语料。读取器要点：`session.v3.jsonl.zstd` 是**多帧 zstd 拼接**（单文件实测 502 帧），Node 的 `zstdDecompressSync` **只解第一帧且不报错**（会把 1.5MB 静默解成 193 字节）→ 需按 magic `28 B5 2F FD` 扫帧起点逐帧解压。**隐私铁律**：只读、绝不写回；**任何 session 原文不得提交进仓库**；需要可复现性时只提交派生聚合量；用例须能在目录缺失时优雅跳过。实测 4 个 session / 646 原子 / 1,052,502 字符，读取器 **0 坏帧、0 非法行、seq 缺口 0、重复 0**。
+- **`spike/43-corpus-audit.ts`（`npm run spike43`）——受控语料自检**：跑完一份受控 session 后判定**这份语料能测什么、不能测什么**（不给"大概行"）。四组：①结构验收（chars/atoms/prune 量，`compaction/start` 因含 overflow-retry 膨胀仅作参考）②场景有效性（cites 声明率、跨轮 handle、extract 候选量、推断边）③**驱逐代价**（prune-then-reread）④**组件 B 生产线观测**（替换副本里的 `[restored]` 尾注 → 逐例复算 ROI、统计 θ=1 会拦下多少）。
+- 真实日志的免费观察 + **两处自我纠错**：① `cites` 声明在 4 个 session 合计 **2 次**（1 处 / 136 条 assistant 原始回复 = 1.5%，其余为 0）而引擎做了 265 次 `compaction/prune` → 组件 A 基本是唯一语义选择性通道；**此前记为"0 次"是错的**（计数须只扫 append 原始写入的 assistant 正文，扫全日志会因 replace 副本虚增到 28）。② **`[restored]` 真实落盘 0 例**；裸文本搜索得到的 41 处**全是假阳性**（来自"对话在讨论 HLS 机制本身的源码"）→ 正确判据是 **I-B3 构造性**（尾注 token 逐字 ⊆ 原文承重词表）。③ 引入非循环指标 **prune-then-reread**：被驱逐路径 24/30（80%）在同 session 被再次读取——**上限值，可归因代价须由对照组做差**。
+
+### Changed
+
+- **spike39 口径分离**：机制不变量（I-B1/I-B3）改测 `repairWithTrailer` **本体**，经济性（I-B5 门控）测 `planReplacements` 的放行/拒收。此前二者混用（用 plan 度量不变量）——门控一经引入即全线误报 FAIL。新增 **S39-6 门控一致性**（落盘集 == `{ROI ≥ θ}`；放行⇒`hlsRepairs=1/skippedFidelity=0`，拒收⇒`hlsRoiSkipped=1/steps=0/skippedFidelity=1`）与 `θ=0` 对照臂；S39-3 节省率改在**落盘子集**上计算（2/6 落盘，落盘子集节省 39.4%），不再被"退回原文"的零改动稀释。结果：ALL PASS（S39-1/2/3/5/6）。
+- **spike38 S38-4 清账**：原断言拿常量 `7` 对表 `citeStats`（引擎内 `+=`，**跨 buildGraph 累加**）与 `inferredStats`（**最近一次建图**口径）→ 多趟 pass 下必然误判。改断不变量：ON/OFF 剪枝序列逐位一致 + 最终图 0 条推断边 + `accepted=0` + **两通道保护集完全重合**（原 INFO S38-5b 提升为硬判据）；原始计数降为 INFO（S38-4b/4c）。结果：spike38 ALL PASS（S38-1..S38-5）。
+- **spike39 live 臂 API 修复**：`session.events` 在 dsh 0.1.5 已移除（1.1.0 CHANGELOG「Session.events 彻底消失」），live 臂仍用它 → 只因"无本地模型"长期跳过而潜伏。改经 `log-access.sessionEvents()`（与 spike38 同纪律）。
+
+### Verified
+
+- `npm run typecheck` 干净；`npm run typecheck:spike` 干净（38/39/40 零错误）；`npm test` **237/237** 全绿（较 1.1.0 基线 229 累计新增 8 项：HLS 门控/token-ontology 5 项 `trailerText` 口径、`hlsRepairEconomics` 数值与 θ 灵敏度、tool/info 两路门控放行与退回 + 墓碑归并 3 项）。
+- `spike38` **ALL PASS**（S38-1..S38-5；S38-4 清账后转绿）、`spike39` **ALL PASS**（S39-1/2/3/5/6）、`spike40` 度量成立（2 PASS + 2 如实 FAIL = 机制边界 + 2 FINDING）、`spike41` **ALL PASS**（读取器完整性 0 坏帧/0 非法行/seq 零缺口；真实语料 2 条 FINDING）。
+- 真实语料校准（spike41）的净结论：**不降低组件 A 的有效性，降低的是"稀有 handle 共现 ≈ 语义信号"这一信念**。受益侧（spike38 S38-3 的 3/3 保护）不受影响；暴露的是信号**判别力弱**（89.7% 单 token 支撑——而单 token 恰是真引用与巧合提及的**共同形态**，故不等于误连率高）与停词阈**结构性空转**（F41-1，maxDF 17 ≪ 阈 33）。**同时撤回上一版的两条修法建议**（"停词按 DF 衰减"、"≥k 独立 token 才建边"）：前者无从衰减，后者会误杀真引用。**在拿到真实误连率标注前不应改门控。**
+- 文档：`PROPOSAL-token-ontology.md` 新增 §2.1「已知边界」（spike40 结论 + 缺口 2 能力边界 + §5 生命周期 2/3 结构天花板）与 §3 门控口径；§5 验收表补 Spike 40 / 门控单测行。
+
 ## [1.1.0] - 2026-09-10（dsh 0.1.5 支持：V3 会话信封迁移）— **BREAKING**
 
 > **宿主兼容性跳代。** 1.1.0 起要求 **dsh ≥ 0.1.5-alpha.1**；rc.2 ~ 0.1.3-alpha.2 宿主请继续使用 **1.0.5**。两代不兼容，且无法在同一个构建内兼容——详见下方「为什么不能两代通吃」。

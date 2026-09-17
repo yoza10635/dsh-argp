@@ -1,0 +1,5 @@
+# Normalize line endings: repo stores LF, checkout keeps LF (kills CRLF churn on Windows dev boxes).
+* text=auto eol=lf
+*.png binary
+*.zst binary
+*.tgz binary

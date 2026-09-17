@@ -5,6 +5,8 @@ dist/
 .env
 sessions/
 spike/out/
+# npm 下载缓存（.npm-cache 是本机 npm_config_cache 落点，不进基线）
+.npm-cache/
 # 一次性调试/诊断脚本（probe/diag 等），不进基线
 .tmp/
 *.tmpdir/

@@ -116,10 +116,6 @@ export declare function userIsLong(text: string, thresholdChars: number): boolea
  * 零调用（计数器可断言）、零 cites（孤立原子规则）。
  */
 export declare function turnCompressible(atoms: readonly GateAtom[], chain: VersionChainIndex, opts?: GateOptions): boolean;
-/** 提取原文中必须在压缩副本里 verbatim 存活的高信号 token（去重）。 */
-export declare function findLoadBearingTokens(text: string): string[];
-/** 守卫裁决：missing 非空 = 该副本不得落盘（原文保面）。 */
-export declare function fidelityGuard(originalText: string, compressedText: string): {
-    ok: boolean;
-    missing: string[];
-};
+export { LOAD_BEARING_PATTERNS, findLoadBearingTokens, fidelityGuard } from '../token-ontology.js';
+export type { InferredEdgeOptions, InferredEdgePair, OntologyAtom } from '../token-ontology.js';
+export { deriveInferredEdges, repairWithTrailer } from '../token-ontology.js';

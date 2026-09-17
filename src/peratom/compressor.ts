@@ -47,6 +47,7 @@ import {
   userIsLong,
 } from './gate.js'
 import type { GateOptions, GateToolResult, GateUserLong, NeedCompress, VersionChainIndex } from './gate.js'
+import { DEFAULT_HLS_ROI_THRESHOLD, hlsRepairEconomics, repairWithTrailer } from '../token-ontology.js'
 
 /** 插件署名（dialog replace / U-info append 副本的 message.source.plugin）。 */
 const PLUGIN_NAME = 'dsh-argp'
@@ -82,6 +83,21 @@ export interface PeratomCompressorConfig {
    * `setToolPolicy(toolName, policy)` 增改；构造期传入便于单测 / 声明式挂载预置。
    */
   toolPolicies?: ReadonlyMap<string, NeedCompress>
+  /**
+   * HLS 修复档（PROPOSAL-token-ontology 组件 B，v1.2.0；默认 'trailer'）：
+   * extract 被保真守卫拒收（缺高信号 token）时不再整条丢弃（收益全损），
+   * 改为守卫机械补全——候选文本 + 缺失 token 按原文顺序尾注（`[restored]`），
+   * 硬 token 保真由构造（100%），prose 损失受控（等同 summary 档），
+   * 缺失清单入 `restoredByGuard` 台账（与 summaryDropped 同级可审）。
+   * 'off' = v1.1 行为（拒收即原文保面）。
+   */
+  hlsMode?: 'trailer' | 'off'
+  /**
+   * HLS 经济学门槛 θ（默认 1，见 token-ontology `DEFAULT_HLS_ROI_THRESHOLD`）：
+   * 仅当 ROI = 净释放预算 / 尾注占用 ≥ θ 才修复，否则退回原文保面。
+   * 修复后比原文还长（ROI < 0）在任何 θ ≥ 0 下都被拒——这是代价盲的修正。
+   */
+  hlsRoiThreshold?: number
   /** fetch 注入点（测试替身；生产缺省 globalThis.fetch）。 */
   fetchImpl?: typeof fetch
 }
@@ -280,6 +296,21 @@ export interface CompressRecord {
    * 逐条入账，供 LLM 审核 / 人工审核事后评判。空数组/缺省 = 无丢失。
    */
   summaryDropped?: string[]
+  /**
+   * HLS 修复档计数（v1.2.0 组件 B）：extract 副本被拒后经守卫尾注补全落地的数量。
+   * 与 skippedFidelity 互斥语义：前者 = 保真由构造地落地，后者 = 保守回退原文。
+   */
+  hlsRepairs?: number
+  /**
+   * HLS 审计台账（与 summaryDropped 同级可审）：守卫从原文补进尾注的高信号 token。
+   * 空数组/缺省 = 无修复发生。spike39 用其度量"拒收挽回率"。
+   */
+  restoredByGuard?: string[]
+  /**
+   * HLS 经济学门控拒收数（v1.2.0 门控修正）：缺 token 但 ROI < θ → 退回原文保面。
+   * 空/缺省 = 无门控拦截。用于观测「代价盲区间」（修复越修越长）在真实语料的频率。
+   */
+  hlsRoiSkipped?: number
   /** 当轮原子 seq 快照（prompt 里给出的值；调试 seq 信任边界用）。 */
   atomSeqs?: { userLong: number[]; toolResults: number[] }
   /** 模型原始 decision（解析成功时留痕；调试服从率用）。 */
@@ -327,7 +358,27 @@ interface PlanResult {
   fidelityMissing: string[]
   /** summary 副本审计：被概括丢弃的高信号 token（放行但入账，供审核）。 */
   summaryDropped: string[]
+  /** HLS 修复档（v1.2.0 组件 B）：extract 被拒后经守卫尾注补全落地的副本数。 */
+  hlsRepairs: number
+  /** HLS 审计台账：守卫补进尾注的高信号 token（与 summaryDropped 同级可审，spike39 消费）。 */
+  restoredByGuard: string[]
+  /**
+   * HLS 经济学门控拒收数（v1.2.0 门控修正）：候选虽缺 token 但 ROI = 净释放/尾注 < θ
+   * （尾注不划算，修复后接近/超过原文长度）→ 退回原文保面。与 skippedFidelity 同向
+   * （原子保原文），单列以便度量「代价盲区间」（spike39 的 F1/F4 形态）的出现频率。
+   */
+  hlsRoiSkipped: number
   anomalies: number
+}
+
+/**
+ * planReplacements 选项（v1.2.0）：`hlsMode` 对独立调用方缺省 'off'（保守默认，
+ * 既有行为不变）；PeratomCompressor 类显式传自身配置（生产缺省 'trailer'）。
+ */
+export interface PlanOptions {
+  hlsMode?: 'trailer' | 'off'
+  /** HLS 经济学门槛 θ（缺省 1）；仅 trailer 档生效。 */
+  hlsRoiThreshold?: number
 }
 
 /** user/message 副本载荷：plugin 署名；meta 存在时挂 data[ARG_NS]（U-info 标记 + summary）。 */
@@ -372,7 +423,11 @@ export function planReplacements(
   collect: CurrentTurnCollect,
   decision: CompressDecision,
   events: readonly SessionEvent[],
+  opts: PlanOptions = {},
 ): PlanResult {
+  // 独立调用方缺省 'off'（v1.1 行为）；类实例化路径传生产缺省 'trailer'。
+  const hlsMode = opts.hlsMode ?? 'off'
+  const hlsRoiThreshold = opts.hlsRoiThreshold ?? DEFAULT_HLS_ROI_THRESHOLD
   const userBySeq = new Map(collect.userLong.map(u => [u.seq, u]))
   const toolBySeq = new Map(collect.toolResults.map(t => [t.seq, t]))
   const steps: PlannedStep[] = []
@@ -383,6 +438,9 @@ export function planReplacements(
   let skippedNoopGain = 0
   const fidelityMissing: string[] = []
   const summaryDropped: string[] = []
+  const restoredByGuard: string[] = []
+  let hlsRepairs = 0
+  let hlsRoiSkipped = 0
   let anomalies = 0
 
   const seenUserSeqs = new Set<number>()
@@ -407,8 +465,29 @@ export function planReplacements(
               // summary 审计放行：概括天然丢精确串，缺失清单入账供审核（与 tool summary 同档纪律）。
               summaryDropped.push(...guard.missing)
               infoText = candidate
+            } else if (hlsMode === 'trailer') {
+              // HLS 修复档（v1.2.0 组件 B）：尾注补全缺失硬 token——保真由构造
+              // （fidelityGuard 平凡通过 = 构造性断言；I-B1/I-B3）。
+              // 经济学门控（θ=1）：修复后不划算（ROI < θ）→ 退回原文保面（v1.1 行为）。
+              const econ = hlsRepairEconomics(verbatimInfo.length, candidate.length, guard.missing, hlsRoiThreshold)
+              if (!econ.accept) {
+                hlsRoiSkipped += 1
+                skippedFidelity += 1
+                fidelityMissing.push(...guard.missing)
+              } else {
+                const repaired = repairWithTrailer(candidate, guard.missing)
+                if (fidelityGuard(verbatimInfo, repaired).ok) {
+                  hlsRepairs += 1
+                  restoredByGuard.push(...guard.missing)
+                  infoText = repaired
+                } else {
+                  // 构造性断言失败 = bug 信号：回退原文保面（保守方向）。
+                  skippedFidelity += 1
+                  fidelityMissing.push(...guard.missing)
+                }
+              }
             } else {
-              // extract 硬拒：缺任一高信号 token 即回退逐字（原文保面，错误方向只往"少压"错）。
+              // extract 硬拒（v1.1）：缺任一高信号 token 即回退逐字（原文保面，错误方向只往"少压"错）。
               skippedFidelity += 1
               fidelityMissing.push(...guard.missing)
             }
@@ -472,14 +551,36 @@ export function planReplacements(
       continue
     }
     // 保真守卫（spike 34 驱动）：原文的高信号 token 必须在副本里 verbatim 存活。
-    // level-aware 分级（spike36 复盘驱动）：extract 维持硬拒——缺任一 token 即拒绝替换、
-    // 原文保面（错误方向只允许往"少压"错）；summary 是模型自选的概括档，概括天然
-    // 会丢精确串，硬拒会让该档位永远不可用——改为审计式放行：缺失清单入账
+    // level-aware 分级（spike36 复盘驱动）：summary 是模型自选的概括档，概括天然
+    // 会丢精确串，硬拒会让该档位永远不可用——审计式放行：缺失清单入账
     // summaryDropped，供 LLM 审核 / 人工审核事后评判。
+    // v1.2.0 HLS 修复档（组件 B，hlsMode='trailer'）：extract 缺 token 不再整条
+    // 丢弃（收益全损）——守卫机械补全缺失硬 token（尾注 `[restored]`），
+    // 硬 token 保真由构造、prose 损失受控、缺失清单入 restoredByGuard 台账；
+    // hlsMode='off' 退回 v1.1 硬拒（原文保面，错误方向只往"少压"错）。
     const guard = fidelityGuard(atom.text, action.text)
+    let text = action.text
     if (!guard.ok) {
       if (action.level === 'summary') {
         summaryDropped.push(...guard.missing)
+      } else if (hlsMode === 'trailer') {
+        // 经济学门控（θ=1）：修复后不划算（ROI < θ，典型 = 修复文本 ≥ 原文）→
+        // 原样退回 v1.1 硬拒（原文保面）。门控拒收与构造性失败同列 skippedFidelity，
+        // 单列 hlsRoiSkipped 以度量代价盲区间频率。
+        const econ = hlsRepairEconomics(atom.text.length, action.text.length, guard.missing, hlsRoiThreshold)
+        if (!econ.accept) {
+          hlsRoiSkipped += 1
+          skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+        }
+        const repaired = repairWithTrailer(action.text, guard.missing)
+        if (fidelityGuard(atom.text, repaired).ok) {
+          hlsRepairs += 1
+          restoredByGuard.push(...guard.missing)
+          text = repaired
+        } else {
+          // 构造性断言失败 = bug 信号：回退原文保面（保守方向）。
+          skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+        }
       } else {
         skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
       }
@@ -488,13 +589,13 @@ export function planReplacements(
       kind: 'replace',
       type: 'tool/result',
       at: action.seq,
-      data: toolCopyPayload(origDataBySeq.get(action.seq), action.text),
+      data: toolCopyPayload(origDataBySeq.get(action.seq), text),
       sourceEventSeqs: [action.seq],
     })
     replaces += 1
   }
 
-  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, skippedNoopGain, fidelityMissing, summaryDropped, anomalies }
+  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, skippedNoopGain, fidelityMissing, summaryDropped, hlsRepairs, restoredByGuard, hlsRoiSkipped, anomalies }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +712,10 @@ export class PeratomCompressor {
   readonly splitThresholdChars: number
   readonly smallResultChars: number
   readonly timeoutMs: number
+  /** HLS 修复档（v1.2.0 组件 B；生产缺省 'trailer'，'off' = v1.1 硬拒行为）。 */
+  readonly hlsMode: 'trailer' | 'off'
+  /** HLS 经济学门槛 θ（v1.2.0 门控修正；缺省 1）。 */
+  readonly hlsRoiThreshold: number
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
   private readonly endpoint: ResolvedEndpoint | null
@@ -670,6 +775,8 @@ export class PeratomCompressor {
     this.splitThresholdChars = config.splitThresholdChars ?? SPLIT_THRESHOLD_CHARS
     this.smallResultChars = config.smallResultChars ?? DEFAULT_SMALL_RESULT_CHARS
     this.timeoutMs = config.timeoutMs ?? 180_000
+    this.hlsMode = config.hlsMode ?? 'trailer'
+    this.hlsRoiThreshold = config.hlsRoiThreshold ?? DEFAULT_HLS_ROI_THRESHOLD
     this.chatTemplateKwargs = config.chatTemplateKwargs
     if (config.toolPolicies !== undefined) {
       for (const [name, policy] of config.toolPolicies) this.toolPolicies.set(name, policy)
@@ -975,7 +1082,7 @@ export class PeratomCompressor {
   // -- 事务括号发射（仿 t1：start..end，双事件/多事件发射，断言内联）-------
 
   private flushEntry(session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord): void {
-    const plan = planReplacements(collect, decision, sessionEvents(session))
+    const plan = planReplacements(collect, decision, sessionEvents(session), { hlsMode: this.hlsMode, hlsRoiThreshold: this.hlsRoiThreshold })
     if (plan.steps.length === 0) {
       // 全部动作被拒（保真守卫/回退）或零动作：不开空事务，但统计直接落账到本次记录。
       record.skippedFallbackDialog = plan.skippedFallbackDialog
@@ -983,6 +1090,9 @@ export class PeratomCompressor {
       record.skippedFalse = plan.skippedFalse
       record.skippedNoopGain = plan.skippedNoopGain
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
+      if (plan.hlsRepairs > 0) record.hlsRepairs = plan.hlsRepairs
+      if (plan.restoredByGuard.length > 0) record.restoredByGuard = plan.restoredByGuard
+      if (plan.hlsRoiSkipped > 0) record.hlsRoiSkipped = plan.hlsRoiSkipped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
       return
@@ -1075,6 +1185,9 @@ export class PeratomCompressor {
       record.skippedFalse = plan.skippedFalse
       record.skippedNoopGain = plan.skippedNoopGain
       if (plan.summaryDropped.length > 0) record.summaryDropped = plan.summaryDropped
+      if (plan.hlsRepairs > 0) record.hlsRepairs = plan.hlsRepairs
+      if (plan.restoredByGuard.length > 0) record.restoredByGuard = plan.restoredByGuard
+      if (plan.hlsRoiSkipped > 0) record.hlsRoiSkipped = plan.hlsRoiSkipped
       record.fidelityMissing = plan.fidelityMissing
       record.anomalies = (record.anomalies ?? 0) + plan.anomalies
     } catch (error) {

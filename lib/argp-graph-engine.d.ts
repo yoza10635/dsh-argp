@@ -7,6 +7,7 @@ import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
 import type { ParsedCite } from './cites-strip.js';
 export type { ParsedCite, CiteLevel } from './cites-strip.js';
+import { type InferredEdgeOptions } from './token-ontology.js';
 import { type PresetCleanOptions } from './preset-cleaner.js';
 export type { PresetCleanOptions, PresetCleanReport, PresetRow } from './preset-cleaner.js';
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
@@ -53,7 +54,13 @@ export interface Atom {
      */
     sourceSeq?: number;
 }
-export type EdgeLevel = 'critical' | 'supporting' | 'contextual';
+/**
+ * 语义边级别。v1.2.0 起含 'inferred'（PROPOSAL-token-ontology 组件 A）：
+ * 承重 token 逐字包含派生边——模型声明通道（cites / declarer）空窗时的**保底层**，
+ * 0 LLM、构造性 I-A1（∃ token 双端逐字在场）。保护度低于任何声明档（权重 1 < contextual 2），
+ * 高于无边原子；声明边先行去重（buildGraph 在 cites/inject 之后合并，同 (from,to) 先到者胜）。
+ */
+export type EdgeLevel = 'critical' | 'supporting' | 'contextual' | 'inferred';
 export interface SemanticEdge {
     from: number;
     to: number;
@@ -96,6 +103,15 @@ export declare function looksAskText(text: string): boolean;
  * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
  */
 export declare function classifyUserMessage(data: unknown): 'U' | 'X';
+/**
+ * tombstone 可合并判据（v1.2.x §11.8① 修复）。X 原子中仅「本引擎剪枝墓碑」可安全合并：
+ * 文本以 `[elided` 开头、含 pruned by ARGP 与 recall_pruned 取回提示（覆盖默认区间
+ * 墓碑与 closure 墓碑两种形态；tool 占位墓碑 `[elided: ...` 缺 pruned by ARGP → 不合并，
+ * 且 consolidateTombstoneRuns 只认 user/message 事件，双保险防孤儿 tool_calls）。
+ * 其余 X（宿主 system-reminder、官方摘要 checkpoint、注入型 checkpoint）不可动。
+ * 导出供测试锁定行为。
+ */
+export declare function isMergeableTombstone(text: string): boolean;
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
     windowTokens?: number;
@@ -160,8 +176,35 @@ export interface ArgpGraphConfig {
     /**
      * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
      * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
+     * 注意（v1.2.0）：A₁"无边"臂同时**自动隔离推断边**——disableCiteEdges=true 时
+     * 推断边一并关闭，保证该臂零语义边的实验语义不被 0-LLM 派生边污染。
      */
     disableCiteEdges?: boolean;
+    /**
+     * 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认 true = 启用）。
+     * 承重 token 逐字包含派生语义边（0 LLM、建图期）：模型声明通道空窗时恢复选择性，
+     * 保护集只增不减（I-A4）。false = 退回 v1.1 行为（语义边仅 cites / inject 两源）。
+     * 独立于 disableCiteEdges（A₁ 臂经后者一并关闭，见上）。
+     */
+    disableInferredEdges?: boolean;
+    /** 推断边种子 token 最小长度（默认 6；守卫词表 ≥4 为保真口径，边派生需更强区分度）。 */
+    inferredMinTokenLen?: number;
+    /** 推断边停词阈值（默认 0.15）：出现在 >15% 原子中的 token 不派生边。 */
+    inferredStopwordRatio?: number;
+    /** 每 A 原子推断边上限（默认 8）。 */
+    inferredMaxEdgesPerAtom?: number;
+    /** 推断边声明窗口轮数（默认 20）：仅近 N 轮的 A 原子作边源。 */
+    inferredWindowTurns?: number;
+    /**
+     * tombstone 归并阈值（v1.2.x §11.8① 修复，默认 8；0 = 关闭）。
+     * X 原子（剪枝墓碑）在 isAtomCandidate 结构性不可剪 → 墓碑地板单调累积，
+     * 实测两臂复现同形态 CONTEXT_WINDOW_EXCEEDED（141,313+32,768>174,080；
+     * run2 T16 dump：1297/1310 surface 节点是墓碑，284,786 chars ≈ 142K tok）。
+     * ≥N 的连续可合并墓碑段会被归并为单条聚合墓碑（原文仍在 append-only 日志，
+     * recall_pruned(seq) 可取回）。每 pass 至多归并一段——若整段一次事务 replace
+     * 失败，回退范围清晰可查（宁少并不错删）。
+     */
+    tombstoneMergeMinRun?: number;
     /**
      * P0 双引擎生产挂载（2026-08-28，webui-liaison 台账发现一，已迁出公开仓库）：非空时
      * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
@@ -273,6 +316,12 @@ export interface CiteStats {
     ambiguous: number;
     failed: number;
 }
+/** 推断边统计（v1.2.0；最近一次 buildGraph 口径，每次建图重置；skippedDup = 与既有声明边同 (from,to) 被去重）。 */
+export interface InferredStats {
+    candidates: number;
+    accepted: number;
+    skippedDup: number;
+}
 /** list_pruned 工具的剪枝节点目录条目。 */
 export interface PrunedNodeInfo {
     seq: number;
@@ -353,8 +402,18 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     lastDeterministicEdges: DeterministicEdge[];
     /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
     injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
-    /** 边价值实验 A₁ 离线重放：跳过 cites 边构建。 */
+    /** 边价值实验 A₁ 离线重放：跳过 cites 边构建（同时隔离推断边，见 config 注释）。 */
     disableCiteEdges: boolean;
+    /** 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认启用）。 */
+    disableInferredEdges: boolean;
+    /** tombstone 归并阈值（§11.8① 修复；默认 8，0=关闭；见 ArgpGraphConfig.tombstoneMergeMinRun）。 */
+    tombstoneMergeMinRun: number;
+    /** 推断边派生参数（config 缺省 6/0.15/8/20；见 InferredEdgeOptions）。 */
+    inferredOpts: InferredEdgeOptions;
+    /** 推断边统计（最近一次 buildGraph 口径）。 */
+    readonly inferredStats: InferredStats;
+    /** 最近一次建图的推断边（诊断/测试断言用；同 lastEdges）。 */
+    lastInferredEdges: SemanticEdge[];
     /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
     readonly citesObligation: boolean;
     /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
@@ -554,8 +613,19 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private resolveScaledBudgets;
     /**
+     * tombstone 归并（v1.2.x §11.8① 修复）。扫描 surface，找**连续**的「可合并墓碑」X 段
+     * （user/message + isMergeableTombstone 文本），段长 ≥ tombstoneMergeMinRun 时一笔事务
+     * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
+     * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
+     * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
+     * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（不含 pruned by ARGP）
+     * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
+     */
+    private consolidateTombstones;
+    /**
      * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
-     * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；U/X 永不参剪。
+     * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；普通 U 仅 ask-exempt 参剪，
+     * X（墓碑/checkpoint）不参剪——但墓碑地板由 §11.8① tombstone-merge 在图剪前归并（见 consolidateTombstones）。
      * 排序键（§4.5）：最低关联语义级别升 → effective_importance 升 → lastRefRound 升 → seq 升。
      * 候选耗尽仍超预算 → force_prune（忽略入度，§4.6.2）。
      *
