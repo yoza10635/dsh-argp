@@ -2,7 +2,11 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
-## [Unreleased]
+## [1.2.0] - 2026-09-17（token-ontology 组件 A/B + §11.8① 墓碑地板修复）— **BREAKING（宿主基线迁移）**
+
+> **宿主基线再次跳档**：1.2.0 起 peer 对齐 **dsh ≥ 0.1.6-alpha.1**（cordis ≥4.0.2）。0.1.5-rc.1 宿主请继续使用 **1.1.0**。
+> 沿 1.1.0 惯例——dsh 无真 stable 线，其 `latest` 即 rc 构建，故跟随宿主线仍发 stable 版本号。
+> 本版核心 API 零漂移（alpha 线实测 build/237 测试全绿），迁移面仅依赖下限；另有三项默认行为变化见下方 Added/Fixed（均可旋钮回退）。
 
 ### Fixed
 
@@ -22,6 +26,7 @@
 
 ### Changed
 
+- **宿主依赖线对齐 0.1.6-alpha.1**（发包前置，用户拍板走 alpha 档而非 rc.2 保守档）：18 个 `@deepseek-ai/dsh-*` peer+dev 从 `^0.1.5-rc.1`/精确 `0.1.5-rc.1` 升 `0.1.6-alpha.1`；`cordis` `^4.0.1`→`^4.0.2`（alpha 全线要求）；`schemastery` 不动（alpha 不约束）。零 API 漂移（typecheck/spike/smoke/237 测试全绿）。harness 侧 54/55 包同步（`dsh-code-runtime` 例外：alpha 线不存在、无人 peer，留 `0.1.5-alpha.2`）。坑：旧 lockfile 树毒 ERESOLVE 解析，须删 lock+node_modules 全新解析。
 - **spike39 口径分离**：机制不变量（I-B1/I-B3）改测 `repairWithTrailer` **本体**，经济性（I-B5 门控）测 `planReplacements` 的放行/拒收。此前二者混用（用 plan 度量不变量）——门控一经引入即全线误报 FAIL。新增 **S39-6 门控一致性**（落盘集 == `{ROI ≥ θ}`；放行⇒`hlsRepairs=1/skippedFidelity=0`，拒收⇒`hlsRoiSkipped=1/steps=0/skippedFidelity=1`）与 `θ=0` 对照臂；S39-3 节省率改在**落盘子集**上计算（2/6 落盘，落盘子集节省 39.4%），不再被"退回原文"的零改动稀释。结果：ALL PASS（S39-1/2/3/5/6）。
 - **spike38 S38-4 清账**：原断言拿常量 `7` 对表 `citeStats`（引擎内 `+=`，**跨 buildGraph 累加**）与 `inferredStats`（**最近一次建图**口径）→ 多趟 pass 下必然误判。改断不变量：ON/OFF 剪枝序列逐位一致 + 最终图 0 条推断边 + `accepted=0` + **两通道保护集完全重合**（原 INFO S38-5b 提升为硬判据）；原始计数降为 INFO（S38-4b/4c）。结果：spike38 ALL PASS（S38-1..S38-5）。
 - **spike39 live 臂 API 修复**：`session.events` 在 dsh 0.1.5 已移除（1.1.0 CHANGELOG「Session.events 彻底消失」），live 臂仍用它 → 只因"无本地模型"长期跳过而潜伏。改经 `log-access.sessionEvents()`（与 spike38 同纪律）。
