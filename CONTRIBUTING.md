@@ -72,6 +72,11 @@ npm publish               # 发布 npm registry（prepublishOnly 自动跑 typec
 
 > npm 账号 `yoza10635`（与 GitHub 同名）。认证 token（Granular Access Token：All packages + Bypass 2FA）保存在**用户级 `~/.npmrc`**，不进 git（项目级 `.npmrc` 只含 registry 行）。tag 已存在的版本直接 `npm publish` 即可，无需重新打 tag。
 
+> **换设备后重建凭证（2026-09-17 实测）**：
+> 1. npm token 写入必须用**限定 registry 形式** `npm config set '//registry.npmjs.org/:_authToken' <token>`——本机全局 registry 配的是 npmmirror 镜像，裸 `_authToken=` 行可能把 token 发给镜像站。发布时显式 `npm publish --registry=https://registry.npmjs.org/`。
+> 2. 本网络环境下 **HTTPS git push 到 github.com 被干扰**（timeout / Connection reset），但 **SSH 22 端口通**（`ssh -T git@github.com` 验证）。仓库 origin 已切为 `git@github.com:yoza10635/dsh-argp.git`，公钥在 GitHub Settings→SSH keys 注册即可；`ssh.github.com:443` 是同场景的备用端口。
+> 3. 旧设备重装系统后其 SSH key 不可恢复（私钥不在），记得把 GitHub 上的 dead key 条目删掉；npm token 同理，换新后 revoke 旧 token。
+
 ## 实验纪律（ARGP 特有）
 
 - 实验脚本放 `spike/`，产物放 `spike/out/`（已在 .gitignore）。
