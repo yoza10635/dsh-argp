@@ -792,7 +792,23 @@ G1 之所以放在 chdir 之前：否则 `--repo` 指向不存在目录时会先
 **同时补挂官方传输层重试**：`@deepseek-ai/dsh-llm-retry` 是**官方 `dsh-base` bundle 的宿主平面成员**
 （`packages/bundle/base/cordis.patch.yml` 的 insert `- id: llm-retry`），**不在** `standard-argp` /
 `corpus-vs-a2` 的 agent 平面 preset 里 —— 所以只照 preset 摘插件的 harness 必然漏挂它。补上**是回归
-官方，不是偏离**。它是本次 6 个失败轮（全是 keep-alive 死 socket 触发的 `TRANSPORT`）的官方解；
+官方，不是偏离**。它是失败轮 `TRANSPORT` 的官方解；
+
+**⚠️ 根因订正（2026-09-17 16:41，用户通报）**：此前把 `TRANSPORT` 记为"客户端 keep-alive 死 socket
+（undici ↔ uvicorn 5s 空闲关闭竞态）"，**该假设撤回**。真实病因是**显存驱逐 → 模型重载的死循环**：
+vLLM 容器在 VRAM 被驱逐后进入"驱逐→重载→再驱逐"的循环，端点**连续数分钟不接受请求**（TCP 仍
+accept，HTTP 返回空响应 —— 实测 `curl -v` 报 `Empty reply from server`）。证据链：`podman inspect`
+显示 `Created` 与 `Started` **同一秒**（16:33:23）= 容器是被销毁重建的（`RestartCount=0`、
+`Policy=no`、`ExitCode=0`，排除崩溃自愈）。
+
+**性质：一次性人为事件，非系统性缺陷**（用户 2026-09-17 16:45 通报）—— 触发条件是**运维侧在调试
+硬件**（当时 GPU 侧 `VRAM 34.2 GB 总 / 31.98 GB 已用`，余量仅 ~2.2 GB，任何额外申请都会引发驱逐）。
+**故不在 harness 侧加防**（不做赛前探活、不放宽重试预算）—— 针对一次性人为事件的加固会把 harness
+复杂化，且这类中断 harness 本来就无法预防。此前"有复发土壤"的推断作废。
+
+**但要记住的推论**：默认重试预算（5 次 / 初始 500ms / 上限 10s ≈ 覆盖 16s）**扛不住分钟级重载窗口**
+——实测 T13 用满 `llm/retry:7` 仍失败。因此**任何合理重试预算都不能替代 resume**；retry 的价值在于
+吞掉秒级抖动，分钟级中断的唯一恢复路径是 `--resume --skip N`（本次 T13 即如此恢复，重驱动 146s 完成）。
 挂载后校验：不在 `mounted` 列表就 `exit(1)`（插件"挂载成功"≠"生效"，inject 不满足会静默 skipped）。
 
 **轮超时（`--turn-timeout-ms`）默认 1200000 偏紧**：T1–T12 一气跑完（最长 641s）后，T13（BOSS）在
