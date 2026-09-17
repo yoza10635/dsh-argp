@@ -718,3 +718,80 @@ ON 完成态归档 `vs-corpus-on`）。两臂各 22 轮 + 各自瞬断续跑。
 **覆盖了 ON 臂明文 dump**（明文丢；spike43 与段级 C1 全读权威 `.zstd`，结论无损）。
 已改为**会话前缀隔离**：产物统一 `${ART}-pilot-*`（`ART` = resume-id 或 session-id 净化后），
 多臂/多次跑批共用 OUT 不再互相踩踏。两臂 zstd session 与 run1 坏 session 全部保留不删。
+
+### 11.10 官方重跑整批作废：**两臂写进同一个仓库**（2026-09-17，事故 + 护栏）
+
+**背景**：对齐 `0.1.6-alpha.1` + 发布 `dsh-argp@1.2.0` 后，用**分发物**重跑两臂（22 轮 × 2），
+会话 `official-t22-on` / `official-t22-off`。
+
+**症状**：ON 臂 **17 轮全部 `无新提交`**（`head=9bd0c32` 纹丝不动），而它的目标仓库
+`vs-corpus-on` 里始终只有 180 字节 README；OFF 臂却每轮正常提交。
+
+**根因链**（三层叠加，任一层设防都不会出事）：
+
+1. `run.ts` 的 `--repo` **只做两件事**：`process.chdir(REPO)` + 以 `cwd: REPO` 读 `git rev-parse`。
+   它**不替换注入 prompt 里的路径** —— 注入是 `agent.followup(text: t.prompt)`，逐字。
+2. 任务书 `corpus-run-taskbook-vs.md:100` 把目标仓库**逐字写死**：
+   `在 C:\workspace\Project\vs-corpus 里从零做一个 Canvas 2D 的"吸血鬼幸存者"类游戏。`
+3. 于是 ON 臂（`--repo …/vs-corpus-on`）的 agent 照 prompt 里的绝对路径行事，把工程**全写进了
+   `vs-corpus`**。实测该会话工具目标分布：
+
+   | 会话 | write | edit | read | bash |
+   |---|---|---|---|---|
+   | `official-t22-on` | OFF 仓 **76** | OFF 仓 **126** | OFF 仓 **64** | OFF 仓 **163** |
+   | ↳ 指向 `vs-corpus-on` | **0** | **0** | **0** | **0** |
+
+**雪上加霜：两臂在同一仓库上交替续跑且零重置**。六个进程段依次是
+ON r1 `09:21→10:16`、OFF r1 `10:18→11:33`、ON r2 `11:33→11:55`、OFF r2 `11:55→12:09`、
+ON r3 `12:09→12:36`、OFF r3 `12:36→12:55`。`vs-corpus` 的提交时间线正好印证交错：
+`09:26–10:12`=ON r1 的 T3–T11 → `10:18` `reset to minimal skeleton`=OFF r1 的 T1（**直接压在
+ON 的 T11 状态上**）→ `10:21–11:31`=OFF r1 的 T2–T12 → `11:47/11:52`=ON r2 的 T13/T14 →
+`11:59/12:07`=OFF r2 的 T14/T15 → `12:16/12:33`=ON r3 的 T15/T16 → `12:46/12:52`=OFF r3 的 T16/T17。
+
+**结论**：两臂既不共享基线、也不物理隔离 —— 这正是 §11.9 已记为"致命混淆项"的坑，这次更极端
+（那次至少是各自演化线，这次是互相覆盖）。**整批数据不可归因，作废**。产物保留为失败证据：
+`spike-out/official-t22-{on,off}-pilot-*.jsonl`、`harness/.tmp/official-*.log`、归档目录
+`vs-corpus-invalid-20260917`（45 提交 / 6 脏文件）。
+
+**重做方案（用户 2026-09-17 拍板："换仓隔离"）**：两臂**都用任务书里的字面路径**跑，prompt 一字不改
+（放弃 `--repo` 的"多仓"用法），臂间靠**目录改名归档 + 从基线重建**实现物理隔离：
+
+```
+C:\workspace\Project\
+  vs-corpus                  工作仓（每臂开跑前 = 基线）
+  vs-corpus-baseline         基线模板（单提交 9bd0c32 / 零 remote / 零 tag），重建用
+  vs-corpus-on               ON 臂跑完的归档
+  vs-corpus-off              OFF 臂跑完的归档
+  vs-corpus-invalid-20260917 本次作废批次的归档（证据）
+  vs-corpus-on-run1-archive  run1（§11.9）ON 归档
+```
+
+- 基线**必须从基线树重建**，不能 `git clone`：实测 clone 会带过来归档仓的 `refs/tags/pilot-t2`
+  → 历史泄漏。重建命令（`git init` + 从源仓 `git archive 9bd0c32` 解包 + 同 author/date 提交）
+  产出的 SHA 与 `9bd0c32` 逐位一致。
+- 臂间切换：`mv vs-corpus vs-corpus-on` → `cp -r vs-corpus-baseline vs-corpus`。
+
+**harness 新增护栏（同日落地，见 `run.ts`）**：把这类事故压成"启动即失败/首轮即失败"，
+而不是跑满 7 小时才发现。
+
+| 护栏 | 时机 | 判据 | 失败动作 |
+|---|---|---|---|
+| **G1** | 启动、**chdir 之前** | 任务书首轮 prompt 里写死的目标仓库 == `resolve(--repo)` | `exit(1)` + 打印正确做法 |
+| **G2** | 启动、非 resume | 仓库 HEAD 在基线 `9bd0c32` 上 ∧ 历史恰 1 个提交 ∧ 无分支外 ref ∧ 工作树干净 | `exit(1)` + 打印重建命令 |
+| **G3a** | 每轮结束 | 本轮新增 `tool/call` 的 `file_path` **全部**落在 `REPO` 内 | `exit(1)` |
+| **G3** | 每轮结束 | 连续 2 轮"零产出"（HEAD 未动 ∧ 工作树为空） | `dumpLive` 后中止，收尾 `exit(2)` |
+
+G1 之所以放在 chdir 之前：否则 `--repo` 指向不存在目录时会先炸 `ENOENT`，报出的是症状不是病因。
+
+**G3a 的坑（同日踩到）**：`agent` 在 bash 里最常用 **Git-Bash/MSYS 形式** `/c/workspace/Project/vs-corpus/…`，
+而 `path.resolve('/c/foo')` 在 Windows 上解析成**当前盘根的 `\c\foo`**（完全不同的位置）→ 不做归一化
+就把合法写入误判成"越界"（首次启用护栏时 T1 被误杀）。归一化必须含：`/c/x` → `C:/x`，再统一小写、
+反斜杠转正斜杠。回归用例见 `harness/.tmp/normpath-test.mjs`（8 例：MSYS/反斜杠/正斜杠/仓库根/相对路径
+/另一仓/前缀陷阱 `vs-corpus2`/完全无关目录）。
+
+**同时补挂官方传输层重试**：`@deepseek-ai/dsh-llm-retry` 是**官方 `dsh-base` bundle 的宿主平面成员**
+（`packages/bundle/base/cordis.patch.yml` 的 insert `- id: llm-retry`），**不在** `standard-argp` /
+`corpus-vs-a2` 的 agent 平面 preset 里 —— 所以只照 preset 摘插件的 harness 必然漏挂它。补上**是回归
+官方，不是偏离**。它是本次 6 个失败轮（全是 keep-alive 死 socket 触发的 `TRANSPORT`）的官方解；
+挂载后校验：不在 `mounted` 列表就 `exit(1)`（插件"挂载成功"≠"生效"，inject 不满足会静默 skipped）。
+
