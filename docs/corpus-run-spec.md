@@ -989,3 +989,59 @@ T15 之后又完全不提交（收尾遗留 15 个文件，用 `--commit-pending
    turn 序号会因 resume 漂移。
 3. **护栏误杀（§11.10 的 G3 探针轮问题）的代价被低估了**：它不只是"白丢 T21/T22"，
    还**污染了该臂的会话结构**（多 2 轮 + 重复注入 + 段数变化）。修护栏的价值比原先记的更高。
+
+### 11.13 参数与思考模式核查 + **组件 B 归因二次修正**（2026-09-17）
+
+触发：用户问"目前是用什么参数在跑，不思考模式吗，还是中等思考模式"。
+
+#### 跑批参数（两臂一致）
+
+| 项 | 值 | 依据 |
+|---|---|---|
+| provider / model | `local` / `qwen3.8-27b-vllm` @ `http://192.168.110.2:1234/v1` | `run.ts:31-32` + `request/header` |
+| **思考模式** | **不思考（`enable_thinking=false`）** | `run.ts:426` `reasoningEffort:'off'`；`run.ts:372` `compat.thinkingFormat:'qwen-chat-template'` → 发 `chat_template_kwargs.enable_thinking=false` |
+| maxTokens | 32768 | `request/header.config` |
+| 声明 contextWindow | 262144（**故意大于服务端真实 174080**，见 §11.5） | `run.ts:36` |
+| 触发线 / 保留 | `windowRatio 0.3815` → **100007 tok**；`retainRatio 0.2` → **20001 tok** | 实测回读，两臂逐字一致 |
+| 工具集 | 10 个（bash/edit/glob/grep/list_pruned/read/recall/recall_pruned/todo_write/write） | `request/header.header.tools` |
+| 插件 | 16 个（含官方 `llm-retry`） | 挂载日志 |
+
+**产物级佐证（比配置更硬）**：两臂共 **1305 条 `assistant/message`、2000+ 内容块，`reasoning`/`thinking` 块 = 0**
+（块类型只有 `tool-call` 与 `text`）⇒ 整批跑批**确实全程不思考**，不是"配了但没生效"。
+
+#### 🔴 顺带发现：**ARGP 的 Stage-1 LLM 管线在本批从未运行** —— 这修正组件 B 的归因
+
+每轮 `compaction/summary` 的正文实测是：
+> `ARGP 图剪：N 原子 / M 区间（约 X tok）；确定性排序，0-LLM；…`
+
+且负载字段 **`provider/model = "argp/deterministic-guards"`**，`拆分 / 提取 / 摘要 / 保原文` 四个计数**全为 0**（ON 38 轮、OFF 39 轮一致）。
+另一侧证据：**两臂 6386 次替换全部是 `[elided …]` 墓碑**（ON 3834/3837、OFF 2549/2549；替换后长度中位 **42 字符**），
+**没有任何一次是模型产出的摘要/抽取副本**。
+
+原因（配置侧已核）：压缩器的 LLM 后端要求 `compressor.llm`（走宿主 dsh-llm）**或** env
+（`ARGP_MODEL_SOURCE=qwen-local` + `QWEN_BASE`，或 `DEEPSEEK_API_KEY`）——实测这三个 env **全未设**；
+而**官方两层配置（bundle `node_modules/dsh-argp/cordis.patch.yml` + profile `cordis.patch.yml`）都只给
+`maxPasses/recencyGuard/windowRatio/retainRatio` 四个键、不设 `compressor`**，bundle 注释亦自称
+**"mounts the 0-LLM ARGP engine"**。
+⇒ **这是官方默认形态，不是 harness 偏离**（harness 的 `OFFICIAL_CONFIG` 与官方逐键一致，§11.10 的防漂移自检亦通过）。
+
+#### 组件 B 归因修正（撤回上一版）
+
+读码定触发链（`compressor.ts` 两处）：`repairWithTrailer` 仅在
+**① 存在模型候选（`split.infoText` / `action.text`）→ ② `fidelityGuard` 判定缺硬 token → ③ `hlsMode==='trailer'`**
+三者同时成立时被调用。**没有模型候选就永远没有 `guard.missing`**。
+
+- ❌ **撤回**：§11.11 结论二写的"唯一剩下的原因是 extract 缺 token 守卫从未报警"——
+  那是我从"路径被走到"推的**过度推断**（把"`planReplacements` 被调用"当成了"抽取路径被走到"，
+  实际它同时承担 Stage-2 图剪的规划）。
+- ✅ **正解**：**Stage-1 抽取本批 0 产出 ⇒ 组件 B 结构性不可达**，从来没有机会落盘。
+- ⇒ **推论（重要）**：组件 B 在当前**官方默认配置下永不可能落盘**。要拿它的生产数据，
+  必须先**显式开启 Stage-1**（配 `compressor.llm`），这本身就是一条**配置变更**，
+  而不是"换个负载就自然出现"。所以 §11.11 的"走 spike39 定向构造"仍然成立，
+  但更准确的表述是：**先决定要不要在生产开启 Stage-1；不开启则组件 B 只能纯合成验证**。
+
+#### 顺带确认
+
+- 组件 A（推断边）属 **Stage-2**，本批**确实被真实走到**（3834/2549 次图剪），所以 §11.11 的 A/B 对照轴没有被这件事破坏
+  —— 但"不可归因"的结论仍由 §11.12 的两条理由支撑。
+- `assistant/attempt` ON=9/OFF=4、`llm/retry` ON=8/OFF=4：官方重试模块在本批**实际工作过**，无丢轮。
