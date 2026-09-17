@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- **Stage-1（双引擎）无生产挂载路径**（规格 §11.13.1）：`ArgpGraphEngine` 的 Stage-1 三管线只在 `config.peratom !== undefined` 时构造（`src/argp-graph-engine.ts:679`），而 `cordis.patch.yml` **从 v0.2.6 起从未写入 `peratom`**（bundle / profile / agent preset 三层皆无，历史备份逐字相同）→ 实际分发形态是**纯 Stage-2（0-LLM）**。插件自己的类型文档早已记录此缺口（`peratom?` doc-comment 原文："本块存在的意义是真宿主 bundle patch 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）"，2026-08-28），bundle patch 头部注释亦自称 "mounts the 0-LLM ARGP engine"。后果：**组件 B（HLS repair）在默认安装下结构性不可达**（受控语料两臂 `[restored]` 计数均为 0、6386 次替换全是 `[elided]` 墓碑、`拆分/提取/摘要` 计数全 0、标签恒为 `argp/deterministic-guards`）。
+- **Stage-1（双引擎）无生产挂载路径**（规格 §11.13.1）：`ArgpGraphEngine` 的 Stage-1 三管线只在 `config.peratom` 为对象时构造（`src/argp-graph-engine.ts:679`），而 `cordis.patch.yml` 的**整个 git 历史从未写入 `peratom`**——自 **2026-08-28**（`41fa600`）`config.peratom` 闸门引入起，bundle patch 就没有同步补上声明（bundle / profile / agent preset 三层皆无，历史备份逐字相同）→ 实际分发形态是**纯 Stage-2（0-LLM）**。插件自己的类型文档早已记录此缺口（`peratom?` doc-comment 原文："本块存在的意义是真宿主 bundle patch 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）"，2026-08-28），bundle patch 头部注释亦自称 "mounts the 0-LLM ARGP engine"。后果：**组件 B（HLS repair）在默认安装下结构性不可达**（受控语料两臂 `[restored]` 计数均为 0、6386 次替换全是 `[elided]` 墓碑、`拆分/提取/摘要` 计数全 0、标签恒为 `argp/deterministic-guards`）。
 - **关停陷阱 `peratom: false` 反向挂满**（同上，顺带修复）：闸门旧写法只判 `config.peratom !== undefined`，而 YAML 里"关掉 Stage-1"最自然的写法 `peratom: false` **会通过闸门** —— 布尔装箱后 `.compressor` 取到 `undefined` → `?? {}` → **三管线全挂**，与写配置者的意图完全相反。改判 `typeof config.peratom === 'object' && config.peratom !== null`，`false`/`null` 一律按"不挂"（与缺省同语义）。
 
 ### Added

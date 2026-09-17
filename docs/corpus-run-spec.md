@@ -1087,9 +1087,17 @@ Stage-1 三管线（compressor / declarer / zoom）**只在 `config.peratom` 存
 > 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）**。
 
 ⇒ 设计意图是"**由真宿主 bundle patch 来声明 `peratom`**"，把这个缺口补上。
-但 `cordis.patch.yml` 从 v0.2.6 到 1.2.0 **从未**写入过 `peratom`；
+但 `cordis.patch.yml` 在其整个 git 历史中**从未**写入过 `peratom`
+（`git log -S "peratom" -- cordis.patch.yml` 为空）；
 patch 头部注释反而自称 **"mounts the 0-LLM ARGP engine"** —— 说明当前是**有意**只挂 0-LLM 引擎，
 还是**漏配**，需要作者定夺（见下方待办）。
+
+> **⏱️ 时间线勘误**（初稿曾写作"从 v0.2.6 到 1.2.0 从未写入"，锚点错误）：`v0.2.6` 与
+> `peratom` 无关——它只是 patch 文件 **2026-08-20** 提交信息（`05c3118` "engine never mounted
+> since v0.2.6"）里的一个 tag，指的是**另一个** bug（`insert` vs config-patch 产生 duplicate
+> loader entry id）。事实链：patch 文件 08-20 定型 → `src/peratom/`（逐轮 LLM 引擎）**08-25~26**
+> 才首次落地（`c59b3c2`…`7fe87bc`）→ `config.peratom` 闸门 **08-28**（`41fa600`）才引入。
+> 正确表述：**自 2026-08-28 闸门存在起，bundle patch 就没有同步补上 `peratom` 声明**。
 
 #### 那真实 session 里的 `localhost/Qwen3.8-27B` 标签是怎么来的？
 
