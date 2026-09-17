@@ -37,7 +37,8 @@ import type { GateAtom } from './gate.js'
 import { sessionEvents } from '../log-access.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
-import type { DshLlmSpec } from './llm-adapter.js'
+import { autoDshLlmSpec } from './llm-adapter.js'
+import type { AgentRouteHint, DshLlmSpec } from './llm-adapter.js'
 
 /** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
 export const CITATION_WINDOW_TURNS = 10
@@ -415,6 +416,10 @@ export class CiteDeclarer {
   private readonly ctx: Context
   private readonly endpoint: ResolvedEndpoint | null
   private readonly dshLlm: DshLlmSpec | null
+  /** 自动兜底候选（§11.13.1）：显式 llm 与 fetch 两路都缺省时置 true。 */
+  private readonly llmAutoEligible: boolean
+  /** 延迟解析出的后端（来自 agent 路由；构造期拿不到路由，故后置填充）。 */
+  private autoLlm: DshLlmSpec | null = null
   private readonly fetchImpl: typeof fetch
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
@@ -433,8 +438,8 @@ export class CiteDeclarer {
   /** 缓存中的声明边数（测试断言用）。 */
   get cachedEdgeCount(): number { return this.edgeCache.size }
 
-  /** 是否已解析到 LLM 后端（dsh-llm 或 endpoint 任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
-  get armed(): boolean { return this.endpoint !== null || this.dshLlm !== null }
+  /** 是否已解析到 LLM 后端（dsh-llm / endpoint / 自动兜底任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
+  get armed(): boolean { return this.endpoint !== null || this.dshLlm !== null || this.autoLlm !== null }
 
   constructor(ctx: Context, config: CiteDeclarerConfig = {}) {
     this.ctx = ctx
@@ -448,18 +453,44 @@ export class CiteDeclarer {
     this.timeoutMs = config.timeoutMs ?? 120_000
     this.chatTemplateKwargs = config.chatTemplateKwargs
     this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args))
+    // 显式 llm 与 fetch 两路都缺省 ⇒ 进入自动兜底（真会话里解析 agent 路由）。
+    this.llmAutoEligible = config.llm === undefined && this.endpoint === null
     if (this.endpoint === null && this.dshLlm === null) {
-      ctx.logger.warn('cite-declarer: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); declarer disabled')
+      if (this.llmAutoEligible) {
+        ctx.logger.info('cite-declarer: no explicit LLM backend; auto mode — will follow the host dsh-llm + agent route once a real session provides one (disabled, zero network, until then)')
+      } else {
+        ctx.logger.warn('cite-declarer: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); declarer disabled')
+      }
     }
 
     // 触发钩子：轮末 idle（当轮必已闭）→ 收集 + 声明（异步，不阻塞状态切换）。
     // 与 compressor 的 idle prepare 同钩子、互相独立：declarer 只产边缓存，不落盘。
     ctx.on('agent/status', ({ agent, status }) => {
+      this.rememberRoute(agent)
       if (status !== 'idle') return
       void this.declareCurrentTurn(agent.session).catch(error => {
         this.ctx.logger.warn(`cite-declarer declare failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     })
+  }
+
+  // -- LLM 后端选择（§11.13.1）-------------------------------------------
+
+  /** 记住 agent 路由（构造期拿不到，只能在 agent/status 钩子里现取）。非自动模式短路。 */
+  private rememberRoute(agent: { options?: AgentRouteHint } | undefined): void {
+    if (!this.llmAutoEligible) return
+    try {
+      const spec = autoDshLlmSpec(this.ctx, agent?.options ?? null)
+      if (spec !== null) this.autoLlm = spec
+    } catch { /* 路由解析失败：保持原值，退化为 disabled（零网络） */ }
+  }
+
+  /** 后端选路：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底；三者皆无 → null。 */
+  private backend(): { kind: 'dsh-llm'; spec: DshLlmSpec } | { kind: 'fetch'; endpoint: ResolvedEndpoint } | null {
+    if (this.dshLlm !== null) return { kind: 'dsh-llm', spec: this.dshLlm }
+    if (this.endpoint !== null) return { kind: 'fetch', endpoint: this.endpoint }
+    if (this.autoLlm !== null) return { kind: 'dsh-llm', spec: this.autoLlm }
+    return null
   }
 
   /**
@@ -484,7 +515,8 @@ export class CiteDeclarer {
       this.records.push(record)
       return record // 孤立原子规则：纯 dialog / 全版本链 / 全小结果 → 零调用、零建边
     }
-    if (this.endpoint === null && this.dshLlm === null) {
+    const backend = this.backend()
+    if (backend === null) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'no-endpoint' }
       this.records.push(record)
       return record // disabled：静默跳过
@@ -492,21 +524,21 @@ export class CiteDeclarer {
     this._calls += 1
     const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     this.records.push(record)
-    console.log(`[argp-peratom] declarer: turn ${collect.turn} from=${collect.fromAtoms.length} to=${collect.toAtoms.length} (dsh-llm=${this.dshLlm !== null})`)
+    console.log(`[argp-peratom] declarer: turn ${collect.turn} from=${collect.fromAtoms.length} to=${collect.toAtoms.length} (dsh-llm=${backend.kind === 'dsh-llm'})`)
     const started = Date.now()
     try {
       const prompt = buildCitePrompt([...collect.fromAtoms, ...collect.toAtoms])
       let raw: string
-      if (this.dshLlm !== null) {
+      if (backend.kind === 'dsh-llm') {
         // dsh-llm 生产后端：一次到位（GenerateOptions 无 response_format，extractJson 兜底）。
-        raw = (await completeViaDshLlm(this.ctx, this.dshLlm, prompt, this.timeoutMs)).text
+        raw = (await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs)).text
       } else {
         try {
-          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
         } catch {
           // response_format 被端点拒绝 / 网络抖动：降级裸 prompt 静默重试一次（compressor 同款，
           // plan P2"至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
-          raw = await postChat(this.fetchImpl, this.endpoint as ResolvedEndpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
         }
       }
       record.ms = Date.now() - started

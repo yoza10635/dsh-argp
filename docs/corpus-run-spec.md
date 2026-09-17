@@ -1045,3 +1045,130 @@ T15 之后又完全不提交（收尾遗留 15 个文件，用 `--commit-pending
 - 组件 A（推断边）属 **Stage-2**，本批**确实被真实走到**（3834/2549 次图剪），所以 §11.11 的 A/B 对照轴没有被这件事破坏
   —— 但"不可归因"的结论仍由 §11.12 的两条理由支撑。
 - `assistant/attempt` ON=9/OFF=4、`llm/retry` ON=8/OFF=4：官方重试模块在本批**实际工作过**，无丢轮。
+
+### 11.13.1 根因定位（2026-09-17 晚，用户追问"我这个插件本来就应该是双引擎的啊"）
+
+用户质疑上一版的"env 未设"表述太浅。逐层查封后，**真正的原因是挂载闸门，而不是 env**。
+
+#### 硬闸门：`config.peratom !== undefined`
+
+`src/argp-graph-engine.ts:679`（1.1.0 同在 `lib/argp-graph-engine.js:411`）：
+
+```ts
+if (config.peratom !== undefined) {
+  const compressor = config.peratom.compressor === false ? null : new PeratomCompressor(...)
+  ...
+  this.peratomStack = { compressor, declarer, zoom }
+}
+```
+
+`export default ArgpGraphEngine`（`:2831`）是**唯一被 cordis 挂载的插件入口**（id=dsh-argp）。
+Stage-1 三管线（compressor / declarer / zoom）**只在 `config.peratom` 存在时**才构造。
+⇒ `peratom` 缺省时 `peratomStack === null`、`injectEdges` 保持 `config.injectEdges`（undefined）、
+`citesObligation` 回退 `true` ⇒ **纯 Stage-2，零 LLM**，与观测到的产物完全一致。
+
+#### `peratom` 键在全宿主范围内**一处都不存在**
+
+| 配置层 | 路径 | 是否给 `peratom` |
+|---|---|---|
+| bundle（插件包自带） | `node_modules/dsh-argp/cordis.patch.yml` | ❌ 只有 `maxPasses` / `recencyGuard` |
+| profile（用户层） | `~/.dsh/profiles/web/cordis.patch.yml` | ❌ 加 `windowRatio` / `retainRatio`（共 4 键） |
+| agent preset ×4 | `~/.dsh/.agent-presets/{standard-argp,corpus-vs-a2,cordis-argp,ptc-argp}` | ❌ 无 `dsh-argp` 行，更无 `peratom` |
+| 历史备份 ×3 + `dsh-argp-1.1.0.tgz` | `~/.dsh/backups/*/cordis.patch.yml` | ❌ 与当前**逐字相同**（无 `peratom`） |
+| harness | `dsh-corpus-harness/run.ts` `OFFICIAL_CONFIG` | ❌ 镜像那 4 键（且 §11.10 防漂移自检通过） |
+
+⇒ 这不是 harness 偏离，也**不是 env 问题**：**分发物本身没有 Stage-1 的生产挂载路径**。
+
+#### 插件自己的类型文档已承认这件事（2026-08-28，未修）
+
+`src/argp-graph-engine.ts` 的 `peratom?` 字段 doc-comment（1.1.0 `lib/…d.ts:214-215`）原文：
+
+> 与 mountPeratomStack（测试/三臂工厂）同拓扑；**本块存在的意义是真宿主 bundle patch
+> 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）**。
+
+⇒ 设计意图是"**由真宿主 bundle patch 来声明 `peratom`**"，把这个缺口补上。
+但 `cordis.patch.yml` 从 v0.2.6 到 1.2.0 **从未**写入过 `peratom`；
+patch 头部注释反而自称 **"mounts the 0-LLM ARGP engine"** —— 说明当前是**有意**只挂 0-LLM 引擎，
+还是**漏配**，需要作者定夺（见下方待办）。
+
+#### 那真实 session 里的 `localhost/Qwen3.8-27B` 标签是怎么来的？
+
+`compaction/summary` 只有三个发射点：graph 引擎（`argp/deterministic-guards`）、
+t1 引擎（`argp/algorithmic-tombstone`）、compressor（`provider: this.dshLlm?.provider ?? 'fetch'`）。
+后者的 `dshLlm` **只能**由 `config.llm` 赋值（`compressor.ts:767`，无 ctx 兜底）。
+
+`~/.dsh/sessions` 4 份里 2 份含 `localhost/Qwen3.8-27B`(1) 与 `localhost/…Qwen3.8-27B-UD-IQ3_XXS.gguf`(3)
+（时间戳 Sep 14 16:xx / Sep 15 01:26，**早于** profile patch 的 mtime Sep 15 11:04）。
+⇒ 唯一自洽解释：**当时确实存在过一个 `peratom` 块**（带 `llm: { provider:'localhost', … }`），
+后来在配置整理中被移除（无备份可查，故标为**推断**而非事实）。
+副作用：那 4 条事件的 `拆分/提取` 计数亦为 0 —— 说明即使挂上了 Stage-1，
+在这类短会话里也没触发到抽取（候选门槛未达），**不构成"Stage-1 曾产出摘要"的证据**。
+
+#### 结论与待办
+
+1. **"插件是双引擎"是能力事实，不是部署事实** —— 双引擎需要宿主在 `config.peratom` 里显式声明；
+   当前分发物与全部本地配置都没有声明 ⇒ 生产与语料跑批**都**是 Stage-2-only。
+2. §11.13 正文的"官方默认形态，不是 harness 偏离"**结论正确、保留**；本小节只把机制从
+   "env 未设"精确到"**挂载闸门从未被打开**"。
+3. **❗待作者定夺**：`cordis.patch.yml` 是否应补 `peratom` 块？两种取向：
+   - **(a) 补挂**（回归设计意图）：`peratom: { compressor: { llm: {provider, model} } , declarer: {llm}, zoom: {} }`
+     —— 但 `provider/model` 是**宿主相关**的，写死在 bundle 层会把本地模型钉进分发物；
+     更干净的做法是让引擎在 `peratom` 存在但 `compressor.llm` 缺省时**自动用
+     `ctx.get('llm')` + agent 路由**（`ctx.agentLoop` 的 `agent.options.provider/model`，
+     `:1992` 已有一处同源解析）兜底。
+   - **(b) 保持 opt-in**：明确 Stage-1 是"实验特性，需用户自己配 `peratom`"，
+     那么组件 B（HLS repair）在默认安装下**永远拿不到生产数据**，只能 spike39 合成验证 —— 文档需写明。
+   在定夺前，**语料跑批维持现状（Stage-2-only）**，两臂对称性不受影响。
+
+#### ✅ 处置（2026-09-17 晚，用户拍板"引擎侧自动兜底"）
+
+**已实施（源码 + 构建 + 单测；未装进 live profile、未重跑语料）**：
+
+1. **后端延迟解析**（`peratom/llm-adapter.ts` 新增 `autoDshLlmSpec` / `hostHasLlm`）：
+   `PeratomCompressor` 与 `CiteDeclarer` 的选路改为三档 ——
+   `显式 config.llm > fetch(endpoint/apiKey/env) > 自动兜底`。
+   自动兜底在真会话的 `agent/status` / `agent/pre-step` 钩子里现取
+   `agent.options.{provider,model}`（`rememberRoute`）+ 宿主 `ctx.llm` 合成 spec，
+   宿主换模型即跟随，**分发物不再钉死 provider/model**。
+   判定从严：路由缺任一项 / 宿主无 llm 服务 → `null`，组件保持 disabled（**零网络**，
+   与既有语义逐字一致；构造期日志由 `warn` 降为 `info` 并说明 auto 模式）。
+   `compaction/summary` 的 `provider`/`model` 标签改为反映**实际选路**
+   —— 这正是当初审计判定"Stage-1 没跑过"的那个字段，修好后可直接看它是否变成宿主路由。
+2. **⚠️ 顺带修掉一个关停陷阱**（`argp-graph-engine.ts:679`）：闸门旧写法只判
+   `config.peratom !== undefined`，而 YAML 里"关掉 Stage-1"最自然的写法 `peratom: false`
+   **会通过闸门** —— 布尔装箱后 `.compressor` 取到 `undefined` → `?? {}` → **三管线全挂**，
+   与写配置者的意图完全相反。改判 `typeof config.peratom === 'object' && config.peratom !== null`，
+   `false` / `null` 一律按"不挂"（与缺省同语义）。
+3. **单测 +5**（`npm run check` → **242/242** 全绿）：`autoDshLlmSpec` 边界 4 例；
+   compressor 未武装→路由到位后武装（provider/model 跟随 + fetch 零调用 + 落盘链路一致）；
+   显式 `config.llm` 优先于兜底；declarer `armed` 翻转 + 声明边入缓存；`peratom: false` 不挂。
+
+**⚠️ 自动兜底只解决"拿到后端"，不解决"闸门"** —— `peratom` 仍必须在配置里存在。
+真正开启 Stage-1，要在 **profile 层** `~/.dsh/profiles/web/cordis.patch.yml` 的 modify 行加一段：
+
+```yaml
+- id: dsh-argp
+  config:
+    maxPasses: 256
+    recencyGuard: 10
+    windowRatio: 0.3815
+    retainRatio: 0.2
+    peratom:            # ← 新增：显式开启 Stage-1 双引擎
+      compressor: {}    # 后端自动跟随宿主路由（provider/model 不写死）
+      declarer: {}
+      zoom: {}
+```
+
+- profile 层**只能用 modify**（不得 insert，否则 duplicate loader entry）；config 是**合并**语义，
+  故加 `peratom` 合法。要关：整段删掉（或 `peratom: false`，现已正确按"不挂"处理）。
+- 只开压缩器、不要声明边：`peratom: { compressor: {}, declarer: false, zoom: {} }`。
+- 开启后**必须开新会话**（`~/.dsh/profiles/web/node_modules/dsh-argp` 是**实体拷贝**，
+  且进程内 ESM 缓存不热更）。
+
+**未做（用户选择"先不重跑语料"）**：
+
+① **未把新构建装进 live profile** —— 受控语料审计的"验证对象 = 分发物"锚点钉在当前
+`dsh-argp-1.2.0.tgz` 上，静默覆盖会让 §11.11/§11.12 的基线失锚；建议**升版本号（1.2.1）后再装**。
+② 未重跑语料（Stage-2-only 的既有结论不受影响）。
+③ harness 侧 `node_modules/dsh-argp` 是**软链**，`npm run build` 即生效 —— 但挂载闸门未开
+（harness 配置无 `peratom`），**新代码路径不可达，语料行为零变化**。

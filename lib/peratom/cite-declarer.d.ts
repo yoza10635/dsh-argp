@@ -140,6 +140,10 @@ export declare class CiteDeclarer {
     private readonly ctx;
     private readonly endpoint;
     private readonly dshLlm;
+    /** 自动兜底候选（§11.13.1）：显式 llm 与 fetch 两路都缺省时置 true。 */
+    private readonly llmAutoEligible;
+    /** 延迟解析出的后端（来自 agent 路由；构造期拿不到路由，故后置填充）。 */
+    private autoLlm;
     private readonly fetchImpl;
     private readonly chatTemplateKwargs;
     /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */
@@ -153,9 +157,13 @@ export declare class CiteDeclarer {
     readonly records: CiteRecord[];
     /** 缓存中的声明边数（测试断言用）。 */
     get cachedEdgeCount(): number;
-    /** 是否已解析到 LLM 后端（dsh-llm 或 endpoint 任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
+    /** 是否已解析到 LLM 后端（dsh-llm / endpoint / 自动兜底任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
     get armed(): boolean;
     constructor(ctx: Context, config?: CiteDeclarerConfig);
+    /** 记住 agent 路由（构造期拿不到，只能在 agent/status 钩子里现取）。非自动模式短路。 */
+    private rememberRoute;
+    /** 后端选路：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底；三者皆无 → null。 */
+    private backend;
     /**
      * idle 触发段（公开入口供单测 / P4 直驱）：幂等记账 → 中断轮短路 → 孤立原子门控
      * （turnCompressible 共用谓词）→ disabled 短路 → LLM（1 次静默重试）→ 边入缓存。

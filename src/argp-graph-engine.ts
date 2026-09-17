@@ -676,7 +676,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     // P0 双引擎自挂载：peratom 配置块存在时，Stage-1 三管线在构造期挂载并接线
     // （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
     // ctx.compaction 接收 injectEdges / onOverflowCompress）。
-    if (config.peratom !== undefined) {
+    // ⚠️ 显式判 object（而非只判 `!== undefined`）：YAML 里"关掉 Stage-1"最自然的写法是
+    // `peratom: false`，而布尔装箱后 `.compressor` 取到 undefined → `?? {}` → 三管线全挂，
+    // 与写配置的人意图**完全相反**。false / null 一律按"不挂"处理（与缺省同语义）。
+    if (config.peratom !== undefined && typeof config.peratom === 'object' && config.peratom !== null) {
       if (config.onOverflowCompress !== undefined || config.injectEdges !== undefined) {
         this.log.warn('[argp-graph] peratom block set; explicit injectEdges/onOverflowCompress ignored (wired internally)')
       }

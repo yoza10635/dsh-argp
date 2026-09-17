@@ -179,6 +179,29 @@ test('P5 臂 C 等价：不读工厂直接 ctx.plugin(ArgpGraphEngine) = 纯基�
 // P0 双引擎生产挂载：config.peratom 自挂载块（docs/webui-liaison-2026-08-28.md 发现一）
 // 真宿主 bundle patch 只能声明式挂一个插件入口 → 引擎构造期自挂三管线，与工厂同拓扑。
 
+// ---------------------------------------------------------------------------
+// `peratom: false` 关停语义（YAML 关停写法；2026-09-17 §11.13.1 顺带修复）
+
+test('P0 自挂载：`peratom: false`（YAML 关停写法）必须真的不挂，而非因布尔装箱挂满三管线', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, recencyGuard: 0, maxPasses: 16,
+    // 旧判据只写 `peratom !== undefined`：false 通过闸门后 `.compressor` 装箱取 undefined
+    // → `?? {}` → 三管线全挂，与"关掉双引擎"的意图完全相反。改为显式判 object 后按"不挂"。
+    peratom: false as never,
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.equal(engine.peratomStack, null, 'peratom:false → 不挂 Stage-1（与缺省同语义）')
+    assert.equal(engine.injectEdges, undefined, 'declarer 未挂 → injectEdges 不接线')
+    assert.equal(engine.onOverflowCompress, undefined, 'compressor 未挂 → 溢出第②步不接线')
+  } finally {
+    await ctx.fiber.dispose()
+    restoreEnv()
+  }
+})
+
 test('P0 自挂载：config.peratom 块 → 三管线挂载 + injectEdges/onOverflowCompress 内部接线', async () => {
   const restoreEnv = isolateLlmEnv()
   const ctx = await makeCtx()

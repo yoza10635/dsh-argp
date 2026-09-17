@@ -224,6 +224,13 @@ export declare class PeratomCompressor {
     private readonly chatTemplateKwargs;
     private readonly endpoint;
     private readonly dshLlm;
+    /**
+     * 自动兜底候选（§11.13.1）：显式 `config.llm` 与 fetch（endpoint/apiKey/env）两路
+     * 都缺省时置 true，后端改为在真会话里延迟解析（agent 路由 + 宿主 ctx.llm）。
+     */
+    private readonly llmAutoEligible;
+    /** 延迟解析出的后端（来自 agent 路由；构造期拿不到路由，故后置填充）。 */
+    private autoLlm;
     private readonly fetchImpl;
     private readonly ctx;
     /** LLM 压缩调用计数器（纯 dialog 轮零调用的断言读这里）。 */
@@ -254,6 +261,16 @@ export declare class PeratomCompressor {
     /** 门控选项快照：大小阈值 + tool 对照表（prepare / compressCurrentTurn 两处同口径）。 */
     private gateOptions;
     constructor(ctx: Context, config?: PeratomCompressorConfig);
+    /**
+     * 记住 agent 路由（§11.13.1 自动兜底）。构造期拿不到路由，只能在真会话的
+     * `agent/status` / `agent/pre-step` 钩子里现取。非自动模式直接短路。
+     */
+    private rememberRoute;
+    /**
+     * 后端选路（§11.13.1）：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底。
+     * 三条都解不出返回 null —— 调用方按 disabled 记账（`no-endpoint`），不抛错、不阻断会话。
+     */
+    private backend;
     /**
      * 收集当前（最新闭合）轮的可压原子。内嵌三道确定性过滤：
      * ① 中断轮整轮排除（filterInterruptedAtoms，interrupted=true 时数组恒空）；

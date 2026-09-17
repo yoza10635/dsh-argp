@@ -7,13 +7,16 @@
  *  ② compressor 的 config.llm 后端：走 ctx.llm、fetch 零调用、usage 落 record、
  *    解析/守卫/落盘全链路与 fetch 后端行为一致；
  *  ③ 后端优先级：config.llm 存在时无须 endpoint/apiKey（disabled 语义让位）；
- *  ④ declarer 同款接线：声明边照常入缓存（injectEdges 通道与后端无关）。
+ *  ④ declarer 同款接线：声明边照常入缓存（injectEdges 通道与后端无关）；
+ *  ⑤ 宿主路由自动兜底（§11.13.1）：无显式 llm/endpoint/env 时先 disabled，agent 路由
+ *    到位后自动武装并跟随宿主 provider/model；显式 config.llm 优先于兜底。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { completeViaDshLlm } from '../src/peratom/llm-adapter.ts'
+import { autoDshLlmSpec } from '../src/peratom/llm-adapter.ts'
 import { PeratomCompressor } from '../src/peratom/compressor.ts'
 import { CiteDeclarer } from '../src/peratom/cite-declarer.ts'
 import type { DshLlmSpec } from '../src/peratom/llm-adapter.ts'
@@ -203,4 +206,135 @@ test('declarer：config.llm 接线——跨轮声明边照常入缓存（injectE
   assert.equal(declarer.cachedEdgeCount, 1, '声明边照常入缓存')
   assert.equal(fetchCalled, 0)
   assert.equal(fake.calls.length, 1)
+})
+
+// ---------------------------------------------------------------------------
+// ⑤ 宿主路由自动兜底（2026-09-17 §11.13.1）
+// ---------------------------------------------------------------------------
+
+/** 清掉三条后端 env（defaultEndpoint 口径），返回还原函数。 */
+function withoutLlmEnv(): () => void {
+  const keys = ['ARGP_MODEL_SOURCE', 'QWEN_BASE', 'QWEN_MODEL', 'DEEPSEEK_API_KEY', 'DEEPSEEK_BASE', 'DEEPSEEK_MODEL']
+  const saved = keys.map(k => [k, process.env[k]] as const)
+  for (const k of keys) delete process.env[k]
+  return () => {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+}
+
+function emitRouting(ctx: Context, session: Session, provider: string, model: string): void {
+  ;(ctx as unknown as { emit: (n: string, ...a: unknown[]) => void })
+    .emit('agent/status', { agent: { session, options: { provider, model } }, status: 'running' })
+}
+
+test('autoDshLlmSpec：路由齐备 + 宿主有 llm 才解析，缺一即 null', () => {
+  const { service } = fakeLlm([{ text: '{}' }])
+  const ctx = ctxWithLlm(service)
+  assert.deepEqual(autoDshLlmSpec(ctx, { provider: 'localhost', model: 'Qwen3.8-27B' }), { provider: 'localhost', model: 'Qwen3.8-27B' })
+  assert.equal(autoDshLlmSpec(ctx, null), null, '无路由 → 不兜底')
+  assert.equal(autoDshLlmSpec(ctx, { provider: 'p' }), null, '缺 model → 不兜底')
+  assert.equal(autoDshLlmSpec(ctx, { provider: 'p', model: '' }), null, '空 model → 不兜底')
+  assert.equal(autoDshLlmSpec(ctx, { provider: '', model: 'm' }), null, '空 provider → 不兜底')
+  assert.equal(autoDshLlmSpec(new Context(), { provider: 'p', model: 'm' }), null, '宿主无 llm 服务 → 不兜底')
+})
+
+test('compressor：自动兜底——无 llm/endpoint/env 时先 disabled，agent 路由到位后跟随宿主后端', async t => {
+  const restoreEnv = withoutLlmEnv()
+  t.after(restoreEnv)
+
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  let fetchCalled = 0
+  const fetchImpl = (async () => { fetchCalled += 1; throw new Error('fetch must not be used') }) as typeof fetch
+
+  // ① 路由未知：与既有 disabled 语义逐字一致（零网络、零调用）
+  const offSession = Session.create(SessionId('llm-auto-comp-off'))
+  const offCompressor = new PeratomCompressor(ctx, { fetchImpl })
+  buildCompressibleTurn(offSession, 1, 'c1')
+  const before = await offCompressor.compressCurrentTurn(offSession)
+  assert.equal(before?.error, 'no-endpoint', '无显式后端且路由未知 → 保持 no-endpoint')
+  assert.equal(fetchCalled, 0, '未武装时零网络')
+
+  // ② 宿主在钩子里告知路由：自动武装，后端 = 宿主路由（provider/model 跟随，不写死）
+  const onSession = Session.create(SessionId('llm-auto-comp-on'))
+  const turn = buildCompressibleTurn(onSession, 1, 'c2')
+  const fake = fakeLlm([{
+    text: JSON.stringify({ splits: [], tools: [{ seq: turn.rSeq, level: 'summary', text: '自动兜底摘要' }] }),
+    usage: { inputTokens: 42, outputTokens: 8 },
+  }])
+  ;(ctx as unknown as { llm: unknown }).llm = fake.service
+  const onCompressor = new PeratomCompressor(ctx, { fetchImpl })
+  emitRouting(ctx, onSession, 'localhost', 'Qwen3.8-27B')
+
+  const record = await onCompressor.compressCurrentTurn(onSession)
+  assert.ok(record !== null)
+  assert.equal(record.error, undefined, '路由到位后不得再判 disabled')
+  assert.equal(record.called, true)
+  assert.equal(record.appliedReplaces, 1, '落盘链路与显式后端一致')
+  assert.equal(fetchCalled, 0, 'dsh-llm 后端就位时 fetch 零调用')
+  assert.equal(fake.calls.length, 1)
+  assert.equal(fake.calls[0]?.provider, 'localhost', '后端 provider 跟随 agent 路由')
+  assert.equal(fake.calls[0]?.model, 'Qwen3.8-27B', '后端 model 跟随 agent 路由')
+  assert.equal(fake.calls[0]?.purpose, 'compaction')
+})
+
+test('compressor：显式 config.llm 优先于自动兜底（显式配了就不跟随宿主）', async t => {
+  const restoreEnv = withoutLlmEnv()
+  t.after(restoreEnv)
+
+  const session = Session.create(SessionId('llm-auto-precedence'))
+  const turn = buildCompressibleTurn(session, 1, 'c1')
+  const fake = fakeLlm([{ text: JSON.stringify({ splits: [], tools: [{ seq: turn.rSeq, level: 'summary', text: 'S' }] }) }])
+  const ctx = ctxWithLlm(fake.service)
+  t.after(() => ctx.fiber.dispose())
+  const compressor = new PeratomCompressor(ctx, { llm: { provider: 'explicit-p', model: 'explicit-m' } })
+  emitRouting(ctx, session, 'localhost', 'Qwen3.8-27B')
+  await compressor.compressCurrentTurn(session)
+  assert.equal(fake.calls[0]?.provider, 'explicit-p', '显式 llm 赢过自动兜底')
+  assert.equal(fake.calls[0]?.model, 'explicit-m')
+})
+
+test('declarer：自动兜底——armed 随路由到位翻转，声明边照常入缓存', async t => {
+  const restoreEnv = withoutLlmEnv()
+  t.after(restoreEnv)
+
+  const session = Session.create(SessionId('llm-auto-decl'))
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  let fetchCalled = 0
+  const declarer = new CiteDeclarer(ctx, {
+    fetchImpl: (async () => { fetchCalled += 1; throw new Error('fetch must not be used') }) as typeof fetch,
+  })
+
+  // turn-1 的大 R 是 turn-2 的 to 目标（与既有显式后端用例同款布局）。
+  const r1 = buildCompressibleTurn(session, 1, 'c1')
+
+  // ① 路由未知：未武装 → 静默跳过，零网络
+  assert.equal(declarer.armed, false, '构造期拿不到路由 → 未武装（citesObligation 保持开启）')
+  const before = await declarer.declareCurrentTurn(session)
+  assert.equal(before?.error, 'no-endpoint')
+  assert.equal(fetchCalled, 0)
+
+  // ② 路由到位后自动武装
+  session.append('turn/start', { turn: 2 } as never)
+  appendUser(session, LONG_USER)
+  const a2 = appendAssistantWithToolCall(session, 2, 'c2')
+  appendToolResult(session, 2, 'c2', 'small')
+  session.append('turn/end', { turn: 2, reason: { kind: 'completed' } } as never)
+  const fake = fakeLlm([{ text: JSON.stringify({ cites: [{ fromSeq: a2, toSeq: r1.rSeq, level: 'supporting' }] }) }])
+  ;(ctx as unknown as { llm: unknown }).llm = fake.service
+  emitRouting(ctx, session, 'localhost', 'Qwen3.8-27B')
+  assert.equal(declarer.armed, true, '路由到位后自动武装')
+
+  const record = await declarer.declareCurrentTurn(session)
+  assert.ok(record !== null)
+  assert.equal(record.called, true)
+  assert.equal(record.accepted, 1)
+  assert.equal(declarer.cachedEdgeCount, 1, '声明边照常入缓存')
+  assert.equal(fetchCalled, 0)
+  assert.equal(fake.calls[0]?.provider, 'localhost')
+  assert.equal(fake.calls[0]?.model, 'Qwen3.8-27B')
 })

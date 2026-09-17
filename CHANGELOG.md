@@ -2,6 +2,19 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [Unreleased]
+
+### Fixed
+
+- **Stage-1（双引擎）无生产挂载路径**（规格 §11.13.1）：`ArgpGraphEngine` 的 Stage-1 三管线只在 `config.peratom !== undefined` 时构造（`src/argp-graph-engine.ts:679`），而 `cordis.patch.yml` **从 v0.2.6 起从未写入 `peratom`**（bundle / profile / agent preset 三层皆无，历史备份逐字相同）→ 实际分发形态是**纯 Stage-2（0-LLM）**。插件自己的类型文档早已记录此缺口（`peratom?` doc-comment 原文："本块存在的意义是真宿主 bundle patch 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）"，2026-08-28），bundle patch 头部注释亦自称 "mounts the 0-LLM ARGP engine"。后果：**组件 B（HLS repair）在默认安装下结构性不可达**（受控语料两臂 `[restored]` 计数均为 0、6386 次替换全是 `[elided]` 墓碑、`拆分/提取/摘要` 计数全 0、标签恒为 `argp/deterministic-guards`）。
+- **关停陷阱 `peratom: false` 反向挂满**（同上，顺带修复）：闸门旧写法只判 `config.peratom !== undefined`，而 YAML 里"关掉 Stage-1"最自然的写法 `peratom: false` **会通过闸门** —— 布尔装箱后 `.compressor` 取到 `undefined` → `?? {}` → **三管线全挂**，与写配置者的意图完全相反。改判 `typeof config.peratom === 'object' && config.peratom !== null`，`false`/`null` 一律按"不挂"（与缺省同语义）。
+
+### Added
+
+- **宿主路由自动兜底 `autoDshLlmSpec(ctx, route)`**（`peratom/llm-adapter.ts`）：`PeratomCompressor` / `CiteDeclarer` 的 LLM 后端在**显式 `config.llm` 与 fetch（endpoint/apiKey/env）两路都缺省**时改为**延迟解析**——在真会话的 `agent/status` / `agent/pre-step` 钩子里现取 `agent.options.{provider,model}`（`rememberRoute`），配合宿主 `ctx.llm`（`LlmRuntime`）合成 `DshLlmSpec`。宿主换模型自动跟随，分发物不必钉死 provider/model。判定从严：路由缺任一项、或宿主无 llm 服务即返回 `null`，组件保持 disabled（**零网络**，与既有语义逐字一致；构造期日志由 `warn` 降为 `info` 并说明 auto 模式）。选路优先序 `backend()`：显式 `config.llm` > fetch > 自动兜底；`compaction/summary` 的 `provider`/`model` 标签同步反映**实际选路**（审计据此判"Stage-1 是否真的跑过"）。`CiteDeclarer.armed` 随路由到位翻转。
+- 单测 5 项（`test/peratom-llm-adapter.test.ts` + `test/peratom-mount.test.ts`）：`autoDshLlmSpec` 边界（路由缺项/空串/宿主无 llm）、compressor 未武装→路由到位后武装（provider/model 跟随、fetch 零调用、落盘链路一致）、显式 `config.llm` 优先于兜底、declarer `armed` 翻转 + 声明边入缓存、`peratom: false` 不挂。`npm test` **242/242** 全绿（1.2.0 基线 237 + 5）。
+- 规格文档 §11.13.1：根因定位（挂载闸门 + 逐层配置表 + 类型文档自述）+ 处置与**开启配方**（profile 层 modify 加 `peratom` 块；改后须开新会话）。
+
 ## [1.2.0] - 2026-09-17（token-ontology 组件 A/B + §11.8① 墓碑地板修复）— **BREAKING（宿主基线迁移）**
 
 > **宿主基线再次跳档**：1.2.0 起 peer 对齐 **dsh ≥ 0.1.6-alpha.1**（cordis ≥4.0.2）。0.1.5-rc.1 宿主请继续使用 **1.1.0**。
