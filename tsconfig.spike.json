@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "spike/lib/**/*.ts",
+    "spike/38-*.ts",
+    "spike/39-*.ts",
+    "spike/40-*.ts",
+    "spike/41-*.ts",
+    "spike/42-*.ts",
+    "spike/43-*.ts"
+  ]
+}
