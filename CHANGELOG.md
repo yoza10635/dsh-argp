@@ -2,10 +2,19 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
-## [Unreleased]
+## [1.3.0] - 2026-09-20（P6 轮内压力压缩「方案 B」+ Stage-1 生产路径修复）
 
 ### Fixed
 
+- **压缩调用输出 cap 4096 → 16384（按 262,144 墙重标定）**：plan 的 quotes 部分 = dialog 保真保留（用户指令逐字转写，尺寸与原子原文同量级，不可省）⇒ cap 截断 = JSON 不完整 = parse 失败 = 整轮保原文。实弹（record 端到端，3-turn 语料）证实 4096 在首个大轮即截断（`completion_tokens=4096`）。防爆余量重算：触发线 100,007 + agent maxTokens 32,768 + cap 16,384 ≈ 149K ≪ 262,144（旧 174K 墙时代"让 margin"的推导过时；KV 池 933K 下 16K 响应的 prefill 搅动可忽略）。
+- **prefixWithinBudget 读 usage 挂载路径错误 + 口径低估（P6 验证闭环抓到）**：真实 `assistant/message` 事件 usage 挂 **data 顶层**（agent-loop 落账 `{turn, step, message, usage, stream}`），旧实现读 `data.message.usage` 恒 undefined ⇒ **生产上 A 形态前缀被静默全量降级 C**（方案 B 复用收益不生效；压缩本身安全 = 保守方向）。且只算 `inputTokens`（未命中）会低估 prompt——billed 口径 = `inputTokens + cacheReadTokens + cacheWriteTokens`（与引擎真实锚点同式）。compressor / cite-declarer 两处同修；回归锁 = "inputTokens 10K + cacheRead 130K 超 132K 预算必须降级"用例。实弹：修复后压缩请求 6/6 全部 A 形态带前缀。
+
+### Added
+
+- **P6 轮内压力压缩（方案 B）**：turn N 上下文达标（与图剪 `compactIfNeeded('pressure')` 同口径的 `isPressureExceeded`）且存在 open turn ⇒ **同一 pre-step 窗口内先 per-atom 压缩 open turn 原子、再图剪头部**（两变异合成态 = "剪枝后老轮 + 压缩过的新轮"，无独立 restore 机制）。接线双路：`config.onPrePressureCompress` 显式注入 + `config.peratom` 自挂载时自动接 `compressor.compressOpenTurn`；回调失败隔离（吞错照常图剪）；无 open turn（全闭合）不压（活跃态守卫，闭合轮归 idle 边界路径）。配套：`resolveEffectiveCtk`（`enable_thinking:false` + `preserve_thinking:false` + 主链 `reasoning_effort` 从 `request/header` config 重建——LlmCallConfig 无 ctk 字段）、`doneTurns` 跨路径防重（open turn 压过 ⇒ 该轮闭合后 idle prepare 零调用跳过）。
+- **A 形态前缀预算门控**：`prefixBudgetTokens`（默认 132,000）超预算该次**降级 C**（丢前缀只发指令），`degradedToC='prefix-budget'` 留痕——"全前缀或无前缀"二元；无 usage 可参照（会话头）保守降级。
+- 单测 11 项（`test/peratom-pre-pressure.test.ts`）：pre-step 顺序（压先于剪）、压力同口径、无 open turn 守卫、失败隔离、集成（真 compressor 自挂载 + fetch 替身 + 图剪零 LLM）、doneTurns 跨路径防重、预算门控三例（预算内/三和口径超限/无 usage）、ctk 形状两例（主链 effort 继承 / 缺省不发 re 键）。`npm test` **253/253**（1.2.0 基线 242 + 11）。
+- 实弹验证（record 端到端 + 线级 metrics 真值）：轮内触发时序、A 形态前缀与 ctk 在真实 wire 全部生效、输出 cap 防爆精确截断；KV 命中率 72.9–79.5%（metrics Δ，新引擎池 933K 无驱逐压力）。
 - **Stage-1（双引擎）无生产挂载路径**（规格 §11.13.1）：`ArgpGraphEngine` 的 Stage-1 三管线只在 `config.peratom` 为对象时构造（`src/argp-graph-engine.ts:679`），而 `cordis.patch.yml` 的**整个 git 历史从未写入 `peratom`**——自 **2026-08-28**（`41fa600`）`config.peratom` 闸门引入起，bundle patch 就没有同步补上声明（bundle / profile / agent preset 三层皆无，历史备份逐字相同）→ 实际分发形态是**纯 Stage-2（0-LLM）**。插件自己的类型文档早已记录此缺口（`peratom?` doc-comment 原文："本块存在的意义是真宿主 bundle patch 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）"，2026-08-28），bundle patch 头部注释亦自称 "mounts the 0-LLM ARGP engine"。后果：**组件 B（HLS repair）在默认安装下结构性不可达**（受控语料两臂 `[restored]` 计数均为 0、6386 次替换全是 `[elided]` 墓碑、`拆分/提取/摘要` 计数全 0、标签恒为 `argp/deterministic-guards`）。
 - **关停陷阱 `peratom: false` 反向挂满**（同上，顺带修复）：闸门旧写法只判 `config.peratom !== undefined`，而 YAML 里"关掉 Stage-1"最自然的写法 `peratom: false` **会通过闸门** —— 布尔装箱后 `.compressor` 取到 `undefined` → `?? {}` → **三管线全挂**，与写配置者的意图完全相反。改判 `typeof config.peratom === 'object' && config.peratom !== null`，`false`/`null` 一律按"不挂"（与缺省同语义）。
 
