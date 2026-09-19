@@ -19,11 +19,31 @@ export interface PeratomCompressorConfig {
     /** 单次请求超时（默认 180s，spike 32 同款）。 */
     timeoutMs?: number;
     /**
-     * 追加到请求体的模板参数（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
-     * 实测（spike 33）：llama.cpp 上 json_schema 强制输出与思考模式互斥——不关思考则
-     * token 预算全烧在推理上、content 为空。官方端点会忽略未知字段，默认不发送。
+     * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
+     * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
+     * `chat_template_kwargs` 为基础**再叠加本基础层 + `enable_thinking:false` 覆盖
+     * （2026-09-19 定案：同态渲染 = 继承主链 ctk；强制 pt:true 反而把跨轮 reasoning
+     * 渲染回来，LCP 12.7% < pt:false 30.3%）。C 形态（无前缀）直接用本基础层。
+     * 实测（spike 33）：不关思考则 token 预算全烧在推理上、content 为空。
      */
     chatTemplateKwargs?: Record<string, unknown>;
+    /**
+     * 压缩调用输出 cap（token，默认 16384）。plan 的 quotes 部分 = dialog 保真保留
+     * （用户指令逐字转写，尺寸与原子原文同量级，不可省）⇒ cap 必须容纳"dialog +
+     * tools plan"而不是"几百 token"——cap 截断 = JSON 不完整 = parse 失败 = 整轮
+     * 保原文（2026-09-20 r3 实弹：3-turn 语料 T1 任务书全指令型 user 即打满 4096）。
+     * 防爆余量按新窗口重标定：触发线 100,007 + agent maxTokens 32,768 + cap 16,384
+     * ≈ 149K ≪ 262,144 墙（旧 174K 墙时代 4096 的"让 margin"推导已过时；KV 池
+     * 933K 下 16K 响应的 prefill 搅动也可忽略）。
+     */
+    maxCompletionTokens?: number;
+    /**
+     * A 形态前缀预算（token，默认 132000 ≈ 0.76×174080 墙）：前缀快照估算
+     * `prompt_tokens` 超预算时**该次降级 C 形态**（丢前缀、只发指令）——防爆上限的
+     * 核心防线（"全前缀或无前缀"二元门控，截断前缀要么质量最伤要么比 C 还贵）。
+     * 估算源 = 最近一次真实 agent 请求的 usage.prompt_tokens（同源，误差 < 1K）。
+     */
+    prefixBudgetTokens?: number;
     /**
      * 初始 tool 对照表（设计 §6-2）：工具种类名 → 压缩档位。运行期可经
      * `setToolPolicy(toolName, policy)` 增改；构造期传入便于单测 / 声明式挂载预置。
@@ -145,6 +165,8 @@ export interface CompressRecord {
     };
     /** 模型原始 decision（解析成功时留痕；调试服从率用）。 */
     decision?: CompressDecision;
+    /** A 形态降级 C 的原因（'prefix-budget' = 前缀超预算丢前缀只发指令；防爆上限门控留痕）。 */
+    degradedToC?: string;
     /** 模型原始响应文本（无论解析成败都留痕；调试 parseFailed 根因用）。 */
     rawResponse?: string;
     /** dsh-llm 后端的 usage 记账（fetch 后端经 meteringFetch 在 spike 侧独立计量）。 */
@@ -221,6 +243,10 @@ export declare class PeratomCompressor {
     readonly hlsMode: 'trailer' | 'off';
     /** HLS 经济学门槛 θ（v1.2.0 门控修正；缺省 1）。 */
     readonly hlsRoiThreshold: number;
+    /** 压缩调用输出 cap（默认 4096；JSON plan 输出通常几百 token，小 cap 给 prompt 让出 margin）。 */
+    readonly maxCompletionTokens: number;
+    /** A 形态前缀预算（默认 132000 ≈ 0.76×174080；前缀超预算 ⇒ 该次降级 C 形态）。 */
+    readonly prefixBudgetTokens: number;
     private readonly chatTemplateKwargs;
     private readonly endpoint;
     private readonly dshLlm;
@@ -305,6 +331,46 @@ export declare class PeratomCompressor {
     compressOpenTurn(session: Session): Promise<CompressRecord | null>;
     /** 共享压缩尾部：防重记账 + 中断/无候选短路 + callAndStash + 立即 flush。 */
     private compressCollect;
+    /**
+     * A 形态前缀快照（设计文档 §4 tail-only 语义的落地）：agent 当前
+     * `deriveMessages()` + `requestHeader().tools` + 主链 ctk。
+     *
+     * 时序依据（2026-09-18/19 record 实测）：
+     * - 轮边界触发（idle）：derive = 刚结束轮的全量，复用对象 = P_last / 下一轮第一发；
+     * - 轮内触发（pre-step，P6）：derive = 进行到一半的 turn N，复用对象 = 紧随其后的
+     *   step k+1 请求。两条路径共用本快照函数，前缀 = 触发时刻的 deriveMessages()。
+     * 无 header 事件（会话首请求前）时 tools 缺省，消息前缀仍可用。
+     */
+    private buildContextPrefix;
+    /**
+     * 方案 B ctk（2026-09-19 定案，替代旧的"强制 pt:true"）：
+     *   { enable_thinking:false, preserve_thinking:false, reasoning_effort:<主链同值?>, ...config 基础层 }
+     * 三字段各自的理由：
+     *  - `preserve_thinking:false`（方案 B 核心）：压缩请求末尾必是 user 指令 ⇒ 模板把
+     *    last_query_index 推到末尾 ⇒ 历史轮内 reasoning 被剥 = **剥离态**。这恰好与
+     *    "下一轮第一发 agent 请求"（末尾也是 user，同为剥离态）**同态** ⇒ 前缀逐 token
+     *    一致（plan B 实测 LCP 99.4%）。强制 pt:true 反而把跨轮 reasoning 渲染回来，
+     *    与参照不同态（LCP 12.7% < pt:false 30.3%）。
+     *  - `enable_thinking:false`：压缩响应是 JSON plan，不烧 thinking（spike 33）。
+     *  - `reasoning_effort`：与主链对齐（若声明了）——匹配主链的渲染 token 序列，
+     *    跨模型可移植（不依赖 Qwen3 专属 pt 语义）。
+     * 主链 reasoningEffort 取自最近 `request/header` 事件的 config（LlmCallConfig 无
+     * chat_template_kwargs 字段，只有 reasoningEffort——故从它重建，非读现成 ctk）。
+     */
+    private resolveEffectiveCtk;
+    /**
+     * 前缀预算门控（防爆上限核心防线）：估算 A 形态请求的 prompt_tokens
+     * = 最近一次真实 agent 请求的 billed input + 指令字符估算（/4，chars/4 对
+     * 指令这种短文本偏安全）。usage 挂 assistant/message 事件的 data **顶层**
+     * （agent-loop 落账实证 `{turn, step, message, usage, stream}`，读
+     * `data.message.usage` 恒 undefined ⇒ A 形态会被静默全量降级 C）；billed
+     * 口径 = inputTokens（未命中）+ cacheReadTokens + cacheWriteTokens，与引擎
+     * 真实锚点同式——只算未命中会在高缓存命中率时大幅低估、漏放行超预算请求。
+     * 超预算 ⇒ 返回 false，调用方**该次降级 C 形态**（丢前缀只发指令）——
+     * "全前缀或无前缀"二元门控：截断前缀要么砍最近历史（质量最伤）要么 0 命中
+     * 还比 C 贵（被支配）。无 usage 可参照（会话头）⇒ 保守返回 false（降级 C）。
+     */
+    private prefixWithinBudget;
     private callAndStash;
     private flushEntry;
 }

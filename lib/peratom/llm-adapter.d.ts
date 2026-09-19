@@ -1,3 +1,4 @@
+import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm';
 import type { Context } from '@deepseek-ai/cordis';
 /** dsh-llm 后端规格：宿主 LlmRuntime 的 provider 路由 + model。 */
 export interface DshLlmSpec {
@@ -13,10 +14,15 @@ export interface PeratomLlmResult {
     usage?: PeratomLlmUsage;
 }
 /**
- * 经宿主 dsh-llm 完成一次 one-shot 补全（hand-built 请求，不带 agent-loop 标记）。
+ * 经宿主 dsh-llm 完成一次补全（hand-built 请求，不带 agent-loop 标记）。
  * 超时经 AbortSignal 传给运行时；text-delta 拼装正文，usage 块记账。
+ *
+ * A 形态（contextMessages 非空）：压缩指令作为尾部 user 消息拼在 agent 当前
+ * `deriveMessages()` 前缀之后，tools 透传 `requestHeader().tools`——请求与
+ * agent 上一发共享前缀，KV 块原地命中（设计文档 §4；ctk 须配
+ * preserve_thinking:true，见 serializeWireMessages 头注）。
  */
-export declare function completeViaDshLlm(ctx: Context, spec: DshLlmSpec, prompt: string, timeoutMs: number): Promise<PeratomLlmResult>;
+export declare function completeViaDshLlm(ctx: Context, spec: DshLlmSpec, prompt: string, timeoutMs: number, contextMessages?: readonly Message[], contextTools?: readonly ToolSchema[]): Promise<PeratomLlmResult>;
 /** agent 路由提示：AgentContext.options 的结构最小视图（provider/model）。 */
 export interface AgentRouteHint {
     provider?: string;
@@ -40,3 +46,23 @@ export interface AgentRouteHint {
 export declare function autoDshLlmSpec(ctx: Context, route: AgentRouteHint | null): DshLlmSpec | null;
 /** 宿主是否挂了 llm 服务（自动兜底的前提之一；测试/诊断用）。 */
 export declare function hostHasLlm(ctx: Context): boolean;
+/**
+ * dsh-llm `Message` → OpenAI wire 消息数组（与 pi-ai openai-completions 的
+ * transformMessages + 请求体构造等价；reasoning 字段名实测为 `reasoning`——
+ * 本 vLLM build 模板读 `message.reasoning`，record-requests 真身逐字核对）。
+ * 深冻结的源消息只读不改；一条 dsh Message 可能展开为多条 wire 消息
+ * （user 消息内嵌 tool-result 时）。
+ */
+export declare function serializeWireMessages(messages: readonly Message[]): Record<string, unknown>[];
+/**
+ * dsh-llm `ToolSchema[]` → OpenAI wire tools。
+ *
+ * 🔴 必须与 pi-ai openai-completions 的 tools 序列化**逐字节一致**（tools 在 prompt
+ * 头部，任何差异 → 整段前缀分叉 → KV 全废）。pi-ai 行为（constrained-sampling.js
+ * + openai-completions.js 实测）：标准工具（无 constrainedSampling）
+ * `resolveJsonSchemaStrictSampling` 返回 undefined → wire 带 **`strict: false`**、
+ * `parameters` 原样透传（`getJsonSchemaToolParameters` 仅 strict===true 时改写）。
+ * 字段序 = agent 真身 wire 实测序：name, description, parameters, strict。
+ * （2026-09-18 A-2 落地实锤：漏掉 `strict` 使 LCP 从 100% 塌到 454。）
+ */
+export declare function serializeWireTools(tools: readonly ToolSchema[] | undefined): Record<string, unknown>[] | undefined;

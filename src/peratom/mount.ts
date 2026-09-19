@@ -37,7 +37,7 @@ import { RecallZoom, type RecallZoomConfig } from './recall-zoom.js'
  */
 export interface PeratomStackConfig {
   /** graph 引擎 config（ArgpGraphConfig 透传；injectEdges/onOverflowCompress 由工厂接管，传入值被忽略）。 */
-  graph?: Omit<ArgpGraphConfig, 'injectEdges' | 'onOverflowCompress'>
+  graph?: Omit<ArgpGraphConfig, 'injectEdges' | 'onOverflowCompress' | 'onPrePressureCompress'>
   compressor?: PeratomCompressorConfig | false
   declarer?: CiteDeclarerConfig | false
   zoom?: RecallZoomConfig | false
@@ -78,6 +78,11 @@ export async function mountPeratomStack(ctx: Context, config: PeratomStackConfig
   // 网络错误只记 record 不抛），钩子侧另有 try/catch 双保险。
   if (compressor !== null) {
     graphConfig.onOverflowCompress = async (session: Session): Promise<void> => {
+      await compressor.compressOpenTurn(session)
+    }
+    // P6 接线（2026-09-19 方案 B）：轮内压力达标时先压 open turn 原子再图剪
+    //（pre-step 单变异窗口；与 onOverflowCompress 同入口，触发条件不同：压力 vs 溢出）。
+    graphConfig.onPrePressureCompress = async (session: Session): Promise<void> => {
       await compressor.compressOpenTurn(session)
     }
   }

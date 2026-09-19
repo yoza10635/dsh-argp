@@ -15,7 +15,9 @@
  * （`autoDshLlmSpec`：真会话里从 `agent.options` 取 provider/model + 宿主 `ctx.llm`，
  * 2026-09-17 §11.13.1）。三条路都解不出才让组件 disabled（零网络）。
  */
+import { writeFileSync } from 'node:fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 
 /** dsh-llm 后端规格：宿主 LlmRuntime 的 provider 路由 + model。 */
@@ -44,6 +46,8 @@ interface LlmRuntimeView {
     maxTokens?: number
     signal?: AbortSignal
     purpose?: 'compaction' | 'session-title'
+    /** A 形态前缀的 tools 透传（GenerateOptions.tools，真身支持）。 */
+    tools?: unknown[]
   }): AsyncIterable<{ type: string; text?: string; usage?: { inputTokens?: number; outputTokens?: number } }>
 }
 
@@ -61,22 +65,32 @@ function resolveLlmRuntime(ctx: Context): LlmRuntimeView | undefined {
 }
 
 /**
- * 经宿主 dsh-llm 完成一次 one-shot 补全（hand-built 请求，不带 agent-loop 标记）。
+ * 经宿主 dsh-llm 完成一次补全（hand-built 请求，不带 agent-loop 标记）。
  * 超时经 AbortSignal 传给运行时；text-delta 拼装正文，usage 块记账。
+ *
+ * A 形态（contextMessages 非空）：压缩指令作为尾部 user 消息拼在 agent 当前
+ * `deriveMessages()` 前缀之后，tools 透传 `requestHeader().tools`——请求与
+ * agent 上一发共享前缀，KV 块原地命中（设计文档 §4；ctk 须配
+ * preserve_thinking:true，见 serializeWireMessages 头注）。
  */
 export async function completeViaDshLlm(
   ctx: Context,
   spec: DshLlmSpec,
   prompt: string,
   timeoutMs: number,
+  contextMessages?: readonly Message[],
+  contextTools?: readonly ToolSchema[],
 ): Promise<PeratomLlmResult> {
   const llm = resolveLlmRuntime(ctx)
   if (llm === undefined) throw new Error('dsh-llm backend: host has no llm service')
-  ctx.logger.info(`[argp-peratom] dsh-llm call: provider=${spec.provider} model=${spec.model} prompt=${prompt.length} chars`)
+  const instr = createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })
+  const messages = contextMessages !== undefined ? [...contextMessages, instr] : [instr]
+  ctx.logger.info(`[argp-peratom] dsh-llm call: provider=${spec.provider} model=${spec.model} prompt=${prompt.length} chars prefix=${contextMessages?.length ?? 0} msgs`)
   const stream = llm.stream({
     provider: spec.provider,
     model: spec.model,
-    messages: [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } })],
+    messages,
+    ...(contextTools !== undefined && contextTools.length > 0 ? { tools: [...contextTools] } : {}),
     temperature: 0,
     purpose: 'compaction',
     signal: AbortSignal.timeout(timeoutMs),
@@ -131,4 +145,136 @@ export function autoDshLlmSpec(ctx: Context, route: AgentRouteHint | null): DshL
 /** 宿主是否挂了 llm 服务（自动兜底的前提之一；测试/诊断用）。 */
 export function hostHasLlm(ctx: Context): boolean {
   return resolveLlmRuntime(ctx) !== undefined
+}
+
+// ---------------------------------------------------------------------------
+// A 形态前缀序列化（compressor / cite-declarer 共用）
+//
+// A 形态（设计文档 §4"tail-only 替换 ⇒ 前缀全部命中"）：压缩调用站在 agent 链
+// 延长线上——`session.deriveMessages()` + 尾部压缩指令。要让压缩请求的 token 序列
+// 与 agent 上一发请求（P_last）的 KV 块逐 token 一致，wire 序列化必须与宿主
+// agent-loop 的渲染（pi-ai openai-completions 路径）字节等价。
+//
+// 2026-09-18 模板行为定案（.tmp/kv-ctk-settle*.mjs 探针）：Qwen3 vLLM 模板
+// 渲染 assistant reasoning 的条件 = `preserve_thinking ∈ {undefined, true}`
+// **或** 该 assistant 位于最后一条 user 之后（`loop.index0 > last_query_index`）。
+// 2026-09-19 record2 实测定量（.tmp/kv-a2-diag5）：A 形态末尾追加 user 指令会
+// **把 last_query_index 推到末尾** ⇒ 原"轮内"reasoning 全部降级为"历史"被剥
+// （pt:false 时 LCP 仅 30.3%）；pt:true 又把 P_last 剥掉的跨轮 reasoning 渲染
+// 回来（LCP 仅 12.7%，更差）⇒ **ctk 救不了 A 形态，末尾 user 指令本身即分叉源**。
+// 正确形态 = A-4：尾部指令用 **assistant** 承载（last_query_index 不变 ⇒ 渲染
+// 与 P_last 逐 token 一致，实测 LCP=100%）。详见 memory 2026-09-18.md Request 11/12。
+//
+// wire 形状（record-requests 真身实测，P10）：
+//   developer | { role:'developer', content:string }                    ← system 消息
+//   user      | { role:'user', content:string }
+//   assistant | { role:'assistant', content:string|null,
+//               reasoning?:string, tool_calls?:[{id,type:'function',
+//               function:{name,arguments:string}}] }
+//   tool      | { role:'tool', content:string, tool_call_id:string }    ← user 角色 tool-result
+// tools       | ToolSchema[] 原样透传（{type:'function', function:{...}}）
+// ---------------------------------------------------------------------------
+
+/** dsh-llm ContentBlock[] → 纯文本（text 块拼接；image/file 落占位文本）。 */
+function flattenWireText(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = []
+  for (const block of blocks) {
+    if (block.type === 'text') parts.push(block.text)
+    else if (block.type === 'reasoning') continue // reasoning 走独立字段
+    else if (block.type === 'tool-result') continue // tool-result 展开为独立 wire 消息
+    else if (block.type === 'tool-call') continue // tool-call 走独立字段
+    else parts.push(`[${block.type} omitted]`)
+  }
+  return parts.join('')
+}
+
+/**
+ * dsh-llm `Message` → OpenAI wire 消息数组（与 pi-ai openai-completions 的
+ * transformMessages + 请求体构造等价；reasoning 字段名实测为 `reasoning`——
+ * 本 vLLM build 模板读 `message.reasoning`，record-requests 真身逐字核对）。
+ * 深冻结的源消息只读不改；一条 dsh Message 可能展开为多条 wire 消息
+ * （user 消息内嵌 tool-result 时）。
+ */
+export function serializeWireMessages(messages: readonly Message[]): Record<string, unknown>[] {
+  const wire: Record<string, unknown>[] = []
+  for (const message of messages) {
+    if (message.role === 'system') {
+      wire.push({ role: 'developer', content: flattenWireText(message.content) })
+      continue
+    }
+    if (message.role === 'assistant') {
+      const text = flattenWireText(message.content)
+      const reasoning = message.content
+        .filter((b): b is Extract<ContentBlock, { type: 'reasoning' }> => b.type === 'reasoning')
+        .map(b => b.text)
+        .join('')
+      const toolCalls = message.content
+        .filter((b): b is Extract<ContentBlock, { type: 'tool-call' }> => b.type === 'tool-call')
+        .map(b => ({ id: b.id, type: 'function', function: { name: b.name, arguments: b.arguments } }))
+      const msg: Record<string, unknown> = {
+        role: 'assistant',
+        // record 真身：纯 tool-call 轮 content=null（pi-ai "no text → null"）
+        content: text.length > 0 ? text : null,
+      }
+      if (reasoning.length > 0) msg['reasoning'] = reasoning
+      if (toolCalls.length > 0) msg['tool_calls'] = toolCalls
+      wire.push(msg)
+      continue
+    }
+    // user 角色：内嵌 tool-result 先展开为独立 tool 消息，文本单独成条（pi-ai 同款顺序）
+    const toolResults = message.content.filter(b => b.type === 'tool-result')
+    const text = flattenWireText(message.content)
+    if (text.length > 0 || toolResults.length === 0) {
+      wire.push({ role: 'user', content: text })
+    }
+    for (const result of toolResults) {
+      wire.push({ role: 'tool', tool_call_id: result.toolCallId, content: flattenWireText(result.content) || '(no output)' })
+    }
+  }
+  // A 形态观测（2026-09-18 落地期）：序列化前后消息数差异 = tool-result 展开量；
+  // reasoning 总量 = 前缀复用的承重变量（模板只在该字段非空时渲染 <think> 块）。
+  const reasoningChars = wire
+    .map(m => (typeof (m as { reasoning?: unknown }).reasoning === 'string' ? (m as { reasoning: string }).reasoning.length : 0))
+    .reduce((a, b) => a + b, 0)
+  if (wire.length !== messages.length || reasoningChars > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`[argp-peratom] wire-prefix: dsh=${messages.length} msgs → wire=${wire.length} msgs (tool-result 展开 ${wire.length - messages.length >= 0 ? wire.length - messages.length : 0}) reasoning=${reasoningChars} chars`)
+  }
+  // A-2 落地期诊断：env 门控 dump 序列化后的 A 前缀 wire，供与 agent 实际请求
+  // 逐字节对齐（验证序列化器 = agent-loop 渲染）。生产默认关。
+  const dbgDir = process.env['ARGP_PERATOM_A2_DEBUG']
+  if (dbgDir !== undefined && dbgDir !== '') {
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const file = `${dbgDir}/a-prefix-${stamp}.json`
+      writeFileSync(file, JSON.stringify({ messageCount: messages.length, wire }, null, 2))
+      // eslint-disable-next-line no-console
+      console.log(`[argp-peratom] a2-debug: dump → ${file}`)
+    } catch { /* 诊断失败不影响主流程 */ }
+  }
+  return wire
+}
+
+/**
+ * dsh-llm `ToolSchema[]` → OpenAI wire tools。
+ *
+ * 🔴 必须与 pi-ai openai-completions 的 tools 序列化**逐字节一致**（tools 在 prompt
+ * 头部，任何差异 → 整段前缀分叉 → KV 全废）。pi-ai 行为（constrained-sampling.js
+ * + openai-completions.js 实测）：标准工具（无 constrainedSampling）
+ * `resolveJsonSchemaStrictSampling` 返回 undefined → wire 带 **`strict: false`**、
+ * `parameters` 原样透传（`getJsonSchemaToolParameters` 仅 strict===true 时改写）。
+ * 字段序 = agent 真身 wire 实测序：name, description, parameters, strict。
+ * （2026-09-18 A-2 落地实锤：漏掉 `strict` 使 LCP 从 100% 塌到 454。）
+ */
+export function serializeWireTools(tools: readonly ToolSchema[] | undefined): Record<string, unknown>[] | undefined {
+  if (tools === undefined || tools.length === 0) return undefined
+  return tools.map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+      strict: false,
+    },
+  }))
 }

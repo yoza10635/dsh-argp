@@ -27,11 +27,13 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { compactCheckpointSource, CompactionId } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { asSeq, asSeqs, sessionEvents } from '../log-access.js'
 import { ARG_NS, SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import { autoDshLlmSpec } from './llm-adapter.js'
+import { serializeWireMessages, serializeWireTools } from './llm-adapter.js'
 import type { AgentRouteHint, DshLlmSpec } from './llm-adapter.js'
 import type { SplitResolution } from './split.js'
 import { buildDialogText, buildInfoText, resolveSplit } from './split.js'
@@ -74,11 +76,31 @@ export interface PeratomCompressorConfig {
   /** 单次请求超时（默认 180s，spike 32 同款）。 */
   timeoutMs?: number
   /**
-   * 追加到请求体的模板参数（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
-   * 实测（spike 33）：llama.cpp 上 json_schema 强制输出与思考模式互斥——不关思考则
-   * token 预算全烧在推理上、content 为空。官方端点会忽略未知字段，默认不发送。
+   * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
+   * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
+   * `chat_template_kwargs` 为基础**再叠加本基础层 + `enable_thinking:false` 覆盖
+   * （2026-09-19 定案：同态渲染 = 继承主链 ctk；强制 pt:true 反而把跨轮 reasoning
+   * 渲染回来，LCP 12.7% < pt:false 30.3%）。C 形态（无前缀）直接用本基础层。
+   * 实测（spike 33）：不关思考则 token 预算全烧在推理上、content 为空。
    */
   chatTemplateKwargs?: Record<string, unknown>
+  /**
+   * 压缩调用输出 cap（token，默认 16384）。plan 的 quotes 部分 = dialog 保真保留
+   * （用户指令逐字转写，尺寸与原子原文同量级，不可省）⇒ cap 必须容纳"dialog +
+   * tools plan"而不是"几百 token"——cap 截断 = JSON 不完整 = parse 失败 = 整轮
+   * 保原文（2026-09-20 r3 实弹：3-turn 语料 T1 任务书全指令型 user 即打满 4096）。
+   * 防爆余量按新窗口重标定：触发线 100,007 + agent maxTokens 32,768 + cap 16,384
+   * ≈ 149K ≪ 262,144 墙（旧 174K 墙时代 4096 的"让 margin"推导已过时；KV 池
+   * 933K 下 16K 响应的 prefill 搅动也可忽略）。
+   */
+  maxCompletionTokens?: number
+  /**
+   * A 形态前缀预算（token，默认 132000 ≈ 0.76×174080 墙）：前缀快照估算
+   * `prompt_tokens` 超预算时**该次降级 C 形态**（丢前缀、只发指令）——防爆上限的
+   * 核心防线（"全前缀或无前缀"二元门控，截断前缀要么质量最伤要么比 C 还贵）。
+   * 估算源 = 最近一次真实 agent 请求的 usage.prompt_tokens（同源，误差 < 1K）。
+   */
+  prefixBudgetTokens?: number
   /**
    * 初始 tool 对照表（设计 §6-2）：工具种类名 → 压缩档位。运行期可经
    * `setToolPolicy(toolName, policy)` 增改；构造期传入便于单测 / 声明式挂载预置。
@@ -316,6 +338,8 @@ export interface CompressRecord {
   atomSeqs?: { userLong: number[]; toolResults: number[] }
   /** 模型原始 decision（解析成功时留痕；调试服从率用）。 */
   decision?: CompressDecision
+  /** A 形态降级 C 的原因（'prefix-budget' = 前缀超预算丢前缀只发指令；防爆上限门控留痕）。 */
+  degradedToC?: string
   /** 模型原始响应文本（无论解析成败都留痕；调试 parseFailed 根因用）。 */
   rawResponse?: string
   /** dsh-llm 后端的 usage 记账（fetch 后端经 meteringFetch 在 spike 侧独立计量）。 */
@@ -648,6 +672,21 @@ interface ChatCompletionResponse {
   usage?: { completion_tokens?: number }
 }
 
+/**
+ * A 形态（设计文档 §4 tail-only 语义）：压缩调用站在 agent 链延长线上——
+ * `[...agent 当前 deriveMessages() 的 wire 渲染, {user: 压缩指令}]`。
+ *
+ * ⚠️ 复用率实测（2026-09-19 record2 + .tmp/kv-a2-diag5 隔离实验，长历史）：
+ * Qwen3 模板的 reasoning 渲染受"最后一条 user 位置"门控——末尾是 user 指令时，
+ * 最后一条 user **之后**的 assistant reasoning 在 agent 上一发（P_last）里全渲染、
+ * 在本请求里全剥离 ⇒ 前缀从该处起分叉。长历史（轮内 reasoning 多）实测 LCP 仅 30.3%
+ * （pt:false）/ 12.7%（pt:true 反而更差：把 P_last 剥掉的跨轮 reasoning 又渲染回来）；
+ * 短历史（turn1 末，reasoning 极少）才 ≈100%。⇒ **A 形态的真实复用率是历史长度依赖的**，
+ * 此前"完全复用 / LCP=100%"的注释与结论均基于短历史假象，已作废。
+ * 若要长历史下接近完全复用，需 A-4（尾部指令用 assistant 承载，实测 LCP=100%）
+ * 或 A-3（前缀截断到最后一条 user，自身复用率 87.1%，compaction-basic 同款形态）。
+ * 本函数在 A 形态下仍强制 `preserve_thinking:true`（维持既有行为），待形态拍板后统一调整。
+ */
 async function postChat(
   fetchImpl: typeof fetch,
   ep: ResolvedEndpoint,
@@ -655,12 +694,22 @@ async function postChat(
   timeoutMs: number,
   useJsonSchema: boolean,
   chatTemplateKwargs?: Record<string, unknown>,
+  /** A 形态前缀（serializeWireMessages 产物）；缺省 = C 形态独立 one-shot。 */
+  contextWire?: Record<string, unknown>[],
+  /** A 形态 tools 透传（requestHeader().tools 的 wire 渲染）。 */
+  contextTools?: Record<string, unknown>[],
+  /** 输出 cap（token）。压缩输出是 JSON plan，通常几百 token；设小 cap 给 prompt 让出 margin（防爆上限）。 */
+  maxCompletionTokens?: number,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: ep.model,
-    messages: [{ role: 'user', content: prompt }],
+    messages: contextWire !== undefined
+      ? [...contextWire, { role: 'user', content: prompt }]
+      : [{ role: 'user', content: prompt }],
     temperature: 0,
   }
+  if (maxCompletionTokens !== undefined) body['max_completion_tokens'] = maxCompletionTokens
+  if (contextTools !== undefined) body['tools'] = contextTools
   if (useJsonSchema) {
     // JSON Schema 强制输出：支持结构化解码的端点上消灭自由生成失控（plan 已知债务 7 的
     // "服务端 schema 约束"路径）；strict=true 要求全部字段受 schema 约束。
@@ -669,6 +718,10 @@ async function postChat(
       json_schema: { name: 'argp_peratom_turn', strict: true, schema: OUTPUT_SCHEMA },
     }
   }
+  // ctk 由调用方解析（resolveEffectiveCtk：继承主链 requestHeader ctk + enable_thinking:false
+  // 覆盖）。此处不再强制 preserve_thinking——2026-09-19 定案：A 形态末尾 user 指令把
+  // last_query_index 推到末尾，pt:true 反而把 P_last 剥掉的跨轮 reasoning 渲染回来
+  // （LCP 12.7% < pt:false 30.3%）；继承主链 ctk 才是同态渲染的正确姿势。
   if (chatTemplateKwargs !== undefined && Object.keys(chatTemplateKwargs).length > 0) {
     body['chat_template_kwargs'] = chatTemplateKwargs
   }
@@ -717,6 +770,10 @@ export class PeratomCompressor {
   readonly hlsMode: 'trailer' | 'off'
   /** HLS 经济学门槛 θ（v1.2.0 门控修正；缺省 1）。 */
   readonly hlsRoiThreshold: number
+  /** 压缩调用输出 cap（默认 4096；JSON plan 输出通常几百 token，小 cap 给 prompt 让出 margin）。 */
+  readonly maxCompletionTokens: number
+  /** A 形态前缀预算（默认 132000 ≈ 0.76×174080；前缀超预算 ⇒ 该次降级 C 形态）。 */
+  readonly prefixBudgetTokens: number
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
   private readonly endpoint: ResolvedEndpoint | null
@@ -786,6 +843,8 @@ export class PeratomCompressor {
     this.hlsMode = config.hlsMode ?? 'trailer'
     this.hlsRoiThreshold = config.hlsRoiThreshold ?? DEFAULT_HLS_ROI_THRESHOLD
     this.chatTemplateKwargs = config.chatTemplateKwargs
+    this.maxCompletionTokens = config.maxCompletionTokens ?? 16_384
+    this.prefixBudgetTokens = config.prefixBudgetTokens ?? 132_000
     if (config.toolPolicies !== undefined) {
       for (const [name, policy] of config.toolPolicies) this.toolPolicies.set(name, policy)
     }
@@ -1063,6 +1122,80 @@ export class PeratomCompressor {
 
   // -- LLM 调用与暂存 ------------------------------------------------------
 
+  /**
+   * A 形态前缀快照（设计文档 §4 tail-only 语义的落地）：agent 当前
+   * `deriveMessages()` + `requestHeader().tools` + 主链 ctk。
+   *
+   * 时序依据（2026-09-18/19 record 实测）：
+   * - 轮边界触发（idle）：derive = 刚结束轮的全量，复用对象 = P_last / 下一轮第一发；
+   * - 轮内触发（pre-step，P6）：derive = 进行到一半的 turn N，复用对象 = 紧随其后的
+   *   step k+1 请求。两条路径共用本快照函数，前缀 = 触发时刻的 deriveMessages()。
+   * 无 header 事件（会话首请求前）时 tools 缺省，消息前缀仍可用。
+   */
+  private buildContextPrefix(session: Session): { messages: Message[]; tools?: ToolSchema[] } {
+    const messages = session.deriveMessages()
+    const header = session.requestHeader()
+    return { messages, ...(header?.tools !== undefined ? { tools: header.tools } : {}) }
+  }
+
+  /**
+   * 方案 B ctk（2026-09-19 定案，替代旧的"强制 pt:true"）：
+   *   { enable_thinking:false, preserve_thinking:false, reasoning_effort:<主链同值?>, ...config 基础层 }
+   * 三字段各自的理由：
+   *  - `preserve_thinking:false`（方案 B 核心）：压缩请求末尾必是 user 指令 ⇒ 模板把
+   *    last_query_index 推到末尾 ⇒ 历史轮内 reasoning 被剥 = **剥离态**。这恰好与
+   *    "下一轮第一发 agent 请求"（末尾也是 user，同为剥离态）**同态** ⇒ 前缀逐 token
+   *    一致（plan B 实测 LCP 99.4%）。强制 pt:true 反而把跨轮 reasoning 渲染回来，
+   *    与参照不同态（LCP 12.7% < pt:false 30.3%）。
+   *  - `enable_thinking:false`：压缩响应是 JSON plan，不烧 thinking（spike 33）。
+   *  - `reasoning_effort`：与主链对齐（若声明了）——匹配主链的渲染 token 序列，
+   *    跨模型可移植（不依赖 Qwen3 专属 pt 语义）。
+   * 主链 reasoningEffort 取自最近 `request/header` 事件的 config（LlmCallConfig 无
+   * chat_template_kwargs 字段，只有 reasoningEffort——故从它重建，非读现成 ctk）。
+   */
+  private resolveEffectiveCtk(session: Session): Record<string, unknown> {
+    const events = sessionEvents(session)
+    let mainChainEffort: string | undefined
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type !== 'request/header') continue
+      const cfg = (event.data as unknown as { header?: { config?: { reasoningEffort?: string } } } | undefined)?.header?.config
+      if (cfg?.reasoningEffort !== undefined) { mainChainEffort = cfg.reasoningEffort; break }
+    }
+    const ctk: Record<string, unknown> = { ...(this.chatTemplateKwargs ?? {}) }
+    ctk['enable_thinking'] = false
+    ctk['preserve_thinking'] = false
+    if (mainChainEffort !== undefined) ctk['reasoning_effort'] = mainChainEffort
+    return ctk
+  }
+
+  /**
+   * 前缀预算门控（防爆上限核心防线）：估算 A 形态请求的 prompt_tokens
+   * = 最近一次真实 agent 请求的 billed input + 指令字符估算（/4，chars/4 对
+   * 指令这种短文本偏安全）。usage 挂 assistant/message 事件的 data **顶层**
+   * （agent-loop 落账实证 `{turn, step, message, usage, stream}`，读
+   * `data.message.usage` 恒 undefined ⇒ A 形态会被静默全量降级 C）；billed
+   * 口径 = inputTokens（未命中）+ cacheReadTokens + cacheWriteTokens，与引擎
+   * 真实锚点同式——只算未命中会在高缓存命中率时大幅低估、漏放行超预算请求。
+   * 超预算 ⇒ 返回 false，调用方**该次降级 C 形态**（丢前缀只发指令）——
+   * "全前缀或无前缀"二元门控：截断前缀要么砍最近历史（质量最伤）要么 0 命中
+   * 还比 C 贵（被支配）。无 usage 可参照（会话头）⇒ 保守返回 false（降级 C）。
+   */
+  private prefixWithinBudget(session: Session, promptChars: number): boolean {
+    const events = sessionEvents(session)
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type !== 'assistant/message') continue
+      const usage = (event.data as { usage?: { inputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number } } | undefined)?.usage
+      if (usage === undefined || typeof usage.inputTokens !== 'number') continue
+      const billedInput = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+      const estimate = billedInput + Math.ceil(promptChars / 4)
+      if (estimate > this.prefixBudgetTokens) return false
+      return true
+    }
+    return false
+  }
+
   private async callAndStash(session: Session, collect: CurrentTurnCollect): Promise<CompressRecord> {
     const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     this.records.push(record)
@@ -1079,23 +1212,33 @@ export class PeratomCompressor {
         userLong: collect.userLong.map(u => u.seq),
         toolResults: collect.toolResults.map(t => t.seq),
       }
-      this.ctx.logger.info(`[argp-peratom] compressor: turn ${collect.turn} candidates=${collect.userLong.length}u+${collect.toolResults.length}r (dsh-llm=${backend.kind === 'dsh-llm'})`)
+      // A 形态前缀 + 预算门控：超预算该次降级 C（丢前缀只发指令），防爆上限。
+      const context = this.buildContextPrefix(session)
+      const effectiveCtk = this.resolveEffectiveCtk(session)
+      const usePrefix = this.prefixWithinBudget(session, prompt.length)
+      if (!usePrefix) record.degradedToC = 'prefix-budget'
+      this.ctx.logger.info(`[argp-peratom] compressor: turn ${collect.turn} candidates=${collect.userLong.length}u+${collect.toolResults.length}r (dsh-llm=${backend.kind === 'dsh-llm'}, prefix=${usePrefix ? context.messages.length + ' msgs' : 'OFF (degraded C)'}, ctk=${JSON.stringify(effectiveCtk)})`)
       let raw: string
       let ms = Date.now() - started
       if (backend.kind === 'dsh-llm') {
         // dsh-llm 生产后端：GenerateOptions 无 response_format——schema 约束仅在 fetch
         // 后端可用，此路径一次到位，依赖 extractJson 兜底解析（无 schema 重试舞蹈）。
-        const res = await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs)
+        // A 形态：deriveMessages() 前缀 + 指令尾部 user；ctk 由宿主 compat 决定
+        //（本机 qwen-chat-template 硬编码 preserve_thinking:true，见 llm-adapter 头注——
+        // 该路径的同态对齐依赖宿主，fetch 路径才是 ctk 继承的完全控制面）。
+        const res = await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs, usePrefix ? context.messages : undefined, usePrefix ? context.tools : undefined)
         raw = res.text
         if (res.usage !== undefined) record.usage = res.usage
         ms = Date.now() - started
       } else {
+        const contextWire = usePrefix ? serializeWireMessages(context.messages) : undefined
+        const contextTools = usePrefix ? serializeWireTools(context.tools) : undefined
         try {
-          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, effectiveCtk, contextWire, contextTools, this.maxCompletionTokens)
           ms = Date.now() - started
         } catch (schemaError) {
           // response_format 被端点拒绝/网络抖动：spike 30/32 兼容模式重试一次（裸 prompt）。
-          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, effectiveCtk, contextWire, contextTools, this.maxCompletionTokens)
           ms = Date.now() - started
           record.anomalies = (record.anomalies ?? 0) + 1
           void schemaError
@@ -1215,9 +1358,15 @@ export class PeratomCompressor {
         shadowedSeqs: plan.steps.flatMap(step => step.sourceEventSeqs),
         shadowedTokenCount: Math.ceil(shadowedChars / 3.5),
         provider: summaryBackend?.kind === 'dsh-llm' ? summaryBackend.spec.provider : 'fetch',
+        // ⚠️ fetch 分支要取 `endpoint.endpoint`（URL 字符串）：`endpoint` 本身是
+        // ResolvedEndpoint 对象 {endpoint, model, apiKey}，`String(对象)` 序列化成
+        // "[object Object]"（2026-09-18 ab4 跑批实测审计字段坏掉）——既丢 URL，也丢模型名，
+        // 审计脚本无法判断 Stage-1 实际跑在哪个模型上。现在 model 段同时带模型名与端点 URL。
         model: summaryBackend === null
           ? 'disabled'
-          : (summaryBackend.kind === 'dsh-llm' ? summaryBackend.spec.model : String(summaryBackend.endpoint)),
+          : (summaryBackend.kind === 'dsh-llm'
+            ? summaryBackend.spec.model
+            : `${summaryBackend.endpoint.model} @ ${summaryBackend.endpoint.endpoint}`),
       } as never)
       session.append('compaction/end', lifecycle)
       // 断言 2b：整事务代数增量 === replace 步数（append 步不推进代数）。

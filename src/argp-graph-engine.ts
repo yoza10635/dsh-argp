@@ -330,6 +330,17 @@ export interface ArgpGraphConfig {
    * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
    */
   onOverflowCompress?: (session: Session) => Promise<void>
+  /**
+   * P6 轮内压力压缩（2026-09-19 方案 B 主路径）：pre-step 压力达标（与
+   * compactIfNeeded('pressure') 同口径）时，**先**对当前 open turn 做 per-atom
+   * 压缩（compressOpenTurn），**再**图剪（compactIfNeeded），两者在同一 pre-step
+   * 窗口落地 = 单变异窗口（"拼回"效果：step k+1 看到剪枝后 turns 1..N-1 +
+   * 原子压缩过的进行到一半的 turn N）。仅 open turn 触发（闭合轮走 idle 边界
+   * 路径）；活跃态守卫内建——pre-step 在轮内只在 tool result 之后触发，纯文本
+   * 收手的 turn 不会再 fire。回调自身失败被吞掉（失败隔离：不影响后续图剪）。
+   * 未注入（undefined）时行为与 P6 前完全一致（仅溢出才压 open turn）。
+   */
+  onPrePressureCompress?: (session: Session) => Promise<void>
 }
 
 export interface GraphPruneRecord {
@@ -496,6 +507,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly maxOverflowRetries: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
   readonly onOverflowCompress?: (session: Session) => Promise<void>
+  /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
+  readonly onPrePressureCompress?: (session: Session) => Promise<void>
   /** 闭包静止窗 K（A11 参数化，默认 2）。 */
   readonly closureWindowK: number
   /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
@@ -658,6 +671,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     this.maxOverflowRetries = config.maxOverflowRetries ?? 1
     this.onOverflowCompress = config.onOverflowCompress
+    this.onPrePressureCompress = config.onPrePressureCompress
     this.closureWindowK = config.closureWindowK ?? 2
     // 默认 4：ASCII 词（如 "the"=3）被拒；CJK 双字（"读书"=2×2=4）放行（问题 5 修订）
     this.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
@@ -691,6 +705,11 @@ export class ArgpGraphEngine extends CompactionEngine {
         this.onOverflowCompress = async (session: Session): Promise<void> => {
           // 溢出发生在当前 open turn 的请求上——第②步要降熵的正是它。closed-turn
           // 口径会错压上一闭合轮（2026-08-29 review 中项），改用 open-turn 入口。
+          await compressor.compressOpenTurn(session)
+        }
+        // P6：轮内压力达标时先压缩 open turn 原子再图剪（与 onOverflowCompress 同入口，
+        // 区别只在触发条件：压力 vs 溢出错误）。
+        this.onPrePressureCompress = async (session: Session): Promise<void> => {
           await compressor.compressOpenTurn(session)
         }
       }
@@ -1060,6 +1079,24 @@ export class ArgpGraphEngine extends CompactionEngine {
     ctx.on('agent/pre-step', async ({ agent, signal }, next): Promise<PreStepDecision> => {
       this.bindSession(agent.session) // A7（问题 3）：生产 resume 点，账目缺失时自动重建
       if (!signal.aborted) {
+        // P6 轮内压力压缩（2026-09-19 方案 B 主路径）：压力达标 且 当前有 open turn
+        // ⇒ 先 per-atom 压缩 open turn（原子降熵），再图剪（头部平衡段）。两者在同一
+        // pre-step 窗口落地 = 单变异窗口：step k+1 看到"剪枝后 turns 1..N-1 + 原子
+        // 压缩过的进行到一半的 turn N"（用户构想的"拼回"效果 = 两个变异的合成态）。
+        // 活跃态守卫内建：pre-step 在轮内只在 tool result 之后触发，纯文本收手的
+        // turn 不会再 fire（detectOpenTurn=null 时不压）。闭合轮（无 open turn）走
+        // idle 边界路径，此处不重复处理。回调失败隔离：吞错后照常走图剪。
+        if (this.onPrePressureCompress !== undefined && this.detectOpenTurn(agent.session) !== null) {
+          if (await this.isPressureExceeded(agent)) {
+            try {
+              await this.onPrePressureCompress(agent.session)
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : String(error)
+              this.log.error('[argp-graph] pre-pressure peratom compress FAILED: ' + message)
+              ctx.logger.warn(`argp-graph pre-pressure compress failed: ${message}; proceeding to graph prune`)
+            }
+          }
+        }
         try {
           await this.compactIfNeeded(agent, 'pressure', signal)
         } catch (error: unknown) {
@@ -2094,6 +2131,22 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 可能与实际请求偏差（估算低于触发线但请求已撞墙），此时**跳过 pressure 门槛强制
    * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
    */
+  /**
+   * P6 轮内压力判定（与 compactIfNeeded('pressure') 同口径，2026-09-19 方案 B）：
+   * 声明窗口已知 且 contextTokens ≥ windowTokens − reserveTokens。抽出供 pre-step
+   * 钩子复用，避免两处重复预算解析（口径漂移风险）。返回 false = 未达标（或
+   * reserve 超窗 / 声明窗口未知）⇒ 调用方跳过轮内压缩。
+   */
+  private async isPressureExceeded(agent: CompactionAgentContext): Promise<boolean> {
+    const session = agent.session
+    const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+    const thresholdTokens = windowTokens - this.reserveTokens
+    if (thresholdTokens <= 0) return false
+    if (!declaredKnown) return false
+    const measurement = this.measureTokens(session)
+    return measurement.contextTokens >= thresholdTokens
+  }
+
   override async compactIfNeeded(
     agent: CompactionAgentContext,
     trigger: CompactionTrigger,

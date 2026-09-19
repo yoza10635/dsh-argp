@@ -34,7 +34,7 @@ import { RecallZoom, type RecallZoomConfig } from './recall-zoom.js';
  */
 export interface PeratomStackConfig {
     /** graph 引擎 config（ArgpGraphConfig 透传；injectEdges/onOverflowCompress 由工厂接管，传入值被忽略）。 */
-    graph?: Omit<ArgpGraphConfig, 'injectEdges' | 'onOverflowCompress'>;
+    graph?: Omit<ArgpGraphConfig, 'injectEdges' | 'onOverflowCompress' | 'onPrePressureCompress'>;
     compressor?: PeratomCompressorConfig | false;
     declarer?: CiteDeclarerConfig | false;
     zoom?: RecallZoomConfig | false;

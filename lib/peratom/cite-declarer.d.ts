@@ -90,8 +90,17 @@ export interface CiteDeclarerConfig {
     windowTurns?: number;
     /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
     timeoutMs?: number;
-    /** 追加到请求体的模板参数（本地 llama.cpp + Qwen 的 { enable_thinking: false } 等）。 */
+    /**
+     * 追加到请求体的模板参数**基础层**（本地 llama.cpp + Qwen 的
+     * `{ enable_thinking: false }` 等）。A 形态下 `resolveEffectiveCtk` 以最近
+     * 真实 agent 请求的 ctk 为基础叠加本层 + et:false（与 compressor 同款，
+     * 2026-09-19 方案 B 定案）。
+     */
     chatTemplateKwargs?: Record<string, unknown>;
+    /** 输出 cap（token，默认 4096；cites JSON 通常几百 token，小 cap 防爆上限）。 */
+    maxCompletionTokens?: number;
+    /** A 形态前缀预算（token，默认 132000；超预算该次降级 C，与 compressor 同款）。 */
+    prefixBudgetTokens?: number;
     /** fetch 注入点（测试替身；生产缺省 globalThis.fetch）。 */
     fetchImpl?: typeof fetch;
 }
@@ -146,6 +155,10 @@ export declare class CiteDeclarer {
     private autoLlm;
     private readonly fetchImpl;
     private readonly chatTemplateKwargs;
+    /** 输出 cap（默认 4096；cites JSON 通常几百 token，小 cap 防爆上限）。 */
+    private readonly maxCompletionTokens;
+    /** A 形态前缀预算（默认 132000；超预算该次降级 C）。 */
+    private readonly prefixBudgetTokens;
     /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */
     private readonly edgeCache;
     /** 防重复 turn 处理：(session, turn) 记账于声明阶段。 */
@@ -164,6 +177,14 @@ export declare class CiteDeclarer {
     private rememberRoute;
     /** 后端选路：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底；三者皆无 → null。 */
     private backend;
+    /** 方案 B ctk（与 compressor 同款，2026-09-19 定案）：et:false + pt:false + 主链 reasoningEffort 对齐。 */
+    private resolveEffectiveCtk;
+    /**
+     * 前缀预算门控（与 compressor 同款；超预算该次降级 C）。usage 挂事件 data
+     * 顶层（非 message 内层），billed = inputTokens + cacheRead + cacheWrite
+     * 与引擎真实锚点同式——只算未命中会在高缓存命中率时低估、漏降级。
+     */
+    private prefixWithinBudget;
     /**
      * idle 触发段（公开入口供单测 / P4 直驱）：幂等记账 → 中断轮短路 → 孤立原子门控
      * （turnCompressible 共用谓词）→ disabled 短路 → LLM（1 次静默重试）→ 边入缓存。

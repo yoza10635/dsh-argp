@@ -24,6 +24,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Atom, SemanticEdge } from '../argp-graph-engine.js'
 import {
   buildToolNameIndex,
@@ -38,6 +39,7 @@ import { sessionEvents } from '../log-access.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import { autoDshLlmSpec } from './llm-adapter.js'
+import { serializeWireMessages, serializeWireTools } from './llm-adapter.js'
 import type { AgentRouteHint, DshLlmSpec } from './llm-adapter.js'
 
 /** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
@@ -119,8 +121,17 @@ export interface CiteDeclarerConfig {
   windowTurns?: number
   /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
   timeoutMs?: number
-  /** 追加到请求体的模板参数（本地 llama.cpp + Qwen 的 { enable_thinking: false } 等）。 */
+  /**
+   * 追加到请求体的模板参数**基础层**（本地 llama.cpp + Qwen 的
+   * `{ enable_thinking: false }` 等）。A 形态下 `resolveEffectiveCtk` 以最近
+   * 真实 agent 请求的 ctk 为基础叠加本层 + et:false（与 compressor 同款，
+   * 2026-09-19 方案 B 定案）。
+   */
   chatTemplateKwargs?: Record<string, unknown>
+  /** 输出 cap（token，默认 4096；cites JSON 通常几百 token，小 cap 防爆上限）。 */
+  maxCompletionTokens?: number
+  /** A 形态前缀预算（token，默认 132000；超预算该次降级 C，与 compressor 同款）。 */
+  prefixBudgetTokens?: number
   /** fetch 注入点（测试替身；生产缺省 globalThis.fetch）。 */
   fetchImpl?: typeof fetch
 }
@@ -275,6 +286,14 @@ interface ChatCompletionResponse {
   usage?: { completion_tokens?: number }
 }
 
+/**
+ * A 形态（设计文档 §4 tail-only 语义，与 compressor 同款）：引用声明调用站在
+ * agent 链延长线上——`[...agent 当前 deriveMessages() 的 wire 渲染, {user: 声明指令}]`。
+ * ctk 由调用方解析（resolveEffectiveCtk：继承主链 requestHeader ctk +
+ * enable_thinking:false 覆盖，2026-09-19 方案 B 定案——同态渲染 = 继承主链；
+ * 强制 pt:true 已证实更差：LCP 12.7% < pt:false 30.3%）。前缀预算门控与
+ * compressor 同款（超预算该次降级 C）。
+ */
 async function postChat(
   fetchImpl: typeof fetch,
   ep: ResolvedEndpoint,
@@ -282,12 +301,22 @@ async function postChat(
   timeoutMs: number,
   useJsonSchema: boolean,
   chatTemplateKwargs?: Record<string, unknown>,
+  /** A 形态前缀（serializeWireMessages 产物）；缺省 = C 形态独立 one-shot。 */
+  contextWire?: Record<string, unknown>[],
+  /** A 形态 tools 透传（requestHeader().tools 的 wire 渲染）。 */
+  contextTools?: Record<string, unknown>[],
+  /** 输出 cap（token）。cites 输出通常几百 token；小 cap 给 prompt 让出 margin。 */
+  maxCompletionTokens?: number,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: ep.model,
-    messages: [{ role: 'user', content: prompt }],
+    messages: contextWire !== undefined
+      ? [...contextWire, { role: 'user', content: prompt }]
+      : [{ role: 'user', content: prompt }],
     temperature: 0,
   }
+  if (maxCompletionTokens !== undefined) body['max_completion_tokens'] = maxCompletionTokens
+  if (contextTools !== undefined) body['tools'] = contextTools
   if (useJsonSchema) {
     // JSON Schema 强制输出：支持结构化解码的端点上消灭自由生成失控（与 compressor 同策略）。
     body['response_format'] = {
@@ -295,6 +324,8 @@ async function postChat(
       json_schema: { name: 'argp_cite_declarer', strict: true, schema: OUTPUT_SCHEMA },
     }
   }
+  // ctk 由调用方解析（resolveEffectiveCtk）；此处不再强制 preserve_thinking
+  //（2026-09-19 定案，见头注）。
   if (chatTemplateKwargs !== undefined && Object.keys(chatTemplateKwargs).length > 0) {
     body['chat_template_kwargs'] = chatTemplateKwargs
   }
@@ -422,6 +453,10 @@ export class CiteDeclarer {
   private autoLlm: DshLlmSpec | null = null
   private readonly fetchImpl: typeof fetch
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
+  /** 输出 cap（默认 4096；cites JSON 通常几百 token，小 cap 防爆上限）。 */
+  private readonly maxCompletionTokens: number
+  /** A 形态前缀预算（默认 132000；超预算该次降级 C）。 */
+  private readonly prefixBudgetTokens: number
 
   /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */
   private readonly edgeCache = new Map<string, DeclaredCite>()
@@ -452,6 +487,8 @@ export class CiteDeclarer {
     this.windowTurns = config.windowTurns ?? CITATION_WINDOW_TURNS
     this.timeoutMs = config.timeoutMs ?? 120_000
     this.chatTemplateKwargs = config.chatTemplateKwargs
+    this.maxCompletionTokens = config.maxCompletionTokens ?? 4096
+    this.prefixBudgetTokens = config.prefixBudgetTokens ?? 132_000
     this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args))
     // 显式 llm 与 fetch 两路都缺省 ⇒ 进入自动兜底（真会话里解析 agent 路由）。
     this.llmAutoEligible = config.llm === undefined && this.endpoint === null
@@ -493,6 +530,41 @@ export class CiteDeclarer {
     return null
   }
 
+  /** 方案 B ctk（与 compressor 同款，2026-09-19 定案）：et:false + pt:false + 主链 reasoningEffort 对齐。 */
+  private resolveEffectiveCtk(session: Session): Record<string, unknown> {
+    const events = sessionEvents(session)
+    let mainChainEffort: string | undefined
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type !== 'request/header') continue
+      const cfg = (event.data as unknown as { header?: { config?: { reasoningEffort?: string } } } | undefined)?.header?.config
+      if (cfg?.reasoningEffort !== undefined) { mainChainEffort = cfg.reasoningEffort; break }
+    }
+    const ctk: Record<string, unknown> = { ...(this.chatTemplateKwargs ?? {}) }
+    ctk['enable_thinking'] = false
+    ctk['preserve_thinking'] = false
+    if (mainChainEffort !== undefined) ctk['reasoning_effort'] = mainChainEffort
+    return ctk
+  }
+
+  /**
+   * 前缀预算门控（与 compressor 同款；超预算该次降级 C）。usage 挂事件 data
+   * 顶层（非 message 内层），billed = inputTokens + cacheRead + cacheWrite
+   * 与引擎真实锚点同式——只算未命中会在高缓存命中率时低估、漏降级。
+   */
+  private prefixWithinBudget(session: Session, promptChars: number): boolean {
+    const events = sessionEvents(session)
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const event = events[i]
+      if (event?.type !== 'assistant/message') continue
+      const usage = (event.data as { usage?: { inputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number } } | undefined)?.usage
+      if (usage === undefined || typeof usage.inputTokens !== 'number') continue
+      const billedInput = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+      return billedInput + Math.ceil(promptChars / 4) <= this.prefixBudgetTokens
+    }
+    return false
+  }
+
   /**
    * idle 触发段（公开入口供单测 / P4 直驱）：幂等记账 → 中断轮短路 → 孤立原子门控
    * （turnCompressible 共用谓词）→ disabled 短路 → LLM（1 次静默重试）→ 边入缓存。
@@ -524,21 +596,29 @@ export class CiteDeclarer {
     this._calls += 1
     const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     this.records.push(record)
-    console.log(`[argp-peratom] declarer: turn ${collect.turn} from=${collect.fromAtoms.length} to=${collect.toAtoms.length} (dsh-llm=${backend.kind === 'dsh-llm'})`)
+    // A 形态前缀（与 compressor 同语义）：agent 当前 deriveMessages() + requestHeader().tools。
+    // 预算门控：超预算该次降级 C（丢前缀只发指令），防爆上限。
+    const contextMessages = session.deriveMessages()
+    const contextTools = session.requestHeader()?.tools
+    const effectiveCtk = this.resolveEffectiveCtk(session)
+    const prompt = buildCitePrompt([...collect.fromAtoms, ...collect.toAtoms])
+    const usePrefix = this.prefixWithinBudget(session, prompt.length)
+    this.ctx.logger.info(`[argp-peratom] declarer: turn ${collect.turn} from=${collect.fromAtoms.length} to=${collect.toAtoms.length} (dsh-llm=${backend.kind === 'dsh-llm'}, prefix=${usePrefix ? contextMessages.length + ' msgs' : 'OFF (degraded C)'})`)
     const started = Date.now()
     try {
-      const prompt = buildCitePrompt([...collect.fromAtoms, ...collect.toAtoms])
       let raw: string
       if (backend.kind === 'dsh-llm') {
         // dsh-llm 生产后端：一次到位（GenerateOptions 无 response_format，extractJson 兜底）。
-        raw = (await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs)).text
+        raw = (await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs, usePrefix ? contextMessages : undefined, usePrefix ? contextTools : undefined)).text
       } else {
+        const contextWire = usePrefix ? serializeWireMessages(contextMessages) : undefined
+        const contextToolsWire = usePrefix ? serializeWireTools(contextTools) : undefined
         try {
-          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, effectiveCtk, contextWire, contextToolsWire, this.maxCompletionTokens)
         } catch {
           // response_format 被端点拒绝 / 网络抖动：降级裸 prompt 静默重试一次（compressor 同款，
           // plan P2"至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
-          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, this.chatTemplateKwargs)
+          raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, effectiveCtk, contextWire, contextToolsWire, this.maxCompletionTokens)
         }
       }
       record.ms = Date.now() - started

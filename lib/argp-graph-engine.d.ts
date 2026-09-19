@@ -253,6 +253,17 @@ export interface ArgpGraphConfig {
      * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
      */
     onOverflowCompress?: (session: Session) => Promise<void>;
+    /**
+     * P6 轮内压力压缩（2026-09-19 方案 B 主路径）：pre-step 压力达标（与
+     * compactIfNeeded('pressure') 同口径）时，**先**对当前 open turn 做 per-atom
+     * 压缩（compressOpenTurn），**再**图剪（compactIfNeeded），两者在同一 pre-step
+     * 窗口落地 = 单变异窗口（"拼回"效果：step k+1 看到剪枝后 turns 1..N-1 +
+     * 原子压缩过的进行到一半的 turn N）。仅 open turn 触发（闭合轮走 idle 边界
+     * 路径）；活跃态守卫内建——pre-step 在轮内只在 tool result 之后触发，纯文本
+     * 收手的 turn 不会再 fire。回调自身失败被吞掉（失败隔离：不影响后续图剪）。
+     * 未注入（undefined）时行为与 P6 前完全一致（仅溢出才压 open turn）。
+     */
+    onPrePressureCompress?: (session: Session) => Promise<void>;
 }
 export interface GraphPruneRecord {
     at: string;
@@ -371,6 +382,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly maxOverflowRetries: number;
     /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
     readonly onOverflowCompress?: (session: Session) => Promise<void>;
+    /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
+    readonly onPrePressureCompress?: (session: Session) => Promise<void>;
     /** 闭包静止窗 K（A11 参数化，默认 2）。 */
     readonly closureWindowK: number;
     /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
@@ -634,6 +647,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 可能与实际请求偏差（估算低于触发线但请求已撞墙），此时**跳过 pressure 门槛强制
      * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
      */
+    /**
+     * P6 轮内压力判定（与 compactIfNeeded('pressure') 同口径，2026-09-19 方案 B）：
+     * 声明窗口已知 且 contextTokens ≥ windowTokens − reserveTokens。抽出供 pre-step
+     * 钩子复用，避免两处重复预算解析（口径漂移风险）。返回 false = 未达标（或
+     * reserve 超窗 / 声明窗口未知）⇒ 调用方跳过轮内压缩。
+     */
+    private isPressureExceeded;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
