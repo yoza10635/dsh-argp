@@ -2,6 +2,14 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+> **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
+
+## [1.3.3] - 2026-09-21（citesObligation autoLlm 时序修复）
+
+### Fixed
+
+- **auto 兜底（autoLlm）下回复级 cites 协议未被屏蔽**：`citesObligation` 的 auto 口径在**构造期**读 `declarer.armed` 定死，而 auto 兜底的 declarer 构造期未武装（路由要等真会话 `agent/status` → `rememberRoute` 才解析）⇒ `citesObligation` 恒 `true` ⇒ `argp-cites` system section 恒注册全文 ⇒ 模型持续输出 `{"cites":...}` 尾（dsh 宿主无 assistantDisplay 服务，UI 显示过滤器不生效，泄漏到用户可见回复）。修复：auto 口径（config 未显式给 `citesObligation`）下 section **恒注册**，`text` 回调在 `declarer.armed` 翻转后**动态返回 `''`**——`renderPrompt` 过滤空 section ⇒ system 块不再含协议，渲染结果与旧"不注册"逐字一致。`armed` 单调递增（`autoLlm` 只赋值不清除）⇒ 至多翻转一次，代价 = 一次 system 块 KV 失效（通常发生在首个请求之前，可忽略）；始终未武装时保持全文（两种边来源不能同时归零）。显式 `true`/`false` 覆盖保持静态语义不变（A₁-A₃ 实验臂不受影响）。新增回归测试（autoLlm 会话中期武装 → section text 翻转 `''`，走真实 `agent/status` 事件路径），全量回归 **258/258**。
+
 ## [1.3.1] - 2026-09-21（preset-cleaner isolate 残留修复）
 
 ### Fixed

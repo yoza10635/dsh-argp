@@ -338,19 +338,60 @@ test('citesObligation auto: default mount keeps argp-cites (no declarer)', async
   }
 })
 
-test('citesObligation auto: armed declarer drops argp-cites, keeps contract+catalog', async () => {
+test('citesObligation auto: armed declarer blanks argp-cites (registered but empty), keeps contract+catalog', async () => {
   const { ctx, engine } = await makeEngine({
     peratom: { compressor: false, zoom: false, declarer: { endpoint: 'http://declarer.test/v1', apiKey: 'test-key' } },
   })
   try {
     assert.equal(engine.peratomStack?.declarer?.armed, true)
     assert.equal(engine.citesObligation, false)
-    const names = await sectionNames(ctx)
-    assert.ok(!names.includes('argp-cites'), 'argp-cites should be absent under armed declarer')
+    // 2026-09-21 时序修复后：auto 口径 section 恒注册，武装时 text 动态返回 ''
+    // （renderPrompt 过滤空 section ⇒ system 块不再含协议，渲染结果与旧"不注册"一致）。
+    const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
+    const assembly = await sp.assemble()
+    const cites = assembly.sections.find(s => s.name === 'argp-cites')
+    assert.ok(cites !== undefined, 'auto mode keeps argp-cites registered (dynamic blanking)')
+    assert.equal(cites?.text, '', 'armed declarer ⇒ section text blanked')
+    const names = assembly.sections.map(s => s.name)
     assert.ok(names.includes('argp-contract'))
     assert.ok(names.includes('argp-catalog'))
   } finally {
     await ctx.fiber.dispose()
+  }
+})
+
+test('citesObligation auto: autoLlm mid-session arming blanks argp-cites (timing fix)', async () => {
+  // 回归：auto 兜底（declarer: {}）构造期未武装 → 旧实现在构造期定死 citesObligation=true
+  // 并静态注册全文；会话中期 rememberRoute 武装后 section 仍恒含协议 ⇒ 模型持续输出
+  // cites 尾（UI 泄漏）。修复后 text 回调随 armed 翻转返回 ''。
+  const savedKey = process.env['DEEPSEEK_API_KEY']
+  const savedSource = process.env['ARGP_MODEL_SOURCE']
+  delete process.env['DEEPSEEK_API_KEY']
+  delete process.env['ARGP_MODEL_SOURCE']
+  try {
+    const { ctx, engine } = await makeEngine({ peratom: { compressor: false, zoom: false, declarer: {} } })
+    try {
+      const declarer = engine.peratomStack?.declarer
+      assert.ok(declarer, 'peratom declarer must be mounted')
+      assert.equal(declarer.armed, false, '构造期无路由 → 未武装')
+      const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
+      // 武装前：全文协议（两种边来源不能同时归零）
+      let cites = (await sp.assemble()).sections.find(s => s.name === 'argp-cites')
+      assert.ok(cites?.text?.includes('Citation declaration (ARGP)'), 'unarmed ⇒ full protocol text')
+      // 模拟真会话：宿主 llm 服务已由 testkit 挂载（LlmRuntime，ctx.get('llm') 可解析）
+      // + agent 路由经 agent/status 到位 → autoLlm 武装（rememberRoute → autoDshLlmSpec）。
+      ;(ctx as unknown as { emit: (n: string, ...a: unknown[]) => void })
+        .emit('agent/status', { agent: { options: { provider: 'localhost', model: 'Qwen3.8-27B' } }, status: 'running' })
+      assert.equal(declarer.armed, true, '路由到位 → autoLlm 武装')
+      // 武装后：text 回调返回 ''（renderPrompt 过滤 ⇒ system 块不再含协议）
+      cites = (await sp.assemble()).sections.find(s => s.name === 'argp-cites')
+      assert.equal(cites?.text, '', 'armed mid-session ⇒ section text blanked')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  } finally {
+    if (savedKey !== undefined) process.env['DEEPSEEK_API_KEY'] = savedKey
+    if (savedSource !== undefined) process.env['ARGP_MODEL_SOURCE'] = savedSource
   }
 })
 

@@ -315,10 +315,14 @@ export interface ArgpGraphConfig {
    * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
    * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
    * UI 显示泄漏，见 webui-liaison 台账发现三证据链，已迁出公开仓库）。
-   * 显式 true/false 覆盖 auto：边价值实验 A₁-A₃ 臂依赖回复级 cites 时强制开；
-   * 双保险关闭时强制关。declarer 挂载但未武装（无 LLM 后端）时 auto 保持开启
-   * （两种边来源不能同时归零）。buildGraph 的 cites 解析不受影响——协议关闭后
-   * 模型偶发残留的 cites 尾仍被剥离并作为加菜边消费，引擎侧 flush 剥离恒开。
+   * 2026-09-21 时序修复：auto 兜底（autoLlm）的 declarer 构造期未武装、会话中期
+   * 才经 agent/status 武装——auto 口径下 section 恒注册，text 回调在 armed 翻转后
+   * 动态返回 ''（renderPrompt 过滤空 section ⇒ system 块不再含协议）；armed 单调
+   * 递增 ⇒ 至多翻转一次。显式 true/false 覆盖 auto（静态语义不变）：边价值实验
+   * A₁-A₃ 臂依赖回复级 cites 时强制开；双保险关闭时强制关。declarer 挂载但始终
+   * 未武装（无 LLM 后端）时 auto 保持全文（两种边来源不能同时归零）。buildGraph
+   * 的 cites 解析不受影响——协议关闭后模型偶发残留的 cites 尾仍被剥离并作为加菜
+   * 边消费，引擎侧 flush 剥离恒开。
    */
   citesObligation?: boolean
   /**
@@ -547,6 +551,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   lastInferredEdges: SemanticEdge[] = []
   /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
   readonly citesObligation: boolean
+  /** citesObligation 是否 auto 口径（config 未显式给值）。auto 下 section 恒注册、
+   *  text 回调随 declarer.armed 动态返回 ''（autoLlm 会话中期武装的时序修复，2026-09-21）。 */
+  readonly citesObligationAuto: boolean
   /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
   readonly peratomStack: {
     compressor: PeratomCompressor | null
@@ -728,6 +735,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 回复级 cites 义务 auto 口径：declarer 已武装（有 LLM 后端）→ 结构化旁路建边
     // 接管，回复协议关闭；显式 true/false 覆盖。declarer 挂载但未武装时保持开启，
     // 避免"两种边来源同时归零"（见 citesObligation 配置注释）。
+    // 2026-09-21 时序修复：autoLlm 兜底的 declarer 构造期未武装（路由要等真会话的
+    // agent/status 钩子才解析），构造期布尔无法覆盖它——auto 口径下 section 恒注册，
+    // 由 text 回调在 armed 翻转后动态返回 ''（见注册处）；显式覆盖保持静态语义。
+    this.citesObligationAuto = config.citesObligation === undefined
     this.citesObligation = config.citesObligation ?? !(this.peratomStack?.declarer?.armed === true)
 
     const recallTool = defineTool({
@@ -929,6 +940,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 挂载受 citesObligation 门控（auto：declarer 已武装即不注册——边声明走结构化旁路，
     // 回复不再携带 cites 尾，源头消灭 UI 显示泄漏）。协议关闭不影响引擎侧剥离与
     // buildGraph 解析：模型偶发残留的 cites 尾仍被剥离并作为加菜边消费。
+    // 2026-09-21 时序修复（autoLlm）：auto 兜底的 declarer 构造期未武装、会话中期
+    // 才经 agent/status → rememberRoute 武装，构造期布尔无法预判——auto 口径下
+    // section 恒注册，text 回调在 armed 翻转后动态返回 ''；renderPrompt 过滤空
+    // section ⇒ system 块不再含协议。armed 单调递增（autoLlm 只赋值不清除）⇒
+    // 至多翻转一次，代价 = 一次 system 块 KV 失效（通常发生在首个请求之前，可忽略）。
+    // 始终未武装时保持全文（两种边来源不能同时归零）。显式覆盖保持静态语义。
     // V4 措辞（实测，spike 脚本已精简移除）：明示"读了工具结果并作答 = 必须引用该结果"，
     // 比旧版"if used ... append"的被动式显著提升 t-long 类任务下的声明率。
     // V5 措辞（2026-08 修 UI 残留）：空引用时"完全不输出 block"而非写 {"cites":[]}。
@@ -936,19 +953,22 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 见 core session surface.ts "replacement copies stay model-only"），surface
     // 剥离永远改不到 UI 显示；空块对引用图零信息（无入边），只能在源头不产出。
     // 引擎侧对"无块"本就是常态（§4.7），citeStats 对空/无块均不计 declared。
-    if (this.citesObligation) {
+    if (this.citesObligation || this.citesObligationAuto) {
       ctx.systemPrompt.section({
         name: 'argp-cites',
         order: 151,
-        text: () => 'Citation declaration (ARGP):\n'
-          + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
-          + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
-          + '{"cites":[...]}\n'
-          + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
-          + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
-          + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
-          + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
-          + '- The block goes in the final reply body, never in reasoning. Output nothing after it.',
+        text: () => {
+          if (this.citesObligationAuto && this.peratomStack?.declarer?.armed === true) return ''
+          return 'Citation declaration (ARGP):\n'
+            + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
+            + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
+            + '{"cites":[...]}\n'
+            + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
+            + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
+            + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
+            + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
+            + '- The block goes in the final reply body, never in reasoning. Output nothing after it.'
+        },
       })
     }
 

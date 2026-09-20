@@ -238,10 +238,14 @@ export interface ArgpGraphConfig {
      * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
      * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
      * UI 显示泄漏，见 webui-liaison 台账发现三证据链，已迁出公开仓库）。
-     * 显式 true/false 覆盖 auto：边价值实验 A₁-A₃ 臂依赖回复级 cites 时强制开；
-     * 双保险关闭时强制关。declarer 挂载但未武装（无 LLM 后端）时 auto 保持开启
-     * （两种边来源不能同时归零）。buildGraph 的 cites 解析不受影响——协议关闭后
-     * 模型偶发残留的 cites 尾仍被剥离并作为加菜边消费，引擎侧 flush 剥离恒开。
+     * 2026-09-21 时序修复：auto 兜底（autoLlm）的 declarer 构造期未武装、会话中期
+     * 才经 agent/status 武装——auto 口径下 section 恒注册，text 回调在 armed 翻转后
+     * 动态返回 ''（renderPrompt 过滤空 section ⇒ system 块不再含协议）；armed 单调
+     * 递增 ⇒ 至多翻转一次。显式 true/false 覆盖 auto（静态语义不变）：边价值实验
+     * A₁-A₃ 臂依赖回复级 cites 时强制开；双保险关闭时强制关。declarer 挂载但始终
+     * 未武装（无 LLM 后端）时 auto 保持全文（两种边来源不能同时归零）。buildGraph
+     * 的 cites 解析不受影响——协议关闭后模型偶发残留的 cites 尾仍被剥离并作为加菜
+     * 边消费，引擎侧 flush 剥离恒开。
      */
     citesObligation?: boolean;
     /**
@@ -429,6 +433,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     lastInferredEdges: SemanticEdge[];
     /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
     readonly citesObligation: boolean;
+    /** citesObligation 是否 auto 口径（config 未显式给值）。auto 下 section 恒注册、
+     *  text 回调随 declarer.armed 动态返回 ''（autoLlm 会话中期武装的时序修复，2026-09-21）。 */
+    readonly citesObligationAuto: boolean;
     /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
     readonly peratomStack: {
         compressor: PeratomCompressor | null;
