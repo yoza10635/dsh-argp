@@ -22,3 +22,6 @@ run-baseline.bat
 
 # 发布物料草稿（内部）
 release-post-draft.md
+
+# npm pack 产物（本地安装物料，不进仓库）
+*.tgz

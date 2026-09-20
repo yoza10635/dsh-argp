@@ -2,10 +2,6 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
-## [1.3.2] - 2026-09-21（= v1.3.1 内容；npm 版本号重发）
-
-内容与 v1.3.1 完全一致（preset-cleaner isolate 残留修复，见下节）。npm 机制：版本号一旦发布过即永久不可再发同号（unpublish 只下架、不释放版本号）——v1.3.1 在发布流程中曾短暂上架后被 unpublish，`1.3.1` 号在 npm 上已烧掉（E403），故 bump 至 1.3.2 重发。GitHub 侧 v1.3.1 release 保留（tag 锚定 commit `b5716cf`，其 package.json 即 1.3.1）；**npm 安装请用 `dsh-argp@1.3.2`**。
-
 ## [1.3.1] - 2026-09-21（preset-cleaner isolate 残留修复）
 
 ### Fixed
