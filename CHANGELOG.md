@@ -2,6 +2,12 @@
 
 本项目使用 conventional commits 记录变更，版本由 `package.json` + git tag 锚定。双分发渠道：**GitHub Release**（tag 驱动）+ **npm registry**（`dsh-argp`，账号 `yoza10635`）。
 
+## [1.3.1] - 2026-09-21（preset-cleaner isolate 残留修复）
+
+### Fixed
+
+- **preset-cleaner 净化副本残留 `isolate` 块导致 preset 挂载失败（建不了新会话）**：从 shipped preset 生成的净化副本 `<id>-argp` 只摘除了 `compaction-basic`/`tool-result-pruner` 行，却保留了 `compaction` 组上的 `isolate: { compaction: true, ... }`。cordis `isolate(name)` 的语义是被隔离的服务按**新 symbol** 解析、**不回落**宿主平面的 `compaction`（ArgpGraphEngine）——提供者被摘除后该隔离 realm 无提供者，`command-compact`（`inject=['commands','compaction']`）永久 "waiting for compaction" → 整个 preset 挂载失败（`agent-preset/invalid: 1 row(s) did not activate`），`agent-presets.default` 指向该 preset 时**所有新会话无法创建**。修复：新增 `stripIsolateBlock`，摘除 stock 行后同步摘掉对应组的 `isolate` 块，`command-compact` 的 `compaction` 恢复沿 scope 链解析到宿主平面的 ArgpGraphEngine，`/compact` 仍指向 ARGP 确定性 compactNow（零额外接线）。模块 doc-comment 同步勘误（旧注释"沿 scope 链向上解析到宿主平面"的假设在 isolate 存在时不成立）。preset-cleaner 测试扩至 11 项（含 `stripIsolateBlock` 4 例：命中剥离/无 isolate 不动/多 isolate 键只摘目标组/组内多行不受影响），全量回归 **257/257**。
+
 ## [1.3.0] - 2026-09-20（P6 轮内压力压缩「方案 B」+ Stage-1 生产路径修复）
 
 ### Fixed

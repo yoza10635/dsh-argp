@@ -13,7 +13,7 @@ import { copyFile, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promise
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { cleanShippedPresets, dropEmptyGroups, stripPresetRows, type PresetRosterLike, type PresetRow } from '../src/preset-cleaner.js'
+import { cleanShippedPresets, dropEmptyGroups, stripIsolateBlock, stripPresetRows, type PresetRosterLike, type PresetRow } from '../src/preset-cleaner.js'
 
 const FIXTURE = [
   '# The `standard` agent preset: the full coding agent.',
@@ -122,6 +122,65 @@ test('dropEmptyGroups removes the compaction group once its config is emptied', 
   assert.ok(partial.includes('command-compact'))
 })
 
+test('stripIsolateBlock removes the isolate block from the target group only', () => {
+  const { text, removed } = stripIsolateBlock(FIXTURE, 'compaction')
+  assert.ok(removed)
+  assert.ok(!text.includes('isolate:'))
+  assert.ok(!text.includes('toolResultPruner: true'))
+  // 组结构保留（id/name/group/config 都在）
+  assert.ok(text.includes('- id: compaction\n  name: cordis:group\n  group: true'))
+  assert.ok(text.includes('config:'))
+  assert.ok(text.includes('command-compact'))
+  // 其他组不受影响
+  assert.ok(text.includes('- id: delegation'))
+  assert.ok(text.includes('- id: persona'))
+})
+
+test('stripIsolateBlock is a no-op when the group has no isolate block', () => {
+  const noIsolate = FIXTURE.replace(/  isolate:\n    compaction: true\n    toolResultPruner: true\n/, '')
+  const { text, removed } = stripIsolateBlock(noIsolate, 'compaction')
+  assert.ok(!removed)
+  assert.equal(text, noIsolate)
+})
+
+test('stripIsolateBlock is idempotent', () => {
+  const once = stripIsolateBlock(FIXTURE, 'compaction')
+  const twice = stripIsolateBlock(once.text, 'compaction')
+  assert.equal(twice.text, once.text)
+  assert.ok(!twice.removed)
+})
+
+test('stripIsolateBlock does not touch other groups\' isolate blocks', () => {
+  // 构造一个含两个 isolate 组的 fixture：compaction + planning
+  const multi = [
+    '- id: compaction',
+    '  name: cordis:group',
+    '  group: true',
+    '  isolate:',
+    '    compaction: true',
+    '  config:',
+    '    - id: command-compact',
+    "      name: '@deepseek-ai/dsh-command-compact'",
+    '',
+    '- id: planning',
+    '  name: cordis:group',
+    '  group: true',
+    '  isolate:',
+    '    planMode: true',
+    '  config:',
+    '    - id: plan-mode',
+    "      name: '@deepseek-ai/dsh-plan-mode'",
+    '',
+  ].join('\n')
+  const { text, removed } = stripIsolateBlock(multi, 'compaction')
+  assert.ok(removed)
+  // compaction 的 isolate 被摘除
+  assert.ok(!text.includes('compaction: true'))
+  // planning 的 isolate 保留
+  assert.ok(text.includes('planMode: true'))
+  assert.ok(text.includes('- id: planning'))
+})
+
 test('cleanShippedPresets copies + strips shipped presets and leaves user presets alone', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'argp-preset-'))
   const standardFile = join(dir, 'standard.yml')
@@ -139,10 +198,12 @@ test('cleanShippedPresets copies + strips shipped presets and leaves user preset
   const std = bySource.get('standard')
   assert.equal(std?.status, 'created')
   assert.equal(std?.target, 'standard-argp')
-  assert.deepEqual(std?.removed, ['compaction-basic', 'tool-result-pruner'])
+  assert.deepEqual(std?.removed, ['compaction-basic', 'tool-result-pruner', 'isolate:compaction'])
   const cleanedText = await roster.read('standard-argp')
   assert.ok(!cleanedText.includes('dsh-compaction-basic'))
   assert.ok(cleanedText.includes('command-compact'))
+  // isolate 块被摘除（command-compact 的 inject 将回落到宿主平面）
+  assert.ok(!cleanedText.includes('isolate:'))
   // 源文件逐字未动
   assert.equal(await readFile(standardFile, 'utf8'), FIXTURE)
   // 净化副本落盘
