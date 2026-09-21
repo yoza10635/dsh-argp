@@ -9,9 +9,8 @@
  *  - cites 义务开启：正为回答母表待决项（本地新 SOTA 模型的 cites 服从率）
  *  - 触发/目标同一可见字符估算基准（不变式 2）；reasoning 块不计入预算（spike 4a 判决 C）
  */
-import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
-import { CompactionEngine, CompactionId, compactCheckpointSource, toolPairingBalancedAfter, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
+import { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import type {
   CompactionAgentContext,
   CompactionResult,
@@ -19,143 +18,67 @@ import type {
   ManualCompactAgentContext,
 } from '@deepseek-ai/dsh-compaction'
 import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { asSeq, asSeqs, detectOpenTurn, eventText, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader, turnOf } from './log-access.js'
+import { asSeq, detectOpenTurn, eventText, sessionEvents, turnOf } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 // eventText 已迁 log-access（P5 Wave 3 第 1 步）；此处转发以维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
 // 通用类型收敛到叶子 argp-types（P5 Wave 3 第 1 步）：本地使用 + 转发维持公共 API。
 import type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
-import { EDGE_WEIGHTS, LEVEL_ORDER } from './argp-types.js'
+import { EDGE_WEIGHTS } from './argp-types.js'
 export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
 export { EDGE_WEIGHTS } from './argp-types.js'
-import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
-import type { ParsedCite, CiteLevel } from './cites-strip.js'
-import {
-  DEFAULT_CHARS_PER_TOKEN,
-  DEFAULT_MAX_PASSES,
-  DEFAULT_RETAIN_RATIO,
-  DEFAULT_RETAIN_TOKENS,
-  DEFAULT_WINDOW_RATIO,
-  DEFAULT_WINDOW_TOKENS,
-} from './constants.js'
-import { DEFAULT_TELEMETRY_CAP, pushBounded } from './telemetry.js'
+import { DEFAULT_WINDOW_TOKENS } from './constants.js'
+import { pushBounded } from './telemetry.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
-import { deriveInferredEdges, type InferredEdgeOptions } from './token-ontology.js'
+import type { InferredEdgeOptions } from './token-ontology.js'
 import { cleanShippedPresets, type PresetCleanOptions, type PresetRosterLike } from './preset-cleaner.js'
+// 建图侧模块（P5 Wave 3 第 4 步）：atomize/buildGraph/findVersionDuplicates/extractCites/
+// classifyUserMessage/looksAskText + 纯辅助。本地使用 + 转发维持既有公共 API。
+import { looksAskText, classifyUserMessage, extractCites, atomize, buildGraph, findVersionDuplicates, type CiteStats, type InferredStats, type GraphBuildHost } from './graph-build.js'
+export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js'
+export type { CiteStats, InferredStats } from './graph-build.js'
+// 预算/度量模块（P5 Wave 3 第 4 步）：scaleBudgets/resolveScaledBudgets/measureTokens/
+// acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
+import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
+export { scaleBudgets } from './budget.js'
+// 召回模块（P5 Wave 3 第 4 步）：shadowedSeqsOf/catalogText/recallQuery/recall/
+// recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
+import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
+// 剪枝选择模块（P5 Wave 3 第 4 步）：isAtomCandidate/isGroupCandidate/sortKey/
+// mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
+import { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones, selectClosureToMerge, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
+export { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones } from './prune-selection.js'
+export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
+// 剪枝事务模块（P5 Wave 3 第 4 步）：pruneIntervals/consolidateTombstones/
+// compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
+// 本地使用 + 转发维持公共 API。
+import { pruneIntervals, consolidateTombstones, compactRegions, selectManualRanges, compactRegion, isMergeableTombstone, type GraphPruneRecord, type PruneTxHost } from './prune-tx.js'
+export { isMergeableTombstone } from './prune-tx.js'
+export type { GraphPruneRecord } from './prune-tx.js'
+import { registerRecallTools, type RecallToolsHost } from './recall-tools.js'
+// 会话生命周期 + 构造期装配模块（P5 Wave 3 第 4 步）：normalizeConfig/registerSettings/
+// mountPeratomStack + bindSession/rebuildLedgerFromLog/rearmReactive/compactNow。
+// 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）随 registerSettings 迁入，此处转发维持公共 API。
+import { normalizeConfig, registerSettings, mountPeratomStack, bindSession, rebuildLedgerFromLog, rearmReactive, compactNow, ARG_SETTINGS_KEY, ArgpUserSettingsSchema, type LifecycleHost } from './session-lifecycle.js'
+export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js'
 export type { PresetCleanOptions, PresetCleanReport, PresetRow } from './preset-cleaner.js'
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js'
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js'
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
-import { ARG_NS, isArgpUserInfo } from './peratom/types.js'
-import z from '@deepseek-ai/schemastery'
-// NOTE: intentionally NO import of `installSettingsSection` / `settingsNamespace`
-// from `@deepseek-ai/dsh-settings`: dsh 0.1.2-alpha.1 deleted both. A missing
-// NAMED EXPORT is not a missing service — an ESM named import that resolves to
-// nothing is a SyntaxError at module evaluation, which cordis reports as a
-// failed entry and the host exits 1 (installing this plugin stops the host
-// booting at all). Verified against the reference implementation
-// (dshmarket/src/settings.ts) and confirmed by live probe on this host:
-// `@deepseek-ai/dsh-settings` resolves but exports only
-// SettingsConflictError / SettingsProvider / default / redactSecrets.
-// The `settings` SERVICE itself never changed, so we call
-// `settings.register(ns, schema, { base })` through `ctx.inject` — the
-// graceful-degradation boundary — and validate the namespace locally.
+// 设置页常量与 schema（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
+// 已迁 session-lifecycle（P5 Wave 3 第 4 步，随 registerSettings 一并迁出；dsh-settings 禁 import 的 NOTE 亦随之迁移）；
+// 经上方 import 本地可用、经 re-export 维持公共 API。
 
-/** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
-export const ARG_SETTINGS_KEY = 'dsh-argp'
+// scaleBudgets 已迁 budget（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
-/** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
-export const ArgpUserSettingsSchema = z.object({
-  windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO),
-  retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO),
-  maxPasses: z.number().step(1).min(1).default(DEFAULT_MAX_PASSES),
-  recencyGuard: z.number().step(1).min(0).default(4),
-  turnGuard: z.number().step(1).min(0).default(1),
-  minSpanChars: z.number().step(1).min(0).default(0),
-  enableSummarize: z.boolean().default(false),
-  sortMode: z.string().default('density'),
-  charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN),
-}) as z<ArgpUserSettings>
+// looksAskText / classifyUserMessage 已迁 graph-build（P5 Wave 3 第 4 步）；
+// 经上方 import 本地可用、经 re-export 维持公共 API。
 
-/**
- * The namespace pattern `settingsNamespace` enforced before it was removed.
- * Kept as a literal check rather than an import (see the note above).
- */
-const NAMESPACE_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/
-
-/** Namespace the card on the browser side keys itself to. */
-const ARG_SETTINGS_NS: string = ARG_SETTINGS_KEY
-
-if (!NAMESPACE_PATTERN.test(ARG_SETTINGS_NS)) {
-  throw new TypeError(`settings namespace "${ARG_SETTINGS_NS}" must match ${String(NAMESPACE_PATTERN)}`)
-}
-
-/** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
-export function scaleBudgets(
-  contextWindow: number | undefined,
-  opts: { windowRatio?: number; retainRatio?: number; explicitWindow?: number; explicitRetain?: number; fallbackWindow?: number; fallbackRetain?: number },
-): { windowTokens: number; retainTokens: number } {
-  const windowRatio = opts.windowRatio ?? DEFAULT_WINDOW_RATIO
-  const retainRatio = opts.retainRatio ?? DEFAULT_RETAIN_RATIO
-  if (opts.explicitWindow !== undefined && opts.explicitRetain !== undefined) {
-    return { windowTokens: opts.explicitWindow, retainTokens: opts.explicitRetain }
-  }
-  if (contextWindow === undefined || contextWindow <= 0) {
-    return { windowTokens: opts.fallbackWindow ?? DEFAULT_WINDOW_TOKENS, retainTokens: opts.fallbackRetain ?? DEFAULT_RETAIN_TOKENS }
-  }
-  const windowTokens = opts.explicitWindow ?? Math.floor(contextWindow * windowRatio)
-  const retainTokens = opts.explicitRetain ?? Math.floor(windowTokens * retainRatio)
-  return { windowTokens, retainTokens }
-}
-
-/**
- * A8（问题 10 修订）：ask 检测中英双语纯函数。
- * 英文：'?' / ask / what；中文：？/ 吗 / 呢 / 什么 / 怎么 / 如何 / 能否 / 能不能。
- * /帮我/ 由子串收窄为句首（^请|^帮我|^能不能|^能否），避免 "顺便帮我带个话" 之类
- * 非问句/非请求主语误命中；疑问词 什么/怎么/如何 仍保留子串（问句核心成分，方向保守=少剪）。
- * 导出供测试直接锁定收窄行为。
- */
-export function looksAskText(text: string): boolean {
-  const t = text.trim()
-  return t.endsWith('?') || /\bask\b/i.test(t) || /\bwhat\b/i.test(t)
-    || t.endsWith('？') || /吗[？?。]?$/.test(t) || /呢[？?。]?$/.test(t)
-    || /什么|怎么|如何|能否|能不能/.test(t)
-    || /^(请|帮我|能不能|能否)/.test(t)
-}
-
-/**
- * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
- *
- * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
- * 插件 append，但必须按 U 待遇参与剪枝候选），再落 `source.kind === 'plugin'` → X
- * （墓碑/checkpoint）判定。若先判 plugin-source，U-info 会被分类成 X 而**全局不可剪**，
- * P4 的候选放行将永远失效。
- *
- * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
- * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
- */
-export function classifyUserMessage(data: unknown): 'U' | 'X' {
-  if (isArgpUserInfo(data)) return 'U'
-  return (data as { source?: { kind?: string } } | undefined)?.source?.kind === 'plugin' ? 'X' : 'U'
-}
-
-/**
- * tombstone 可合并判据（v1.2.x §11.8① 修复）。X 原子中仅「本引擎剪枝墓碑」可安全合并：
- * 文本以 `[elided` 开头、含 pruned by ARGP 与 recall_pruned 取回提示（覆盖默认区间
- * 墓碑与 closure 墓碑两种形态；tool 占位墓碑 `[elided: ...` 缺 pruned by ARGP → 不合并，
- * 且 consolidateTombstoneRuns 只认 user/message 事件，双保险防孤儿 tool_calls）。
- * 其余 X（宿主 system-reminder、官方摘要 checkpoint、注入型 checkpoint）不可动。
- * 导出供测试锁定行为。
- */
-export function isMergeableTombstone(text: string): boolean {
-  const t = text.trimStart()
-  return t.startsWith('[elided') && t.includes('pruned by ARGP') && t.includes('recall_pruned')
-}
+// isMergeableTombstone 已迁 prune-tx（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 export interface ArgpGraphConfig {
   /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
@@ -351,23 +274,7 @@ export interface ArgpGraphConfig {
   onPrePressureCompress?: (session: Session) => Promise<void>
 }
 
-export interface GraphPruneRecord {
-  at: string
-  compactionId: string
-  /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
-  sourceCommandId?: string
-  intervals: { start: number; end: number; tombstoneSeq: number }[]
-  startEventSeq: number
-  summaryEventSeq: number
-  endEventSeq: number
-  shadowedSeqs: number[]
-  prunedAtoms: { id: number; type: AtomType; seq: number }[]
-  semanticEdges: number
-  candidates: number
-  charsBefore: number
-  charsAfter: number
-  forced: boolean
-}
+// GraphPruneRecord 已迁 prune-tx（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
@@ -414,292 +321,33 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
   })
 }
 
-/**
- * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
- * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
- * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
- */
-export function extractCites(text: string): { body: string; cites: ParsedCite[]; attempted: boolean; parseFailed: boolean } {
-  const matched = matchCitesTail(text)
-  const attempted = text.includes('"cites"')
-  if (matched === null) {
-    return { body: text, cites: [], attempted, parseFailed: attempted }
-  }
-  const cites = parseCitesBlock(matched.raw)
-  if (cites === null) {
-    return { body: text, cites: [], attempted: true, parseFailed: true } // JSON 合法但形状不对 → 解析失败，保守保护
-  }
-  return { body: text.slice(0, text.length - matched.span).trimEnd(), cites, attempted: true, parseFailed: false }
-}
-/** cites 服从率度量台账（C7-cites 判决用）。 */
-export interface CiteStats { aAtoms: number; declared: number; resolved: number; ambiguous: number; failed: number }
-/** 推断边统计（v1.2.0；最近一次 buildGraph 口径，每次建图重置；skippedDup = 与既有声明边同 (from,to) 被去重）。 */
-export interface InferredStats { candidates: number; accepted: number; skippedDup: number }
+// extractCites / CiteStats / InferredStats 已迁 graph-build（P5 Wave 3 第 4 步）；
+// 经上方 import 本地可用、经 re-export 维持公共 API。
 
-/**
- * P5 结构重构 Wave 3 第 2 步（C 报告 S2）：compactIfNeeded 拆分出的模块级纯函数。
- *
- * 背景：compactIfNeeded 原约 365 行单函数，内含 3 个闭包（isAtomCandidate /
- * isGroupCandidate / sortKey，闭包捕获 this 与局部 state）+ ~100 行贪心 for-pass
- * 循环 + ~80 行区间归并/tombstone 生成，单函数不可测不可读。现将「无 this 副作用」
- * 的判定/排序/归并/墓碑段提升为模块级纯函数：原来闭包捕获的 this 字段与局部量
- * 打包成显式 state 参数（PruneState）传入，函数体逻辑逐字保留（this.x → state.x）。
- * 贪心 for-pass 循环与 this 交互过深（selectClosureToMerge 会 this.nextClosureId++、
- * 写 this.closurePrunes、调 this.summarizeCriticalChain、读 this.degradationStrategy/
- * maxPasses/enableSummarize、process.env 调试副作用），抽出会改变控制流/副作用顺序，
- * 故保留在方法内（见 compactIfNeeded）。
- *
- * 导出（export function）供未来独立单测；**不**加进 src/index.ts 公共 API。
- */
-
-/** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
-export interface PruneInterval {
-  seqs: number[]
-  chars: number
-  atoms: Atom[]
-  hasSoloR: boolean
-}
-
-/** 区间 tombstone 规格：user 文本墓碑 或 tool 占位墓碑（保留 callId 配对 issuer A 的 tool_calls）。 */
-export type PruneTombstone = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string }
-
-/**
- * compactIfNeeded 拆出纯函数共享的显式 state：原 3 个闭包捕获的 this 字段与局部量。
- * - turnGuard / sortMode / charsPerToken：原闭包读 this.<getter>；此处快照为值（方法执行期间
- *   guardOverride/argpSettings 稳定，快照等价）。
- * - curInDegree / curInDegreeDecl：每 pass 重推（链式解锁），方法内每 pass 更新本字段，
- *   纯函数按调用时读取当前 pass 值（与原闭包捕获 let 绑定的语义一致）。
- * - chainLen：findVersionDuplicates 产物；仅 sortKey 使用，且 sortKey 只在 pass 循环内调用
- *   （届时已回填），构造期占位空 Map 不会被读到。
- */
-export interface PruneState {
-  turnGuard: number
-  askCoverage: Map<number, number>
-  position: Map<number, number>
-  recencyCut: number
-  latestTurn: number
-  edges: SemanticEdge[]
-  atoms: Atom[]
-  curInDegree: Map<number, number>
-  curInDegreeDecl: Map<number, number>
-  deterministicEdges: DeterministicEdge[]
-  touchesSemantic: Set<number>
-  eff: Map<number, number>
-  sortMode: 'legacy' | 'density' | 'density-chain'
-  chainLen: Map<number, number>
-  lastRef: Map<number, number>
-  charsPerToken: number
-}
-
-/**
- * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
- * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走
- * recencyGuard/turnGuard/citesFailed/A10 结构保护/入度门槛。
- */
-export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneState): boolean {
-  if (a.type === 'U' && a.sourceSeq === undefined) {
-    // 普通 U（含 task-init dialog）：ask-exempt 路径——须被首个 A 的 supporting
-    // 边覆盖才参剪。dialog 永不剪不变（无覆盖 → 不可剪）。
-    const coverer = state.askCoverage.get(a.id)
-    if (coverer === undefined) return false
-    const pos = state.position.get(a.seq)
-    if (pos === undefined || pos >= state.recencyCut) return false
-    if (a.turn > state.latestTurn - state.turnGuard) return false
-    // 动态复核：所有保留入边都必须来自覆盖者，否则豁免失效
-    const incoming = state.edges.filter(e => e.to === a.id)
-    if (incoming.length === 0 || incoming.some(e => e.from !== coverer)) return false
-    return true
-  }
-  // P4：U-info（a.sourceSeq 有值）按 R 待遇参剪——跳过 ask-exempt（其不是 ask
-  // 文本、永远拿不到覆盖），走下方与 A/R 相同的 recencyGuard/turnGuard/
-  // citesFailed/入度门槛。dialog 不受影响（仍走上方 ask-exempt 分支）。
-  if (a.type !== 'A' && a.type !== 'R' && a.type !== 'U') return false
-  const pos = state.position.get(a.seq)
-  if (pos === undefined || pos >= state.recencyCut) return false
-  if (a.turn > state.latestTurn - state.turnGuard) return false
-  if (a.citesFailed) return false
-  // A10（必补，收窄版）：A 带 R 组但漏 cites 时，该 A 对 R 无语义边 → 闭包守卫（inDegreeByClosure）
-  // 防不住整闭包被剪。但**仅当组内 R 均无来自组外的其他入边**才结构性保护（设计 §4 收窄版 + 问题 1 修订）：
-  //  - A 漏 cites 且 R 无任何外部入边（组内只有 issuer 的确定性配对边）→ 整组失去外部保护，
-  //    A 不可剪（防整闭包被剪；单轮 1U+1A+1R 探针场景即此形态，**应保护**——评审探针的
-  //    “工具 A 永久不可剪”是旧版无脑全保护的结论，收窄后仅漏 cites 且无外部引用的组受保护）
-  //  - R 被组外原子 cites 或引用（语义入度 >0，或来自其他 A 的确定性边）→ R 已被外部保护，A 照常可剪
-  //  - A 有 cites 指向组内 R → 有边，不触发保护
-  // 判定依据：语义边（edges）+ 确定性边（deterministicEdges）均只数「组外来源」——
-  // 组内 issuer 自己的配对边不算“其他入边”，否则“有 R 就保护”退化为无脑全保护（问题 1）。
-  // force_prune（allowInDegree=true）路径同样走此判定——结构性保护优先于强制降级。
-  if (a.type === 'A' && a.toolCallIds.length > 0) {
-    const groupIds = new Set<number>([a.id])
-    const groupRs = state.atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
-    for (const r of groupRs) groupIds.add(r.id)
-    if (groupRs.length > 0) {
-      const aCitesR = state.edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
-      // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
-      const anyRExternalIncoming = groupRs.some(r =>
-        (state.curInDegreeDecl.get(r.id) ?? 0) > 0 || // 语义**声明**入度（cites/inject）——排除 inferred（见上方实验注释）
-        state.deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
-      if (!aCitesR && !anyRExternalIncoming) return false
-    }
-  }
-  if (!allowInDegree && (state.curInDegree.get(a.id) ?? 0) > 0) return false
-  return true
-}
-
-/** 组候选判定（原 isGroupCandidate 闭包）：组内全部原子均候选。 */
-export function isGroupCandidate(g: Atom[], allowInDegree: boolean, state: PruneState): boolean {
-  return g.every(a => isAtomCandidate(a, allowInDegree, state))
-}
-
-/**
- * 排序键（原 sortKey 闭包，§4.5 + spike 18 提案）：默认 legacy = [lvl, eff, lastRef, seq]；
- * density = eff 同档内 token 降序（大 token 先剪）；density-chain = density + 链代表 eff 叠加。
- */
-export function sortKey(a: Atom, state: PruneState): string {
-  const lvl = state.touchesSemantic.has(a.id) ? LEVEL_ORDER.supporting : LEVEL_ORDER.isolated
-  const effV = state.eff.get(a.id) ?? 0
-  if (state.sortMode === 'legacy') {
-    return [lvl, effV, state.lastRef.get(a.id) ?? 0, a.seq].map(n => String(n).padStart(10, '0')).join('|')
-  }
-  const chainBonus = state.sortMode === 'density-chain' ? (state.chainLen.get(a.id) ?? 1) - 1 : 0
-  // density/density-chain：token 降序（负数入键，大 token 数值小排前）
-  const tokNeg = -Math.ceil(a.text.length / state.charsPerToken)
-  return [lvl, effV + chainBonus, tokNeg, state.lastRef.get(a.id) ?? 0, a.seq].map(n => String(n).padStart(10, '0')).join('|')
-}
-
-/**
- * 区间归并（原 compactIfNeeded 内区间归并段，逐字保留）。
- * 按极大连续区间归并 pruned 原子；R 原子（issuer A 未被剪）强制单独成区间（tool 占位墓碑
- * 的 surface replace 必须恰好替换 1 节点）；双向守卫防孤儿 tool 消息；
- * 区间可见量 < minSpanChars 的放回（不剪）。
- * 入参 = pruned 原子集合 + position/issuerByCall 局部量 + minSpanChars（原 this.minSpanChars）；
- * 出参 = 归并后区间 kept + droppedIntervals（放回区间数，原方法内计算但未被读取，保留以逐字对应）。
- */
-export function mergeIntervals(
-  pruned: Map<number, Atom>,
-  position: Map<number, number>,
-  issuerByCall: Map<string, Atom>,
-  minSpanChars: number,
-): { kept: PruneInterval[]; droppedIntervals: number } {
-  const prunedSeqs = [...pruned.values()].map(a => a.seq).sort((x, y) => x - y)
-  const intervals: PruneInterval[] = []
-  for (const seq of prunedSeqs) {
-    const a = [...pruned.values()].find(x => x.seq === seq)
-    if (a === undefined) continue
-    const isSoloR = a.type === 'R' && a.toolCallIds[0] !== undefined
-      && (() => {
-        const issuer = issuerByCall.get(a.toolCallIds[0] as string)
-        return issuer !== undefined && !pruned.has(issuer.id)
-      })()
-    const lastInterval = intervals[intervals.length - 1]
-    const prevPos = lastInterval !== undefined ? position.get(lastInterval.seqs[lastInterval.seqs.length - 1] as number) : undefined
-    const curPos = position.get(seq)
-    if (!isSoloR && lastInterval !== undefined && lastInterval.hasSoloR === false
-      && prevPos !== undefined && curPos !== undefined && curPos === prevPos + 1) {
-      lastInterval.seqs.push(seq)
-      lastInterval.chars += a.text.length
-      lastInterval.atoms.push(a)
-    } else {
-      intervals.push({ seqs: [seq], chars: a.text.length, atoms: [a], hasSoloR: isSoloR })
-    }
-  }
-  const keptRaw = intervals.filter(iv => iv.chars >= minSpanChars)
-  // 2026-08-23 兜底防线：双向守卫后结构上不应再出现「混剪区间含 issuer 存活的 R」，
-  // 但降级路径不能假设不变式处处成立——最后校验一遍，违例则把该 R 原子拆出成独立区间；
-  // 拆后原区间低于微剪枝下限则整段放回（宁可不剪，不破配对）。
-  const kept: typeof keptRaw = []
-  const rescued: typeof keptRaw = []
-  for (const iv of keptRaw) {
-    if (iv.seqs.length <= 1) { kept.push(iv); continue }
-    const rest = { seqs: [] as number[], chars: 0, atoms: [] as Atom[], hasSoloR: false }
-    for (const a of iv.atoms) {
-      const soloHere = a.type === 'R' && a.toolCallIds[0] !== undefined
-        && (() => {
-          const issuer = issuerByCall.get(a.toolCallIds[0] as string)
-          return issuer !== undefined && !pruned.has(issuer.id)
-        })()
-      if (soloHere) rescued.push({ seqs: [a.seq], chars: a.text.length, atoms: [a], hasSoloR: true })
-      else { rest.seqs.push(a.seq); rest.chars += a.text.length; rest.atoms.push(a) }
-    }
-    if (rest.chars >= minSpanChars) kept.push(rest)
-  }
-  kept.push(...rescued)
-  kept.sort((x, y) => (x.seqs[0] as number) - (y.seqs[0] as number))
-  const droppedIntervals = intervals.length - kept.length
-  return { kept, droppedIntervals }
-}
-
-/**
- * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留）。
- * 区间原子全部来自同一闭包 → 闭包 tombstone（带 root/计数，recall 消歧）；
- * 单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的 tool_calls）；
- * 否则默认 user 文本墓碑（forced 时标注）。
- */
-export function buildTombstones(
-  kept: PruneInterval[],
-  closureSeqMeta: Map<number, { closureId: string; rootPreview: string; closureTotal: number }>,
-  issuerByCall: Map<string, Atom>,
-  pruned: Map<number, Atom>,
-  forced: boolean,
-): PruneTombstone[] {
-  return kept.map(iv => {
-    const metas = iv.atoms
-      .map(a => closureSeqMeta.get(a.seq))
-      .filter((m): m is { closureId: string; rootPreview: string; closureTotal: number } => m !== undefined)
-    const first = metas[0]
-    if (first !== undefined && metas.every(m => m.closureId === first.closureId)) {
-      return { type: 'user' as const, text: '[elided closure ' + first.closureId
-        + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-        + ': ' + iv.seqs.length + ' of ' + first.closureTotal + ' surface nodes in this closure'
-        + ' pruned by ARGP closure lifecycle; root=' + first.rootPreview
-        + '; recall_pruned(seq) retrieves original]' }
-    }
-    const r0 = iv.atoms[0]
-    if (iv.atoms.length === 1 && r0.type === 'R' && r0.toolCallIds[0] !== undefined) {
-      const issuer = issuerByCall.get(r0.toolCallIds[0])
-      if (issuer !== undefined && !pruned.has(issuer.id)) {
-        return { type: 'tool', seq: r0.seq, callId: r0.toolCallIds[0] }
-      }
-    }
-    return { type: 'user' as const, text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-      + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-      + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]' }
-  })
-}
-
-/** list_pruned 工具的剪枝节点目录条目。 */
-export interface PrunedNodeInfo {
-  seq: number
-  type: AtomType
-  turn: number
-  firstLine: string
-  citedBySeq: number[]
-  /** 被剪瞬间的有效重要性（recall 价值继承的来源，§3-3）。 */
-  eff: number
-  /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时，指向同一路径（tool name+arguments）下最新存活版本的 seq。
-   *  未参与版本链去重的被剪节点无此字段（undefined）。 */
-  latestOfPath?: number
-}
+// isAtomCandidate / isGroupCandidate / sortKey / mergeIntervals / buildTombstones /
+// PruneInterval / PruneTombstone / PruneState / PrunedNodeInfo 已迁 prune-selection
+// （P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 export class ArgpGraphEngine extends CompactionEngine {
   static inject = ['tools', 'systemPrompt']
 
-  readonly windowTokens: number
-  readonly retainTokens: number
+  readonly windowTokens!: number
+  readonly retainTokens!: number
   /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
-  private readonly explicitWindowTokens: boolean
+  private readonly explicitWindowTokens!: boolean
   /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
-  private readonly explicitRetainTokens: boolean
+  private readonly explicitRetainTokens!: boolean
   /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
   private resolvedWindowTokens = DEFAULT_WINDOW_TOKENS
-  readonly reserveTokens: number
+  readonly reserveTokens!: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
-  readonly turnBasis: 'semantic' | 'all'
+  readonly degradationStrategy!: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  readonly turnBasis!: 'semantic' | 'all'
   /**
    * UI 设置页可调旋钮的实时解析值（Settings → Plugins → Configurable → ARGP）。
    * 构造期为 cordis 配置基线；ctx.inject(['settings']) 注册后随用户写入实时更新。
    */
-  private argpSettings: ArgpUserSettings
+  private argpSettings!: ArgpUserSettings
   /** settings 源 thunk：ctx.inject(['settings']) 注册后置为 scope.get()，否则回退 cordis 基线。 */
   private settingsSource: () => ArgpUserSettings = () => this.argpSettings
   get windowRatio(): number { return this.argpSettings.windowRatio }
@@ -716,24 +364,24 @@ export class ArgpGraphEngine extends CompactionEngine {
   get maxPasses(): number { return this.argpSettings.maxPasses }
   get enableSummarize(): boolean { return this.argpSettings.enableSummarize }
   get sortMode(): 'legacy' | 'density' | 'density-chain' { return this.argpSettings.sortMode }
-  readonly maxOverflowRetries: number
+  readonly maxOverflowRetries!: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
   readonly onOverflowCompress?: (session: Session) => Promise<void>
   /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
   readonly onPrePressureCompress?: (session: Session) => Promise<void>
   /** 闭包静止窗 K（A11 参数化，默认 2）。 */
-  readonly closureWindowK: number
+  readonly closureWindowK!: number
   /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
-  readonly citeMinPrefixLen: number
+  readonly citeMinPrefixLen!: number
   /** 版本链重叠归链阈值 θ（A4，默认 0.8）。 */
-  readonly overlapTheta: number
+  readonly overlapTheta!: number
   /** 版本链重叠归链开关（A4，默认 false）。 */
-  readonly enableOverlapChain: boolean
+  readonly enableOverlapChain!: boolean
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
-  private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
+  private readonly tokenMeter!: TokenMeter | undefined
 
   /** 遥测数组容量上限（P4.5：records/recallCalls/recallQueryCalls/closurePrunes/auditWarnings 有界）。 */
-  readonly telemetryCap: number
+  readonly telemetryCap!: number
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean; state?: NodeStateLabel }[] = []
   readonly recallQueryCalls: { query: string; count: number; hits: number }[] = []
@@ -760,10 +408,10 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 最近一次建图的推断边（诊断/测试断言用；同 lastEdges）。 */
   lastInferredEdges: SemanticEdge[] = []
   /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
-  readonly citesObligation: boolean
+  readonly citesObligation!: boolean
   /** citesObligation 是否 auto 口径（config 未显式给值）。auto 下 section 恒注册、
    *  text 回调随 declarer.armed 动态返回 ''（autoLlm 会话中期武装的时序修复，2026-09-21）。 */
-  readonly citesObligationAuto: boolean
+  readonly citesObligationAuto!: boolean
   /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
   readonly peratomStack: {
     compressor: PeratomCompressor | null
@@ -813,12 +461,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
   private readonly requestMaxTokens = new WeakMap<Session, number>()
   /** 三级触发 ①②③ 开关与旋钮（cordis 配置，不进 UI 设置页）。 */
-  private readonly midTurnPruneEnabled: boolean
-  private readonly midTurnTurnGuard: number
+  private readonly midTurnPruneEnabled!: boolean
+  private readonly midTurnTurnGuard!: number
   /** 兼容别名路径：`midTurnActive: true` ⇒ 轮中用默认 `turnGuard`（1.3.x 语义）。 */
-  private readonly midTurnLegacyGuard: boolean
-  private readonly reactiveRetries: number
-  private readonly continuationNotice: string
+  private readonly midTurnLegacyGuard!: boolean
+  private readonly reactiveRetries!: number
+  private readonly continuationNotice!: string
   /** 本 episode（连续被钳）内已用掉的"剪枝 + 续写"次数；出现一次正常输出即清零。 */
   private readonly reactiveRescues = new WeakMap<Session, number>()
 
@@ -834,310 +482,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 结构化日志门面（2026-08-29 review 轻微项）：替换裸 console 直调，日志进宿主
     // 统一管道（ctx.logger 门面；warn/error/info 三级均被 cordis logger 支持）。
     this.log = ctx.logger
-    // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
-    // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。
-    this.windowTokens = config.windowTokens ?? DEFAULT_WINDOW_TOKENS
-    this.retainTokens = config.retainTokens ?? DEFAULT_RETAIN_TOKENS
-    this.explicitWindowTokens = config.windowTokens !== undefined
-    this.explicitRetainTokens = config.retainTokens !== undefined
-    // 顶层旋钮（windowRatio/retainRatio/recencyGuard/turnGuard/minSpanChars/charsPerToken/
-    // maxPasses/enableSummarize/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
-    // （见下方 settings 注册块），此处不再逐字段赋值；getter 读取 this.argpSettings。
-    this.reserveTokens = config.reserveTokens ?? 0
-    this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
-    this.tokenMeterFn = config.measureTokens
-    // tokenMeter 不作为 required inject（避免测试/最小化组合缺少该服务时构造失败），
-    // 运行时尝试从 ctx 获取；真会话中 dsh-token-meter 已挂载即可使用。
-    try {
-      this.tokenMeter = (ctx as any).tokenMeter ?? (ctx as any).get?.('tokenMeter')
-    } catch {
-      this.tokenMeter = undefined
-    }
-    this.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
-    // 2026-08-23 拍板：默认 density（spike 18 离线 + spike 19 真实验证：同达成度下 recall 2→0、
-    // 保留集单位信息量更高；eff 同档大 token 先剪 = 分数背包贪心）。需回退可显式传 sortMode:'legacy'。
-    this.turnBasis = config.turnBasis ?? 'semantic'
+    // P5 Wave 3 第 4 步：构造期装配拆四函数——session-lifecycle.normalizeConfig（字段归一，纯）/
+    // registerSettings（UI 设置页 ctx.inject）/ mountPeratomStack（peratom 三管线自挂载 + 派生赋值），
+    // 加 recall-tools.registerRecallTools（下方）。副作用次序不变：字段归一 → settings 注册 →
+    // peratom 自挂载 → 召回工具注册。字段赋值与 ctx 副作用无交互（settings 回调不读归一字段），
+    // 两批字段赋值合并为单一 normalizeConfig 置于 registerSettings 之前，可观测行为不变。
+    normalizeConfig(ctx, this as unknown as LifecycleHost, config)
+    registerSettings(ctx, this as unknown as LifecycleHost, config)
+    mountPeratomStack(ctx, this as unknown as LifecycleHost, config)
 
-    // ── UI 设置页注册（Settings → Plugins → Configurable → ARGP）──
-    // 构造期基线 = cordis 配置（windowRatio 等顶层旋钮）；ctx.inject(['settings']) 在 settings 服务
-    // 存在时注册 namespace=`dsh-argp`（base=基线），并把源 thunk 指向 scope.get()；用户经 UI 写入
-    // 后 onChange 实时刷新 this.argpSettings，getter 透出即时生效（无需重启）。settings 服务缺失时
-    // 优雅回退到 cordis 基线（settingsSource 保持 () => this.argpSettings）。
-    const settingsEntry: ArgpUserSettings = {
-      windowRatio: config.windowRatio ?? DEFAULT_WINDOW_RATIO,
-      retainRatio: config.retainRatio ?? DEFAULT_RETAIN_RATIO,
-      maxPasses: config.maxPasses ?? DEFAULT_MAX_PASSES,
-      recencyGuard: config.recencyGuard ?? 4,
-      turnGuard: config.turnGuard ?? 1,
-      minSpanChars: config.minSpanChars ?? 0,
-      enableSummarize: config.enableSummarize ?? false,
-      sortMode: config.sortMode ?? 'density',
-      charsPerToken: config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN,
-    }
-    this.argpSettings = settingsEntry
-    this.settingsSource = () => settingsEntry
-    // `inject` is the graceful-degradation boundary: on a host with no settings
-    // service the callback never runs and the composed entry stands.
-    ctx.inject(['settings'], (scopedCtx: Context) => {
-      const scoped = scopedCtx as unknown as Context & {
-        settings: {
-          register: (
-            ns: string,
-            schema: z<ArgpUserSettings>,
-            options: { base: ArgpUserSettings },
-          ) => { get: () => ArgpUserSettings; watch: (listener: () => void) => void }
-        }
-      }
-      const scope = scoped.settings.register(ARG_SETTINGS_NS, ArgpUserSettingsSchema, { base: settingsEntry })
-      this.settingsSource = () => scope.get()
-      const apply = (): void => { this.argpSettings = this.settingsSource() }
-      // Unload restores the composed entry, so a disabled section cannot leave
-      // the engine reading a value nobody can see or change any more.
-      scoped.effect(() => () => {
-        this.settingsSource = () => settingsEntry
-        apply()
-      })
-      apply()
-      scope.watch(apply)
-    })
-    this.maxOverflowRetries = config.maxOverflowRetries ?? 1
-    // 三级触发（1.5.0）：① 轮初主动 ② 轮中压力剪（step>1，放宽 turnGuard）③ 截断后剪+续写。
-    // 轮中剪默认**开**：超额的来源是上一批 tool result（轮中），只在轮初判定的 L1 看不见它；
-    // 而轮中剪落在那个 pre-step 里，剪完同一步的请求即已瘦身 ⇒ 天然自动继续。
-    // 兼容 1.4.0 的 `midTurnActive`：true = 开+默认守卫（1.3.x 对照），false = 关。
-    this.midTurnPruneEnabled = config.midTurnPrune ?? config.midTurnActive ?? true
-    this.midTurnLegacyGuard = config.midTurnActive === true
-    this.midTurnTurnGuard = Math.max(0, config.midTurnTurnGuard ?? 0)
-    this.reactiveRetries = Math.max(0, config.reactiveRetries ?? 2)
-    this.continuationNotice = config.continuationNotice
-      ?? '[argp] 你上一条输出被宿主的输出预算截断了（不是你的错误）。上下文已压缩，请从截断处接着完成当前任务，不要重述已写内容。'
-    this.onOverflowCompress = config.onOverflowCompress
-    this.onPrePressureCompress = config.onPrePressureCompress
-    this.closureWindowK = config.closureWindowK ?? 2
-    // 默认 4：ASCII 词（如 "the"=3）被拒；CJK 双字（"读书"=2×2=4）放行（问题 5 修订）
-    this.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
-    this.overlapTheta = config.overlapTheta ?? 0.8
-    this.enableOverlapChain = config.enableOverlapChain ?? false
-    this.injectEdges = config.injectEdges
-    this.disableCiteEdges = config.disableCiteEdges ?? false
-    // v1.2.0 组件 A（PROPOSAL-token-ontology）：推断边参数（默认启用，可单独关停）。
-    this.disableInferredEdges = config.disableInferredEdges ?? false
-    // v1.2.x §11.8①：tombstone 归并阈值（默认 8；显式 0 = 关闭，对照组实验用）。
-    if (config.tombstoneMergeMinRun !== undefined) this.tombstoneMergeMinRun = config.tombstoneMergeMinRun
-    if (config.inferredMinTokenLen !== undefined) this.inferredOpts.minTokenLen = config.inferredMinTokenLen
-    if (config.inferredStopwordRatio !== undefined) this.inferredOpts.stopwordRatio = config.inferredStopwordRatio
-    if (config.inferredMaxEdgesPerAtom !== undefined) this.inferredOpts.maxEdgesPerAtom = config.inferredMaxEdgesPerAtom
-    if (config.inferredWindowTurns !== undefined) this.inferredOpts.windowTurns = config.inferredWindowTurns
-    // P0 双引擎自挂载：peratom 配置块存在时，Stage-1 三管线在构造期挂载并接线
-    // （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
-    // ctx.compaction 接收 injectEdges / onOverflowCompress）。
-    // ⚠️ 显式判 object（而非只判 `!== undefined`）：YAML 里"关掉 Stage-1"最自然的写法是
-    // `peratom: false`，而布尔装箱后 `.compressor` 取到 undefined → `?? {}` → 三管线全挂，
-    // 与写配置的人意图**完全相反**。false / null 一律按"不挂"处理（与缺省同语义）。
-    if (config.peratom !== undefined && typeof config.peratom === 'object' && config.peratom !== null) {
-      if (config.onOverflowCompress !== undefined || config.injectEdges !== undefined) {
-        this.log.warn('[argp-graph] peratom block set; explicit injectEdges/onOverflowCompress ignored (wired internally)')
-      }
-      const compressor = config.peratom.compressor === false ? null : new PeratomCompressor(ctx, config.peratom.compressor ?? {})
-      const declarer = config.peratom.declarer === false ? null : new CiteDeclarer(ctx, config.peratom.declarer ?? {})
-      const zoom = config.peratom.zoom === false ? null : new RecallZoom(ctx, config.peratom.zoom ?? {})
-      if (declarer !== null) this.injectEdges = (atoms) => declarer.buildInjectEdges(atoms)
-      if (compressor !== null) {
-        this.onOverflowCompress = async (session: Session): Promise<void> => {
-          // 溢出发生在当前 open turn 的请求上——第②步要降熵的正是它。closed-turn
-          // 口径会错压上一闭合轮（2026-08-29 review 中项），改用 open-turn 入口。
-          await compressor.compressOpenTurn(session)
-        }
-        // P6：轮内压力达标时先压缩 open turn 原子再图剪（与 onOverflowCompress 同入口，
-        // 区别只在触发条件：压力 vs 溢出错误）。
-        this.onPrePressureCompress = async (session: Session): Promise<void> => {
-          await compressor.compressOpenTurn(session)
-        }
-      }
-      this.peratomStack = { compressor, declarer, zoom }
-    }
-
-    // P4 修复（2026-08-29 review，严重项）：peratom 第②步（onOverflowCompress）挂载时，
-    // 重试上限缺省从 1 提到 3——否则事件#2（retries=1）在重试上限守卫处直接保留原错误，
-    // 三步序列的第②步在默认配置下永不触发（测试显式传 3/5 掩盖了缺口，生产挂载路径
-    // 无人设值）。显式配置始终优先；耗尽判定（retries≥2，见 request-error 钩子）独立于
-    // 本上限，第③步后照旧收束，不会多空转。未挂 compressor（第②步不存在）时维持 1。
-    if (config.maxOverflowRetries === undefined && this.onOverflowCompress !== undefined) {
-      this.maxOverflowRetries = 3
-    }
-
-    // 回复级 cites 义务 auto 口径：declarer 已武装（有 LLM 后端）→ 结构化旁路建边
-    // 接管，回复协议关闭；显式 true/false 覆盖。declarer 挂载但未武装时保持开启，
-    // 避免"两种边来源同时归零"（见 citesObligation 配置注释）。
-    // 2026-09-21 时序修复：autoLlm 兜底的 declarer 构造期未武装（路由要等真会话的
-    // agent/status 钩子才解析），构造期布尔无法覆盖它——auto 口径下 section 恒注册，
-    // 由 text 回调在 armed 翻转后动态返回 ''（见注册处）；显式覆盖保持静态语义。
-    this.citesObligationAuto = config.citesObligation === undefined
-    this.citesObligation = config.citesObligation ?? !(this.peratomStack?.declarer?.armed === true)
-
-    const recallTool = defineTool({
-      name: 'recall_pruned',
-      description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context (text blocks verbatim; tool-call arguments are a JSON semantic-equivalent reconstruction when the host stores them as an object — the reply says so). Call it when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from the visible context. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use list_pruned (including its fromSeq/toSeq range mode) when you do not know the seq.',
-      parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
-      output: {
-        schema: { type: 'string' },
-        render: (_args, value) => [{ type: 'text', text: value }],
-      },
-      execute: async (args): Promise<string> => {
-        const seq = (args as { seq?: number }).seq
-        if (seq === undefined || this.session === null) return 'recall_pruned: no session bound'
-        if (this.recallCallsThisTurn >= 3) return 'recall_pruned: per-turn budget exceeded (3 calls)'
-        this.recallCallsThisTurn += 1
-        // P1 修复 (b)：不再用 shadowedSeqsOf 门控。数据路径本来就是全日志级的
-        // （eventText 直接索引 sessionEvents(session)[seq]），只有越界才算失败；返回值带状态标签，
-        // 使掉出可见上下文但未被 ARGP 替换的节点（适配器窗口丢弃 / 从不进 surface）也可召回。
-        const shadowed = this.shadowedSeqsOf(this.session)
-        const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
-        pushBounded(this.recallCalls, { seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined }, this.telemetryCap)
-        if (!outcome.ok) return formatRecallOutcome('recall_pruned', seq, outcome)
-        this.noteRecallHit(seq)
-        // 版本链重定向（2026-08-23）：被剪旧 R 若属于某路径版本链，重定向返回该路径最新存活版本原文，
-        // 替代旧值。避免模型基于已过时的旧快照做决定（旧值正是被剪的原因）；文件仍在演进时
-        // 模型要的是「现在长什么样」。保留 state 标签说明这是重定向结果。
-        const redirect = this.prunedNodeIndex.get(seq)?.latestOfPath
-        if (redirect !== undefined && redirect !== seq) {
-          const latestOutcome = recallFromLog(this.session, redirect, s => shadowed.has(s), eventText)
-          if (latestOutcome.ok) {
-            const result = stateHeader(seq, latestOutcome.state)
-              + '\n[version-chain redirect: seq ' + seq + ' was superseded by newer version seq ' + redirect + ' of the same path; returning the latest]\n'
-              + this.budgetRecallText(latestOutcome.text)
-            this.recallSourceSeq = seq
-            this.recallResultSeq = this.session.seq
-            return result
-          }
-        }
-        const result = formatRecallOutcome('recall_pruned', seq, outcome, text => this.budgetRecallText(text))
-        // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
-        // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
-        this.recallSourceSeq = seq
-        this.recallResultSeq = this.session.seq
-        return result
-      },
-    })
-    ctx.tools.register(recallTool)
-
-    const listPrunedTool = defineTool({
-      name: 'list_pruned',
-      description: 'List conversation nodes that are no longer in your visible context, so you can find the seq to pass to recall_pruned. Default mode lists nodes pruned by ARGP. Range mode (pass fromSeq/toSeq) scans the raw append-only log over that seq window and reports every node with text, including nodes that are still on the surface but may have fallen outside the model render window — use it when a placeholder does not mention the seq you need. Each line carries seq, type, turn, state (shadowed/live/off-surface) and a first-line preview. Optional filters: turn, type (A/R/U/X/T), keyword, limit.',
-      parameters: {
-        turn: { type: 'integer', description: 'optional exact turn number filter' },
-        type: { type: 'string', description: 'optional node type filter: A (assistant), R (tool result), U (user), X (checkpoint), T (tool call, range mode only)' },
-        keyword: { type: 'string', description: 'optional substring that must appear in the node text' },
-        fromSeq: { type: 'integer', description: 'optional range-mode start seq (inclusive); enables raw-log scanning instead of the pruned-only list' },
-        toSeq: { type: 'integer', description: 'optional range-mode end seq (inclusive); defaults to the newest event when only fromSeq is given' },
-        limit: { type: 'integer', description: 'optional maximum number of lines to return (default 50 in range mode, capped at 200)' },
-      },
-      output: {
-        schema: { type: 'string' },
-        render: (_args, value) => [{ type: 'text', text: value }],
-      },
-      execute: async (args): Promise<string> => {
-        if (this.session === null) return 'list_pruned: no session bound'
-        const shadowed = this.shadowedSeqsOf(this.session)
-        const filters = (args ?? {}) as {
-          turn?: number
-          type?: string
-          keyword?: string
-          fromSeq?: number
-          toSeq?: number
-          limit?: number
-        }
-        // P1 修复 (b) 的另一半：区间模式 = 发现原语。去门控只解决"知道 seq 就能取"，
-        // 掉出渲染窗口的 live 节点没有 tombstone 也不带 seq，模型需要能按区间查全日志补集。
-        if (filters.fromSeq !== undefined || filters.toSeq !== undefined) {
-          const total = this.session.seq
-          const limit = Math.max(1, Math.min(200, filters.limit ?? 50))
-          const range = queryLogRange(this.session, {
-            fromSeq: filters.fromSeq ?? 0,
-            toSeq: filters.toSeq ?? total - 1,
-            turn: filters.turn,
-            type: filters.type,
-            keyword: filters.keyword,
-            limit,
-          }, s => shadowed.has(s), eventText)
-          if (range.rows.length === 0) {
-            return 'list_pruned (range mode): no node with text in seq '
-              + (filters.fromSeq ?? 0) + '..' + (filters.toSeq ?? total - 1) + ' matches the filters'
-          }
-          const header = 'list_pruned (range mode): ' + range.rows.length + ' node(s) in seq '
-            + (filters.fromSeq ?? 0) + '..' + (filters.toSeq ?? total - 1)
-            + ' (log has ' + total + ' events; state=shadowed means ARGP pruned it, '
-            + 'live means still on the surface, off-surface means log-only)'
-            + (range.truncated ? '; output capped at limit=' + limit + ', narrow the range or raise limit' : '')
-          const rangeLines = range.rows.map(row => {
-            const indexed = this.prunedNodeIndex.get(row.seq)
-            const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
-              ? ' citedBy=' + indexed.citedBySeq.join(',')
-              : ''
-            return formatLogRow(row, citedBy)
-          })
-          return header + '\n' + rangeLines.join('\n')
-        }
-        const lines: string[] = []
-        const seqs = [...shadowed].sort((a, b) => a - b)
-        for (const seq of seqs) {
-          const event = sessionEvents(this.session)[seq]
-          if (event === undefined) continue
-          const data = event.data as Record<string, unknown> | undefined
-          const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
-          if (filters.turn !== undefined && turn !== filters.turn) continue
-          let type: AtomType
-          if (event.type === 'user/message') {
-            type = classifyUserMessage(data)
-          } else if (event.type === 'assistant/message') {
-            type = 'A'
-          } else if (event.type === 'tool/result') {
-            type = 'R'
-          } else {
-            type = 'X'
-          }
-          if (filters.type !== undefined && type !== filters.type) continue
-          const text = eventText(this.session, seq)
-          if (filters.keyword !== undefined && !text.includes(filters.keyword)) continue
-          const firstLine = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-          const preview = firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine
-          const indexed = this.prunedNodeIndex.get(seq)
-          const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
-            ? ' citedBy=' + indexed.citedBySeq.join(',')
-            : ''
-          lines.push('seq=' + seq + ' type=' + type + ' turn=' + turn + ' state=shadowed' + citedBy + ' first=' + preview)
-        }
-        if (lines.length === 0) {
-          return 'list_pruned: no pruned node matches the filters. '
-            + 'If the content you need was never replaced by a placeholder, retry with range mode '
-            + '(fromSeq/toSeq) to scan the raw log window.'
-        }
-        return lines.join('\n')
-      },
-    })
-    ctx.tools.register(listPrunedTool)
-
-    const recallQueryTool = defineTool({
-      name: 'recall',
-      description: 'Search nodes that are no longer in your visible context by content query and return matching original text. Use when you know roughly what was said but not the exact seq. Prefer list_pruned when you can identify by turn/type or by seq range, and recall_pruned(seq) when you already know the seq.',
-      parameters: {
-        query: { type: 'string', description: 'keywords or substring to search in content that left the visible context' },
-        maxResults: { type: 'integer', description: 'optional maximum number of matches to return (default 5)' },
-      },
-      output: {
-        schema: { type: 'string' },
-        render: (_args, value) => [{ type: 'text', text: value }],
-      },
-      execute: async (args): Promise<string> => {
-        if (this.session === null) return 'recall: no session bound'
-        if (this.recallCallsThisTurn >= 3) return 'recall: per-turn budget exceeded (3 calls)'
-        this.recallCallsThisTurn += 1
-        const query = (args as { query?: string }).query ?? ''
-        const maxResults = (args as { maxResults?: number }).maxResults ?? 5
-        return this.budgetRecallText(this.recallQuery(query, maxResults))
-      },
-    })
-    ctx.tools.register(recallQueryTool)
+    // P5 Wave 3 第 4 步：三个召回工具闭包迁 recall-tools.registerRecallTools（闭包体逐字保留，this → host 窄接口）。
+    // 三个 ctx.tools.register 调用次序不变（recall_pruned → list_pruned → recall）。
+    registerRecallTools(ctx, this as unknown as RecallToolsHost)
 
     // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
     // 本 section 的 text 必须是纯静态（不引用引擎运行时状态）——否则每轮变化会破坏
@@ -1535,24 +891,8 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
    */
   private bindSession(session: Session): void {
-    if (this.session === session) return
-    this.session = session
-    this.rebuiltCompactionIds.clear() // 跨 session 重置告警/重建去重
-    this.shadowedSeqsOf(session) // setSession 时初始化一次；后续仅扫描新追加事件
-    try {
-      this.rebuildLedgerFromLog() // 懒触发：仅当 records 空 + 日志含事务事件时真正重建
-    } catch { /* 重建失败不阻断 turn */ }
-    // 锚点回填（2026-09-21）：换 session 身份 = 进程重启后 resume / 新会话，
-    // 此时内存锚点要么属于上一个 session（失效），要么为空 ⇒ 必须从日志恢复，
-    // 否则压力检查静默退化为 chars 口径（详见 restoreUsageAnchor 注释）。
-    this.restoreUsageAnchor(session)
-    // 永久冻结 catalog：仅在首次绑定（frozenCatalog 仍为 null）时拍一次快照。
-    // 后续任何重绑（agent/pre-step 每步传来的 session 对象可能换新身份，见 line 870）或落剪
-    // 都不再改写 —— 这是 1.0.2 仍漏的 bug：session 对象换位时 bindSession 重跑会把
-    // frozenCatalog 重算成当时 catalogText 值（有时返回 ''），导致 catalog 段在非剪枝步骤
-    // 凭空消失/重现、打穿前缀缓存。现改为"只冻一次"，system 块全程逐字节恒定、KV 100% 命中。
-    // 代价：catalog 文本停在首绑时刻（recall_pruned / list_pruned 仍扫原始日志，发现能力不丢）。
-    if (this.frozenCatalog === null) this.frozenCatalog = this.catalogText(20, 70)
+    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.bindSession（this → host 窄接口），本方法变薄编排。
+    bindSession(this as unknown as LifecycleHost, session)
   }
 
   setSession(session: Session): void {
@@ -1608,109 +948,24 @@ export class ArgpGraphEngine extends CompactionEngine {
       + this.lastRealPromptTokens + ' tok at seq=' + this.lastRealAnchorSeq)
   }
 
-  /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。 */
+  /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
+   *  P5 Wave 3 第 4 步：实现迁 recall.catalogText（this → host 窄接口），本方法变薄编排。 */
   catalogText(maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
-    if (this.session === null) return ''
-    const shadowed = this.shadowedSeqsOf(this.session)
-    const entries: { type: AtomType; turn: number; seq: number; snippet: string }[] = []
-    const charBudget = tokenBudget * this.charsPerToken
-    let usedChars = 0
-    for (const seq of shadowed) {
-      if (entries.length >= maxItems) break
-      const event = sessionEvents(this.session)[seq]
-      if (event === undefined) continue
-      const data = event.data as Record<string, unknown> | undefined
-      let type: AtomType
-      if (event.type === 'user/message') {
-        type = classifyUserMessage(data)
-      } else if (event.type === 'assistant/message') {
-        type = 'A'
-      } else if (event.type === 'tool/result') {
-        type = 'R' // A9：R 补入 catalog 发现入口（N2）
-      } else {
-        continue
-      }
-      const text = eventText(this.session, seq)
-      const snippet = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-      const clipped = snippet.length > snippetChars ? snippet.slice(0, snippetChars) + '…' : snippet
-      if (usedChars + clipped.length > charBudget && entries.length > 0) break
-      usedChars += clipped.length
-      const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
-      entries.push({ type, turn, seq, snippet: clipped })
-    }
-    // U 排前，其余按 seq 升序
-    entries.sort((a, b) => (a.type === 'U' ? 0 : 1) - (b.type === 'U' ? 0 : 1) || a.seq - b.seq)
-    const lines = entries.map(e => '[' + e.type + (e.turn !== 0 ? e.turn : '') + '] ' + e.snippet)
-    if (lines.length === 0) return ''
-    return '[context] Compression removed ' + shadowed.size + ' earlier item(s) from the visible context:\n' + lines.join('\n')
+    return catalogText(this as unknown as RecallHost, maxItems, snippetChars, tokenBudget)
   }
-  /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。 */
+  /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
+   *  P5 Wave 3 第 4 步：实现迁 recall.recallQuery（this → host 窄接口），本方法变薄编排。 */
   recallQuery(query: string, maxResults = 5): string {
-    if (this.session === null) return 'recall: no session bound'
-    const shadowed = this.shadowedSeqsOf(this.session)
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-    interface Hit { seq: number; score: number; text: string; type: AtomType; turn: number }
-    const hits: Hit[] = []
-    for (const seq of shadowed) {
-      const event = sessionEvents(this.session)[seq]
-      if (event === undefined) continue
-      const data = event.data as Record<string, unknown> | undefined
-      const text = eventText(this.session, seq)
-      if (text === '') continue
-      const lower = text.toLowerCase()
-      let score = 0
-      for (const term of terms) if (lower.includes(term)) score += 1
-      if (score === 0) continue
-      let type: AtomType
-      if (event.type === 'user/message') type = classifyUserMessage(data)
-      else if (event.type === 'assistant/message') type = 'A'
-      else if (event.type === 'tool/result') type = 'R'
-      else type = 'X'
-      const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
-      hits.push({ seq, score, text, type, turn })
-    }
-    hits.sort((a, b) => b.score - a.score || (a.type === 'U' ? -1 : b.type === 'U' ? 1 : a.seq - b.seq))
-    const selected = hits.slice(0, maxResults)
-    for (const h of selected) this.noteRecallHit(h.seq)
-    pushBounded(this.recallQueryCalls, { query, count: selected.length, hits: selected.length }, this.telemetryCap)
-    if (selected.length === 0) return 'recall: no pruned nodes match query "' + query + '"'
-    const lines = selected.map(h => '[' + h.type + (h.turn !== 0 ? h.turn : '') + '] ' + h.text)
-    return 'Recalled ' + selected.length + ' pruned atom(s) for "' + query + '":\n' + lines.join('\n')
+    return recallQuery(this as unknown as RecallHost, query, maxResults)
   }
 
   /**
    * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
    * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
+   * P5 Wave 3 第 4 步：实现迁 recall.shadowedSeqsOf（this → host 窄接口），本方法变薄编排。
    */
   private shadowedSeqsOf(session: Session): Set<number> {
-    if (this.shadowedSession !== session) {
-      this.shadowedSession = session
-      this.shadowedSet = new Set()
-      this.shadowedScanned = 0
-    }
-    for (let index = this.shadowedScanned; index < session.seq; index += 1) {
-      const event = sessionEvents(session)[index]
-      if (event === undefined) continue
-      // 权威剪枝账本：只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，
-      // 且 shadowedSeqs 即被剪 surface seq 的权威清单）。不再靠「replace 形态推断」：
-      // 旧实现扫 surfaceOp replace 并把 sourceEventSeqs 收进集合，会误吞两类非剪枝写回——
-      //   ① cites 剥离写回（data.argpCites，仅去协议产物）——2026-08-22 已加 argpCites 门控；
-      //   ② per-atom 原地压缩（peratom/compressor.ts 的 user/tool 副本，start===end、
-      //      sourceEventSeqs=[被压原子]、无 compaction/prune 事件）——2026-08-27 定位：
-      //      它仍穿透旧门控被当「已剪」，导致 catalog 谎报 "Compression removed N"、
-      //      system 前缀逐轮变、跨轮缓存全断（60 轮 A 臂实证：catalog 显示 removed 44，
-      //      而 compaction/prune 事件数 = 0，44 个全是 per-atom 原地压缩）。
-      // 只读 compaction/prune.shadowedSeqs 后，per-atom 原地压缩天然不在账本内，根因消除；
-      // 且不再把 compaction/start、compaction/prune 这两个 off-surface 事务 seq 误收进集合。
-      if (event.type === 'compaction/prune') {
-        const shadowed = (event.data as { shadowedSeqs?: number[] }).shadowedSeqs
-        if (Array.isArray(shadowed)) {
-          for (const seq of shadowed) this.shadowedSet.add(seq)
-        }
-      }
-    }
-    this.shadowedScanned = session.seq
-    return this.shadowedSet
+    return shadowedSeqsOf(this as unknown as RecallHost, session)
   }
 
   /**
@@ -1719,31 +974,25 @@ export class ArgpGraphEngine extends CompactionEngine {
    * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
    * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
    * 程序化的全日志入口是 recallAnyState()。
+   * P5 Wave 3 第 4 步：实现迁 recall.recall（this → host 窄接口），本方法变薄编排。
    */
   recall(seq: number): string | null {
-    if (this.session === null) return null
-    if (!this.shadowedSeqsOf(this.session).has(seq)) return null
-    const text = eventText(this.session, seq)
-    return text === '' ? null : text
+    return recall(this as unknown as RecallHost, seq)
   }
 
   /**
    * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
    * 不要求节点属于 pruned 集合。越界返回 null。
+   * P5 Wave 3 第 4 步：实现迁 recall.recallAnyState（this → host 窄接口），本方法变薄编排。
    */
   recallAnyState(seq: number): { text: string; state: NodeStateLabel } | null {
-    if (this.session === null) return null
-    const shadowed = this.shadowedSeqsOf(this.session)
-    const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
-    if (!outcome.ok) return null
-    return { text: outcome.text, state: outcome.state }
+    return recallAnyState(this as unknown as RecallHost, seq)
   }
 
-  /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。 */
+  /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
+   *  P5 Wave 3 第 4 步：实现迁 recall.nodeState（this → host 窄接口），本方法变薄编排。 */
   nodeState(seq: number): NodeStateLabel | null {
-    if (this.session === null) return null
-    const shadowed = this.shadowedSeqsOf(this.session)
-    return nodeStateOf(this.session, seq, s => shadowed.has(s))
+    return nodeState(this as unknown as RecallHost, seq)
   }
 
   /**
@@ -1757,133 +1006,11 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
    * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
    * 「system prompt at surface node 0 is never selected for pruning」。
+   *
+   * P5 Wave 3 第 4 步：实现迁 graph-build.atomize（this → host 窄接口），本方法变薄编排。
    */
   atomize(session: Session): Atom[] {
-    const atoms: Atom[] = []
-    for (const seq of session.surface.nodes) {
-      const event = sessionEvents(session)[seq]
-      if (event === undefined) continue
-      const data = event.data as Record<string, unknown> | undefined
-      const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
-      if (event.type === 'user/message') {
-        // P0 分类陷阱防线：先认 data[argp].info（U-info 聚合副本），再判 plugin-source → X
-        const kind = classifyUserMessage(data)
-        // P4：U-info 投影 sourceSeq（原始用户消息日志 seq）——既是 recall_detail 恢复
-        // 目标，也是 isAtomCandidate/闭包 root 的 U-info 识别判据（dialog 无此字段）。
-        const uInfoMeta = (data as Record<string, unknown> | undefined)?.[ARG_NS] as { sourceSeq?: unknown } | undefined
-        const uSourceSeq = typeof uInfoMeta?.sourceSeq === 'number' ? (uInfoMeta.sourceSeq as number) : undefined
-        const userAtom: Atom = { id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false }
-        if (uSourceSeq !== undefined) userAtom.sourceSeq = uSourceSeq
-        atoms.push(userAtom)
-        continue
-      }
-      if (event.type === 'assistant/message') {
-        const raw = eventText(session, seq)
-        const stored = (data as { argpCites?: ParsedCite[] | string[] }).argpCites
-        const parsed = extractCites(raw)
-        // 优先用 surface 剥离时存入的 argpCites，保证跨压缩引用图不丢（文本已无 cites）。
-        // ⚠ 2026-08-22 修复：判据原查 graded 字段 `c.t`，但写回格式是 ParsedCite `{text, level}`
-        // （stripTrailingCitesIfNeeded 存 extractCites 的返回值）→ every 恒 false → 误走 string[]
-        // 分支把对象塞进 text → buildGraph cite.text.trim() 抛 TypeError → 压缩静默失败（boundaries=0）。
-        // 现按实际格式归一化，兼容 ParsedCite[] / string[]（V5 产物）/ graded {t,l}（契约原文）三种形状。
-        let cites: ParsedCite[]
-        if (Array.isArray(stored)) {
-          cites = stored
-            .map(c => {
-              if (typeof c === 'string') return { text: c, level: 'supporting' as const }
-              if (c !== null && typeof c === 'object') {
-                const o = c as { text?: unknown; t?: unknown; level?: unknown; l?: unknown }
-                const text = typeof o.text === 'string' ? o.text : typeof o.t === 'string' ? o.t : ''
-                if (text === '') return null
-                let level: CiteLevel = 'supporting'
-                const lv = (typeof o.level === 'string' ? o.level : typeof o.l === 'string' ? o.l : '').trim().toLowerCase()
-                if (lv === 'c' || lv === 'critical') level = 'critical'
-                else if (lv === 'x' || lv === 'contextual') level = 'contextual'
-                return { text, level }
-              }
-              return null
-            })
-            .filter((c): c is ParsedCite => c !== null)
-        } else {
-          cites = parsed.cites
-        }
-        const body = parsed.body
-        const msg = (data as { message?: { content?: unknown[] } })?.message
-        const content = Array.isArray(msg?.content) ? (msg?.content as { type: string; id?: string }[]) : []
-        const toolCallIds = content.filter(b => b.type === 'tool-call' && typeof b.id === 'string').map(b => b.id as string)
-        this.citeStats.aAtoms += 1
-        if (cites.length > 0) this.citeStats.declared += cites.length
-        if (parsed.parseFailed) this.citeStats.failed += 1
-        atoms.push({ id: atoms.length, seq, type: 'A', turn, text: body, toolCallIds, cites, citesFailed: parsed.parseFailed })
-        continue
-      }
-      if (event.type === 'tool/result') {
-        const d = data as { message?: { source?: { callId?: string } } }
-        const callId = d?.message?.source?.callId
-        atoms.push({ id: atoms.length, seq, type: 'R', turn, text: eventText(session, seq), toolCallIds: callId === undefined ? [] : [callId], cites: [], citesFailed: false })
-        continue
-      }
-    }
-    return atoms
-  }
-
-  /**
-   * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
-   * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
-   * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
-   */
-  private citePrefixTooShort(prefix: string): boolean {
-    const minLen = this.citeMinPrefixLen
-    let ascii = 0
-    let wide = 0
-    for (const ch of prefix) {
-      if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch)) wide += 1
-      else ascii += 1
-    }
-    return ascii + wide * 2 < minLen
-  }
-
-  /** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
-  private readonly ngramN = 3
-
-  private buildNGramIndex(atoms: Atom[], extract: (a: Atom) => string): Map<string, number[]> {
-    const index = new Map<string, number[]>()
-    const n = this.ngramN
-    for (const a of atoms) {
-      const text = extract(a)
-      if (text === '') continue
-      const grams = new Set<string>()
-      for (let i = 0; i + n <= text.length; i += 1) grams.add(text.slice(i, i + n))
-      for (const g of grams) {
-        const list = index.get(g)
-        if (list === undefined) index.set(g, [a.id])
-        else list.push(a.id)
-      }
-    }
-    return index
-  }
-
-  /** 查询候选集：前缀长度 < n 时返回 null（走全扫描回退）。取前缀上 ≤3 个 n-gram 交集收窄候选。 */
-  private queryNGramCandidates(index: Map<string, number[]>, prefix: string): number[] | null {
-    const n = this.ngramN
-    if (prefix.length < n) return null
-    const first = prefix.slice(0, n)
-    const firstList = index.get(first)
-    if (firstList === undefined) return []
-    const candidates = new Set<number>(firstList)
-    const starts = [Math.floor((prefix.length - n) / 2), prefix.length - n]
-    for (const start of starts) {
-      if (start === 0) continue
-      const g = prefix.slice(start, start + n)
-      const list = index.get(g)
-      if (list === undefined) return []
-      const set = new Set(list)
-      for (const id of [...candidates]) {
-        if (!set.has(id)) candidates.delete(id)
-      }
-      if (candidates.size === 0) return []
-    }
-    return [...candidates]
+    return atomize(this as unknown as GraphBuildHost, session)
   }
 
   /**
@@ -1892,125 +1019,15 @@ export class ArgpGraphEngine extends CompactionEngine {
    * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
    * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
    * 前缀长度守卫：过短前缀不计 declared 也不建边。
+   *
+   * P5 Wave 3 第 4 步：实现迁 graph-build.buildGraph（this → host 窄接口），本方法变薄编排。
    */
   buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; deterministicEdges: DeterministicEdge[]; inDegree: Map<number, number> } {
-    const edges: SemanticEdge[] = []
-    const deterministicEdges: DeterministicEdge[] = []
-    const rByCall = new Map<string, Atom>()
-    for (const r of atoms) if (r.type === 'R' && r.toolCallIds[0] !== undefined) rByCall.set(r.toolCallIds[0], r)
-    for (const a of atoms) {
-      if (a.type !== 'A') continue
-      for (const cid of a.toolCallIds) {
-        const r = rByCall.get(cid)
-        if (r !== undefined) deterministicEdges.push({ from: a.id, to: r.id })
-      }
-    }
-    // A5：整文本 n-gram 索引（子串命中）+ 行首 n-gram 索引（行首精确命中，A2 增强回退）
-    const textIndex = this.buildNGramIndex(atoms, a => a.text)
-    const lineIndex = this.buildNGramIndex(atoms, a => a.text.split('\n').map(l => l.trim()).filter(l => l !== '').join('\n'))
-    const resolveHits = (prefix: string, index: Map<string, number[]>, verify: (t: Atom) => boolean): Atom[] => {
-      const candidates = this.queryNGramCandidates(index, prefix)
-      const pool = candidates === null
-        ? atoms
-        : candidates.map(id => atoms.find(a => a.id === id)).filter((a): a is Atom => a !== undefined)
-      return pool.filter(verify)
-    }
-    if (!this.disableCiteEdges) for (const a of atoms) {
-      if (a.type !== 'A') continue
-      for (const cite of a.cites) {
-        // 兜底防御（2026-08-22）：cites 来自模型不可信输入 + argpCites 历史格式迁移，
-        // 任何非字符串 text 一律视为无效声明跳过，绝不让压缩主体抛错。
-        if (typeof cite.text !== 'string') {
-          this.citeStats.failed += 1
-          continue
-        }
-        const p = cite.text.trim()
-        if (p === '') continue
-        if (this.citePrefixTooShort(p)) {
-          this.citeStats.failed += 1 // 过短前缀视为声明失败（保守保护，不建边）
-          continue
-        }
-        const selfExcluded = (t: Atom): boolean => t.id !== a.id && t.text !== ''
-        // 先精确（行首）后子串：行首命中更贴引用意图，其次整文子串（spike 5 教训：includes 兜底）
-        let hits = resolveHits(p, lineIndex, t => selfExcluded(t) && t.text.split('\n').some(line => line.trim().startsWith(p)))
-        if (hits.length === 0) {
-          hits = resolveHits(p, textIndex, t => selfExcluded(t) && t.text.includes(p))
-        }
-        if (hits.length === 0) continue
-        let target = hits[0]
-        if (hits.length > 1) {
-          this.citeStats.ambiguous += 1
-          const uHit = hits.find(h => h.type === 'U')
-          if (uHit !== undefined) {
-            target = uHit
-          } else {
-            // A2：最长公共前缀最深的原子优先（引用意图最接近），同深度取最早 seq
-            const depth = (h: Atom): number => {
-              let i = 0
-              while (i < p.length && i < h.text.length && h.text[i] === p[i]) i += 1
-              return i
-            }
-            target = hits.reduce((min, h) => (depth(h) > depth(min) || (depth(h) === depth(min) && h.seq < min.seq) ? h : min), hits[0] as Atom)
-          }
-        }
-        edges.push({ from: a.id, to: target.id, level: cite.level })
-        this.citeStats.resolved += 1
-      }
-    }
-    // 边价值实验 A₃：合并注入的 oracle 边（离线辅助 LLM 组图）。校验 from/to 合法且非自环。
-    // 去重（2026-08-29，citesObligation 退役回复协议后）：模型残留 cites 尾仍会被
-    // 上方解析建边，declarer 可能对同一 (from,to) 声明同一条边——只保留先到者
-    // （回复级逐字前缀是最强证据），防 inDegree 双计污染判决与守卫计数。
-    if (this.injectEdges !== undefined) {
-      const validIds = new Set(atoms.map(a => a.id))
-      const seen = new Set(edges.map(e => `${e.from}\u0000${e.to}`))
-      for (const e of this.injectEdges(atoms)) {
-        if (e.from === e.to || !validIds.has(e.from) || !validIds.has(e.to)) continue
-        const key = `${e.from}\u0000${e.to}`
-        if (seen.has(key)) continue
-        seen.add(key)
-        edges.push(e)
-      }
-    }
-    // v1.2.0 组件 A（PROPOSAL-token-ontology）：推断边——承重 token 逐字包含派生
-    // （0 LLM，I-A1 构造性；停词过滤/每 A 上限/声明窗口见 token-ontology.ts）。
-    // 在 cites / injectEdges 之后合并 → 声明边先行（同 (from,to) 先到者胜，与 inject
-    // 去重同纪律）；A₁ 臂（disableCiteEdges）一并隔离，保零语义边实验语义。
-    this.lastInferredEdges = []
-    if (!this.disableCiteEdges && !this.disableInferredEdges) {
-      const pairs = deriveInferredEdges(atoms, this.inferredOpts)
-      this.inferredStats.candidates = pairs.length
-      const seqToId = new Map<number, number>()
-      for (const a of atoms) seqToId.set(a.seq, a.id)
-      const seenInferred = new Set(edges.map(e => `${e.from}\u0000${e.to}`))
-      let accepted = 0
-      let skippedDup = 0
-      for (const p of pairs) {
-        const from = seqToId.get(p.fromSeq)
-        const to = seqToId.get(p.toSeq)
-        if (from === undefined || to === undefined) continue
-        if (from === to) continue // 防御：seq→id 映射异常（如重复 id）不得产出自环
-        const key = `${from}\u0000${to}`
-        if (seenInferred.has(key)) { skippedDup += 1; continue }
-        seenInferred.add(key)
-        edges.push({ from, to, level: 'inferred' })
-        this.lastInferredEdges.push({ from, to, level: 'inferred' })
-        accepted += 1
-      }
-      this.inferredStats.accepted = accepted
-      this.inferredStats.skippedDup = skippedDup
-    }
-    this.lastEdges = edges
-    this.lastDeterministicEdges = deterministicEdges
-    const inDegree = new Map<number, number>()
-    for (const e of edges) inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1)
-    return { edges, deterministicEdges, inDegree }
+    return buildGraph(this as unknown as GraphBuildHost, atoms)
   }
-  /** surface 可见字符总量（与 spike 4 同基准）。 */
+  /** surface 可见字符总量（与 spike 4 同基准）。P5 Wave 3 第 4 步：实现迁 budget.visibleChars（纯函数）。 */
   private visibleChars(session: Session): number {
-    let total = 0
-    for (const seq of session.surface.nodes) total += eventText(session, seq).length
-    return total
+    return visibleChars(session)
   }
 
   /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
@@ -2019,37 +1036,10 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。
    *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
    *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
-   *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。 */
+   *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。
+   *  P5 Wave 3 第 4 步：实现迁 budget.measureTokens（this → host 窄接口），本方法变薄编排。 */
   private measureTokens(session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
-    const surfaceTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
-    if (this.lastRealAnchorSeq >= 0 && this.lastRealPromptTokens > 0) {
-      // 真实锚点（上轮 provider usage）只覆盖锚点 seq 之前的内容；其后 surface 新增
-      // 节点（user/assistant/tool 事件）按字符估算增量。增量通常远小于全量，估算偏差
-      // 只作用于增量 → 总误差从 ±30% 降到几个百分点。已知局限（均为保守或单步窗口）：
-      // ① peratom 替换旧节点（seq ≤ 锚点）减量不计 → 高估 → 剪早（保守方向）；
-      // ② 压缩换代后锚点重置为纯 surface 估算（不含 system+tools）→ 低估一个 step，
-      //    下一次 assistant/message usage 回到精确锚定。
-      let deltaChars = 0
-      for (const seq of session.surface.nodes) {
-        if (seq > this.lastRealAnchorSeq) deltaChars += eventText(session, seq).length
-      }
-      const deltaTokens = Math.ceil(deltaChars / this.charsPerToken)
-      return { contextTokens: this.lastRealPromptTokens + deltaTokens + extraTokens, surfaceTokens, source: 'anchored' }
-    }
-    if (this.tokenMeter !== undefined) {
-      try {
-        const m = this.tokenMeter.measure(session)
-        return { contextTokens: m.totalTokens + extraTokens, surfaceTokens: m.surfaceTokens, source: 'tokenMeter' }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        this.log.warn('[argp-graph] tokenMeter.measure failed, falling back: ' + message)
-      }
-    }
-    if (this.tokenMeterFn !== undefined) {
-      const measured = this.tokenMeterFn(session)
-      return { ...measured, contextTokens: measured.contextTokens + extraTokens, source: 'config' }
-    }
-    return { contextTokens: surfaceTokens + extraTokens, surfaceTokens, source: 'chars' }
+    return measureTokens(this as unknown as BudgetHost, session, extraTokens)
   }
 
   /**
@@ -2074,17 +1064,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     return chars === 0 ? 0 : Math.ceil(chars / this.charsPerToken)
   }
 
-  /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
-  private static lineOverlap(a: string, b: string): number {
-    const linesA = new Set(a.split('\n').map(l => l.trim()).filter(l => l !== ''))
-    const linesB = new Set(b.split('\n').map(l => l.trim()).filter(l => l !== ''))
-    const min = Math.min(linesA.size, linesB.size)
-    if (min === 0) return 0
-    let inter = 0
-    for (const l of linesA) if (linesB.has(l)) inter += 1
-    return inter / min
-  }
-
   /**
    * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
    *  - A：文本全等（不变）。
@@ -2094,116 +1073,11 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
    *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
    * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
+   *
+   * P5 Wave 3 第 4 步：实现迁 graph-build.findVersionDuplicates（this → host 窄接口），本方法变薄编排。
    */
   private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number>; latestRByKey: Map<string, number>; rKeyByRId: Map<number, string> } {
-    const dupIds = new Set<number>()
-    const chainLen = new Map<number, number>()
-    const latestRByKey = new Map<string, number>()
-    const rKeyByRId = new Map<number, string>()
-    const issuerByCall = new Map<string, Atom>()
-    const rByCall = new Map<string, Atom>()
-    for (const a of atoms) {
-      if (a.type !== 'A') continue
-      for (const cid of a.toolCallIds) issuerByCall.set(cid, a)
-    }
-    for (const r of atoms) {
-      if (r.type !== 'R' || r.toolCallIds[0] === undefined) continue
-      rByCall.set(r.toolCallIds[0], r)
-    }
-    const addPair = (a: Atom): void => {
-      if ((inDegree.get(a.id) ?? 0) !== 0) return
-      // 方案 A 修复（2026-08-23）：剪 A 时无条件连带剪其全部 R，与 pass 循环（:1693 附近）语义一致。
-      // 版本去重语义 = 旧快照整组淘汰；R 的 cites 引用在 newer 版本上会重建，旧 R 与引用一起剪。
-      // 不保护被 cites 的旧 R（否则 surface 膨胀、版本链去重失效）；无孤儿由连带剪保证。
-      dupIds.add(a.id)
-      for (const cid of a.toolCallIds) {
-        const r = rByCall.get(cid)
-        if (r !== undefined) dupIds.add(r.id)
-      }
-    }
-    const seenA = new Map<string, { atom: Atom; count: number }>()
-    for (const a of atoms.filter(x => x.type === 'A')) {
-      const key = a.text.trim()
-      const existing = seenA.get(key)
-      if (existing !== undefined) {
-        const older = existing.atom.turn < a.turn || (existing.atom.turn === a.turn && existing.atom.seq < a.seq) ? existing.atom : a
-        const newer = older === existing.atom ? a : existing.atom
-        if ((inDegree.get(older.id) ?? 0) === 0) addPair(older)
-        const count = existing.count + 1
-        chainLen.set(newer.id, count)
-        seenA.set(key, { atom: newer, count })
-      } else {
-        seenA.set(key, { atom: a, count: 1 })
-      }
-    }
-    const seenR = new Map<string, { atom: Atom }[]>()
-    const rKey = (r: Atom): string => {
-      // A3 N1 fix：R 去重键 = issuer A 的 tool name + arguments JSON（callId 缺失时退化为 r.text）
-      const issuer = r.toolCallIds[0] !== undefined ? issuerByCall.get(r.toolCallIds[0]) : undefined
-      if (issuer === undefined) return 'text|' + r.text.trim()
-      const issuerEvent = this.session === null ? undefined : sessionEvents(this.session)[issuer.seq]
-      const content = (issuerEvent?.data as { message?: { content?: unknown[] } } | undefined)
-        ?.message?.content as Array<{ type?: string; id?: string; name?: string; arguments?: unknown }> | undefined
-      const tc = content?.find(b => b.type === 'tool-call' && b.id === r.toolCallIds[0])
-      const argsStr = tc !== undefined && tc.arguments !== undefined
-        ? (typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments))
-        : ''
-      return (tc?.name ?? '?') + '|' + argsStr
-    }
-    const registerR = (key: string, r: Atom): void => {
-      const list = seenR.get(key)
-      if (list === undefined) seenR.set(key, [{ atom: r }])
-      else list.push({ atom: r })
-      latestRByKey.set(key, r.seq)
-      rKeyByRId.set(r.id, key)
-    }
-    const mergeOlderR = (older: Atom, r: Atom, key: string): void => {
-      if ((inDegree.get(older.id) ?? 0) === 0) {
-        dupIds.add(older.id)
-        const issuer = older.toolCallIds[0] !== undefined ? issuerByCall.get(older.toolCallIds[0]) : undefined
-        if (issuer !== undefined) addPair(issuer)
-      }
-      // A4 问题 4 修订：chainLen = 合并后组成员数（list.length），而非「已合并条目数+1」的
-      // cur.count 累加——后者在同一 atom 已入 list 时重复多计（如 3 副本 R 链混入 issuer A 计数）。
-      // 先 push 再取 list.length：3 个相同 R → 第一次 register len=1，随后两次 merge 各 push → len=2/3。
-      const list = seenR.get(key)
-      if (list === undefined) {
-        seenR.set(key, [{ atom: r }])
-        chainLen.set(r.id, 1)
-      } else {
-        list.push({ atom: r })
-        chainLen.set(r.id, list.length)
-      }
-      // 版本链重定向：记录该 key 下最新见到的 R seq（遍历按 surface 顺序，后续 seq 更大更「新」）
-      latestRByKey.set(key, r.seq)
-      rKeyByRId.set(older.id, key)
-      rKeyByRId.set(r.id, key)
-    }
-    for (const r of atoms.filter(x => x.type === 'R')) {
-      const key = rKey(r)
-      const group = seenR.get(key)
-      const exact = group?.find(e => e.atom.text === r.text)
-      if (exact !== undefined) {
-        const older = exact.atom.turn < r.turn || (exact.atom.turn === r.turn && exact.atom.seq < r.seq) ? exact.atom : r
-        const newer = older === exact.atom ? r : exact.atom
-        if (older !== newer) {
-          mergeOlderR(older, newer, key)
-          exact.atom = newer
-        }
-        continue
-      }
-      if (this.enableOverlapChain && group !== undefined) {
-        const sims = group.map(e => ArgpGraphEngine.lineOverlap(e.atom.text, r.text))
-        const best = sims.reduce((m, s, i) => (s > sims[m] ? i : m), 0)
-        if (sims[best] !== undefined && sims[best] >= this.overlapTheta) {
-          const older = group[best]?.atom as Atom
-          mergeOlderR(older, r, key)
-          continue
-        }
-      }
-      registerR(key, r)
-    }
-    return { dupIds, chainLen, latestRByKey, rKeyByRId }
+    return findVersionDuplicates(this as unknown as GraphBuildHost, atoms, inDegree)
   }
 
   /**
@@ -2216,26 +1090,12 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
    */
   latestTurnOf(session: Session): number {
-    let max = 0
-    for (const seq of session.surface.nodes) {
-      const event = sessionEvents(session)[seq]
-      if (event === undefined) continue
-      const data = event.data as Record<string, unknown> | undefined
-      if (this.turnBasis === 'semantic' && event.type === 'user/message'
-        && classifyUserMessage(data) === 'X') {
-        continue // 注入型 X（system-reminder / ARGP tombstone）不推进语义轮次；
-        // U-info 聚合副本（classifyUserMessage → U）是真实用户内容的替换拷贝，照常参与——
-        // 若被跳过，被拆分消息所在轮会漏报 latestTurn，recency/turnGuard 保护线随之偏移。
-      }
-      const t = data?.turn
-      if (typeof t === 'number' && t > max) max = t
-    }
-    return max
+    // P5 Wave 3 第 4 步：实现迁 recall.latestTurnOf（this → host 窄接口），本方法变薄编排。
+    return latestTurnOf(this as unknown as RecallHost, session)
   }
 
   private latestTurnOfSession(): number {
-    if (this.session === null) return 0
-    return this.latestTurnOf(this.session)
+    return latestTurnOfSession(this as unknown as RecallHost)
   }
 
   /**
@@ -2245,14 +1105,10 @@ export class ArgpGraphEngine extends CompactionEngine {
    * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
    * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
    * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
+   * P5 Wave 3 第 4 步：实现迁 recall.noteRecallHit（this → host 窄接口），本方法变薄编排。
    */
   private noteRecallHit(seq: number): void {
-    for (const c of this.closurePrunes) {
-      if (c.prunedSeqs.includes(seq)) {
-        this.closureLastRecalled.set(c.rootSeq, this.latestTurnOfSession())
-        break
-      }
-    }
+    noteRecallHit(this as unknown as RecallHost, seq)
   }
 
   /**
@@ -2262,25 +1118,10 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
    *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
    *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+   * P5 Wave 3 第 4 步：实现迁 recall.budgetRecallText（this → host 窄接口），本方法变薄编排。
    */
   private budgetRecallText(text: string): string {
-    const perCallLimit = Math.floor(this.resolvedWindowTokens * 0.05 * this.charsPerToken)
-    const totalLimit = Math.floor(this.resolvedWindowTokens * 0.10 * this.charsPerToken)
-    const remaining = Math.max(0, totalLimit - this.recallCharsUsed)
-    if (remaining === 0) {
-      return '(recall text budget exhausted: ' + this.recallCharsUsed + '/' + totalLimit
-        + ' chars used since the last compaction. Nothing was returned — this is a budget limit, '
-        + 'not missing data. The budget resets on the next compaction; narrow the request or retry later.)'
-    }
-    const allowed = Math.min(perCallLimit, remaining)
-    let result = text
-    if (result.length > allowed) {
-      result = result.slice(0, allowed) + '…(truncated at ' + allowed + ' chars; recall budget '
-        + (this.recallCharsUsed + allowed) + '/' + totalLimit
-        + ' chars used since the last compaction, resets on the next one)'
-    }
-    this.recallCharsUsed += result.length
-    return result
+    return budgetRecallText(this as unknown as RecallHost, text)
   }
 
   /**
@@ -2321,102 +1162,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     atoms: Atom[]
     intervals: { seqs: number[]; chars: number; atoms: Atom[] }[]
   } | null {
-    const roots = atoms
-      .filter(a => a.type === 'U' && a.sourceSeq === undefined && !askCover.has(a.id))
-      // P4：排除 U-info 作 root——U-info 是"可丢弃可召回"的资料副本，不是开启新
-      // 任务的 task-init 根。若不排除，闭包生命周期会以 U-info 为根把其后整段
-      // dialog/A/R 拖进闭包退休（语义错误）。普通 U（dialog）仍为合法根。
-      .sort((a, b) => a.seq - b.seq)
-    if (roots.length === 0) return null
-    const closureOf = new Map<number, string>()
-    const rootByClosure = new Map<string, Atom>()
-    for (let i = 0; i < roots.length; i += 1) {
-      const root = roots[i]
-      const nextRoot = roots[i + 1]
-      const id = 'closure-' + (this.nextClosureId++)
-      rootByClosure.set(id, root)
-      for (const a of atoms) {
-        if (a.type === 'U' && a.id !== root.id) continue
-        if (a.seq >= root.seq && (nextRoot === undefined || a.seq < nextRoot.seq)) {
-          closureOf.set(a.id, id)
-        }
-      }
-    }
-    const lastRefByClosure = new Map<string, number>()
-    const inDegreeByClosure = new Map<string, number>()
-    const atomById = new Map(atoms.map(a => [a.id, a]))
-    for (const e of edges) {
-      const fromClosure = closureOf.get(e.from)
-      const toClosure = closureOf.get(e.to)
-      const from = atomById.get(e.from)
-      if (from !== undefined && toClosure !== undefined) {
-        const ref = from.turn
-        lastRefByClosure.set(toClosure, Math.max(lastRefByClosure.get(toClosure) ?? 0, ref))
-      }
-      if (fromClosure !== undefined && toClosure !== undefined && fromClosure !== toClosure) {
-        // A1 不变量 2′：仅 external **critical** 边计入闭包守卫入度
-        if (e.level === 'critical') {
-          inDegreeByClosure.set(toClosure, (inDegreeByClosure.get(toClosure) ?? 0) + 1)
-        }
-      }
-    }
-    const k = this.closureWindowK
-    const candidates: { id: string; root: Atom; lastRef: number; seqs: number[]; prunableSeqs: number[] }[] = []
-    const lastRootSeq = roots.length > 0 ? roots[roots.length - 1]?.seq : -1
-    for (const [id, root] of rootByClosure) {
-      if (root.seq === lastRootSeq) continue
-      const lastRecalled = this.closureLastRecalled.get(root.seq)
-      if (lastRecalled !== undefined && latestTurn - lastRecalled < k) continue
-      const lastRef = lastRefByClosure.get(id) ?? 0
-      if (lastRef > latestTurn - k) continue
-      if ((inDegreeByClosure.get(id) ?? 0) > 0) continue
-      const seqs = atoms.filter(a => closureOf.get(a.id) === id).map(a => a.seq).sort((x, y) => x - y)
-      if (seqs.length === 0) continue
-      // 过滤已剪原子：只剩已剪原子的闭包无可剪内容，不选；prunable 用于 intervals，seqs 全量用于记录
-      const prunableSeqs = seqs.filter(s => !alreadyPruned.has(s))
-      if (prunableSeqs.length === 0) continue
-      candidates.push({ id, root, lastRef, seqs, prunableSeqs })
-    }
-    if (candidates.length === 0) return null
-    candidates.sort((a, b) => a.lastRef - b.lastRef || a.root.seq - b.root.seq)
-    const chosen = candidates[0]
-    if (chosen === undefined) return null
-    const surfaceSeqs = session.surface.nodes
-    const position = new Map<number, number>(surfaceSeqs.map((seq, i) => [seq, i]))
-    const chosenSet = new Set(chosen.prunableSeqs)
-    const bySeq = new Map(atoms.map(a => [a.seq, a]))
-    const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
-    let current: number[] = []
-    for (const seq of surfaceSeqs) {
-      if (!chosenSet.has(seq)) {
-        if (current.length > 0) {
-          const intervalAtoms = current.map(s => bySeq.get(s)).filter((a): a is Atom => a !== undefined)
-          const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
-          intervals.push({ seqs: current, chars, atoms: intervalAtoms })
-          current = []
-        }
-        continue
-      }
-      current.push(seq)
-    }
-    if (current.length > 0) {
-      const intervalAtoms = current.map(s => bySeq.get(s)).filter((a): a is Atom => a !== undefined)
-      const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
-      intervals.push({ seqs: current, chars, atoms: intervalAtoms })
-    }
-    if (intervals.length === 0) return null
-    const chosenAtoms = chosen.prunableSeqs
-      .map(s => bySeq.get(s))
-      .filter((a): a is Atom => a !== undefined)
-    const rootPreview = chosen.root.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-    return {
-      closureId: chosen.id,
-      root: chosen.root,
-      rootPreview,
-      seqs: chosen.seqs,
-      atoms: chosenAtoms,
-      intervals,
-    }
+    // P5 Wave 3 第 4 步：实现迁 prune-selection.selectClosureToMerge（this → host 窄接口），本方法变薄编排。
+    return selectClosureToMerge(this as unknown as PruneSelectionHost, session, atoms, edges, inDegree, askCover, latestTurn, alreadyPruned)
   }
 
   // 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除（生产零调用、仅测试引用；
@@ -2433,65 +1180,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   private async resolveScaledBudgets(
     agent: CompactionAgentContext,
   ): Promise<{ windowTokens: number; retainTokens: number; declaredKnown: boolean }> {
-    const explicitWindow = this.explicitWindowTokens ? this.windowTokens : undefined
-    const explicitRetain = this.explicitRetainTokens ? this.retainTokens : undefined
-    let contextWindow: number | undefined
-    // 1) 真会话中 request/context 事件会写入 session.requestContext()，优先读取。
-    try {
-      const reqCtx = (agent.session as unknown as { requestContext?: () => { contextWindow?: number } | undefined }).requestContext?.()
-      if (reqCtx?.contextWindow !== undefined && reqCtx.contextWindow > 0) {
-        contextWindow = reqCtx.contextWindow
-      }
-    } catch {
-      contextWindow = undefined
-    }
-    // 1.5) 声明窗口缓存（request/context 事件的 WeakMap 副本）：覆盖 requestContext()
-    // 尚未落账但事件已流经的时序（pre-step 检查早于首个请求的落账窗口）。
-    if (contextWindow === undefined) {
-      const cached = this.declaredContextWindows.get(agent.session)
-      if (cached !== undefined && cached > 0) contextWindow = cached
-    }
-    // 2) fallback 到 llm.resolveModelInfo（旧路径/测试路径）。
-    if (contextWindow === undefined) {
-      try {
-        const provider = agent.options?.provider
-        const model = agent.options?.model
-        const llm = (this as unknown as { ctx: Context }).ctx.get('llm') as
-          | { resolveModelInfo?: (p: string, m: string, s: AbortSignal) => Promise<{ context?: { contextWindow?: number } }> }
-          | undefined
-        if (llm?.resolveModelInfo !== undefined && provider !== undefined && model !== undefined) {
-          // P1.3（2026-09-21）：旧代码用 new AbortController().signal 但该 controller 从未被
-          // abort——LLM 服务挂起时这个 await 无限阻塞 pre-step（外层 try/catch 只对 rejection
-          // 生效，对 hang 无效）。5s 超时把 hang 转成 rejection，落入既有 contextWindow=
-          // undefined 降级（declaredKnown=false 路径，宁缺勿错）。
-          const ac = new AbortController()
-          const t = setTimeout(() => ac.abort(), 5000)
-          try {
-            const info = await llm.resolveModelInfo(provider, model, ac.signal)
-            contextWindow = info.context?.contextWindow
-          } finally {
-            clearTimeout(t)
-          }
-        }
-      } catch {
-        contextWindow = undefined
-      }
-    }
-    // 3) 声明值完全未知（新会话首个 pre-step，且探测路径不可信/缺失）：标记
-    // declaredKnown=false，宁缺勿错——物理窗口口径（llama.cpp n_ctx）会让阈值放大
-    // 7×+，形同禁用。显式配置 windowTokens 的场景不依赖声明值，不受影响。
-    const declaredKnown = explicitWindow !== undefined
-      || (contextWindow !== undefined && contextWindow > 0)
-    if (!declaredKnown) {
-      this.log.info('[argp-graph] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
-    }
-    const scaled = scaleBudgets(contextWindow, {
-      explicitWindow, explicitRetain,
-      windowRatio: this.windowRatio, retainRatio: this.retainRatio,
-      fallbackWindow: this.windowTokens, fallbackRetain: this.retainTokens,
-    })
-    this.resolvedWindowTokens = scaled.windowTokens
-    return { ...scaled, declaredKnown }
+    // P5 Wave 3 第 4 步：实现迁 budget.resolveScaledBudgets（this → host 窄接口），本方法变薄编排。
+    return resolveScaledBudgets(this as unknown as BudgetHost, agent)
   }
 
   /**
@@ -2504,54 +1194,8 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
    */
   private consolidateTombstones(session: Session): number {
-    if (this.tombstoneMergeMinRun <= 0) return 0
-    const nodes = [...session.surface.nodes]
-    // 1) 收集每个 surface 节点的「可合并墓碑」布尔
-    const isTomb: boolean[] = new Array(nodes.length)
-    for (let i = 0; i < nodes.length; i += 1) {
-      const seq = nodes[i]
-      const ev = sessionEvents(session)[seq]
-      if (ev === undefined || ev.type !== 'user/message') { isTomb[i] = false; continue }
-      if (classifyUserMessage(ev.data) !== 'X') { isTomb[i] = false; continue }
-      isTomb[i] = isMergeableTombstone(eventText(session, seq))
-    }
-    // 2) 找第一段长度 ≥ minRun 的连续墓碑
-    const minRun = this.tombstoneMergeMinRun
-    let runStart = -1, runEnd = -1
-    for (let i = 0; i <= nodes.length; i += 1) {
-      const inRun = i < nodes.length && isTomb[i]
-      if (inRun) { if (runStart === -1) runStart = i }
-      else if (runStart !== -1) {
-        const len = i - runStart
-        if (len >= minRun) { runEnd = i - 1; break }
-        runStart = -1
-      }
-    }
-    if (runStart === -1 || runEnd === -1) return 0
-    // 3) 校验事务边界 tool-pairing 平衡（与 compactRegion 同判据），不平衡则放弃归并
-    if (!toolPairingBalancedBefore(session, nodes[runStart]!) || !toolPairingBalancedAfter(session, nodes[runEnd]!)) {
-      this.log.info('[argp-graph] tombstone-merge: boundary not tool-pairing balanced, skip')
-      return 0
-    }
-    const tombSeqs = nodes.slice(runStart, runEnd + 1) as number[]
-    const tombAtoms: Atom[] = tombSeqs.map(seq => ({
-      id: -1, seq, type: 'X' as AtomType, turn: 0,
-      text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false,
-    }))
-    const chars = tombAtoms.reduce((s, a) => s + a.text.length, 0)
-    const interval = { seqs: tombSeqs, chars, atoms: tombAtoms }
-    // 聚合墓碑文本：保持「[elided … pruned by ARGP … recall_pruned」形态（自身可再归并，
-    // 地板随压缩次数收敛到常数；seq 跨度显式保留，被吞聚合的内部 seq 可递归 recall）。
-    const aggText = '[elided consolidated ×' + tombSeqs.length + ' seqs=' + tombSeqs[0] + '..' + tombSeqs[tombSeqs.length - 1]
-      + ': these placeholder nodes were themselves pruned by ARGP (tombstone-merge, §11.8); originals remain recallable via recall_pruned(seq) / list_pruned]'
-    try {
-      this.pruneIntervals(session, [interval], 0, 0, true, [{ type: 'user', text: aggText }], 'tombstone-merge')
-    } catch (error: unknown) {
-      // 归并是「优化地板」的尽力步骤，失败不阻断主图剪（回退：墓碑继续累积，由 overflow 三步序列兜底）
-      this.log.warn('[argp-graph] tombstone-merge failed (non-fatal): ' + (error instanceof Error ? error.message : String(error)))
-      return 0
-    }
-    return tombSeqs.length
+    // P5 Wave 3 第 4 步：实现迁 prune-tx.consolidateTombstones（this → host 窄接口），本方法变薄编排。
+    return consolidateTombstones(this as unknown as PruneTxHost, session)
   }
 
   /**
@@ -2600,7 +1244,8 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 额度用尽则不再重挂（避免"每步白压"）。
    */
   private rearmReactive(session: Session, used: number): void {
-    if (used < this.reactiveRetries) this.reactivePending.set(session, true)
+    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.rearmReactive（this → host 窄接口），本方法变薄编排。
+    rearmReactive(this as unknown as LifecycleHost, session, used)
   }
 
   /**
@@ -2924,26 +1569,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     signal: AbortSignal,
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
-    this.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
-    signal.throwIfAborted()
-    // /compact 链路（command-compact 调用方传入 commandId）：透传给事务事件做
-    // presentation correlation（对齐 compaction-basic 的 sourceCommandId 语义）。
-    this.compactSourceCommandId = sourceCommandId
-    try {
-      const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
-        const opSignal = AbortSignal.any([signal, agentSignal])
-        opSignal.throwIfAborted()
-        // 多段收集（2026-09-21 修复）：surface 被用户消息切成多段时，旧实现只剪最老一段。
-        const ranges = this.selectManualRanges(agent.session)
-        return this.compactRegions(ranges, agent, opSignal)
-      }
-      if (typeof agent.runMaintenance === 'function') {
-        return agent.runMaintenance(run)
-      }
-      return run(signal)
-    } finally {
-      this.compactSourceCommandId = undefined
-    }
+    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.compactNow（this → host 窄接口），本方法变薄编排。
+    return compactNow(this as unknown as LifecycleHost, agent, signal, sourceCommandId)
   }
 
   override async compactRegion(
@@ -2952,37 +1579,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     agent: CompactionAgentContext,
     signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    this.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
-    signal?.throwIfAborted()
-    const session = agent.session
-    const nodes = session.surface.nodes
-    const startIdx = nodes.indexOf(asSeq(start))
-    const endIdx = nodes.indexOf(asSeq(end))
-    if (startIdx === -1) throw new Error('compactRegion: start seq ' + start + ' not found in surface')
-    if (endIdx === -1) throw new Error('compactRegion: end seq ' + end + ' not found in surface')
-    if (startIdx > endIdx) throw new Error('compactRegion: start seq ' + start + ' is after end seq ' + end + ' on the surface')
-    if (!toolPairingBalancedBefore(session, nodes[startIdx])) throw new Error('compactRegion: start seq ' + start + ' is not a balanced boundary')
-    if (!toolPairingBalancedAfter(session, nodes[endIdx])) throw new Error('compactRegion: end seq ' + end + ' is not a balanced boundary')
-
-    const shadowedSeqs = nodes.slice(startIdx, endIdx + 1)
-    const atoms = this.atomize(session)
-    const bySeq = new Map(atoms.map(a => [a.seq, a]))
-    const intervalAtoms = shadowedSeqs.map(seq => bySeq.get(seq)).filter((a): a is Atom => a !== undefined)
-    if (intervalAtoms.some(a => a.type === 'U' || a.type === 'X')) {
-      // P5：措辞 scoped 到手动入口。自动闭包生命周期（compactIfNeeded 降级链内联）确实会连 root U
-      // （task-init）与 X checkpoint 一起剪除；"ARGP never prunes U/X" 只对本手动入口成立。
-      throw new Error('compactRegion (manual) does not prune U/X spans; choose a span without U/X, '
-        + 'or let the automatic closure lifecycle retire those nodes together with their closure')
-    }
-    if (intervalAtoms.length === 0) {
-      throw new Error('compactRegion: selected span contains no prunable A/R atoms')
-    }
-    const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
-    const interval = { seqs: shadowedSeqs, chars, atoms: intervalAtoms }
-    // 本入口不传 tombstones → pruneIntervals 的 P1.2 预校验不会剔除任何区间，null 不可达。
-    const result = this.pruneIntervals(session, [interval], 0, 0, true)
-    if (result === null) throw new Error('compactRegion: pruneIntervals unexpectedly returned null (no tombstones passed; unreachable)')
-    return result
+    // P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegion（this → host 窄接口），本方法变薄编排。
+    return compactRegion(this as unknown as PruneTxHost, start, end, agent, signal)
   }
 
   /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
@@ -2994,70 +1592,23 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  修复（2026-09-21）：旧实现扫到第一个不合格节点就 `break`，而真实会话的 surface 被
    *  用户消息切成「U A R A R U A R …」多段结构 ⇒ 手动 /compact 永远只剪最老一小段
    *  （表现为"图剪压不动"）。现在改为收集全部极大连续段，交给一笔 pruneIntervals 事务剪除。
+   *  P5 Wave 3 第 4 步：实现迁 prune-tx.selectManualRanges（this → host 窄接口），本方法变薄编排。
    */
   private selectManualRanges(session: Session): { start: number; end: number }[] {
-    const surfaceSeqs = session.surface.nodes
-    const atoms = this.atomize(session)
-    const bySeq = new Map(atoms.map(a => [a.seq, a]))
-    const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
-    const recencyCut = Math.max(0, surfaceSeqs.length - this.recencyGuard)
-    const ranges: { start: number; end: number }[] = []
-    let start: number | null = null
-    let end = -1
-    const flush = (): void => {
-      if (start !== null) ranges.push({ start, end })
-      start = null
-      end = -1
-    }
-    for (let i = 0; i < surfaceSeqs.length; i += 1) {
-      const seq = surfaceSeqs[i]
-      const atom = bySeq.get(seq)
-      const eligible = atom !== undefined
-        && atom.type !== 'U' && atom.type !== 'X'
-        && atom.turn <= latestTurn - this.turnGuard
-        && i < recencyCut
-      if (!eligible) {
-        flush() // 不合格节点就地闭合当前段（不再终止整个扫描）
-        continue
-      }
-      if (start === null) start = seq
-      end = seq
-    }
-    flush()
-    return ranges
+    return selectManualRanges(this as unknown as PruneTxHost, session)
   }
 
   /** 手动多区间压缩：逐段复核边界后合并为一笔事务剪除。
    *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
    *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
-   *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。 */
+   *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。
+   *  P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegions（this → host 窄接口），本方法变薄编排。 */
   private compactRegions(
     ranges: { start: number; end: number }[],
     agent: CompactionAgentContext,
     signal: AbortSignal,
   ): CompactionResult | null {
-    if (ranges.length === 0) return null
-    this.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
-    signal.throwIfAborted()
-    const session = agent.session
-    const nodes = session.surface.nodes
-    const bySeq = new Map(this.atomize(session).map(a => [a.seq, a]))
-    const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
-    for (const range of ranges) {
-      const startIdx = nodes.indexOf(asSeq(range.start))
-      const endIdx = nodes.indexOf(asSeq(range.end))
-      if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) continue
-      if (!toolPairingBalancedBefore(session, nodes[startIdx])) continue
-      if (!toolPairingBalancedAfter(session, nodes[endIdx])) continue
-      const shadowedSeqs = nodes.slice(startIdx, endIdx + 1)
-      const intervalAtoms = shadowedSeqs.map(seq => bySeq.get(seq)).filter((a): a is Atom => a !== undefined)
-      if (intervalAtoms.length === 0) continue
-      if (intervalAtoms.some(a => a.type === 'U' || a.type === 'X')) continue
-      const chars = intervalAtoms.reduce((sum, a) => sum + a.text.length, 0)
-      intervals.push({ seqs: shadowedSeqs, chars, atoms: intervalAtoms })
-    }
-    if (intervals.length === 0) return null
-    return this.pruneIntervals(session, intervals, 0, 0, true)
+    return compactRegions(this as unknown as PruneTxHost, ranges, agent, signal)
   }
 
   /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
@@ -3073,198 +1624,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
     summaryKind?: 'graph-prune' | 'tombstone-merge',
   ): CompactionResult | null {
-    // P1.2（2026-09-21）：事务开始前预校验 tool 占位墓碑的可克隆性。带 tool 墓碑的单 R 区间
-    // 必须克隆原 R data（只改 inner text）以配对 issuer A 的 tool_calls；若原事件
-    // data/message/content 缺失（损坏事件），旧代码落入 user 墓碑分支 → R 节点被 user/message
-    // 替换 → issuer A 的 tool_calls 失去应答 → 序列化 role:"tool" 悬空 → provider 400。
-    // 事务前预校验 canCloneTool：无法克隆的单 R 区间从待剪集合剔除（保留该 R 活体、不剪）并
-    // warn；后续循环用过滤后的区间集合。循环内守卫保留为防御性 backstop（预校验通过后可达性为零）。
-    const canCloneTool = (seq: number): boolean => {
-      const ev = sessionEvents(session)[seq] as { data?: Record<string, unknown> } | undefined
-      const data = ev?.data
-      const msg = data?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
-      return data !== undefined && msg !== undefined && msg.content?.[0] !== undefined
-    }
-    type TombstoneSpec = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string }
-    let useIntervals = intervals
-    let useTombstones = tombstones
-    if (tombstones !== undefined && tombstones.length === intervals.length) {
-      const droppedSeqs: number[] = []
-      const keptIv: typeof intervals = []
-      const keptTs: TombstoneSpec[] = []
-      for (let i = 0; i < intervals.length; i += 1) {
-        const iv = intervals[i]
-        const ts = tombstones[i]
-        if (ts !== undefined && ts.type === 'tool' && iv.seqs.length === 1 && !canCloneTool(ts.seq)) {
-          droppedSeqs.push(ts.seq)
-          continue
-        }
-        keptIv.push(iv)
-        if (ts !== undefined) keptTs.push(ts)
-      }
-      if (droppedSeqs.length > 0) {
-        this.log.warn('[argp-graph] tool tombstone clone pre-check failed for seq(s) ' + droppedSeqs.join(',')
-          + '; keeping those R node(s) alive (not pruned) to preserve issuer tool_calls pairing')
-        // 调用方（图剪）在事务前已把这些原子索引进 prunedNodeIndex；节点保留活体，
-        // 删除索引条目保持 recall 账本诚实（活体节点不应出现在 pruned 索引）。
-        for (const seq of droppedSeqs) this.prunedNodeIndex.delete(seq)
-        useIntervals = keptIv
-        useTombstones = keptTs
-      }
-    }
-    if (useIntervals.length === 0) return null
-    const charsBefore = this.visibleChars(session)
-    const openTurn = detectOpenTurn(session)
-    const compactionId = CompactionId('argp-graph-' + randomUUID())
-    const lifecycle = { compactionId, turn: openTurn }
-    const allSeqs = useIntervals.flatMap(iv => iv.seqs)
-    const first = useIntervals[0]?.seqs[0] ?? 0
-    const last = useIntervals[useIntervals.length - 1]?.seqs[useIntervals[useIntervals.length - 1]!.seqs.length - 1] ?? first
-
-    const startEvent = session.append('compaction/start', {
-      ...lifecycle,
-      // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）
-      ...this.compactSourceCommandId === undefined ? {} : { sourceCommandId: this.compactSourceCommandId },
-    })
-    try {
-      const shadowedTokenCount = Math.ceil(useIntervals.reduce((s, iv) => s + iv.chars, 0) / this.charsPerToken)
-      const resolvedTombstones = useTombstones !== undefined && useTombstones.length === useIntervals.length
-        ? useTombstones
-        : useIntervals.map(iv => ({
-            type: 'user' as const,
-            text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-              + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-              + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]',
-          }))
-      const intervalRecords: { start: number; end: number; tombstoneSeq: number }[] = []
-      let firstPruneSeq: number | undefined
-      for (let i = 0; i < useIntervals.length; i += 1) {
-        const iv = useIntervals[i]
-        if (iv === undefined) continue
-        const start = iv.seqs[0] as number
-        const end = iv.seqs[iv.seqs.length - 1] as number
-        // Shadow-price 契约（宿主 token-meter foldSurfaceProjection）：compaction/prune 的
-        // shadowedRange 必须与紧随其后的 surface replace 范围**严格相等**，否则重放投影 throw
-        // （2026-09-01 实测：多区间事务发一个总跨度 claim 再逐区间 replace，第一个 replace
-        // 即撞总 claim → resume 报 "no adjacent shadow price"）。故每区间一个 shadow-price
-        // 事件，范围=该单区间，与官方 compaction-tool-result-pruner 同模式；末尾 summary 的
-        // 总范围 claim 被紧随的 off-surface compaction/end 清掉，无契约冲突。
-        const intervalPrune = session.append('compaction/prune', {
-          shadowedRange: { start: asSeq(start), end: asSeq(end) },
-          shadowedSeqs: asSeqs(iv.seqs),
-          shadowedTokenCount: Math.ceil(iv.chars / this.charsPerToken),
-        })
-        if (firstPruneSeq === undefined) firstPruneSeq = intervalPrune.seq
-        const ts = resolvedTombstones[i]
-        if (ts !== undefined && ts.type === 'tool' && iv.seqs.length === 1) {
-          // tool 占位墓碑：克隆原 R data，只改 tool-result block 的 inner text
-          const origEvent = sessionEvents(session)[ts.seq] as { data?: Record<string, unknown> } | undefined
-          const origData = origEvent?.data
-          const origMsg = origData?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
-          const origBlock = origMsg?.content?.[0]
-          if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
-            const tombstone = session.append('tool/result', {
-              ...origData,
-              message: {
-                ...(origMsg as object),
-                content: [{
-                  type: 'tool-result',
-                  toolCallId: origBlock.toolCallId ?? ts.callId,
-                  isError: origBlock.isError ?? false,
-                  content: [{ type: 'text', text: '[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]' }],
-                }],
-              },
-            } as never, {
-              surfaceOp: { op: 'replace', startSeq: asSeq(ts.seq), endSeq: asSeq(ts.seq) },
-              sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
-            })
-            intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
-            continue
-          }
-          // 原 R data 不可用时回退 user 墓碑（安全方向：无结构化 tool-result → 无孤儿配对问题）
-        }
-        const text = ts !== undefined && ts.type === 'user'
-          ? ts.text
-          : '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-            + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-            + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
-        const tombstone = session.append('user/message', createUserMessage({
-          content: [{ type: 'text', text }],
-          source: compactCheckpointSource(compactionId),
-        }), {
-          surfaceOp: { op: 'replace', startSeq: asSeq(start), endSeq: asSeq(end) },
-          sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
-        })
-        intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
-      }
-      // 人类可读剪枝摘要（2026-08-28 UI 联调）：compaction 节点的展示文本来自
-      // compaction/summary 事件；不发则 WebUI 显示"压缩摘要不可用"。off-surface
-      // 日志事件，模型不可见。payload 按 CompactionSummary 词典填诚实值，类型走 as never。
-      const prunedCount = useIntervals.reduce((sum, iv) => sum + iv.atoms.length, 0)
-      const charsBefore0 = useIntervals.reduce((sum, iv) => sum + iv.chars, 0)
-      session.append('compaction/summary', {
-        ...lifecycle,
-        summary: [{
-          type: 'text',
-          text: summaryKind === 'tombstone-merge'
-            ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
-            : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${Math.ceil(charsBefore0 / this.charsPerToken)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
-        }],
-        shadowedRange: { start: first, end: last },
-        shadowedSeqs: allSeqs,
-        shadowedTokenCount: Math.ceil(charsBefore0 / this.charsPerToken),
-        provider: 'argp',
-        model: 'deterministic-guards',
-      } as never)
-      const endEvent = session.append('compaction/end', lifecycle)
-      const charsAfter = this.visibleChars(session)
-      pushBounded(this.records, {
-        at: new Date().toISOString(),
-        compactionId,
-        ...this.compactSourceCommandId === undefined ? {} : { sourceCommandId: this.compactSourceCommandId },
-        intervals: intervalRecords,
-        startEventSeq: startEvent.seq,
-        summaryEventSeq: firstPruneSeq ?? startEvent.seq,
-        endEventSeq: endEvent.seq,
-        shadowedSeqs: allSeqs,
-        prunedAtoms: useIntervals.flatMap(iv => iv.atoms.map(a => ({ id: a.id, type: a.type, seq: a.seq }))),
-        semanticEdges,
-        candidates: candidateCount,
-        charsBefore,
-        charsAfter,
-        forced,
-      }, this.telemetryCap)
-      // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）
-      this.recallCharsUsed = 0
-      // 2026-08-23：压缩换代 surface——旧真实锚点（压缩前的 provider usage）失效，
-      // 若保留会用大锚点 + 增量导致压缩后立即误触发。用压缩后 surface 估算重置锚点
-      // （压缩后 surface 小、估算误差影响小；下一次请求的 usage 会再次精确锚定）。
-      const nodes = session.surface.nodes
-      const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
-      this.lastRealPromptTokens = Math.ceil(this.visibleChars(session) / this.charsPerToken)
-      this.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : this.lastRealAnchorSeq
-      // 永久冻结：落剪不再刷新 frozenCatalog（见 bindSession 注释）。剪枝本身已让可见上下文换代，
-      // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。
-      return {
-        compactionId,
-        startSeq: asSeq(startEvent.seq),
-        summarySeq: asSeq(firstPruneSeq ?? startEvent.seq),
-        endSeq: asSeq(endEvent.seq),
-        summary: resolvedTombstones.map(ts => ({ type: 'text', text: ts.type === 'tool'
-          ? '[elided tool result; recall_pruned(seq) retrieves original]' : ts.text })),
-        shadowedRange: { start: asSeq(first), end: asSeq(last) },
-        shadowedSeqs: asSeqs(allSeqs),
-        shadowedTokenCount,
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      try {
-        session.append('compaction/end', { ...lifecycle, error: message })
-      } catch {
-        // 关闭失败保留未配对 start，可被 inspectCompactionEntryState 检出
-      }
-      throw error
-    }
+    // P5 Wave 3 第 4 步：实现迁 prune-tx.pruneIntervals（this → host 窄接口），本方法变薄编排。
+    return pruneIntervals(this as unknown as PruneTxHost, session, intervals, semanticEdges, candidateCount, forced, tombstones, summaryKind)
   }
 
   /**
@@ -3274,103 +1635,8 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
    */
   rebuildLedgerFromLog(): void {
-    if (this.session === null) return
-    const events = sessionEvents(this.session)
-    const starts: { seq: number; compactionId: string; lifecycle: Record<string, unknown> }[] = []
-    const prunes: { seq: number; start: number; end: number; shadowedSeqs: number[]; shadowedTokenCount: number }[] = []
-    const ends = new Set<number>()
-    const endByStart = new Map<number, { endSeq: number; error?: string }>()
-    for (let i = 0; i < events.length; i += 1) {
-      const event = events[i]
-      if (event === undefined) continue
-      if (event.type === 'compaction/start') {
-        starts.push({ seq: i, compactionId: String((event.data as { compactionId?: unknown }).compactionId ?? ''), lifecycle: event.data as Record<string, unknown> })
-      } else if (event.type === 'compaction/prune') {
-        const d = event.data as { shadowedRange?: { start?: number; end?: number }; shadowedSeqs?: number[]; shadowedTokenCount?: number }
-        prunes.push({ seq: i, start: d.shadowedRange?.start ?? 0, end: d.shadowedRange?.end ?? 0, shadowedSeqs: d.shadowedSeqs ?? [], shadowedTokenCount: d.shadowedTokenCount ?? 0 })
-      } else if (event.type === 'compaction/end') {
-        ends.add(i)
-        const d = event.data as { compactionId?: unknown; error?: unknown }
-        const s = starts.find(st => st.compactionId === d.compactionId)
-        if (s !== undefined) endByStart.set(s.seq, { endSeq: i, error: typeof d.error === 'string' ? d.error : undefined })
-      }
-    }
-    // 账目重建：shadowed 集合直接复用 shadowedSeqsOf 的增量游标（问题 8：删重复扫描循环，
-    // shadowedSeqsOf 已从上次扫描处继续到 events.length，同一游标不冲突）
-    this.shadowedSeqsOf(this.session)
-    // 事件类型反查（问题 8）：从日志真实事件反推原子类型/轮次，不再一律占位 'A'/turn 0。
-    // 分类口径与 atomize 一致：统一走 classifyUserMessage（先 data[argp].info → U，再 plugin 源 → X）。
-    const typeOfSeq = (seq: number): AtomType => {
-      const event = this.session === null ? undefined : sessionEvents(this.session)[seq]
-      if (event === undefined) return 'X'
-      if (event.type === 'user/message') return classifyUserMessage(event.data)
-      if (event.type === 'assistant/message') return 'A'
-      if (event.type === 'tool/result') return 'R'
-      return 'X'
-    }
-    const turnOfSeq = (seq: number): number => {
-      const event = this.session === null ? undefined : sessionEvents(this.session)[seq]
-      return event === undefined ? 0 : (turnOf(event) ?? 0)
-    }
-    // 逐 start 配对：收集该事务区间（start..end）内的**全部** compaction/prune 与 end。
-    // 2026-09-01 修复：pruneIntervals 改为逐区间发 prune（每区间一个 shadow-price 事件，
-    // 对齐宿主 foldSurfaceProjection 严格相等契约），一个事务含多个 prune；
-    // 旧"start 后最近一个 prune"假设失效 → 改为收集事务内全部并合并（兼容旧单 prune 日志：
-    // 此时区间内恰一个，合并结果等同旧行为）。
-    for (const s of starts) {
-      // 幂等守卫：已重建过则跳过（防止 setSession 自动重建后，测试显式 rebuildLedgerFromLog 再重建）
-      if (this.rebuiltCompactionIds.has(s.compactionId)) continue
-      const end = endByStart.get(s.seq)
-      if (end === undefined) {
-        // 未闭合 start：仅告警，不重建记录；标记已处理防止重复告警
-        if (!this.rebuiltCompactionIds.has(s.compactionId)) {
-          pushBounded(this.auditWarnings, 'unclosed compaction start at seq ' + s.seq + ' (compactionId=' + s.compactionId + '); transaction may have been interrupted', this.telemetryCap)
-          this.rebuiltCompactionIds.add(s.compactionId)
-        }
-        continue
-      }
-      const txPrunes = prunes
-        .filter(p => p.seq > s.seq && p.seq < end.endSeq)
-        .sort((a, b) => a.seq - b.seq)
-      if (txPrunes.length === 0) continue
-      // 标记已重建（重建后不重复，防止再次 rebuildLedgerFromLog 时追加）
-      this.rebuiltCompactionIds.add(s.compactionId)
-      const txPrune = txPrunes[0]!
-      const intervalSeqs = txPrunes.flatMap(p => p.shadowedSeqs)
-      const charsBefore = 0 // 日志无快照，账目重建不伪造数值
-      const charsAfter = 0
-      const intervalRecords = intervalSeqs.length > 0
-        ? [{ start: intervalSeqs[0] as number, end: intervalSeqs[intervalSeqs.length - 1] as number, tombstoneSeq: end.endSeq }]
-        : []
-      const prunedAtoms: { id: number; type: AtomType; seq: number }[] = intervalSeqs.map(seq => ({ id: seq, type: typeOfSeq(seq), seq }))
-      pushBounded(this.records, {
-        at: String((s.lifecycle as { at?: unknown }).at ?? ''),
-        compactionId: s.compactionId,
-        intervals: intervalRecords,
-        startEventSeq: s.seq,
-        summaryEventSeq: txPrune.seq,
-        endEventSeq: end.endSeq,
-        shadowedSeqs: intervalSeqs,
-        prunedAtoms,
-        semanticEdges: 0,
-        candidates: 0,
-        charsBefore,
-        charsAfter,
-        forced: false,
-      }, this.telemetryCap)
-      for (const seq of intervalSeqs) {
-        if (!this.prunedNodeIndex.has(seq)) {
-          this.prunedNodeIndex.set(seq, {
-            seq,
-            type: typeOfSeq(seq), // 问题 8：真实类型反查（R/U 不再一律 'A'）
-            turn: turnOfSeq(seq),
-            firstLine: '(rebuilt from log) seq=' + seq,
-            citedBySeq: [],
-            eff: 0,
-          })
-        }
-      }
-    }
+    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.rebuildLedgerFromLog（this → host 窄接口），本方法变薄编排。
+    rebuildLedgerFromLog(this as unknown as LifecycleHost)
   }
 
   // 2026-09-21（P5 Wave 3 第 3 步）：detectOpenTurn 已迁 log-access 叶子

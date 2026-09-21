@@ -1,3 +1,14 @@
+/**
+ * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
+ *
+ * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 design-vs-impl-trace.md（已迁出公开仓库））：
+ *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
+ *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
+ *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
+ *    实测：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 三类），call 块内嵌在 assistant/message 里
+ *  - cites 义务开启：正为回答母表待决项（本地新 SOTA 模型的 cites 服从率）
+ *  - 触发/目标同一可见字符估算基准（不变式 2）；reasoning 块不计入预算（spike 4a 判决 C）
+ */
 import type { Context } from '@deepseek-ai/cordis';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
@@ -6,63 +17,27 @@ import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { NodeState as NodeStateLabel } from './log-access.js';
 export type { NodeState, LogRow, LogRowType } from './log-access.js';
 export { eventText } from './log-access.js';
-import type { Atom, AtomType, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js';
+import type { Atom, SemanticEdge, DeterministicEdge } from './argp-types.js';
 export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js';
 export { EDGE_WEIGHTS } from './argp-types.js';
-import type { ParsedCite } from './cites-strip.js';
 export type { ParsedCite, CiteLevel } from './cites-strip.js';
-import { type InferredEdgeOptions } from './token-ontology.js';
+import type { InferredEdgeOptions } from './token-ontology.js';
 import { type PresetCleanOptions } from './preset-cleaner.js';
+import { type CiteStats, type InferredStats } from './graph-build.js';
+export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js';
+export type { CiteStats, InferredStats } from './graph-build.js';
+export { scaleBudgets } from './budget.js';
+import { type PrunedNodeInfo } from './prune-selection.js';
+export { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones } from './prune-selection.js';
+export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js';
+import { type GraphPruneRecord } from './prune-tx.js';
+export { isMergeableTombstone } from './prune-tx.js';
+export type { GraphPruneRecord } from './prune-tx.js';
+export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js';
 export type { PresetCleanOptions, PresetCleanReport, PresetRow } from './preset-cleaner.js';
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js';
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js';
-import z from '@deepseek-ai/schemastery';
-/** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
-export declare const ARG_SETTINGS_KEY = "dsh-argp";
-/** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
-export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;
-/** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
-export declare function scaleBudgets(contextWindow: number | undefined, opts: {
-    windowRatio?: number;
-    retainRatio?: number;
-    explicitWindow?: number;
-    explicitRetain?: number;
-    fallbackWindow?: number;
-    fallbackRetain?: number;
-}): {
-    windowTokens: number;
-    retainTokens: number;
-};
-/**
- * A8（问题 10 修订）：ask 检测中英双语纯函数。
- * 英文：'?' / ask / what；中文：？/ 吗 / 呢 / 什么 / 怎么 / 如何 / 能否 / 能不能。
- * /帮我/ 由子串收窄为句首（^请|^帮我|^能不能|^能否），避免 "顺便帮我带个话" 之类
- * 非问句/非请求主语误命中；疑问词 什么/怎么/如何 仍保留子串（问句核心成分，方向保守=少剪）。
- * 导出供测试直接锁定收窄行为。
- */
-export declare function looksAskText(text: string): boolean;
-/**
- * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
- *
- * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
- * 插件 append，但必须按 U 待遇参与剪枝候选），再落 `source.kind === 'plugin'` → X
- * （墓碑/checkpoint）判定。若先判 plugin-source，U-info 会被分类成 X 而**全局不可剪**，
- * P4 的候选放行将永远失效。
- *
- * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
- * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
- */
-export declare function classifyUserMessage(data: unknown): 'U' | 'X';
-/**
- * tombstone 可合并判据（v1.2.x §11.8① 修复）。X 原子中仅「本引擎剪枝墓碑」可安全合并：
- * 文本以 `[elided` 开头、含 pruned by ARGP 与 recall_pruned 取回提示（覆盖默认区间
- * 墓碑与 closure 墓碑两种形态；tool 占位墓碑 `[elided: ...` 缺 pruned by ARGP → 不合并，
- * 且 consolidateTombstoneRuns 只认 user/message 事件，双保险防孤儿 tool_calls）。
- * 其余 X（宿主 system-reminder、官方摘要 checkpoint、注入型 checkpoint）不可动。
- * 导出供测试锁定行为。
- */
-export declare function isMergeableTombstone(text: string): boolean;
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
     windowTokens?: number;
@@ -259,31 +234,6 @@ export interface ArgpGraphConfig {
      */
     onPrePressureCompress?: (session: Session) => Promise<void>;
 }
-export interface GraphPruneRecord {
-    at: string;
-    compactionId: string;
-    /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
-    sourceCommandId?: string;
-    intervals: {
-        start: number;
-        end: number;
-        tombstoneSeq: number;
-    }[];
-    startEventSeq: number;
-    summaryEventSeq: number;
-    endEventSeq: number;
-    shadowedSeqs: number[];
-    prunedAtoms: {
-        id: number;
-        type: AtomType;
-        seq: number;
-    }[];
-    semanticEdges: number;
-    candidates: number;
-    charsBefore: number;
-    charsAfter: number;
-    forced: boolean;
-}
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
  * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
@@ -300,138 +250,6 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     seq: number;
     data?: Record<string, unknown>;
 }): void;
-/**
- * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
- * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
- * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
- */
-export declare function extractCites(text: string): {
-    body: string;
-    cites: ParsedCite[];
-    attempted: boolean;
-    parseFailed: boolean;
-};
-/** cites 服从率度量台账（C7-cites 判决用）。 */
-export interface CiteStats {
-    aAtoms: number;
-    declared: number;
-    resolved: number;
-    ambiguous: number;
-    failed: number;
-}
-/** 推断边统计（v1.2.0；最近一次 buildGraph 口径，每次建图重置；skippedDup = 与既有声明边同 (from,to) 被去重）。 */
-export interface InferredStats {
-    candidates: number;
-    accepted: number;
-    skippedDup: number;
-}
-/**
- * P5 结构重构 Wave 3 第 2 步（C 报告 S2）：compactIfNeeded 拆分出的模块级纯函数。
- *
- * 背景：compactIfNeeded 原约 365 行单函数，内含 3 个闭包（isAtomCandidate /
- * isGroupCandidate / sortKey，闭包捕获 this 与局部 state）+ ~100 行贪心 for-pass
- * 循环 + ~80 行区间归并/tombstone 生成，单函数不可测不可读。现将「无 this 副作用」
- * 的判定/排序/归并/墓碑段提升为模块级纯函数：原来闭包捕获的 this 字段与局部量
- * 打包成显式 state 参数（PruneState）传入，函数体逻辑逐字保留（this.x → state.x）。
- * 贪心 for-pass 循环与 this 交互过深（selectClosureToMerge 会 this.nextClosureId++、
- * 写 this.closurePrunes、调 this.summarizeCriticalChain、读 this.degradationStrategy/
- * maxPasses/enableSummarize、process.env 调试副作用），抽出会改变控制流/副作用顺序，
- * 故保留在方法内（见 compactIfNeeded）。
- *
- * 导出（export function）供未来独立单测；**不**加进 src/index.ts 公共 API。
- */
-/** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
-export interface PruneInterval {
-    seqs: number[];
-    chars: number;
-    atoms: Atom[];
-    hasSoloR: boolean;
-}
-/** 区间 tombstone 规格：user 文本墓碑 或 tool 占位墓碑（保留 callId 配对 issuer A 的 tool_calls）。 */
-export type PruneTombstone = {
-    type: 'user';
-    text: string;
-} | {
-    type: 'tool';
-    seq: number;
-    callId: string;
-};
-/**
- * compactIfNeeded 拆出纯函数共享的显式 state：原 3 个闭包捕获的 this 字段与局部量。
- * - turnGuard / sortMode / charsPerToken：原闭包读 this.<getter>；此处快照为值（方法执行期间
- *   guardOverride/argpSettings 稳定，快照等价）。
- * - curInDegree / curInDegreeDecl：每 pass 重推（链式解锁），方法内每 pass 更新本字段，
- *   纯函数按调用时读取当前 pass 值（与原闭包捕获 let 绑定的语义一致）。
- * - chainLen：findVersionDuplicates 产物；仅 sortKey 使用，且 sortKey 只在 pass 循环内调用
- *   （届时已回填），构造期占位空 Map 不会被读到。
- */
-export interface PruneState {
-    turnGuard: number;
-    askCoverage: Map<number, number>;
-    position: Map<number, number>;
-    recencyCut: number;
-    latestTurn: number;
-    edges: SemanticEdge[];
-    atoms: Atom[];
-    curInDegree: Map<number, number>;
-    curInDegreeDecl: Map<number, number>;
-    deterministicEdges: DeterministicEdge[];
-    touchesSemantic: Set<number>;
-    eff: Map<number, number>;
-    sortMode: 'legacy' | 'density' | 'density-chain';
-    chainLen: Map<number, number>;
-    lastRef: Map<number, number>;
-    charsPerToken: number;
-}
-/**
- * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
- * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走
- * recencyGuard/turnGuard/citesFailed/A10 结构保护/入度门槛。
- */
-export declare function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneState): boolean;
-/** 组候选判定（原 isGroupCandidate 闭包）：组内全部原子均候选。 */
-export declare function isGroupCandidate(g: Atom[], allowInDegree: boolean, state: PruneState): boolean;
-/**
- * 排序键（原 sortKey 闭包，§4.5 + spike 18 提案）：默认 legacy = [lvl, eff, lastRef, seq]；
- * density = eff 同档内 token 降序（大 token 先剪）；density-chain = density + 链代表 eff 叠加。
- */
-export declare function sortKey(a: Atom, state: PruneState): string;
-/**
- * 区间归并（原 compactIfNeeded 内区间归并段，逐字保留）。
- * 按极大连续区间归并 pruned 原子；R 原子（issuer A 未被剪）强制单独成区间（tool 占位墓碑
- * 的 surface replace 必须恰好替换 1 节点）；双向守卫防孤儿 tool 消息；
- * 区间可见量 < minSpanChars 的放回（不剪）。
- * 入参 = pruned 原子集合 + position/issuerByCall 局部量 + minSpanChars（原 this.minSpanChars）；
- * 出参 = 归并后区间 kept + droppedIntervals（放回区间数，原方法内计算但未被读取，保留以逐字对应）。
- */
-export declare function mergeIntervals(pruned: Map<number, Atom>, position: Map<number, number>, issuerByCall: Map<string, Atom>, minSpanChars: number): {
-    kept: PruneInterval[];
-    droppedIntervals: number;
-};
-/**
- * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留）。
- * 区间原子全部来自同一闭包 → 闭包 tombstone（带 root/计数，recall 消歧）；
- * 单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的 tool_calls）；
- * 否则默认 user 文本墓碑（forced 时标注）。
- */
-export declare function buildTombstones(kept: PruneInterval[], closureSeqMeta: Map<number, {
-    closureId: string;
-    rootPreview: string;
-    closureTotal: number;
-}>, issuerByCall: Map<string, Atom>, pruned: Map<number, Atom>, forced: boolean): PruneTombstone[];
-/** list_pruned 工具的剪枝节点目录条目。 */
-export interface PrunedNodeInfo {
-    seq: number;
-    type: AtomType;
-    turn: number;
-    firstLine: string;
-    citedBySeq: number[];
-    /** 被剪瞬间的有效重要性（recall 价值继承的来源，§3-3）。 */
-    eff: number;
-    /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时，指向同一路径（tool name+arguments）下最新存活版本的 seq。
-     *  未参与版本链去重的被剪节点无此字段（undefined）。 */
-    latestOfPath?: number;
-}
 export declare class ArgpGraphEngine extends CompactionEngine {
     static inject: string[];
     readonly windowTokens: number;
@@ -623,13 +441,16 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * （日志 append-only，最后一条 usage 恒 ≥ 内存锚点），故重复执行不会回退。
      */
     private restoreUsageAnchor;
-    /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。 */
+    /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
+     *  P5 Wave 3 第 4 步：实现迁 recall.catalogText（this → host 窄接口），本方法变薄编排。 */
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;
-    /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。 */
+    /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
+     *  P5 Wave 3 第 4 步：实现迁 recall.recallQuery（this → host 窄接口），本方法变薄编排。 */
     recallQuery(query: string, maxResults?: number): string;
     /**
      * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
      * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
+     * P5 Wave 3 第 4 步：实现迁 recall.shadowedSeqsOf（this → host 窄接口），本方法变薄编排。
      */
     private shadowedSeqsOf;
     /**
@@ -638,17 +459,20 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
      * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
      * 程序化的全日志入口是 recallAnyState()。
+     * P5 Wave 3 第 4 步：实现迁 recall.recall（this → host 窄接口），本方法变薄编排。
      */
     recall(seq: number): string | null;
     /**
      * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
      * 不要求节点属于 pruned 集合。越界返回 null。
+     * P5 Wave 3 第 4 步：实现迁 recall.recallAnyState（this → host 窄接口），本方法变薄编排。
      */
     recallAnyState(seq: number): {
         text: string;
         state: NodeStateLabel;
     } | null;
-    /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。 */
+    /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
+     *  P5 Wave 3 第 4 步：实现迁 recall.nodeState（this → host 窄接口），本方法变薄编排。 */
     nodeState(seq: number): NodeStateLabel | null;
     /**
      * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
@@ -661,32 +485,25 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
      * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
      * 「system prompt at surface node 0 is never selected for pruning」。
+     *
+     * P5 Wave 3 第 4 步：实现迁 graph-build.atomize（this → host 窄接口），本方法变薄编排。
      */
     atomize(session: Session): Atom[];
-    /**
-     * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
-     * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
-     * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
-     */
-    private citePrefixTooShort;
-    /** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
-    private readonly ngramN;
-    private buildNGramIndex;
-    /** 查询候选集：前缀长度 < n 时返回 null（走全扫描回退）。取前缀上 ≤3 个 n-gram 交集收窄候选。 */
-    private queryNGramCandidates;
     /**
      * 建图（§4.2 + §4.7 + A1/A2/A5）：确定性边不计级别；cites 子串匹配生成语义边，
      * 级别取声明级别（V6 契约，裸字符串默认 supporting；critical 参与闭包守卫不变量 2′）。
      * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
      * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
      * 前缀长度守卫：过短前缀不计 declared 也不建边。
+     *
+     * P5 Wave 3 第 4 步：实现迁 graph-build.buildGraph（this → host 窄接口），本方法变薄编排。
      */
     buildGraph(atoms: Atom[]): {
         edges: SemanticEdge[];
         deterministicEdges: DeterministicEdge[];
         inDegree: Map<number, number>;
     };
-    /** surface 可见字符总量（与 spike 4 同基准）。 */
+    /** surface 可见字符总量（与 spike 4 同基准）。P5 Wave 3 第 4 步：实现迁 budget.visibleChars（纯函数）。 */
     private visibleChars;
     /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
      *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
@@ -694,15 +511,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。
      *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
      *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
-     *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。 */
+     *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。
+     *  P5 Wave 3 第 4 步：实现迁 budget.measureTokens（this → host 窄接口），本方法变薄编排。 */
     private measureTokens;
     /**
      * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
      * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
      */
     private incomingTokens;
-    /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
-    private static lineOverlap;
     /**
      * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
      *  - A：文本全等（不变）。
@@ -712,6 +528,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
      *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
      * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
+     *
+     * P5 Wave 3 第 4 步：实现迁 graph-build.findVersionDuplicates（this → host 窄接口），本方法变薄编排。
      */
     private findVersionDuplicates;
     /**
@@ -732,6 +550,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
      * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
      * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
+     * P5 Wave 3 第 4 步：实现迁 recall.noteRecallHit（this → host 窄接口），本方法变薄编排。
      */
     private noteRecallHit;
     /**
@@ -741,6 +560,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
      *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
      *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+     * P5 Wave 3 第 4 步：实现迁 recall.budgetRecallText（this → host 窄接口），本方法变薄编排。
      */
     private budgetRecallText;
     /**
@@ -831,12 +651,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  修复（2026-09-21）：旧实现扫到第一个不合格节点就 `break`，而真实会话的 surface 被
      *  用户消息切成「U A R A R U A R …」多段结构 ⇒ 手动 /compact 永远只剪最老一小段
      *  （表现为"图剪压不动"）。现在改为收集全部极大连续段，交给一笔 pruneIntervals 事务剪除。
+     *  P5 Wave 3 第 4 步：实现迁 prune-tx.selectManualRanges（this → host 窄接口），本方法变薄编排。
      */
     private selectManualRanges;
     /** 手动多区间压缩：逐段复核边界后合并为一笔事务剪除。
      *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
      *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
-     *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。 */
+     *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。
+     *  P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegions（this → host 窄接口），本方法变薄编排。 */
     private compactRegions;
     /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
      *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
