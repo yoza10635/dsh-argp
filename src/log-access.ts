@@ -44,6 +44,43 @@ export function sessionEvents(session: Session): readonly SessionEvent[] {
 }
 
 /**
+ * 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
+ *
+ * P5 结构重构 Wave 3 第 1 步：自 hub `argp-graph-engine.ts` 迁入本叶子——本函数只依赖
+ * `sessionEvents`（本模块）+ 纯数据操作，不触碰任何 hub 运行时（无 this.ctx / engine 状态），
+ * 故可安全下沉。迁移消除了 peratom/recall-zoom → hub 的运行时回边（recall-zoom 现直接
+ * 从本模块 import）。hub 侧保留 `export { eventText } from './log-access.js'` 转发以维持
+ * 既有公共 API 与测试 import 不变。
+ */
+export function eventText(session: Session, seq: number): string {
+  const event = sessionEvents(session)[seq]
+  if (event === undefined) return ''
+  const data = event.data as Record<string, unknown> | undefined
+  const parts: string[] = []
+  if (event.type === 'tool/call') {
+    const d = data as { name?: string; arguments?: unknown }
+    parts.push('[tool-call ' + (d?.name ?? '?') + '(' + (typeof d?.arguments === 'string' ? d.arguments : JSON.stringify(d?.arguments ?? {})) + ')]')
+    return parts.join('\n')
+  }
+  // dsh event shapes differ by type: user/message carries content at data.content,
+  // assistant/message and tool/result carry it at data.message.content.
+  const rawContent = event.type === 'user/message'
+    ? (data as { content?: unknown[] } | undefined)?.content
+    : (data as { message?: { content?: unknown[] } } | undefined)?.message?.content
+  const content = Array.isArray(rawContent) ? (rawContent as { type: string; text?: string; name?: string; arguments?: unknown; content?: { type: string; text?: string }[] }[]) : []
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
+    if (block.type === 'tool-call') {
+      parts.push('[tool-call ' + (block.name ?? '?') + '(' + (typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {})) + ')]')
+    }
+    if (block.type === 'tool-result') {
+      for (const inner of block.content ?? []) if (inner.type === 'text' && typeof inner.text === 'string') parts.push(inner.text)
+    }
+  }
+  return parts.join('\n')
+}
+
+/**
  * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
  *
  * 分工约定：**ARGP 内部模型（原子、区间、账目、预算）一律用裸 `number`**——内部要做

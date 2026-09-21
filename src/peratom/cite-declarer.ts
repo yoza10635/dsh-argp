@@ -25,7 +25,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
-import type { Atom, SemanticEdge } from '../argp-graph-engine.js'
+import type { Atom, SemanticEdge } from '../argp-types.js'
 import {
   buildToolNameIndex,
   buildVersionChainIndex,

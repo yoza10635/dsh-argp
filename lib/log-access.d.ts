@@ -35,6 +35,16 @@ import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session
  */
 export declare function sessionEvents(session: Session): readonly SessionEvent[];
 /**
+ * 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
+ *
+ * P5 结构重构 Wave 3 第 1 步：自 hub `argp-graph-engine.ts` 迁入本叶子——本函数只依赖
+ * `sessionEvents`（本模块）+ 纯数据操作，不触碰任何 hub 运行时（无 this.ctx / engine 状态），
+ * 故可安全下沉。迁移消除了 peratom/recall-zoom → hub 的运行时回边（recall-zoom 现直接
+ * 从本模块 import）。hub 侧保留 `export { eventText } from './log-access.js'` 转发以维持
+ * 既有公共 API 与测试 import 不变。
+ */
+export declare function eventText(session: Session, seq: number): string;
+/**
  * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
  *
  * 分工约定：**ARGP 内部模型（原子、区间、账目、预算）一律用裸 `number`**——内部要做

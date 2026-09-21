@@ -25,7 +25,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type { Atom } from '../argp-graph-engine.js'
+import type { Atom } from '../argp-types.js'
 import { ArgpGraphEngine, type ArgpGraphConfig } from '../argp-graph-engine.js'
 import { PeratomCompressor, type PeratomCompressorConfig } from './compressor.js'
 import { CiteDeclarer, type CiteDeclarerConfig } from './cite-declarer.js'

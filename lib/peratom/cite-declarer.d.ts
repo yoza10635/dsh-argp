@@ -24,7 +24,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { Atom, SemanticEdge } from '../argp-graph-engine.js';
+import type { Atom, SemanticEdge } from '../argp-types.js';
 import type { GateAtom } from './gate.js';
 import type { DshLlmSpec } from './llm-adapter.js';
 /** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */

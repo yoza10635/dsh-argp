@@ -23,9 +23,16 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { asSeq, asSeqs, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
+import { asSeq, asSeqs, eventText, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
+// eventText 已迁 log-access（P5 Wave 3 第 1 步）；此处转发以维持既有公共 API 与测试 import。
+export { eventText } from './log-access.js'
+// 通用类型收敛到叶子 argp-types（P5 Wave 3 第 1 步）：本地使用 + 转发维持公共 API。
+import type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
+import { EDGE_WEIGHTS, LEVEL_ORDER } from './argp-types.js'
+export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
+export { EDGE_WEIGHTS } from './argp-types.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 import type { ParsedCite, CiteLevel } from './cites-strip.js'
 import {
@@ -59,24 +66,6 @@ import z from '@deepseek-ai/schemastery'
 // `settings.register(ns, schema, { base })` through `ctx.inject` — the
 // graceful-degradation boundary — and validate the namespace locally.
 
-/**
- * UI 设置页可调旋钮（Settings → Plugins → Configurable → ARGP）。
- * 服务端经 ctx.inject(['settings']) → settings.register('dsh-argp', schema, { base })
- * 注册 namespace，base=引擎 cordis 配置；客户端 ArgpConfigCard 经 ctx.settingsScope.bind 读写。
- * 字段即引擎构造期读取的顶层旋钮。
- */
-export interface ArgpUserSettings {
-  windowRatio: number
-  retainRatio: number
-  maxPasses: number
-  recencyGuard: number
-  turnGuard: number
-  minSpanChars: number
-  enableSummarize: boolean
-  sortMode: 'legacy' | 'density' | 'density-chain'
-  charsPerToken: number
-}
-
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export const ARG_SETTINGS_KEY = 'dsh-argp'
 
@@ -105,39 +94,6 @@ const ARG_SETTINGS_NS: string = ARG_SETTINGS_KEY
 if (!NAMESPACE_PATTERN.test(ARG_SETTINGS_NS)) {
   throw new TypeError(`settings namespace "${ARG_SETTINGS_NS}" must match ${String(NAMESPACE_PATTERN)}`)
 }
-
-export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
-
-export interface Atom {
-  id: number            // 本次投影内局部递增
-  seq: number           // 事件 seq（surface 节点）
-  type: AtomType
-  turn: number
-  text: string          // 模型可见文本（A 已剥离 cites JSON）
-  toolCallIds: string[] // A：发出的 tool-call id；R：应答的 call id —— 配对键（成对同剪防孤儿）
-  cites: ParsedCite[]   // 仅 A：声明的引用（前缀原文 + 级别；V6 分级契约，见 cites-strip.ts）
-  citesFailed: boolean  // 仅 A：检测到 cites 尝试但解析失败 → 保守保护（§4.7）
-  /**
-   * P4（U-info 剪枝放行）：仅 U-info 聚合副本有值——原始用户消息的日志 seq
-   * （recall_detail(sourceSeq) 的恢复目标）。dialog 副本（无 argp meta）与
-   * 普通 user 消息均无此字段，故 `sourceSeq !== undefined` 即 U-info 识别判据：
-   * ① isAtomCandidate 按 R 待遇参剪；② 排除出闭包 root（防 U-info 误当
-   * task-init 根拖整段退休）。
-   */
-  sourceSeq?: number
-}
-
-/**
- * 语义边级别。v1.2.0 起含 'inferred'（PROPOSAL-token-ontology 组件 A）：
- * 承重 token 逐字包含派生边——模型声明通道（cites / declarer）空窗时的**保底层**，
- * 0 LLM、构造性 I-A1（∃ token 双端逐字在场）。保护度低于任何声明档（权重 1 < contextual 2），
- * 高于无边原子；声明边先行去重（buildGraph 在 cites/inject 之后合并，同 (from,to) 先到者胜）。
- */
-export type EdgeLevel = 'critical' | 'supporting' | 'contextual' | 'inferred'
-export interface SemanticEdge { from: number; to: number; level: EdgeLevel }
-export interface DeterministicEdge { from: number; to: number }
-export const EDGE_WEIGHTS: Record<EdgeLevel, number> = { critical: 10, supporting: 5, contextual: 2, inferred: 1 }
-const LEVEL_ORDER: Record<string, number> = { isolated: 0, contextual: 1, supporting: 2, critical: 3 }
 
 /** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
 export function scaleBudgets(
@@ -411,37 +367,6 @@ export interface GraphPruneRecord {
   charsBefore: number
   charsAfter: number
   forced: boolean
-}
-
-
-
-/** 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。 */
-export function eventText(session: Session, seq: number): string {
-  const event = sessionEvents(session)[seq]
-  if (event === undefined) return ''
-  const data = event.data as Record<string, unknown> | undefined
-  const parts: string[] = []
-  if (event.type === 'tool/call') {
-    const d = data as { name?: string; arguments?: unknown }
-    parts.push('[tool-call ' + (d?.name ?? '?') + '(' + (typeof d?.arguments === 'string' ? d.arguments : JSON.stringify(d?.arguments ?? {})) + ')]')
-    return parts.join('\n')
-  }
-  // dsh event shapes differ by type: user/message carries content at data.content,
-  // assistant/message and tool/result carry it at data.message.content.
-  const rawContent = event.type === 'user/message'
-    ? (data as { content?: unknown[] } | undefined)?.content
-    : (data as { message?: { content?: unknown[] } } | undefined)?.message?.content
-  const content = Array.isArray(rawContent) ? (rawContent as { type: string; text?: string; name?: string; arguments?: unknown; content?: { type: string; text?: string }[] }[]) : []
-  for (const block of content) {
-    if (block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
-    if (block.type === 'tool-call') {
-      parts.push('[tool-call ' + (block.name ?? '?') + '(' + (typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {})) + ')]')
-    }
-    if (block.type === 'tool-result') {
-      for (const inner of block.content ?? []) if (inner.type === 'text' && typeof inner.text === 'string') parts.push(inner.text)
-    }
-  }
-  return parts.join('\n')
 }
 
 /**
