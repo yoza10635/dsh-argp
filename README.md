@@ -133,7 +133,7 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 | 合成 0-LLM | `npm run spike8a` | 单事务零 LLM 调用 |
 | 逐原子审计 | `node spike/atom-audit.mjs <产物目录>` | 事件驱动逐原子压缩/剪枝明细 |
 
-`npm run check` = typecheck + smoke + 单测（202/202 全绿，2026-09-02）。每个数字都带产物路径（证据落点见 `CHANGELOG.md`）。
+`npm run check` = typecheck + smoke + 单测（318/318 全绿，2026-09-21）。每个数字都带产物路径（证据落点见 `CHANGELOG.md`）。
 
 ## 平台缺口反馈（给 dsh）
 

@@ -134,7 +134,7 @@ Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 
 | Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
 | Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
 
-`npm run check` = typecheck + smoke + unit tests (202/202 green as of 2026-09-02). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
+`npm run check` = typecheck + smoke + unit tests (318/318 green as of 2026-09-21). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
 
 ## Platform gap feedback (for dsh)
 

@@ -33,13 +33,50 @@
 - **P1 重建诚实化**：`recall_detail` 改走新 raw-text 访问器 `log-access.rawEventText`（`eventText` 共享投影行为不变）：text 块返回日志字面量（多块时块间分隔符为投影，标注）；tool-call 参数宿主存字符串（raw JSON）→ 逐字，宿主存对象 → JSON 语义等价重建并在返回里精确标注（`[note: …]`）。
 - **P2 散文 guard 诚实化**：recall 工具描述 + 契约 section + 压缩 prompt 明确"保真仅保证结构化承重 token（URL/路径/file:line/UUID/哈希/key=value，`token-ontology.ts` LOAD_BEARING_PATTERNS）逐字；散文级引用不保证逐字"；README/ARCHITECTURE 的"逐字节"宣称同步收窄。
 
+### Fixed —— 正确性热修（P1，6 项）
+
+- **per-atom 水位在 LLM/解析失败时仍推进**（`peratom/flush.ts` `prepareCurrentTurn`/`compressCollect`）：`callAndStash` 三条失败路径（no-endpoint / parseFailed / LLM 抛错）都返回"失败 record"不抛异常，旧代码却无条件 `advanceWaterMark` ⇒ 一次瞬时 LLM 抖动即让该轮原子被水位过滤（`event.seq <= since`）**永久排除**出 per-atom 候选，与 1.3.4 水位语义（"成功 pass 才推进水位"）直接矛盾。修复：仅当 `entry.error === undefined && !entry.parseFailed` 才推进水位（两处调用点）。
+- **单 R 占位墓碑克隆失败回退成 user/message**（`prune-tx.ts` `pruneIntervals`）：单 R 区间的 tool_calls 不可克隆时，旧代码回退成 user/message 占位 ⇒ tool_calls 悬空 ⇒ **provider 400**（爆炸半径最高）。修复：事务前预校验 `canCloneTool(seq)`，不可克隆的单 R 区间从本次 pass 剔除并 warn（不再发出非法占位）。
+- **`resolveModelInfo` 的 AbortSignal 无超时**（`budget.ts`）：冷启动 pre-step 创建的 `new AbortController().signal` 从未被 abort ⇒ LLM 服务挂起时 pre-step **永久卡死**（外层 try/catch 只对 rejection 生效，对 hang 无效）。修复：`setTimeout(() => ac.abort(), 5000)` + `finally clearTimeout`。
+- **配置面板 `save()` 缺 try/finally**（`client/argp-config-controller.ts`）：写循环中途抛错时面板**永久卡「Saving…」**。修复：包 try/catch/finally 恢复状态。
+- **`doneTurns` 只读不写**（`peratom/cite-declarer.ts`）：Set 全程无 `.add()` ⇒ 幂等短路永不触发，同一闭合轮**重复烧 LLM 调用**。修复：门控通过后 `done.add(collect.turn)`。
+- **A2 debug 把完整 wire（含用户消息历史）`writeFileSync` 落盘**（`peratom/llm-adapter.ts`）：仅 env 门控、无脱敏。修复：默认（仅设 `ARGP_PERATOM_A2_DEBUG`）只写**脱敏摘要**（消息数、每条 role+长度、整段 wire 的 sha256）——不落正文；确需逐字节对齐的完整 wire 须**额外显式**设 `ARGP_PERATOM_A2_DEBUG_FULL=1`。数据责任在 SECURITY.md 明示。
+
+### Changed —— 工程卫生与构建（P4）
+
+- **日志统一**：双 sink 混用（`this.log` / `ctx.logger`）+ 前缀不一致 ⇒ 统一单一 sink + 前缀表；生产代码裸 `console.log`（LLM 请求序列化热路径）改 `ctx.logger.debug`。
+- **常量集中**：跨 5 文件裸字面重复的核心魔法数字（16_384 / 8_192 / 3.5 / 132_000 / 0.8 / 0.2 / 180_000 / 16）⇒ 新建 `src/constants.ts` 具名常量，全引擎 `??` 引用。
+- **LLM 超时统一**：compressor 180s vs declarer 120s ⇒ 统一 `DEFAULT_LLM_TIMEOUT_MS`（180_000）。
+- **遥测有界化**：实例级诊断数组（`records`/`recallCalls` 等 9 个，常驻 server 插件只增不减）⇒ `src/telemetry.ts` `pushBounded` 有界环形缓冲（保留最近 N 条，`DEFAULT_TELEMETRY_CAP=256`）。
+- **配置值校验**（`client/argp-config-controller.ts`）：`windowRatio`/`retainRatio`/`charsPerToken`/`maxPasses`/`recencyGuard`/`turnGuard`/`minSpanChars`/`sortMode` 加范围/整数/枚举校验；非法值在 parse 期拒绝（`CardFieldState.invalid`，save 被拒），不再静默落盘。
+- **构建/工具加固**：typescript `^5.5.0`→`^5.7.0`（build 需 5.7+）；client 产物嵌 version banner + 开 sourcemap；`check-commit-msg.mjs` 改 spawnSync + ref 白名单（消除命令注入）；新增 `prerelease-check.mjs`（脏树守卫 + tag 幂等，防"半发布"死局）；`release`/`check`/`prepublishOnly` 统一为全量闸门。
+- **lib/ 入库策略（D4）**：维持入库 + CI 校验（`git diff --exit-code lib/`），不 gitignore。
+
+### Removed —— 三个 spike 时代 alt-engine（P3.4，D3）
+
+- 删除 `argp-t1-engine.ts` / `probe-engine.ts` / `recall-engine.ts`（564 行）及其 spike 脚本（`spike/01-mount.ts` / `03-recall.ts` / `04-t1.ts`）：零引用、未从 `index.ts` 导出、已被 `argp-graph-engine.ts` 取代；此前随 `tsconfig.build.json` 的 `include: ["src/**/*.ts"]` 编译进 `lib/` 随包发布（死代码）。公共 API 面 name-for-name 不变（`index.ts` 逐字节 diff 验证）。
+
+### Refactored —— 结构重构（P5，5 步）
+
+> 纯结构重构，运行时行为逐字节不变（Wave 4 功能复审以归一化 diff 独立验证：全部方法体逐字相同、构造函数副作用次序与 ctx.on/systemPrompt/tools 块逐字保留；append-only / shadow-price / 三级触发 / recall paging+rawEventText / verbatim guard 五条核心不变量全部完好）。
+
+- **抽 `argp-types.ts` 叶子**：`Atom`/`AtomType`/`SemanticEdge`/`DeterministicEdge`/`EdgeLevel`/`ArgpUserSettings`/`EDGE_WEIGHTS`/`LEVEL_ORDER` 从 3,313 行 hub 下沉到中性叶子；peratom/* 只依赖它 + `log-access`，**斩断 `argp-graph-engine ⇄ peratom/*` 类型回边**（仅 type-only import，编译期擦除，无运行时环）。`eventText` 下沉 `log-access.ts`。
+- **拆 `compactIfNeeded`**：`isAtomCandidate`/`isGroupCandidate`/`sortKey` 三个闭包提为模块级纯函数，`mergeIntervals`/`buildTombstones` 抽为独立可测函数。
+- **删 `tryPruneClosures` 死代码**（生产零调用、仅测试引用）+ `detectOpenTurn`/`mainChainReasoningEffort`/`turnOf` 收敛到 `log-access` 叶子（替代 13 处 `as { turn }` 强转）。
+- **hub 拆 7 模块**（3,313 → 1,646 行，−51%）：`graph-build` / `budget` / `recall` / `prune-selection` / `prune-tx` / `recall-tools` / `session-lifecycle`；构造函数拆 4 函数（`normalizeConfig`/`registerSettings`/`mountPeratomStack`/`registerRecallTools`）。class 变为薄组合根：持有字段 + 1–4 行薄转发方法。
+- **compressor 拆 6 模块**（1,520 → 362 行，−76%）：`compressor-types` / `decision` / `collect` / `prompt` / `flush`。
+- **窄宿主接口模式**：各模块定义窄 `*Host` 接口，class 经 `this as unknown as Host` 调用，模块只 type-only import 组合根（编译期擦除）⇒ 运行时依赖图为真 DAG（0 环），公共 API 面 name-for-name 不变。
+
 ### Tests
 
 - `test/trigger-levels.test.ts` 扩到 **14 例**：新增 L1⑤（放宽 `turnGuard` 才能剪动"独占当前轮"的 tool result——legacy 档剪不动、默认档剪得动，同会话同时点对照）、L3①–⑤（剪+steer 的载荷形状 / 无信号对照 / 剪不动不续写 / 次数上限 / 阶梯按 turn 重置）；L2 各例改到独立口径（`windowTokens` 极大 ⇒ 只有强制路径可剪，避免与 L1' 混淆）。
 - 新增 **`test/auto-continue-e2e.test.ts`（3 例，真 AgentLoop + 脚本化适配器）**：E2E① 被钳后请求数 3 且 `turn/start` 仍为 **2**（= 同一 turn 续跑，未新开轮）、第 3 次请求确实带上续写提示；E2E② 正常收尾不续（对照）；E2E③ 额度用尽即收轮，不无限续。
 - **变异检查**（3 处，各自只打掉对应断言、对照组全绿）：① 永不 steer ⇒ E2E①/③ + L3①/④/⑤ 失败；② 不放宽 `turnGuard` ⇒ L1⑤ 失败；③ 不重挂信号 ⇒ L2③ 失败。
 - 全量 **285/285**（276 + 6 + 3），typecheck 与 build 干净。
-- **P2.5**：`test/recall-zoom.test.ts` 14 → **18 例**：新增 C1 分页续读（截断标记回传 from + 续读逐字拿回剩余）、limit 单次上限、P1 参数对象/字符串两态（重建标注 vs 逐字无标注）；原"预算截断"断言改为断言续读指引格式。全量 **318/318**，typecheck 干净。
+- **P3.3** 新增 `test/cites-strip.test.ts`（**16 例**）：三个纯函数（双端共享事实源）独立契约测试，含"禁止 `includes('c')` 误升 critical"安全契约（硬回归）。
+- **P3.2** 新增 `test/client.test.ts`（**13 例**）：`client/*` 整目录此前零测试——`assistantDisplay` 显示过滤器（cites 协议防 UI 泄漏 JSON 标记的唯一关口）、静默降级、`ARG_SETTINGS_KEY` 跨端契约。
+- **P2.5** `test/recall-zoom.test.ts` 14 → **18 例**（+4）：新增 C1 分页续读（截断标记回传 from + 续读逐字拿回剩余）、limit 单次上限、P1 参数对象/字符串两态（重建标注 vs 逐字无标注）；原"预算截断"断言改为断言续读指引格式。
+- 全量 **318/318**（285 + 16 + 13 + 4），typecheck 与 build 干净。
 
 ## [1.4.0] - 2026-09-21（三级触发：轮初主动 + 轮中只反应式）
 

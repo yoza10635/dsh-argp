@@ -141,24 +141,36 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 
 | 文件 | 职责 | 依赖 |
 |---|---|---|
-| `argp-graph-engine.ts` | Stage-2 图引擎：建图 + 反向拓扑剪枝 + cites 义务 | log-access, peratom/* |
-| `argp-t1-engine.ts` | 早期机制验证引擎（16K 窗口），历史保留 | — |
-| `probe-engine.ts` | 最小探针引擎（验证挂载/生命周期，不剪枝） | — |
-| `recall-engine.ts` | recall 工具 + argp-contract PromptSection | log-access |
-| `log-access.ts` | 事件日志唯一入口（sessionEvents）+ 日志级访问原语 | dsh-session |
+| `argp-graph-engine.ts` | Stage-2 图引擎**组合根**：持有字段 + 1–4 行薄转发方法，编排下方 hub 模块（3,313 → 1,646 行） | argp-types, constants, telemetry, log-access, token-ontology, preset-cleaner, graph-build, budget, recall, prune-selection, prune-tx, recall-tools, session-lifecycle, peratom/* |
+| `argp-types.ts` | 共享类型与常量（Atom/AtomType/SemanticEdge/DeterministicEdge/EdgeLevel/ArgpUserSettings/EDGE_WEIGHTS/LEVEL_ORDER），叶子 | cites-strip（type-only） |
+| `constants.ts` | 跨引擎共享默认阈值/预算/比例/超时（具名常量），叶子 | — |
+| `telemetry.ts` | 有界环形缓冲 `pushBounded`（诊断/遥测数组），叶子 | — |
+| `graph-build.ts` | 建图：atomize / buildGraph / findVersionDuplicates / extractCites / classifyUserMessage / looksAskText | argp-types, log-access, cites-strip, token-ontology, peratom/types |
+| `budget.ts` | token 度量与预算：visibleChars / resolveScaledBudgets / measureTokens / scaleBudgets + acquireTokenMeter | constants, log-access |
+| `recall.ts` | recall 核心：shadowedSeqsOf / catalogText / recallQuery / recall / nodeState / latestTurnOf / noteRecallHit / budgetRecallText | argp-types, log-access, graph-build, telemetry |
+| `prune-selection.ts` | 剪枝候选选择：isAtomCandidate / isGroupCandidate / sortKey / selectClosureToMerge（模块级纯函数） | argp-types |
+| `prune-tx.ts` | 剪枝事务：pruneIntervals / consolidateTombstones / compactRegions / selectManualRanges / compactRegion / isMergeableTombstone | argp-types, log-access, dsh-compaction/llm/commands |
+| `recall-tools.ts` | `recall_pruned` / `list_pruned` 两个 defineTool 闭包 | argp-types, log-access, graph-build, telemetry |
+| `session-lifecycle.ts` | 会话生命周期：normalizeConfig / registerSettings / mountPeratomStack / bindSession / rebuildLedgerFromLog / rearmReactive / compactNow | argp-types, log-access, peratom/compressor |
+| `log-access.ts` | 事件日志唯一入口（sessionEvents）+ 日志级访问原语（eventText / detectOpenTurn / turnOf / rawEventText） | dsh-session, peratom/types |
 | `cites-strip.ts` | cites 尾块匹配/剥离（纯函数，零依赖） | — |
 | `token-ontology.ts` | 承重 token 词表 + 保真守卫 + 原子间推断边（共享叶子模块，零依赖） | — |
 | `preset-cleaner.ts` | preset 净化器：挂载期为含 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp` | dsh agentPresets |
 | `peratom/types.ts` | Stage-1 共享类型与常量（叶子模块） | — |
 | `peratom/gate.ts` | 门控判定（纯函数，0 LLM/0 Session） | — |
 | `peratom/split.ts` | 拆分解析与策略（纯函数） | — |
-| `peratom/compressor.ts` | Stage-1 eager 熵降管线 | gate, split, llm-adapter |
-| `peratom/cite-declarer.ts` | Stage-1 引用边声明管线 | gate, llm-adapter |
-| `peratom/recall-zoom.ts` | Stage-1 两级 recall 工具 | log-access |
+| `peratom/compressor-types.ts` | compressor 共享类型（CompressDecision / CompressRecord / CurrentTurnCollect / defaultEndpoint），叶子 | llm-adapter（type-only）, gate（type-only） |
+| `peratom/decision.ts` | 决策：extractJson / normalizeDecision / planReplacements | types, split, gate, token-ontology, compressor-types |
+| `peratom/collect.ts` | 采集：collectCurrentTurn / collectOpenTurn / waterMarkOf / advanceWaterMark | log-access, gate, compressor-types |
+| `peratom/prompt.ts` | prompt：buildPrompt / postChat / backend | llm-adapter, compressor-types |
+| `peratom/flush.ts` | flush：prepareCurrentTurn / flushStashed / flushEntry / buildContextPrefix / awaitInFlightPass / rememberRoute | log-access, llm-adapter, dsh-compaction/llm |
+| `peratom/compressor.ts` | Stage-1 eager 熵降管线**组合根**（1,520 → 362 行） | types, gate, token-ontology, constants, telemetry, compressor-types, decision, collect, prompt, flush, llm-adapter |
+| `peratom/cite-declarer.ts` | Stage-1 引用边声明管线 | argp-types, gate, log-access, types, constants, telemetry, llm-adapter |
+| `peratom/recall-zoom.ts` | Stage-1 两级 recall 工具（recall_summary / recall_detail 分页） | log-access, types, constants, telemetry |
 | `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / 宿主路由自动兜底 autoDshLlmSpec） | dsh-llm |
-| `peratom/mount.ts` | 测试/三臂挂载工厂（与生产自挂同拓扑；非生产路径） | 以上全部 |
+| `peratom/mount.ts` | 测试/三臂挂载工厂（与生产自挂同拓扑；非生产路径） | argp-graph-engine, compressor, cite-declarer, recall-zoom |
 | `client/index.ts` | 客户端：隐藏 cites 尾块（chat 渲染）+ 注册设置卡片（settings.plugin.item slot） | cites-strip, argp-config-controller |
-| `client/argp-config-controller.ts` | 客户端设置卡片控制器：settings 命名空间上的暂存表单 + locale 包 | — |
+| `client/argp-config-controller.ts` | 客户端设置卡片控制器：settings 命名空间上的暂存表单 + locale 包 + 字段校验 | — |
 | `client/argp-config-card.ts` | 客户端设置卡片 UI（Settings → Plugins → Plugin configuration，九个引擎旋钮） | argp-config-controller |
 | `index.ts` | 公共导出 | — |
 
@@ -185,16 +197,33 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 
 阈值取业界常用档（Google/ESLint 常见线）。度量口径：对 `src/`（排除 `test/`、`lib/`、`spike/`）用任意 AST 复杂度分析工具统计**单函数**的圈复杂度、认知复杂度、嵌套深度、函数行数，与上表对照；工具的百分比/severity 标签仅作参考，以原始数值为准。
 
-### 2026-09-21 快照（单函数 max；超预算项加粗）
+### 2026-09-21 快照（P5 重构后；单函数 max；超预算项加粗）
 
-| 文件 | 圈 | 认知 | 嵌套 | 函数行 | 文件行 | 参数 |
-|---|---|---|---|---|---|---|
-| `argp-graph-engine.ts` | **58** | **68** | 5 | **698** | **2282** | 7 |
-| `peratom/compressor.ts` | **25** | **43** | **9** | **178** | **965** | **9** |
-| `peratom/cite-declarer.ts` | **24** | **32** | 4 | 70 | 461 | **9** |
-| `token-ontology.ts` | **25** | **33** | 4 | 77 | 128 | 4 |
-| `preset-cleaner.ts` | **15** | **27** | **6** | 65 | 233 | 2 |
-| `peratom/llm-adapter.ts` | **13** | **19** | **5** | 59 | 159 | **6** |
-| `peratom/gate.ts` | **13** | **20** | 4 | 40 | 170 | 3 |
+度量工具：TypeScript 5.9.3 编译器 API。**圈复杂度**口径与重构前基线一致（对 3,380 行旧版精确复现 58，故可直接对照）；**认知 / 嵌套 / 函数行**为本次工具口径（旧快照的认知 68 系另一工具，不直接可比）。
 
-其余 13 个 src 文件全部在预算内（最接近的是 `cites-strip.ts` 认知 19 / 嵌套 5）。主要债务集中在 `argp-graph-engine.ts`（God Class，拆分方案见 `docs/audit-engineering-2026-09-21.md`）。
+| 文件 | 圈 | 认知 | 嵌套 | 函数行 | 文件行 |
+|---|---|---|---|---|---|
+| `argp-graph-engine.ts` | **49** | **148** | **6** | **268** | **1,646** |
+| `graph-build.ts` | **29** | **91** | **5** | **125** | 500 |
+| `prune-selection.ts` | **25** | **68** | 3 | **127** | 388 |
+| `peratom/decision.ts` | **25** | **87** | **9** | **185** | 344 |
+| `token-ontology.ts` | **25** | **55** | 4 | **90** | 268 |
+| `prune-tx.ts` | **24** | **79** | 4 | **213** | 492 |
+| `peratom/cite-declarer.ts` | **24** | **62** | 4 | 78 | 683 |
+| `peratom/flush.ts` | **23** | **40** | 4 | **134** | 469 |
+| `recall-tools.ts` | **17** | **45** | 4 | **171** | 212 |
+| `log-access.ts` | **17** | **46** | **6** | 47 | 413 |
+| `session-lifecycle.ts` | **17** | **41** | **5** | **107** | 484 |
+| `peratom/llm-adapter.ts` | **15** | **41** | **5** | 72 | 298 |
+| `preset-cleaner.ts` | **15** | **88** | **6** | 75 | 349 |
+| `recall.ts` | **14** | **26** | 4 | 40 | 280 |
+| `peratom/collect.ts` | **14** | **29** | 3 | 59 | 227 |
+| `peratom/gate.ts` | **13** | **32** | 4 | 42 | 299 |
+| `budget.ts` | **11** | **28** | 4 | 75 | 206 |
+| `cites-strip.ts` | 9 | **37** | **6** | 44 | 97 |
+
+**重构效果**：文件行数大幅下降（hub 3,380 → 1,646、compressor 1,520 → 362），src 源文件 20 → 32（+15 新模块 − 3 删除的 alt-engine）。但**单函数复杂度基本守恒**——重构把复杂度**搬**进新模块而非削减，每个新模块的函数 max ≈ 被搬走的那个原函数。
+
+**未达标项（诚实记录）**：roadmap 验收标准「`argp-graph-engine.ts` 圈 max 从 58 降到 ≤10 档」**未达成**——当前 **49**（同口径，降 16%）。根因：P5 第 2 步「拆 `compactIfNeeded`」只提了 3 个闭包，**核心贪心 pass 循环（268 行，29 if + 16 for）仍内联**——这才是圈复杂度的真正来源。**下一步**：把该 pass 循环体抽成模块级纯函数，才能把圈 max 压进 ≤10 档。§10 为软性指引（非门控）+ 棘轮原则，此项不阻断 1.5.0 发布，登记为后续目标。
+
+其余 14 个 src 文件全部在预算内。
