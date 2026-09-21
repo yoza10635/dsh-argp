@@ -1188,7 +1188,7 @@ export class PeratomCompressor {
       return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路；不推进水位
     }
     const entry = await this.callAndStash(session, collect)
-    this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+    if (entry.error === undefined && !entry.parseFailed) this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
     return entry
   }
 
@@ -1242,7 +1242,7 @@ export class PeratomCompressor {
       return record // 不推进水位（原实现在此之前 done.add ⇒ 一次 no-candidate 永久作废该轮）
     }
     const entry = await this.callAndStash(session, collect)
-    this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+    if (entry.error === undefined && !entry.parseFailed) this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
     this.flushStashed(session)
     return entry
   }

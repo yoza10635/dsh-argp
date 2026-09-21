@@ -16,6 +16,7 @@
  * 2026-09-17 §11.13.1）。三条路都解不出才让组件 disabled（零网络）。
  */
 import { writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
@@ -242,14 +243,26 @@ export function serializeWireMessages(messages: readonly Message[]): Record<stri
   }
   // A-2 落地期诊断：env 门控 dump 序列化后的 A 前缀 wire，供与 agent 实际请求
   // 逐字节对齐（验证序列化器 = agent-loop 渲染）。生产默认关。
+  // 数据责任（2026-09-21 P1.6）：wire 含完整用户消息历史（敏感上下文）。默认
+  // （ARGP_PERATOM_A2_DEBUG 非空）只写**脱敏摘要**——消息数、每条 role+长度、整段
+  // wire 的 sha256——不落正文；确需逐字节对齐的完整 wire 须显式开
+  // ARGP_PERATOM_A2_DEBUG_FULL=1（数据责任见 SECURITY.md「已知限制」）。
   const dbgDir = process.env['ARGP_PERATOM_A2_DEBUG']
   if (dbgDir !== undefined && dbgDir !== '') {
     try {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-')
       const file = `${dbgDir}/a-prefix-${stamp}.json`
-      writeFileSync(file, JSON.stringify({ messageCount: messages.length, wire }, null, 2))
+      const full = process.env['ARGP_PERATOM_A2_DEBUG_FULL'] === '1'
+      const payload = full
+        ? { messageCount: messages.length, wire }
+        : {
+            messageCount: messages.length,
+            wireSha256: createHash('sha256').update(JSON.stringify(wire)).digest('hex'),
+            wire: wire.map(m => ({ role: m.role, length: JSON.stringify(m).length })),
+          }
+      writeFileSync(file, JSON.stringify(payload, null, 2))
       // eslint-disable-next-line no-console
-      console.log(`[argp-peratom] a2-debug: dump → ${file}`)
+      console.log(`[argp-peratom] a2-debug: dump → ${file} (${full ? 'FULL' : 'redacted'})`)
     } catch { /* 诊断失败不影响主流程 */ }
   }
   return wire

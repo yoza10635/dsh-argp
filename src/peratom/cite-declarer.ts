@@ -576,6 +576,7 @@ export class CiteDeclarer {
     const done = this.doneTurns.get(session) ?? new Set<number>()
     this.doneTurns.set(session, done)
     if (done.has(collect.turn)) return null // 防重复 turn 处理
+    done.add(collect.turn) // 幂等记账：该闭合轮已处理，后续 idle 不再重复烧 LLM 调用
 
     if (collect.interrupted) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'interrupted-turn' }

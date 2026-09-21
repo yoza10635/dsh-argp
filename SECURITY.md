@@ -41,3 +41,4 @@ dsh-argp 是个人维护的开源项目（上下文压缩插件，运行在 [Dee
 - 压缩**必然丢弃一次 KV 缓存**（摘要式压缩同样如此），属固有权衡，非缺陷。
 - 压缩后部分被剪节点仍可通过 recall 召回；若某节点被摘除后不可召回，属设计预期（按"孤立→contextual→supporting→critical"反向拓扑序），不是数据丢失 bug。
 - 会话日志格式版本 `SESSION_FORMAT_VERSION = 0`，存量会话字节兼容；格式升级时会提供迁移说明。
+- A-2 诊断 dump（`ARGP_PERATOM_A2_DEBUG`）的数据责任：该 env 开启时，`serializeWireMessages`（`src/peratom/llm-adapter.ts`）会把序列化后的 A 前缀 wire 落盘到指定目录。wire 含**完整用户消息历史**（敏感上下文）。默认（仅设 `ARGP_PERATOM_A2_DEBUG`）只写**脱敏摘要**——消息数、每条 role+长度、整段 wire 的 sha256——不落正文；确需逐字节对齐的完整 wire 须**额外显式**设 `ARGP_PERATOM_A2_DEBUG_FULL=1`，此时落盘文件含完整敏感上下文，仅应在受控诊断环境使用，勿提交 / 分享。
