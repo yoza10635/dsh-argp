@@ -377,11 +377,20 @@ export class CardForm<T> {
     this.failed = false
     this.publish()
     let landed = true
-    for (const write of writes) landed = (await write()) && landed
-    if (landed) this.staged.clear()
-    this.saving = false
-    this.failed = !landed
-    this.publish()
+    try {
+      for (const write of writes) landed = (await write()) && landed
+    } catch (error) {
+      // A host `set`/`unset` rejection (network, permission, validation) must not
+      // wedge the card on "Saving…" or leak an unhandled rejection: swallow it,
+      // mark the save failed, and let the finally block re-publish the shell.
+      landed = false
+      console.warn('[dsh-argp] settings save failed:', error)
+    } finally {
+      if (landed) this.staged.clear()
+      this.saving = false
+      this.failed = !landed
+      this.publish()
+    }
   }
 
   /** Every staged edit a save would write. */
