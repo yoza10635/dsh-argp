@@ -4,6 +4,22 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.3.4] - 2026-09-21（resume 锚点回填 + peratom 压缩水位）
+
+真环境实测来源：`session-77c64e66`（standard-argp，11 轮 / 232 步 / 334 工具调用）逐事件复盘 + 存档重放（`.sess-tools/replay-real.mjs` / `replay-sweep.mjs`）。
+
+> **口径勘误（同日，重要）**：复盘初期据 `profiles/web/cordis.patch.yml` 的 `windowRatio: 0.3815`（09-17 层）推定"压力检查迟触发 2.1×、图剪全程只跑 1 次 = 缺陷"，属**读错配置层**。该会话实际生效的是更外层的 `~/.dsh/settings.yaml` → `dsh-argp.windowRatio: 0.8`（写入时刻 03:14:56，turn 1 内），触发线 = 262144 × 0.8 = **209,715**。
+> 按 0.8 复算：该会话 232 个请求中**仅 1 个**越过触发线（turn 6 step 84，真实 210,719 = 线的 100.5%）；锚定估算在 **pre-step 85 = 213,070 ≥ 209,715** 触发（step 84 的估算 209,639 差 **76 tok** 未越）⇒ **引擎在越线后一步即压缩，行为与设计完全一致**。"图剪只跑 1 次"是"只有一次越线"的必然结果，非缺陷。
+> 同理，"锚点丢失"这一诊断不成立：若锚点真的缺失，chars 口径在该会话的上限只有 ≈118K，**永不可能越过 209,715**，与实测的触发事件自相矛盾。故下文 ① 的定位由"修复生产缺陷"下调为"补齐 resume 首请求前的口径精度"。
+> ✅ **配置层对齐（同日）**：`windowRatio` 原存两处不一致值——`~/.dsh/settings.yaml`（0.8，运行时生效）与 `~/.dsh/profiles/web/cordis.patch.yml`（0.3815，2026-09-15 语料跑批用）。现已把 profile 层同样改为 **0.8**，两层一致 ⇒ 既消除"settings 键被重置即静默滑回 100K 触发线"的陷阱，也使 0.8/0.2（触发线 ≈209,715 / 保留 ≈41,943）成为唯一口径。代码内置默认值本就是 0.8（schema `:76`、回退 `:138`、构造器 `:643`），无需改动。跑语料若需 100K 触发线，请在跑批 profile 显式覆盖（`docs/corpus-run-spec.md` §3.4 已加现状注记）。
+
+### Fixed
+
+- **resume 首请求前压力估算退化为字符启发式**（防御性修复；非本次实测缺陷）。`lastRealPromptTokens` / `lastRealAnchorSeq` 原先**只**由 `ctx.on('session/event')` 的 `assistant/message` 处理器写入 ⇒ 宿主进程重启后 resume 既有会话时锚点为空，`measureTokens` 在首个真实 usage 到达前回退 `visibleChars / charsPerToken`，而该投影口径**不含 reasoning** ⇒ 实测低估到真值的 **0.56–0.61 倍**（turn 6 逐 step 重放：0.633 → 0.556，差值 ≈ system+tools + 整轮 reasoning tokens，随轮单调增长）。后果有限但真实：resume 后的**第一个** pre-step 压力检查可能漏触发。修复：`bindSession` 检测会话身份变化时从 `snapshotEvents()` 反向扫**最后一条带 `usage.inputTokens` 的 `assistant/message`** 回填锚点（口径 = `in + cacheRead + cacheWrite`，与 usage 处理器同式）；日志无 usage（全新会话）则重置 `0 / -1`，保持既有回退行为。新增两个对照用例（回填驱动触发 / 日志无 usage 时不误触发）。**重放验证**（0.8 档）：回填态估算/真实 = **0.981–0.998**（`source=anchored`），清零态 = 0.556（`source=chars`）。
+- **peratom 每轮一次性配额被轮内压力 pass 吃掉**（语义缺陷；0.8 档下影响受限于"越线次数少"）。`doneTurns` 原为"轮级一次性"记账，且 `done.add` 在候选门控**之前**：① 轮内压力 pass（turn 6 step 85）用掉该轮唯一配额 ⇒ 该轮此后新增内容**永不入压**（其尾巴 step 85-92 与后续 `idle` pass 全被跳过；本会话该尾巴合计仅 1,772 字符 ⇒ 实际代价小，但机制上不成立）；② 一次 `no-candidate` 短路即**永久作废该轮**，即使之后来了大原子。修复：改为**压缩水位**——成功 pass 推进 `(session, turn) → endSeq`，后续 pass 只收 `seq > 水位` 的原子 ⇒ 轮末 `idle` pass 可补压轮内新增；门控短路 / 中断轮**不推进**水位（该轮仍可被后续 pass 处理）；无新增原子时窗口为空 ⇒ 零 LLM 调用短路（幂等）。配套新增统一判据 `isMaterial`（对话载体 U/A/R ∧ `surfaceOp` 非 `replace` ∧ `user/message` 非 `plugin-source`），**同时**用于候选筛选与窗口边界：压缩产物（替换副本）与插件注入（A 形态前缀指令 / U-info 聚合副本 / checkpoint）均不算材料，既防副本被二次摘要，也避免"纯产物窗口"反复记 `no-candidate`。新增 3 个用例（轮内 pass → 轮末补压新增原子 / `no-candidate` 不烧配额 / 无新增时幂等零调用）。
+
+全量回归 **263/263**。
+
 ## [1.3.3] - 2026-09-21（citesObligation autoLlm 时序修复）
 
 ### Fixed

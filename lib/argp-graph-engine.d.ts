@@ -498,6 +498,29 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private bindSession;
     setSession(session: Session): void;
+    /**
+     * 真实 token 锚点回填（2026-09-21 修，问题定位见 docs/audit-prune-priority / 当日台账）。
+     *
+     * 背景：`lastRealPromptTokens` / `lastRealAnchorSeq` 原先**只**由 `ctx.on('session/event')`
+     * 的 `assistant/message` 处理器写入。宿主进程重启后 resume 的会话若不再把该事件喂给本
+     * 引擎（真环境 2026-09-21 实证：同一会话 turn 1 锚点正常、turn 2 起恒为 0），
+     * `measureTokens` 会静默走回退分支 `visibleChars / charsPerToken`——而 `visibleChars`
+     * 的投影口径**不含 reasoning**。实测该估算 ≈ 真实 prompt 的 **0.48 倍**：
+     *   turn 6 真实 prompt 210,719 tok 时估算仅 ≈102,703 ⇒ 触发线 100,007 一路不越线，
+     *   直到真实 prompt 210,719 才触发（迟 2.1×，66 步空转；graph 剪全程只跑 1 次）。
+     *   windowRatio=0.8 档下估算上限 ≈126K **永远够不到** 210,715 触发线 ⇒ 压力路径
+     *   完全不触发，只剩 provider 报错后的溢出恢复兜底。
+     *
+     * 口径与 usage 处理器**完全一致**（in + cacheRead + cacheWrite = provider 回报的 billed
+     * prompt），取日志中最后一条带 `usage.inputTokens` 的 `assistant/message`——即本进程
+     * 重启前最后一次真实请求的 prompt 规模。日志无带 usage 的应答（全新会话）⇒ 重置为
+     * 0 / -1，保持既有回退行为（新会话首轮本就没有可用锚点）。
+     *
+     * 幂等与成本：反向扫描在最后一条带 usage 的应答处提前返回（通常就是最后一条应答）；
+     * 会话身份每步换新（见 bindSession 注释）时重复回填的值恒等于 live 处理器写入的值
+     * （日志 append-only，最后一条 usage 恒 ≥ 内存锚点），故重复执行不会回退。
+     */
+    private restoreUsageAnchor;
     /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。 */
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;
     /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。 */

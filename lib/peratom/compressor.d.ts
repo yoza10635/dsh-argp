@@ -266,8 +266,20 @@ export declare class PeratomCompressor {
     readonly records: CompressRecord[];
     /** 当前暂存待发射的事务数（测试/P4 判断 stash 是否就绪）。 */
     get pendingCount(): number;
-    /** 防重复 turn 处理：(session, turn) 记账于 prepare 阶段。 */
-    private readonly doneTurns;
+    /**
+     * 每轮压缩**水位**：(session, turn) → 已被规划过的最大 seq（-1 = 未压过）。
+     *
+     * 语义（2026-09-21 修订，替代原 `doneTurns` 的"轮级一次性"）：
+     *  - **成功的 pass** 把该轮水位推进到本次窗口的 `endSeq`（= 规划器已考虑过的边界）；
+     *  - 后续 pass（轮末 idle 或再次压力）**只收 `seq > 水位` 的原子** ⇒ 轮内压力 pass
+     *    不再吃掉轮末 idle pass，同一轮可增量再压。真环境 2026-09-21 实证：turn 6 的
+     *    轮内 pass（step 85）用掉唯一配额后，step 85-92 的新增内容永不入压。
+     *  - 门控短路（`no-candidate`）/ 中断轮**不推进水位** ⇒ 该轮仍可被后续 pass 处理
+     *    （原实现把 `done.add` 放在门控**之前**，一次 no-candidate 即永久作废该轮）。
+     *  - 天然幂等：同一轮无新增原子时窗口为空 ⇒ collect 返回 null ⇒ 零 LLM 调用。
+     *  - 未推进水位的重复调用只做一次日志扫描（无网络、无事务），代价可忽略。
+     */
+    private readonly passWatermark;
     /** idle 阶段产出、等待下一次 open-turn 窗口发射的事务。 */
     private readonly pending;
     /**
@@ -286,6 +298,27 @@ export declare class PeratomCompressor {
     setToolPolicy(toolName: string, policy: NeedCompress | undefined): void;
     /** 门控选项快照：大小阈值 + tool 对照表（prepare / compressCurrentTurn 两处同口径）。 */
     private gateOptions;
+    /** 某轮已规划过的最大 seq（-1 = 未压过）。 */
+    private waterMarkOf;
+    /** 成功落地后推进水位（单调不回退）。 */
+    private advanceWaterMark;
+    /** 测试 / 诊断入口：读某轮的压缩水位。 */
+    turnWaterMark(session: Session, turn: number): number;
+    /**
+     * 该事件是否为**可压缩的原始材料**（唯一判据，三处共用）。
+     *
+     * 两类事件不是材料，必须同时从「候选」与「窗口边界（startSeq/endSeq）」里排除：
+     *  - **压缩产物**：`surfaceOp` 存在且非 `'append'`（本压缩器 / 图剪写回的替换副本）。
+     *    它是上一次 pass 的结果；水位语义下同一轮会被多次 collect，放进去会让
+     *    窗口恒非空（每次 pass 都以 no-candidate 重复记账），且副本的
+     *    `message.source.kind` 仍是 `'tool'`，plugin-source 判据拦不住 ⇒ 有二次摘要风险。
+     *  - **插件注入**：`user/message` 且 `source.kind === 'plugin'`（A 形态前缀指令、
+     *    U-info 聚合副本、checkpoint）。这类事件由引擎/本压缩器自己写入，不是会话材料；
+     *    边界若把它们算进去，纯注入窗口会返回"空候选的非 null 收集"（同上噪声问题）。
+     *
+     * 判据口径与 `argp-t1-engine.shadowedSeqs` 的 replace 判定一致。
+     */
+    private isMaterial;
     constructor(ctx: Context, config?: PeratomCompressorConfig);
     /**
      * 记住 agent 路由（§11.13.1 自动兜底）。构造期拿不到路由，只能在真会话的
@@ -303,7 +336,7 @@ export declare class PeratomCompressor {
      * ② 版本链成员硬排除（决策④，need_compress=false）；③ 大小启发式门控。
      * 无再压缩路径：U-info 副本 / plugin checkpoint 一律跳过（决策⑦）。
      */
-    collectCurrentTurn(session: Session): CurrentTurnCollect | null;
+    collectCurrentTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null;
     /**
      * 收集当前开放轮（最后一条 turn/start 之后、尚无 turn/end）的可压原子。
      * P4 溢出三步路径②专用：溢出发生在 open turn 的请求上，第②步要降熵的正是
@@ -312,7 +345,7 @@ export declare class PeratomCompressor {
      * 同款（中断/版本链/大小门控；U-info/checkpoint 跳过）；open turn 无 turn/end，
      * 不会出现在中断集里。无 turn/start（会话头）返回 null。
      */
-    collectOpenTurn(session: Session): CurrentTurnCollect | null;
+    collectOpenTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null;
     /** 窗口→候选的共享尾部（中断/版本链/大小门控 + 原子化）。closed/open 两口径共用。 */
     private collectFromWindow;
     /** idle 触发段：记账防重 → 收集 → 门控 → LLM → 暂存待发射。返回观测记录。 */
@@ -325,11 +358,12 @@ export declare class PeratomCompressor {
      * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
      * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
      * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
-     * open turn 压缩后标记 doneTurns——该轮闭合时 idle prepare 因已 done 跳过
-     * （替换副本本就被 plugin-source 排除，双保险防重压缩）。
+     * 水位语义（2026-09-21 修订）：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
+     * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（原先的"轮级一次性"
+     * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
      */
     compressOpenTurn(session: Session): Promise<CompressRecord | null>;
-    /** 共享压缩尾部：防重记账 + 中断/无候选短路 + callAndStash + 立即 flush。 */
+    /** 共享压缩尾部：中断/无候选短路（不推进水位）+ callAndStash + 立即 flush（成功才推进水位）。 */
     private compressCollect;
     /**
      * A 形态前缀快照（设计文档 §4 tail-only 语义的落地）：agent 当前

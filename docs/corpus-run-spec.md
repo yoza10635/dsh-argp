@@ -100,11 +100,15 @@ retainTokens = windowTokens × retainRatio       (缺省 retainRatio = 0.2)
 
 ### 3.4 本次已落地的配置（2026-09-15，用户拍板）
 
+> 🔴 **现状注记（2026-09-21）**：本节记录的是**跑批当时的配置**。当日用户把 `windowRatio` 统一改为 **0.8**：
+> profile 层 `cordis.patch.yml` 已从 0.3815 改成 0.8，`~/.dsh/settings.yaml` 亦有 `dsh-argp.windowRatio: 0.8`（**该层运行时胜出**）。
+> ⇒ 现在触发线 = **209,715 tok**、保留 ≈ 41,943 tok。**按本节 0.3815 复现跑批前，必须在跑批 profile 中显式覆盖回 0.3815**，不能依赖本层默认值。
+
 | 项 | 值 | 落在哪 |
 |---|---|---|
 | `contextWindow` | 262144（不动） | `~/.dsh/settings.yaml` → `llm-pi-ai.providers.localhost.models[Qwen3.8-27B]` |
 | `maxTokens` | **16384 → 32768** | 同上（写代码任务输出量大，16K 偏紧；输入上限 229376 ≫ 触发线，无钳制风险） |
-| `windowRatio` | **0.3815** | `~/.dsh/profiles/web/cordis.patch.yml`（profile 层，**modify 行，不 insert**） |
+| `windowRatio` | **0.3815**（跑批当时；2026-09-21 起本层已改 0.8） | `~/.dsh/profiles/web/cordis.patch.yml`（profile 层，**modify 行，不 insert**） |
 | `retainRatio` | 0.2（显式重述） | 同上 |
 | `maxPasses` / `recencyGuard` | 256 / 10（显式重述，防被本层覆盖） | 同上 |
 

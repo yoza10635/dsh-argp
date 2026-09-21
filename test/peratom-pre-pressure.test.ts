@@ -325,7 +325,7 @@ function buildOpenTurnSession(id: string, usage?: Record<string, number>): { ses
   return { session, openU, openR }
 }
 
-test('④ doneTurns 跨路径防重：open turn 被压力档压过 ⇒ 闭合后 idle prepare 零调用跳过', async t => {
+test('④ 水位跨路径幂等：open turn 被压力档压过 ⇒ 无新增内容时闭合后 idle prepare 零调用跳过', async t => {
   const h = await makeCompressorHarness()
   t.after(() => disposeCompressor(h))
   const { session, openU, openR } = buildOpenTurnSession('pp-dedup')
@@ -339,7 +339,10 @@ test('④ doneTurns 跨路径防重：open turn 被压力档压过 ⇒ 闭合后
   const recordsAfter = h.compressor.records.length
   appendTurnEnd(session, 2) // 该轮闭合
   const idle = await h.compressor.prepareCurrentTurn(session)
-  assert.equal(idle, null, '已 done 的轮闭合后 idle prepare 返回 null')
+  // 2026-09-21 起口径变化：不再是 doneTurns 的"轮级一次性"拦死，而是**水位过滤**
+  // 使窗口为空（该轮已无水位之后的新原子）⇒ collect 返回 null ⇒ 同样零调用。
+  // 差别在于：若轮内 pass 之后该轮**又新增了原子**，idle pass 现在会补压（见 ⑦）。
+  assert.equal(idle, null, '无新增原子 ⇒ 窗口为空 ⇒ idle prepare 返回 null')
   assert.equal(h.compressor.calls, callsAfter, '零 LLM 调用（防双压）')
   assert.equal(h.compressor.records.length, recordsAfter, '无新 record')
 })
@@ -422,4 +425,91 @@ test('⑥ ctk 形状：主链未声明 effort ⇒ 不发 reasoning_effort 键（
   assert.equal(ctk['enable_thinking'], false)
   assert.equal(ctk['preserve_thinking'], false)
   assert.equal('reasoning_effort' in ctk, false, '主链缺失时省略 re 字段（省略 ≠ 默认值）')
+})
+
+// ---------------------------------------------------------------------------
+// ⑦ 压缩水位（2026-09-21）：同轮可增量再压 / no-candidate 不烧配额 / 幂等
+//
+// 背景（真环境 session-77c64e66 实证）：原 `doneTurns` 是"轮级一次性"记账，
+// 且 `done.add` 在候选门控**之前**。后果有二：
+//   ① 轮内压力 pass（turn 6 step 85）用掉唯一配额 ⇒ 该轮随后新增的内容永不入压；
+//   ② 一次 no-candidate 短路即永久作废该轮（即使之后来了大原子）。
+// 现改为水位：成功 pass 把水位推进到窗口 endSeq，后续 pass 只收 seq > 水位的原子。
+// ---------------------------------------------------------------------------
+
+test('⑦ 水位：轮内压力 pass 后，轮末 idle pass 仍能压新增原子', async t => {
+  const h = await makeCompressorHarness()
+  t.after(() => disposeCompressor(h))
+  const { session, openU, openR } = buildOpenTurnSession('wm-incremental')
+  h.respond({
+    splits: [{ seq: openU, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'open compressed' }],
+    tools: [{ seq: openR, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const first = await h.compressor.compressOpenTurn(session)
+  assert.equal(first?.called, true, '轮内压力档先压一次')
+  const mark1 = h.compressor.turnWaterMark(session, 2)
+  assert.ok(mark1 >= openR, '水位推进到本次窗口边界（>= 最后一个待压原子）')
+
+  // 该轮继续跑：新增一个大 tool result（name+args 与既有互异，避开版本链硬排除）
+  appendAssistantArgs(session, 2, 'c2', '{"path":"late-log.txt"}')
+  const lateR = appendToolResult(session, 2, 'c2', BIG_TOOL_RESULT + 'late tail')
+  h.respond({ tools: [{ seq: lateR, level: 'extract', text: 'late compressed' }] })
+  appendTurnEnd(session, 2) // 该轮闭合
+
+  const idle = await h.compressor.prepareCurrentTurn(session)
+  assert.equal(idle?.called, true, '轮末 idle pass 补压水位之后的新增原子（旧实现此处置零调用）')
+  assert.ok(h.compressor.turnWaterMark(session, 2) >= lateR, '水位随后推进到新边界')
+  assert.equal(h.bodies.length, 2, '两次规划各发一次请求')
+})
+
+test('⑦ 水位：一次 no-candidate 不再永久作废该轮', async t => {
+  const h = await makeCompressorHarness()
+  t.after(() => disposeCompressor(h))
+  const session = Session.create(SessionId('wm-nocandidate'))
+  session.append('turn/start', { turn: 1 })
+  appendUser(session, 1, 'u1: ' + 'a'.repeat(160))
+  appendAssistant(session, 1, 'c0')
+  appendToolResult(session, 1, 'c0', 'old ' + 'x'.repeat(200))
+  appendTurnEnd(session, 1)
+  session.append('turn/start', { turn: 2 })
+  appendUser(session, 2, 'short open user')
+  appendAssistantArgs(session, 2, 'c1', '{"path":"tiny.txt"}')
+  appendToolResult(session, 2, 'c1', 'tiny ok') // < 512 字符 ⇒ 门控无候选
+
+  const noCand = await h.compressor.compressOpenTurn(session)
+  assert.equal(noCand?.called, false)
+  assert.equal(noCand?.skipReason, 'no-candidate', '门控判无可压原子')
+  assert.equal(h.compressor.calls, 0, '零 LLM 调用')
+  assert.equal(h.compressor.turnWaterMark(session, 2), -1, 'no-candidate 不推进水位')
+
+  // 同轮继续：来了一个大原子 ⇒ 应能再被压（旧实现被 doneTurns 永久拦死）
+  appendAssistantArgs(session, 2, 'c2', '{"path":"big.txt"}')
+  const bigR = appendToolResult(session, 2, 'c2', BIG_TOOL_RESULT)
+  h.respond({ tools: [{ seq: bigR, level: 'extract', text: 'big compressed' }] })
+  const rec = await h.compressor.compressOpenTurn(session)
+  assert.equal(rec?.called, true, '大原子到达后同一轮可再压')
+  assert.ok(h.compressor.turnWaterMark(session, 2) >= bigR, '水位推进')
+})
+
+test('⑦ 水位：无新增原子时重复 pass 零调用短路（幂等）', async t => {
+  const h = await makeCompressorHarness()
+  t.after(() => disposeCompressor(h))
+  const { session, openU, openR } = buildOpenTurnSession('wm-idempotent')
+  h.respond({
+    splits: [{ seq: openU, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'open compressed' }],
+    tools: [{ seq: openR, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const first = await h.compressor.compressOpenTurn(session)
+  assert.equal(first?.called, true)
+  const calls = h.compressor.calls
+  const recs = h.compressor.records.length
+
+  const again = await h.compressor.compressOpenTurn(session)
+  assert.equal(again, null, '窗口为空 ⇒ collect 返回 null ⇒ 零调用短路')
+  assert.equal(h.compressor.calls, calls, '无新 LLM 调用')
+  assert.equal(h.compressor.records.length, recs, '不产生 record')
+
+  appendTurnEnd(session, 2)
+  assert.equal(await h.compressor.prepareCurrentTurn(session), null, '闭合后 idle pass 同样幂等')
+  assert.equal(h.compressor.calls, calls, '仍零调用')
 })

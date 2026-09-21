@@ -25,3 +25,6 @@ release-post-draft.md
 
 # npm pack 产物（本地安装物料，不进仓库）
 *.tgz
+
+# session 分析工具（隐私铁律：session 派生数据不进仓库；脚本本身只读不落数据）
+.sess-tools/

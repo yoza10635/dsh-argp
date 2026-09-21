@@ -548,6 +548,49 @@ test('pressure accounting: usage anchor (incl. cacheWriteTokens) + increment dri
   }
 })
 
+test('pressure accounting: usage anchor restored from log on (re)bind — resume 场景', async () => {
+  const { ctx, engine } = await makeEngine({ windowTokens: 200, retainTokens: 50 })
+  try {
+    const session = Session.create(SessionId('anchor-restore-test'))
+    // 关键：**不桥接** session/event —— 模拟宿主进程重启后 resume：引擎的 usage
+    // 处理器拿不到（或拿不到全部）assistant/message 事件，内存锚点恒为 0。
+    // 2026-09-21 真环境实证：锚点缺失时 measureTokens 退化为 chars 口径（不含
+    // reasoning，≈真实 prompt 的 0.48 倍）⇒ 压力检查严重迟触发（0.38 档迟 2.1×、
+    // 0.8 档永不触发）。修复 = bindSession 从日志回填。
+    appendUser(session, 'user anchor (resume)')
+    session.append('assistant/message', { stream: [],
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({ source: { provider: 'test', model: 'test' }, content: [{ type: 'text', text: 'a' }] }),
+      usage: { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 45 },
+    }, { surfaceOp: 'append' })
+    appendAssistant(session, 'R2:' + 'x'.repeat(247), 2)
+    appendAssistant(session, 'R3:' + 'y'.repeat(247), 3)
+    engine.setSession(session) // ← bindSession → restoreUsageAnchor
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    // 同上一例的算术：回填锚点 75 + ceil(500/3.5)=143 → 218 ≥ 200 触发；
+    // 若未回填则字面量估算仅 147 < 200 ⇒ records 为空（见下一个反例用例）。
+    assert.equal(engine.records.length, 1, 'anchor backfilled from log drives the trigger')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('pressure accounting: 日志无 usage ⇒ 不回填、不误触发（反例对照）', async () => {
+  const { ctx, engine } = await makeEngine({ windowTokens: 200, retainTokens: 50 })
+  try {
+    const session = Session.create(SessionId('anchor-nousage-test'))
+    appendUser(session, 'user anchor (no usage anywhere)')
+    appendAssistant(session, 'N2:' + 'x'.repeat(247), 2)
+    appendAssistant(session, 'N3:' + 'y'.repeat(247), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.equal(engine.records.length, 0, 'no usage in log ⇒ no anchor ⇒ chars estimate 147 < 200 ⇒ no prune')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 
 test('ask-exempt U: covered ask U can be pruned when no cross refs', async () => {
   const { ctx, engine } = await makeEngine()

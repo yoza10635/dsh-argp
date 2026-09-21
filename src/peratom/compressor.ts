@@ -12,7 +12,9 @@
  *    loop 先跑 preStep 再落盘消息）。原因：dsh-session invariant 规定 tool/result 的
  *    surface replace 是"durable turn work"，只允许在 open turn 内追加；idle 时 openTurn=null。
  *    推迟发射不损缓存语义：前 N-1 轮前缀字节不变，替换发生在下一次请求组装之前。
- *  - 防重复 turn 处理：prepare 阶段按 (session, turn) 记账，重复 idle / pre-step 幂等跳过。
+ *  - 防重复处理：按 (session, turn) 记**压缩水位**（见 passWatermark）——已规划过的
+ *    前缀不再入候选，重复 idle / pre-step 因窗口为空而幂等短路；成功 pass 之后
+ *    同轮新增内容仍可再压（2026-09-21 起，替代原"轮级一次性"记账）。
  *  - `compressCurrentTurn(session)` 公开入口：立即收集+调用+发射（P4 溢出三步路径②与单测用），
  *    绕过两段式延迟。
  *
@@ -798,8 +800,20 @@ export class PeratomCompressor {
   /** 当前暂存待发射的事务数（测试/P4 判断 stash 是否就绪）。 */
   get pendingCount(): number { return this.pending.length }
 
-  /** 防重复 turn 处理：(session, turn) 记账于 prepare 阶段。 */
-  private readonly doneTurns = new WeakMap<Session, Set<number>>()
+  /**
+   * 每轮压缩**水位**：(session, turn) → 已被规划过的最大 seq（-1 = 未压过）。
+   *
+   * 语义（2026-09-21 修订，替代原 `doneTurns` 的"轮级一次性"）：
+   *  - **成功的 pass** 把该轮水位推进到本次窗口的 `endSeq`（= 规划器已考虑过的边界）；
+   *  - 后续 pass（轮末 idle 或再次压力）**只收 `seq > 水位` 的原子** ⇒ 轮内压力 pass
+   *    不再吃掉轮末 idle pass，同一轮可增量再压。真环境 2026-09-21 实证：turn 6 的
+   *    轮内 pass（step 85）用掉唯一配额后，step 85-92 的新增内容永不入压。
+   *  - 门控短路（`no-candidate`）/ 中断轮**不推进水位** ⇒ 该轮仍可被后续 pass 处理
+   *    （原实现把 `done.add` 放在门控**之前**，一次 no-candidate 即永久作废该轮）。
+   *  - 天然幂等：同一轮无新增原子时窗口为空 ⇒ collect 返回 null ⇒ 零 LLM 调用。
+   *  - 未推进水位的重复调用只做一次日志扫描（无网络、无事务），代价可忽略。
+   */
+  private readonly passWatermark = new WeakMap<Session, Map<number, number>>()
   /** idle 阶段产出、等待下一次 open-turn 窗口发射的事务。 */
   private readonly pending: PendingEntry[] = []
   /**
@@ -825,6 +839,51 @@ export class PeratomCompressor {
   /** 门控选项快照：大小阈值 + tool 对照表（prepare / compressCurrentTurn 两处同口径）。 */
   private gateOptions(): GateOptions {
     return { smallResultChars: this.smallResultChars, toolPolicies: this.toolPolicies }
+  }
+
+  /** 某轮已规划过的最大 seq（-1 = 未压过）。 */
+  private waterMarkOf(session: Session, turn: number): number {
+    return this.passWatermark.get(session)?.get(turn) ?? -1
+  }
+
+  /** 成功落地后推进水位（单调不回退）。 */
+  private advanceWaterMark(session: Session, turn: number, endSeq: number): void {
+    let marks = this.passWatermark.get(session)
+    if (marks === undefined) {
+      marks = new Map<number, number>()
+      this.passWatermark.set(session, marks)
+    }
+    if (endSeq > (marks.get(turn) ?? -1)) marks.set(turn, endSeq)
+  }
+
+  /** 测试 / 诊断入口：读某轮的压缩水位。 */
+  turnWaterMark(session: Session, turn: number): number {
+    return this.waterMarkOf(session, turn)
+  }
+
+  /**
+   * 该事件是否为**可压缩的原始材料**（唯一判据，三处共用）。
+   *
+   * 两类事件不是材料，必须同时从「候选」与「窗口边界（startSeq/endSeq）」里排除：
+   *  - **压缩产物**：`surfaceOp` 存在且非 `'append'`（本压缩器 / 图剪写回的替换副本）。
+   *    它是上一次 pass 的结果；水位语义下同一轮会被多次 collect，放进去会让
+   *    窗口恒非空（每次 pass 都以 no-candidate 重复记账），且副本的
+   *    `message.source.kind` 仍是 `'tool'`，plugin-source 判据拦不住 ⇒ 有二次摘要风险。
+   *  - **插件注入**：`user/message` 且 `source.kind === 'plugin'`（A 形态前缀指令、
+   *    U-info 聚合副本、checkpoint）。这类事件由引擎/本压缩器自己写入，不是会话材料；
+   *    边界若把它们算进去，纯注入窗口会返回"空候选的非 null 收集"（同上噪声问题）。
+   *
+   * 判据口径与 `argp-t1-engine.shadowedSeqs` 的 replace 判定一致。
+   */
+  private isMaterial(event: SessionEvent): boolean {
+    // 只有对话载体（U/A/R）才构成压缩窗口；turn/start·end、compaction/*、
+    // request/header 等旁路事件既不是候选、也不该把窗口撑成"非空"。
+    if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return false
+    const surfaceOp = (event as { surfaceOp?: unknown }).surfaceOp
+    if (surfaceOp !== undefined && surfaceOp !== 'append') return false
+    if (event.type !== 'user/message') return true
+    const kind = (event.data as { source?: { kind?: string } } | undefined)?.source?.kind
+    return kind !== 'plugin'
   }
 
   constructor(ctx: Context, config: PeratomCompressorConfig = {}) {
@@ -910,7 +969,7 @@ export class PeratomCompressor {
    * ② 版本链成员硬排除（决策④，need_compress=false）；③ 大小启发式门控。
    * 无再压缩路径：U-info 副本 / plugin checkpoint 一律跳过（决策⑦）。
    */
-  collectCurrentTurn(session: Session): CurrentTurnCollect | null {
+  collectCurrentTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null {
     const events = sessionEvents(session)
     let closed: number | null = null
     for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -918,6 +977,8 @@ export class PeratomCompressor {
       if (event?.type === 'turn/end') { closed = (event.data as { turn: number }).turn; break }
     }
     if (closed === null) return null
+    // 水位（2026-09-21）：缺省取该轮「已规划边界」，只收其后新增事件 ⇒ 同轮可增量再压。
+    const since = afterSeq ?? this.waterMarkOf(session, closed)
     // 归轮按位置：user/message 事件不携带 turn 字段（rc.2 类型），其归属 =
     // 当前开放的 turn（turn/start..end 之间的日志区间）。assistant/tool 事件自带
     // turn 字段做二次校验。替换副本（dialog/U-info/tool copy）落在本窗口内的，
@@ -930,6 +991,8 @@ export class PeratomCompressor {
       if (event.type === 'turn/start') { open = (event.data as { turn: number }).turn; continue }
       if (event.type === 'turn/end') { open = null; continue }
       if (open !== closed) continue
+      if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
+      if (!this.isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
       if (event.type !== 'user/message') {
         const turn = (event.data as { turn?: unknown } | undefined)?.turn
         if (typeof turn === 'number' && turn !== closed) continue
@@ -949,7 +1012,7 @@ export class PeratomCompressor {
    * 同款（中断/版本链/大小门控；U-info/checkpoint 跳过）；open turn 无 turn/end，
    * 不会出现在中断集里。无 turn/start（会话头）返回 null。
    */
-  collectOpenTurn(session: Session): CurrentTurnCollect | null {
+  collectOpenTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null {
     const events = sessionEvents(session)
     let openSeq = -1
     let openTurn: number | null = null
@@ -962,6 +1025,9 @@ export class PeratomCompressor {
       }
     }
     if (openTurn === null || openSeq < 0) return null
+    // 水位（2026-09-21）：缺省取该 open 轮「已规划边界」，只收其后新增事件 ⇒ 轮内
+    // 压力 pass 之后，轮末 idle pass 仍能压新增原子（不再被一次性配额吃掉）。
+    const since = afterSeq ?? this.waterMarkOf(session, openTurn)
     // open 窗口 = 最后一条 turn/start 之后的全部事件。user/message 按位置归属；
     // assistant/tool 事件自带 turn 字段做二次校验（应恒等于 openTurn）。
     const turnEvents: SessionEvent[] = []
@@ -969,6 +1035,8 @@ export class PeratomCompressor {
     let endSeq = -1
     for (const event of events) {
       if (event.seq <= openSeq) continue
+      if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
+      if (!this.isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
       if (event.type !== 'user/message' && event.type !== 'turn/end') {
         const turn = (event.data as { turn?: unknown } | undefined)?.turn
         if (typeof turn === 'number' && turn !== openTurn) continue
@@ -1007,11 +1075,10 @@ export class PeratomCompressor {
     const nameByCall = buildToolNameIndex(events)
     const rawAtoms: Array<GateUserLong | GateToolResult> = []
     for (const event of turnEvents) {
+      if (!this.isMaterial(event)) continue // 安全网：非材料（压缩产物 / 插件注入）永不入候选
       const data = event.data as Record<string, unknown> | undefined
       if (event.type === 'user/message') {
-        // 无再压缩路径：U-info 聚合副本已是压缩态；plugin 无标记副本是 checkpoint/X。
-        const source = (data as { source?: { kind?: string } } | undefined)?.source?.kind
-        if (source === 'plugin') continue
+        // U-info 聚合副本 / checkpoint / A 形态指令均为 plugin-source —— 已由 isMaterial 排除。
         const text = projectSurfaceText(event)
         if (userIsLong(text, this.splitThresholdChars)) {
           rawAtoms.push({ kind: 'user-long', seq: event.seq, turn, text })
@@ -1042,25 +1109,25 @@ export class PeratomCompressor {
 
   /** idle 触发段：记账防重 → 收集 → 门控 → LLM → 暂存待发射。返回观测记录。 */
   async prepareCurrentTurn(session: Session): Promise<CompressRecord | null> {
+    // 水位过滤内建（collect 缺省取该轮已规划边界）：已压过的原子不再入候选 ⇒ 幂等；
+    // 窗口为空（无新增原子）时 collect 返回 null ⇒ 零调用短路。
     const collect = this.collectCurrentTurn(session)
     if (collect === null) return null
-    const done = this.doneTurns.get(session) ?? new Set<number>()
-    this.doneTurns.set(session, done)
-    if (done.has(collect.turn)) return null // 防重复 turn 处理
-    done.add(collect.turn)
 
     const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
       this.records.push(record)
-      return record // 中断轮：error/aborted 收尾，半成品不进候选（宁全勿漏）
+      return record // 中断轮：error/aborted 收尾，半成品不进候选（宁全勿漏）；不推进水位
     }
     if (!turnCompressible([...collect.userLong, ...collect.toolResults], chain, this.gateOptions())) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'no-candidate' }
       this.records.push(record)
-      return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路
+      return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路；不推进水位
     }
-    return this.callAndStash(session, collect)
+    const entry = await this.callAndStash(session, collect)
+    this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+    return entry
   }
 
   /** 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口（同步追加，吞错记账）。 */
@@ -1089,33 +1156,31 @@ export class PeratomCompressor {
    * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
    * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
    * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
-   * open turn 压缩后标记 doneTurns——该轮闭合时 idle prepare 因已 done 跳过
-   * （替换副本本就被 plugin-source 排除，双保险防重压缩）。
+   * 水位语义（2026-09-21 修订）：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
+   * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（原先的"轮级一次性"
+   * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
    */
   async compressOpenTurn(session: Session): Promise<CompressRecord | null> {
     const collect = this.collectOpenTurn(session)
     return this.compressCollect(session, collect)
   }
 
-  /** 共享压缩尾部：防重记账 + 中断/无候选短路 + callAndStash + 立即 flush。 */
+  /** 共享压缩尾部：中断/无候选短路（不推进水位）+ callAndStash + 立即 flush（成功才推进水位）。 */
   private async compressCollect(session: Session, collect: CurrentTurnCollect | null): Promise<CompressRecord | null> {
     if (collect === null) return null
-    const done = this.doneTurns.get(session) ?? new Set<number>()
-    this.doneTurns.set(session, done)
-    if (done.has(collect.turn)) return null
-    done.add(collect.turn)
     const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
       this.records.push(record)
-      return record
+      return record // 不推进水位：该轮仍可被后续 pass 处理
     }
     if (!turnCompressible([...collect.userLong, ...collect.toolResults], chain, this.gateOptions())) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'no-candidate' }
       this.records.push(record)
-      return record
+      return record // 不推进水位（原实现在此之前 done.add ⇒ 一次 no-candidate 永久作废该轮）
     }
     const entry = await this.callAndStash(session, collect)
+    this.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
     this.flushStashed(session)
     return entry
   }
