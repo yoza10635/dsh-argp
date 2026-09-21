@@ -4,7 +4,39 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.5.0] - 未发布（2026-09-21 起开发；1.4.1 号作废不发布）
+
+> 本条目自 1.5.0 开发起累积：首笔 = 被钳不再等于任务中断（轮中压力剪 + 截断自动续写）；排期 P1–P5 的修复将陆续并入本条目，全部完成并复审后一次性发布。
+
+**问题（用户纠正 + 存档实证）**：1.4.0 把轮中主动压缩关掉、只留"下一个 pre-step 强制剪"，且续写要等用户开口。但上下文超限的两个主要形态恰恰都在轮内——(a) **拿到 tool result 之后才超**（L1 只在轮初判定，看不见它）；(b) **输出过程中被钳**。两者都应在图剪之后**自动继续推进当前轮次的任务**，而 1.4.0 做不到：存档全库 5/5 次钳制后面紧跟的都是 `step/end > turn/end`（`77c64e66`@2318/2326/2356、`a56061c2`@1071/1081/1091/1103；其中 `a56061c2`@1071 发生在 **turn 5 step 15**——典型"轮内长跑被 tool result 推爆"），没有一次续跑。
+
+### Added —— 轮中压力剪（L1'）
+
+- **`step > 1` 且压力达标即剪**，且**只做 0-LLM 图剪**（不跑 per-atom LLM pass——那是 79s–3min 的阻塞，轮内不划算；轮初/轮末另有专门通道）。剪落在那个 pre-step ⇒ **同一个 step 的请求即已瘦身** = 天然自动继续本 turn。
+- **放宽 `turnGuard`（`midTurnTurnGuard`，默认 0）**——这是与 1.3.x 轮中剪的关键差别，也是后者"几乎无效"的根因：超额的来源就是**本轮**的 tool result，而 `turnGuard=1` 恰把整轮保护起来（实测只能剪到 **1 原子 / 154 tok**）。`recencyGuard` 照常保护最新节点（刚收到的 tool result 不动），模型需要更早的 tool result 时走既有 recall 通道。
+
+### Added —— 截断自动续写（L3，本版核心）
+
+- **新钩子 `agent/turn-stopping`**：本轮要收时若仍有待消费的钳制信号 ⇒ ① 就地强制剪（`turn/end` 尚未落账，编号 bracket 仍属本 turn）；② 剪**确有腾空**时 `agent.steer(续写消息)` ⇒ 宿主循环以 `target='next-step'` **续同一个 turn**，用户不必再发"继续"。依据：宿主 `agent.ts:483` 在 `finish.kind === 'max-tokens'` 时**先于** `executeToolCalls` 直接 return（该步 tool calls 被丢弃），`turn()` 随即因 inbox 空而收轮——`turn-stopping` 是最后一个可干预点；harness 自带契约测试逐字锁定 *"steer() from an agent/turn-stopping listener continues the same turn"*（`contract-regressions.spec.ts:323`）。
+- **续写消息形状**：`createUserMessage` + `source = {kind:'plugin', plugin:'dsh-argp', form:'notice'}`。宿主与本引擎都把 `plugin` 源归为 **X**（可见、不参剪）⇒ 既进请求又不会被剪掉，UI 按 notice 渲染、不伪装成用户输入。文案默认点明"输出被宿主的输出预算截断（不是你的错）+ 上下文已压缩 + 接着写勿重述"，可用 `continuationNotice` 覆盖（空串 = 只剪不续）。
+- **零腾空则不续写**：剪不动还 steer 只会立刻再被钳一次；此时把信号**重挂**（`rearmReactive`）留给下一次机会（通常是用户开口后那一轮，那时阶梯已 +1、守卫放宽）。
+- **续写阶梯**：`reactiveRescues` 每 turn 重置，同一 turn 内第 2 次起放宽 `recencyGuard`/`turnGuard`，`reactiveRetries`（默认 2）用尽即放手让本轮结束——既保证"连续被钳能升级"，又封住无限续。
+
+### Changed —— 兼容与默认值
+
+- **`midTurnPrune`（默认 `true`）/ `midTurnTurnGuard`（默认 0）** 成为正式旋钮。1.4.0 的 `midTurnActive` 保留为别名：`true` = 轮中剪开 + 沿用默认 `turnGuard`（1.3.x 逐 pre-step 档，含 per-atom pass，对照用）；`false` = 轮中剪关（1.4.0 档）。
+- `reactiveRetries` 语义收窄为"**每次连续被钳 episode** 内的续写次数"（旧文档描述的是逐 pre-step 重试）。
+
+### Tests
+
+- `test/trigger-levels.test.ts` 扩到 **14 例**：新增 L1⑤（放宽 `turnGuard` 才能剪动"独占当前轮"的 tool result——legacy 档剪不动、默认档剪得动，同会话同时点对照）、L3①–⑤（剪+steer 的载荷形状 / 无信号对照 / 剪不动不续写 / 次数上限 / 阶梯按 turn 重置）；L2 各例改到独立口径（`windowTokens` 极大 ⇒ 只有强制路径可剪，避免与 L1' 混淆）。
+- 新增 **`test/auto-continue-e2e.test.ts`（3 例，真 AgentLoop + 脚本化适配器）**：E2E① 被钳后请求数 3 且 `turn/start` 仍为 **2**（= 同一 turn 续跑，未新开轮）、第 3 次请求确实带上续写提示；E2E② 正常收尾不续（对照）；E2E③ 额度用尽即收轮，不无限续。
+- **变异检查**（3 处，各自只打掉对应断言、对照组全绿）：① 永不 steer ⇒ E2E①/③ + L3①/④/⑤ 失败；② 不放宽 `turnGuard` ⇒ L1⑤ 失败；③ 不重挂信号 ⇒ L2③ 失败。
+- 全量 **285/285**（276 + 6 + 3），typecheck 与 build 干净。
+
 ## [1.4.0] - 2026-09-21（三级触发：轮初主动 + 轮中只反应式）
+
+> ⚠️ 本版的「② 轮中只反应式」已被 **1.5.0** 修订：轮中恢复压力剪（放宽 `turnGuard`），并新增"被钳后剪 + steer 续写同一 turn"。保留下文作为当时的判定依据与实测记录。
 
 真环境实证来源：`session-77c64e66` 全 232 请求的 finish 词表（`tool-calls 232 / stop 13 / max-tokens 3`）+ 三次被钳事件的用量（**1,911 / 1 / 4,714** vs 请求 32,768）+ 宿主 `agent-loop/src/agent.ts:244/250`（先 `claim` 再 dispatch pre-step）与 `compaction/src/invariant.ts:165-177`（编号 bracket 必须落在自己的 open turn 内）。
 

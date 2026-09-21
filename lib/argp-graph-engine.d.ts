@@ -124,18 +124,40 @@ export interface ArgpGraphConfig {
     recencyGuard?: number;
     turnGuard?: number;
     /**
-     * 轮内主动压缩逃生阀（三级触发 v1.4.0）。默认 **false**：轮内不做主动压缩，只剩反应式
-     * （输出被外部钳制 / provider overflow）。理由：轮内主动压缩实测近乎无效——turnGuard
-     * 保护当前轮，209K 上下文的一次轮内图剪只剪掉 1 原子/154 tok；而它每次落地都是一次
-     * **轮中** surface 替换 = 断前缀缓存。置 true 恢复 1.3.x 的逐 pre-step 检查（对照组用）。
+     * 轮中（step > 1）压力剪开关（三级触发 v1.5.0）。默认 **true**。
+     *
+     * 动机（2026-09-21 真会话存档实证）：上下文超限的两个主要形态是「拿到 tool result 之后
+     * 才超」与「输出被钳制」——前者发生在**轮中**，而只在轮初判定的 L1 看不到它。轮中不剪
+     * ⇒ 只能等 provider 400（浪费一次请求）或等输出被钳（本 turn 直接被 max-tokens 终结）。
+     * 轮中剪的落地位置是那个 pre-step，剪完**同一个 step 的请求**即已瘦身 ⇒ 天然自动继续。
+     *
+     * ⚠️ 与 1.3.x 的关键差别：轮中剪**放宽 `turnGuard`**（见 `midTurnTurnGuard`）。超额的来源
+     * 就是**本轮**的 tool result，而 turnGuard=1 恰把整轮保护起来——这正是 1.3.x 轮中剪"只剪
+     * 掉 1 原子/154 tok、却每次都断一次前缀缓存"的根因。轮中剪**不跑 per-atom LLM pass**
+     * （那是 79s–3min 的阻塞，轮中不划算；0-LLM 图剪放宽守卫即可剪掉本轮旧 tool result）。
+     *
+     * 兼容别名（1.4.0 起）：`midTurnActive: true` = 轮中剪**开**且用默认守卫（1.3.x 语义，
+     * 对照组）；`midTurnActive: false` = 轮中剪**关**（1.4.0 语义）。两者都不写 = 新默认。
      */
+    midTurnPrune?: boolean;
+    /** 轮中剪时 `turnGuard` 降到该值（默认 0 = 允许剪本轮的旧 A/R；`recencyGuard` 照常保护最新节点）。 */
+    midTurnTurnGuard?: number;
+    /** 1.4.0 的旧键：见 `midTurnPrune` 的兼容别名说明。 */
     midTurnActive?: boolean;
     /**
-     * 反应式补救的最大次数（默认 2）。输出被外部钳制后（`finish=max-tokens` 且
-     * `usage.outputTokens < 本次请求的 maxTokens`，= provider/适配器把输出预算啃小了，
-     * 容量压力的真信号），后续每个 pre-step 允许一次强制剪枝；第 2 次起放宽
-     * recencyGuard/turnGuard（连当前轮一起剪）。用尽后不再重试，交给 overflow 路径
-     * （provider 400）兜底——避免"每步都被钳 → 每步白压"的死循环。
+     * 输出被钳制后自动续写的提示词（三级触发 v1.5.0）。默认内置中文一句（点明"输出被宿主的
+     * 输出预算截断 + 上下文已压缩 + 接着上次未完成处写、勿重述"）。设为空串则只剪枝不续写。
+     */
+    continuationNotice?: string;
+    /**
+     * 反应式补救的最大次数（**每次"连续被钳"episode** 内，默认 2；出现一次正常输出即清零）。
+     * 输出被外部钳制后（`finish=max-tokens` 且 `usage.outputTokens < 本次请求的 maxTokens`，
+     * = provider/适配器把输出预算啃小了，容量压力的真信号）：
+     *   ① 若本 turn 随后要结束（`agent/turn-stopping`）⇒ 就地强制剪 + `steer` 一条续写消息，
+     *      把**当前轮**续下去（1.5.0 核心：被钳不再等于任务中断）；
+     *   ② 否则（turn 还在跑）⇒ 下一个 pre-step 强制剪。
+     * 第 2 次起放宽 `recencyGuard`/`turnGuard`（连最新节点一起剪）。用尽后不再重试，交给
+     * overflow 路径（provider 400）兜底——避免"每步都被钳 → 每步白压"的死循环。
      */
     reactiveRetries?: number;
     minSpanChars?: number;
@@ -504,13 +526,19 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly auditWarnings: string[];
     /** A7：已重建过的 compactionId 集合（跨 session 重置，保证幂等 + 告警不重复）。 */
     private rebuiltCompactionIds;
-    /** L2 反应式：观察到"输出被外部钳制"后置位，由后续 pre-step 消费（attempts = 已用补救次数）。 */
+    /** L2/L3 反应式：观察到"输出被外部钳制"后置位，由 pre-step（turn 仍在跑）或 turn-stopping（本轮要收）消费。 */
     private readonly reactivePending;
     /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
     private readonly requestMaxTokens;
-    /** 三级触发①②开关（cordis 配置，不进 UI 设置页）。 */
-    private readonly midTurnActive;
+    /** 三级触发 ①②③ 开关与旋钮（cordis 配置，不进 UI 设置页）。 */
+    private readonly midTurnPruneEnabled;
+    private readonly midTurnTurnGuard;
+    /** 兼容别名路径：`midTurnActive: true` ⇒ 轮中用默认 `turnGuard`（1.3.x 语义）。 */
+    private readonly midTurnLegacyGuard;
     private readonly reactiveRetries;
+    private readonly continuationNotice;
+    /** 本 episode（连续被钳）内已用掉的"剪枝 + 续写"次数；出现一次正常输出即清零。 */
+    private readonly reactiveRescues;
     private session;
     private shadowedSession;
     private shadowedSet;
@@ -730,6 +758,17 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 常规轮内剪枝受 turnGuard 保护几乎剪不动，"被钳后回线"需要更狠的手段。用尽
      * `reactiveRetries` 次即停止重试并交给 overflow 路径（provider 400）兜底：避免
      * "每步都被钳 → 每步白压"的死循环（那比现状更糟，每圈多吃一次输出）。
+     */
+    /**
+     * 反应式"零候选"重挂：把钳制信号留给下一次机会（下个 pre-step / 下一轮 turn-stopping），
+     * 那时阶梯已 +1 ⇒ 守卫放宽，原本剪不动的局面（turnGuard 保护当前轮）才可能剪动。
+     * 额度用尽则不再重挂（避免"每步白压"）。
+     */
+    private rearmReactive;
+    /**
+     * L2：turn 仍在跑时的反应式收紧剪。被钳后宿主可能继续本 turn（还有 next-step 输入），
+     * 此时就在下一个 pre-step 剪；若本轮要收，则由 turn-stopping 的 L3 路径剪 + 续写。
+     * 两者共用同一个 episode 计数器（`reactiveRescues`），故连续被钳会逐级放宽守卫而不是各自从头开始。
      */
     private runReactivePrune;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal, 
