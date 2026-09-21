@@ -808,7 +808,7 @@ export class ArgpGraphEngine extends CompactionEngine {
 
     const recallTool = defineTool({
       name: 'recall_pruned',
-      description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context. Call it when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from the visible context. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use list_pruned (including its fromSeq/toSeq range mode) when you do not know the seq.',
+      description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context (text blocks verbatim; tool-call arguments are a JSON semantic-equivalent reconstruction when the host stores them as an object — the reply says so). Call it when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from the visible context. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use list_pruned (including its fromSeq/toSeq range mode) when you do not know the seq.',
       parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
       output: {
         schema: { type: 'string' },

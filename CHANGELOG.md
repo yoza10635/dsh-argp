@@ -27,12 +27,19 @@
 - **`midTurnPrune`（默认 `true`）/ `midTurnTurnGuard`（默认 0）** 成为正式旋钮。1.4.0 的 `midTurnActive` 保留为别名：`true` = 轮中剪开 + 沿用默认 `turnGuard`（1.3.x 逐 pre-step 档，含 per-atom pass，对照用）；`false` = 轮中剪关（1.4.0 档）。
 - `reactiveRetries` 语义收窄为"**每次连续被钳 episode** 内的续写次数"（旧文档描述的是逐 pre-step 重试）。
 
+### Changed —— recall 契约（P2.5，D2 混合方案）
+
+- **C1 截断做实**：`recall_detail` 新增 `from`（字符偏移，默认 0）/ `limit`（单次最多返回字符数）分页参数；被预算或 limit 截断时，截断标记回传"下一步该传什么"（`…(truncated at N/M chars; call recall_detail(seq=…, from=N) to continue)`）——被剪的长代码/长工具输出可逐页完整拿回，截断不再是不可恢复的信息丢失。
+- **P1 重建诚实化**：`recall_detail` 改走新 raw-text 访问器 `log-access.rawEventText`（`eventText` 共享投影行为不变）：text 块返回日志字面量（多块时块间分隔符为投影，标注）；tool-call 参数宿主存字符串（raw JSON）→ 逐字，宿主存对象 → JSON 语义等价重建并在返回里精确标注（`[note: …]`）。
+- **P2 散文 guard 诚实化**：recall 工具描述 + 契约 section + 压缩 prompt 明确"保真仅保证结构化承重 token（URL/路径/file:line/UUID/哈希/key=value，`token-ontology.ts` LOAD_BEARING_PATTERNS）逐字；散文级引用不保证逐字"；README/ARCHITECTURE 的"逐字节"宣称同步收窄。
+
 ### Tests
 
 - `test/trigger-levels.test.ts` 扩到 **14 例**：新增 L1⑤（放宽 `turnGuard` 才能剪动"独占当前轮"的 tool result——legacy 档剪不动、默认档剪得动，同会话同时点对照）、L3①–⑤（剪+steer 的载荷形状 / 无信号对照 / 剪不动不续写 / 次数上限 / 阶梯按 turn 重置）；L2 各例改到独立口径（`windowTokens` 极大 ⇒ 只有强制路径可剪，避免与 L1' 混淆）。
 - 新增 **`test/auto-continue-e2e.test.ts`（3 例，真 AgentLoop + 脚本化适配器）**：E2E① 被钳后请求数 3 且 `turn/start` 仍为 **2**（= 同一 turn 续跑，未新开轮）、第 3 次请求确实带上续写提示；E2E② 正常收尾不续（对照）；E2E③ 额度用尽即收轮，不无限续。
 - **变异检查**（3 处，各自只打掉对应断言、对照组全绿）：① 永不 steer ⇒ E2E①/③ + L3①/④/⑤ 失败；② 不放宽 `turnGuard` ⇒ L1⑤ 失败；③ 不重挂信号 ⇒ L2③ 失败。
 - 全量 **285/285**（276 + 6 + 3），typecheck 与 build 干净。
+- **P2.5**：`test/recall-zoom.test.ts` 14 → **18 例**：新增 C1 分页续读（截断标记回传 from + 续读逐字拿回剩余）、limit 单次上限、P1 参数对象/字符串两态（重建标注 vs 逐字无标注）；原"预算截断"断言改为断言续读指引格式。全量 **318/318**，typecheck 干净。
 
 ## [1.4.0] - 2026-09-21（三级触发：轮初主动 + 轮中只反应式）
 

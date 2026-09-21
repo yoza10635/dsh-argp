@@ -10,7 +10,7 @@ dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https
 
 - **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
 - **Stage-2 reference-graph eviction (lazy, three-tier trigger)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly; triggering is a three-tier ladder: turn-start proactive / mid-turn pressure prune / post-clamp auto-continue (see "Three-tier trigger").
-- **The append-only log is the single source of truth** — originals of everything shrunk or evicted stay in the log forever; two-tier recall `recall_summary` / `recall_detail` (byte-exact, hash-locked by tests) brings them back on demand. The context is a rendered view of the log, not the history itself.
+- **The append-only log is the single source of truth** — originals of everything shrunk or evicted stay in the log forever; two-tier recall `recall_summary` / `recall_detail` brings them back on demand (text blocks verbatim, hash-locked by tests; tool-call arguments are a JSON semantic-equivalent reconstruction, annotated, when the host stores them as an object; the fidelity guarantee covers structured load-bearing tokens verbatim, not prose-level wording; large nodes page via from/limit). The context is a rendered view of the log, not the history itself.
 
 ## Why
 
@@ -54,7 +54,7 @@ Config knobs: `midTurnPrune` (default true) / `midTurnTurnGuard` (default 0) / `
 ### Bridging and recall
 
 - **CiteDeclarer** (per turn): the model declares cross-turn reference edges over its window, fed to Stage-2 through the `injectEdges` channel — measured recall efficiency ≈ 2.6× the edgeless arm (zoom pinpoints the right atoms).
-- **RecallZoom**: `recall_summary(seq)` (compressed state) / `recall_detail(seq)` (byte-exact log original); 4:1 budgeting (summary budget = 4× detail) — over-budget calls return guidance text instead of a hard refusal. Atoms evicted from history are additionally served by `recall_pruned` / `list_pruned`.
+- **RecallZoom**: `recall_summary(seq)` (compressed state) / `recall_detail(seq, from?, limit?)` (log original: text blocks verbatim, tool-call arguments JSON semantic-equivalent and annotated when stored as an object; large nodes page via from/limit); 4:1 budgeting (summary budget = 4× detail) — over-budget calls return guidance text instead of a hard refusal. Atoms evicted from history are additionally served by `recall_pruned` / `list_pruned`.
 
 ## Model requirements (honest version)
 

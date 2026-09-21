@@ -11,8 +11,10 @@
  * 两级工具（设计 §5 渐进 zoom）：
  *  - `recall_summary(seq)`：gist 档——"这内容是关于什么的"。优先读存储 summary，无则降级返回
  *    压缩副本（extract），再降级返回原文。便宜（预算给 4×）。
- *  - `recall_detail(seq)`：exact 档——"确切字符串"。从 append-only 日志取 verbatim 原文（复用
- *    log-access.recallFromLog + argp-graph-engine.eventText），即 verbatim 天花板。贵（预算 1×）。
+ *  - `recall_detail(seq, from?, limit?)`：exact 档——"确切字符串"。从 append-only 日志取原文
+ *    （复用 log-access.recallFromLog + rawEventText：text 块逐字字面量，tool-call 参数为对象
+ *    时 JSON 语义等价重建并精确标注），即 verbatim 天花板。大节点经 from/limit 分页续读——
+ *    截断标记回传下一次该传的 from，被剪的长代码/长工具输出可完整拿回。贵（预算 1×）。
  *
  * 宿主身份（与 PeratomCompressor / CiteDeclarer 同构）：普通 cordis 服务（**非 compaction 位**），
  * 注册两个 defineTool + 一个静态契约 section，经 `setSession` / `agent/pre-step` 绑定 session。
@@ -29,7 +31,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { eventText } from '../argp-graph-engine.js'
-import { formatRecallOutcome, recallFromLog, scanShadowedSeqs, sessionEvents, stateHeader } from '../log-access.js'
+import { formatRecallOutcome, rawEventText, recallFromLog, scanShadowedSeqs, sessionEvents, stateHeader } from '../log-access.js'
 import type { NodeState } from '../log-access.js'
 import { ARG_NS } from './types.js'
 import type { ArgpUserMeta } from './types.js'
@@ -195,13 +197,20 @@ export class RecallZoom {
 
     const detailTool = defineTool({
       name: 'recall_detail',
-      description: 'Exact verbatim recall of any conversation node by log seq: returns the original text byte-for-byte from the append-only log (the verbatim ceiling). Use it when you need the exact string — an error code, a path, a number, a quote — not just the gist. It is the expensive tier (1/4 the budget of recall_summary); for "what was this about" use recall_summary(seq) instead. Works on any seq in the log, whether or not it is still visible. The reply is prefixed with [recall-detail seq=N state=...].',
-      parameters: { seq: { type: 'integer', description: 'log seq of the node to recover verbatim' } },
+      description: 'Exact recall of any conversation node by log seq: returns the original text from the append-only log (the verbatim ceiling). Fidelity: text blocks come back verbatim as stored; tool-call arguments are a JSON semantic-equivalent reconstruction when the host stores them as an object (annotated in the reply). The fidelity guarantee covers structured load-bearing tokens (URLs, paths, file:line, UUIDs, hashes, key=value); prose-level wording is not guaranteed verbatim. Use it when you need the exact string — an error code, a path, a number, a quote — not just the gist. It is the expensive tier (1/4 the budget of recall_summary); for "what was this about" use recall_summary(seq) instead. Large nodes are returned in pages: pass from (character offset, default 0) and limit (max chars this call, optional); a truncated reply tells you the exact from to pass next. Works on any seq in the log, whether or not it is still visible. The reply is prefixed with [recall-detail seq=N state=...].',
+      parameters: {
+        seq: { type: 'integer', description: 'log seq of the node to recover' },
+        from: { type: 'integer', description: 'character offset to start reading from (default 0); pass the value named by a previous truncated reply to continue' },
+        limit: { type: 'integer', description: 'optional maximum number of characters to return this call' },
+      },
       output: {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
       },
-      execute: async (args): Promise<string> => this.recallDetail((args as { seq?: number }).seq),
+      execute: async (args): Promise<string> => {
+        const a = args as { seq?: number; from?: number; limit?: number }
+        return this.recallDetail(a.seq, a.from, a.limit)
+      },
     })
     ctx.tools.register(detailTool)
 
@@ -211,9 +220,11 @@ export class RecallZoom {
       name: 'argp-recall-zoom',
       order: 151,
       text: () => 'Two-tier recall for content that left your visible context (compressed or pruned): '
-        + 'recall_summary(seq) returns a cheap gist ("what it was about"); recall_detail(seq) returns the exact verbatim original. '
+        + 'recall_summary(seq) returns a cheap gist ("what it was about"); recall_detail(seq) returns the original text from the log '
+        + '(text blocks verbatim; tool-call arguments JSON semantic-equivalent when the host stores them as an object, and the reply says so). '
         + 'Use recall_summary first for understanding; escalate to recall_detail only when you need an exact string (error code, path, number, quote). '
-        + 'Both work on any seq in the log — absence from the visible context never means it was never said. Never reconstruct a recalled value from memory; call the tool.',
+        + 'Both work on any seq in the log — absence from the visible context never means it was never said. Never reconstruct a recalled value from memory; call the tool. '
+        + 'A truncated recall_detail reply names the from offset to pass next; keep paging until the node is fully read.',
     })
   }
 
@@ -281,8 +292,16 @@ export class RecallZoom {
     return stateHeader(seq, state).replace('[recall seq=', '[recall-summary seq=') + '\n' + body + suffix
   }
 
-  /** exact 档召回（verbatim 天花板）：日志原文逐字节 + detail 预算。 */
-  async recallDetail(seqArg: number | undefined): Promise<string> {
+  /**
+   * exact 档召回（verbatim 天花板）：日志原文 + detail 预算 + from/limit 分页。
+   *
+   * 分页（C1 做实）：`from` = 字符偏移（默认 0），`limit` = 本次最多返回字符数（可选）。
+   * 投递窗口 = [from, min(from+limit, 预算余量, 原文长度))；被预算或 limit 截断时，
+   * 截断标记回传"下一步该传什么"（`call recall_detail(seq=N, from=…)`），模型可逐页
+   * 拿回被剪的长代码/长工具输出——截断不再是不可恢复的信息丢失。
+   * 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
+   */
+  async recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number): Promise<string> {
     const seq = seqArg
     if (seq === undefined || this.session === null) return 'recall_detail: no session bound'
     const session = this.session
@@ -292,21 +311,32 @@ export class RecallZoom {
       return this.budgetGuidance('detail', this.detailCharsUsed, budget)
     }
     const shadowed = scanShadowedSeqs(session)
-    const outcome = recallFromLog(session, seq, s => shadowed.has(s), eventText)
+    const outcome = recallFromLog(session, seq, s => shadowed.has(s), (s, q) => rawEventText(s, q)?.text ?? '')
     if (!outcome.ok) {
       this.records.push({ tool: 'recall_detail', seq, hit: false, chars: 0, reason: outcome.reason === 'out-of-range' ? 'out-of-range' : 'no-text' })
       return formatRecallOutcome('recall_detail', seq, outcome)
     }
-    const allowed = Math.min(outcome.text.length, budget - this.detailCharsUsed)
-    const truncated = outcome.text.length > allowed
+    const raw = rawEventText(session, seq)
+    const text = outcome.text
+    const from = Math.max(0, Math.floor(fromArg ?? 0))
+    const limit = limitArg !== undefined && Number.isInteger(limitArg) && limitArg > 0 ? limitArg : undefined
+    const header = stateHeader(seq, outcome.state).replace('[recall seq=', '[recall-detail seq=')
+    const note = raw?.reconstructed && raw.note !== undefined ? '\n[note: ' + raw.note + ']' : ''
+    const remaining = text.length - from
+    if (remaining <= 0) {
+      this.records.push({ tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: 0 })
+      return header + '\n…(end of content at seq ' + seq + ': nothing beyond char ' + from + ')' + note
+    }
+    const allowed = Math.min(remaining, budget - this.detailCharsUsed, limit ?? remaining)
+    const end = from + allowed
     const post = this.detailCharsUsed + allowed
-    // 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
-    const body = truncated
-      ? outcome.text.slice(0, allowed) + '…(truncated: detail recall budget ' + post + '/' + budget + ' chars)'
-      : outcome.text
+    const body = text.slice(from, end)
+      + (end < text.length
+        ? '…(truncated at ' + end + '/' + text.length + ' chars; call recall_detail(seq=' + seq + ', from=' + end + ') to continue)'
+        : '')
     this.detailCharsUsed = post
     this.records.push({ tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: allowed })
-    return stateHeader(seq, outcome.state).replace('[recall seq=', '[recall-detail seq=') + '\n' + body
+    return header + '\n' + body + note
   }
 }
 

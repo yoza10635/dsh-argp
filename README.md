@@ -10,7 +10,7 @@ dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 
 - **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
 - **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
-- **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail`（逐字节一致，哈希测试锁定）随取随回。上下文是日志的一个渲染视图，不是历史本身。
+- **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail` 随取随回（text 块逐字字面量，哈希测试锁定；tool-call 参数为对象时 JSON 语义等价重建并精确标注；保真仅保证结构化承重 token 逐字，散文级不保证逐字；大节点 from/limit 分页续读）。上下文是日志的一个渲染视图，不是历史本身。
 
 ## 为什么
 
@@ -54,7 +54,7 @@ Stage-2 的"lazy"不是单一阈值检查，而是三级阶梯（1.4.0 引入、
 ### 桥接与召回
 
 - **CiteDeclarer**（每轮）：模型按窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2——实测召回效率 ≈ 无边臂的 2.6×（zoom 精准定位）。
-- **RecallZoom**：`recall_summary(seq)`（读压缩态）/ `recall_detail(seq)`（日志原文逐字节）；4 倍制预算（summary 预算 = 4×detail），超限返回引导文案而非硬拒。历史被剪原子另有 `recall_pruned` / `list_pruned`。
+- **RecallZoom**：`recall_summary(seq)`（读压缩态）/ `recall_detail(seq, from?, limit?)`（日志原文：text 块逐字，tool-call 参数对象时 JSON 语义等价重建并标注；大节点分页续读）；4 倍制预算（summary 预算 = 4×detail），超限返回引导文案而非硬拒。历史被剪原子另有 `recall_pruned` / `list_pruned`。
 
 ## 模型要求
 

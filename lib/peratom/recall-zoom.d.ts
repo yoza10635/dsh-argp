@@ -75,7 +75,15 @@ export declare class RecallZoom {
     private budgetGuidance;
     /** gist 档召回（P3）：三档降级取数 + summary 预算。 */
     recallSummary(seqArg: number | undefined): Promise<string>;
-    /** exact 档召回（verbatim 天花板）：日志原文逐字节 + detail 预算。 */
-    recallDetail(seqArg: number | undefined): Promise<string>;
+    /**
+     * exact 档召回（verbatim 天花板）：日志原文 + detail 预算 + from/limit 分页。
+     *
+     * 分页（C1 做实）：`from` = 字符偏移（默认 0），`limit` = 本次最多返回字符数（可选）。
+     * 投递窗口 = [from, min(from+limit, 预算余量, 原文长度))；被预算或 limit 截断时，
+     * 截断标记回传"下一步该传什么"（`call recall_detail(seq=N, from=…)`），模型可逐页
+     * 拿回被剪的长代码/长工具输出——截断不再是不可恢复的信息丢失。
+     * 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
+     */
+    recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number): Promise<string>;
 }
 export default RecallZoom;

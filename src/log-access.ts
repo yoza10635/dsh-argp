@@ -99,6 +99,80 @@ export function scanShadowedSeqs(session: Session): Set<number> {
   return shadowed
 }
 
+/**
+ * 原始文本访问器（P2.5 / P1「能精确则精确，做不到则精确标注」）。
+ *
+ * 背景：recall_detail 原先经 `argp-graph-engine.eventText` 投影——多 text 块用
+ * `join('\n')` 塞合成换行、tool-call 参数被 `JSON.stringify` 重序列化，"byte-for-byte"
+ * 名不副实。`eventText` 是共享投影（recall_pruned / list_pruned / summary 降级等多调用方），
+ * 行为不动；本访问器专供 recall_detail 取**原始字面量**：
+ *
+ *  - **text 块**：返回日志里存的字面量本身（不塞合成换行）；多块时按原顺序保真，
+ *    块间分隔符是投影（原件是离散块、无单一字符串），`reconstructed` 标注之；
+ *  - **tool-call 参数**：宿主存的是字符串（dsh-session `tool/call` 的 `arguments` 即
+ *    模型产出的 raw JSON string，未解析）→ 逐字；宿主存的是对象 → 字面量不可恢复，
+ *    只能 `JSON.stringify` 语义等价重建，`reconstructed` + `note` 精确标注；
+ *  - `[tool-call name(...)]` 框架是事件结构的确定性投影（tool/call 事件无 text 块），
+ *    参数本体逐字时不算重建。
+ *
+ * 无正文（无 text 块 / 参数）返回 null（与 eventText 的 `''` 语义对齐，由调用方转换）。
+ */
+export interface RawEventText {
+  /** 原始文本（text 块逐字字面量；重建部分经 note 标注）。 */
+  text: string
+  /** 返回文本是否含重建部分（非存储字面量）。 */
+  reconstructed: boolean
+  /** 重建部分的标注（仅 reconstructed=true 时存在）。 */
+  note?: string
+}
+
+const RECON_ARGS_NOTE = 'tool-call arguments are a JSON semantic-equivalent reconstruction (the host stores them as an object), not the original literal'
+
+/** {@link rawEventText} 的 tool-call 参数投影：字符串逐字，对象 JSON 语义等价重建。 */
+function toolCallProjection(name: string | undefined, args: unknown): { text: string; reconstructed: boolean } {
+  if (typeof args === 'string') return { text: '[tool-call ' + (name ?? '?') + '(' + args + ')]', reconstructed: false }
+  return { text: '[tool-call ' + (name ?? '?') + '(' + JSON.stringify(args ?? {}) + ')]', reconstructed: true }
+}
+
+export function rawEventText(session: Session, seq: number): RawEventText | null {
+  const event = sessionEvents(session)[seq]
+  if (event === undefined) return null
+  const data = event.data as Record<string, unknown> | undefined
+
+  if (event.type === 'tool/call') {
+    const d = data as { name?: string; arguments?: unknown } | undefined
+    const p = toolCallProjection(d?.name, d?.arguments)
+    return { text: p.text, reconstructed: p.reconstructed, note: p.reconstructed ? RECON_ARGS_NOTE : undefined }
+  }
+
+  // dsh event shapes differ by type: user/message carries content at data.content,
+  // assistant/message and tool/result carry it at data.message.content.
+  const rawContent = event.type === 'user/message'
+    ? (data as { content?: unknown[] } | undefined)?.content
+    : (data as { message?: { content?: unknown[] } } | undefined)?.message?.content
+  const content = Array.isArray(rawContent)
+    ? (rawContent as { type: string; text?: string; name?: string; arguments?: unknown; content?: { type: string; text?: string }[] }[])
+    : []
+  const parts: string[] = []
+  let note = ''
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string') {
+      parts.push(block.text)
+    } else if (block.type === 'tool-call') {
+      const p = toolCallProjection(block.name, block.arguments)
+      parts.push(p.text)
+      if (p.reconstructed) note = RECON_ARGS_NOTE
+    } else if (block.type === 'tool-result') {
+      for (const inner of block.content ?? []) if (inner.type === 'text' && typeof inner.text === 'string') parts.push(inner.text)
+    }
+  }
+  if (parts.length === 0) return null
+  if (parts.length > 1) {
+    note = (note !== '' ? note + '; ' : '') + 'multiple content blocks: each block is verbatim, the separator between blocks is a projection'
+  }
+  return { text: parts.join('\n'), reconstructed: note !== '', note: note !== '' ? note : undefined }
+}
+
 /** 判定单个 seq 的状态。shadowed 优先（被遮蔽的节点也可能仍留在 surface 索引之外）。 */
 export function nodeStateOf(session: Session, seq: number, isShadowed: (seq: number) => boolean): NodeState {
   if (isShadowed(seq)) return 'shadowed'

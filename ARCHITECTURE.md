@@ -133,7 +133,7 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 | 工具 | 档位 | 数据源 | 成本 |
 |---|---|---|---|
 | `recall_summary(seq)` | gist（"这内容关于什么"） | 优先存储 summary → 降级压缩副本 → 降级原文 | 便宜（预算 4×） |
-| `recall_detail(seq)` | exact（"确切字符串"） | append-only 日志 verbatim 原文 | 贵（预算 1×） |
+| `recall_detail(seq, from?, limit?)` | exact（"确切字符串"） | append-only 日志原文：text 块逐字字面量；tool-call 参数为对象时 JSON 语义等价重建并精确标注。保真仅保证结构化承重 token 逐字（`token-ontology.ts` LOAD_BEARING_PATTERNS），散文级不保证逐字。大节点 from/limit 分页，截断标记回传续读 from | 贵（预算 1×） |
 
 程序化入口：`recallAnyState()` / `nodeState()`（不受工具门控）。引擎侧 `recall(seq)` 是窄接口，**仅**命中被剪节点（pruned-only 语义，给宿主/测试探针用）。
 

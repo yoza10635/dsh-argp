@@ -224,7 +224,9 @@ test('验收②a：detail 预算拦截（超预算返回引导文案教降档，
   assert.ok(BIG_ORIGINAL.length > h.zoom.detailBudget, 'fixture 必须超预算')
 
   const first = await runTool(h.ctx, 'recall_detail', { seq: 2 })
-  assert.ok(first.includes('…(truncated: detail recall budget'), 'first call should be truncated to budget: ' + first.slice(-120))
+  // C1 做实：截断标记回传"下一步该传什么"（续读 from），而非仅诊断预算数
+  assert.ok(first.includes('…(truncated at ' + h.zoom.detailBudget + '/' + BIG_ORIGINAL.length + ' chars; call recall_detail(seq=2, from=' + h.zoom.detailBudget + ') to continue)'),
+    'first call should be truncated to budget with a continuation hint: ' + first.slice(-160))
   assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'budget should be fully consumed')
 
   const second = await runTool(h.ctx, 'recall_detail', { seq: 2 })
@@ -278,6 +280,70 @@ test('summary 预算独立于 detail：耗尽 detail 不影响 summary 档', asy
   assert.equal(h.zoom.summaryUsed, 0, 'summary untouched')
   const s = await runTool(h.ctx, 'recall_summary', { seq: 1 })
   assert.ok(s.includes('who ate the cookie'), 'summary still works after detail exhaustion: ' + s.slice(0, 80))
+})
+
+// ---------------------------------------------------------------------------
+// C1 做实：from/limit 分页——截断标记回传续读 from，大节点可完整拿回
+// ---------------------------------------------------------------------------
+
+test('C1：from/limit 分页——截断标记回传续读 from，续读拿到剩余正文', async t => {
+  const h = await makeZoom({ detailBudgetTokens: 50 }) // 175 字符预算
+  t.after(() => h.ctx.fiber.dispose())
+  const session = buildBaseSession()
+  h.zoom.setSession(session)
+  const from = h.zoom.detailBudget // 175
+  const first = await runTool(h.ctx, 'recall_detail', { seq: 2 })
+  assert.ok(first.includes('call recall_detail(seq=2, from=' + from + ') to continue'), 'first page must name the continuation from: ' + first.slice(-160))
+  assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'first page consumes the whole budget')
+  // 续读：生产由 compaction/end 重置滑窗并放大窗口；此处用大预算 harness 验证"完整拿回"
+  const big = await makeZoom({ detailBudgetTokens: 2000 })
+  t.after(() => big.ctx.fiber.dispose())
+  big.zoom.setSession(session)
+  const full = await big.zoom.recallDetail(2, from)
+  const body = full.slice(full.indexOf('\n') + 1)
+  assert.equal(body, BIG_ORIGINAL.slice(from), 'continuation must return exactly the remaining original text')
+  assert.ok(!body.includes('truncated'), 'final page must not be truncated')
+  assert.equal(big.zoom.records.at(-1)?.chars, BIG_ORIGINAL.length - from)
+})
+
+test('C1：limit 参数限制单次返回字符数（截断标记回传 from=from+limit）', async t => {
+  const h = await makeZoom() // 默认预算远大于 limit
+  t.after(() => h.ctx.fiber.dispose())
+  const session = buildBaseSession()
+  h.zoom.setSession(session)
+  const out = await runTool(h.ctx, 'recall_detail', { seq: 2, from: 0, limit: 10 })
+  const body = out.slice(out.indexOf('\n') + 1)
+  assert.equal(body.slice(0, 10), BIG_ORIGINAL.slice(0, 10), 'limit caps the returned chars')
+  assert.ok(body.includes('call recall_detail(seq=2, from=10) to continue'), 'limit truncation must name from=10: ' + body.slice(-120))
+  assert.equal(h.zoom.records.at(-1)?.chars, 10, 'budget counts only the delivered chars')
+})
+
+test('P1：tool/call 参数为对象 → JSON 语义等价重建 + 精确标注（note）', async t => {
+  const h = await makeZoom()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('rz-tc-obj'))
+  appendTurnStart(session, 1)
+  // 宿主把 arguments 存成对象（非 raw JSON string）→ 字面量不可恢复
+  session.append('tool/call', { turn: 1, step: 1, callId: 'tc1', name: 'bash', arguments: { cmd: 'ls -la', cwd: '/opt/svc' } } as never)
+  h.zoom.setSession(session)
+  const out = await runTool(h.ctx, 'recall_detail', { seq: 1 })
+  assert.ok(out.includes('[tool-call bash('), 'must project the tool-call: ' + out)
+  assert.ok(out.includes('[note:'), 'object arguments must carry the reconstruction note: ' + out)
+  assert.ok(out.includes('JSON semantic-equivalent reconstruction'), 'note must say JSON semantic-equivalent: ' + out)
+  assert.ok(out.includes('"cmd":"ls -la"'), 'reconstructed JSON must be present: ' + out)
+})
+
+test('P1：tool/call 参数为字符串（raw JSON）→ 逐字，无重建标注', async t => {
+  const h = await makeZoom()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('rz-tc-str'))
+  appendTurnStart(session, 1)
+  const rawArgs = '{"path":"x","depth":2}'
+  session.append('tool/call', { turn: 1, step: 1, callId: 'tc2', name: 'read_file', arguments: rawArgs } as never)
+  h.zoom.setSession(session)
+  const out = await runTool(h.ctx, 'recall_detail', { seq: 1 })
+  assert.ok(out.includes('[tool-call read_file(' + rawArgs + ')]'), 'string arguments must be verbatim: ' + out)
+  assert.ok(!out.includes('[note:'), 'string arguments must NOT carry a reconstruction note: ' + out)
 })
 
 // ---------------------------------------------------------------------------
