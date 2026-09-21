@@ -1,17 +1,21 @@
 /**
  * P2 回归测试：recall 防抖 key 从 closureId 改为 rootSeq。
  *
- * Bug：closureId 由 `nextClosureId++` 生成，tryPruneClosures **每 pass 都给所有 root
- * 重发新 id**（即使跨事务，计数器也只增不减）。noteRecallHit 把「旧 id」写入
+ * Bug：closureId 由 `nextClosureId++` 生成，selectClosureToMerge **每 pass 都给所有
+ * root 重发新 id**（即使跨事务，计数器也只增不减）。noteRecallHit 把「旧 id」写入
  * closureLastRecalled，而剪枝决策处查「本次 pass 的新 id」→ 永不相等 → 防抖分支
- * 永不触发（L816 `continue` 死代码）→ 刚被 recall 回拉的闭包下一 pass 又被剪。
+ * 永不触发（`continue` 死代码）→ 刚被 recall 回拉的闭包下一 pass 又被剪。
  *
  * 修复：key 改用 rootSeq（闭包 root U 的 seq，跨 pass / 跨事务稳定），写入与读取
  * 用同一把钥匙。本测试两条断言：
  *  1) 写入侧：noteRecallHit 之后 closureLastRecalled 里出现的是 rootSeq 条目，
  *     旧 closureId 条目不复存在；
- *  2) 决策侧：预置「该 rootSeq 刚被 recall」后，tryPruneClosures 对同一闭包返回
- *     null（被防抖挡住）；清除预置后同一闭包可剪（非 null）。
+ *  2) 决策侧：预置「该 rootSeq 刚被 recall」后，selectClosureToMerge（compactIfNeeded
+ *     降级链的闭包选择侧）对同一闭包返回 null（被防抖挡住）；清除预置后同一闭包
+ *     可剪（非 null）。
+ *
+ * 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除（生产零调用），决策侧
+ * 断言改指向生产选择函数 selectClosureToMerge（闭包防抖/合并行为在生产路径仍存在）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -99,7 +103,7 @@ test('P2 write-side: noteRecallHit 以 rootSeq 为 key 写入防抖（旧 closur
   }
 })
 
-test('P2 decision-side: tryPruneClosures 按 rootSeq 查防抖，recall 过的闭包被跳过', async () => {
+test('P2 decision-side: selectClosureToMerge 按 rootSeq 查防抖，recall 过的闭包被跳过', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('p2-decision-side'))
@@ -109,24 +113,27 @@ test('P2 decision-side: tryPruneClosures 按 rootSeq 查防抖，recall 过的�
     const { edges, inDegree } = engine.buildGraph(atoms)
     const askCover = new Map<number, number>()
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
+    // 2026-09-21（P5 Wave 3 第 3 步）：决策侧改指向生产选择函数 selectClosureToMerge
+    // （原独立闭包事务方法删除；闭包防抖/选择行为在生产降级链里仍存在）。
     const engineAny = engine as unknown as {
       closureLastRecalled: Map<number, number>
-      tryPruneClosures(
+      selectClosureToMerge(
         session: Session,
         atoms: Atom[],
         edges: unknown[],
         inDegree: Map<number, number>,
         askCover: Map<number, number>,
         latestTurn: number,
+        alreadyPruned: Set<number>,
       ): unknown
     }
     // 预置「rootSeq 刚被 recall」（模拟 noteRecallHit 在上一事务写入）
     engineAny.closureLastRecalled.set(u1, latestTurn)
-    const blocked = engineAny.tryPruneClosures(session, atoms, edges, inDegree, askCover, latestTurn)
+    const blocked = engineAny.selectClosureToMerge(session, atoms, edges, inDegree, askCover, latestTurn, new Set<number>())
     assert.ok(blocked === null, 'closure recalled this turn must be debounced (latestTurn - recalled < k)')
     // 清除预置后同一闭包恢复可剪（证明不是其他条件挡住的）
     engineAny.closureLastRecalled.delete(u1)
-    const allowed = engineAny.tryPruneClosures(session, atoms, edges, inDegree, askCover, latestTurn)
+    const allowed = engineAny.selectClosureToMerge(session, atoms, edges, inDegree, askCover, latestTurn, new Set<number>())
     assert.ok(allowed !== null, 'closure without a recent recall must be prunable')
   } finally {
     await ctx.fiber.dispose()

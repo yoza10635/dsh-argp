@@ -718,7 +718,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
      *
      * P4 修复：旧实现遍历 **全部 events** 取 max，把 turn/start、注入型 system-reminder
-     * 等非 surface 事件也算进来，与 compactIfNeeded / tryPruneClosures 用的
+     * 等非 surface 事件也算进来，与 compactIfNeeded（含内联闭包降级链）用的
      * "atoms（surface 节点）最大 turn" 口径不一致 —— 同一个防抖判定两端基准不同。
      * 现统一为 surface 节点口径；turnBasis='semantic'（默认）时进一步排除注入型 X 节点，
      * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
@@ -729,7 +729,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。
      *
      * P2 修复：防抖 key 从 closureId 改为 rootSeq。closureId 由 `nextClosureId++` 生成，
-     * tryPruneClosures 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
+     * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
      * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
      * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
      */
@@ -750,13 +750,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private summarizeCriticalChain;
     /** P2 选择侧（2026-08-22 拆出）：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
-     *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前 tryPruneClosures
+     *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
      *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
-     *  pruned、统一事务剪"，闭包原子需与已剪集合去重（如 A1/A2 已正常剪 → 闭包仅剩 root U，
-     *  单独退休 root U 是有意设计：P5 注释"自动闭包生命周期确实会连 root U 一起剪除"）。 */
+     *  pruned、统一事务剪"（compactIfNeeded 降级链内联），闭包原子需与已剪集合去重
+     *  （如 A1/A2 已正常剪 → 闭包仅剩 root U，单独退休 root U 是有意设计：P5 注释
+     *  "自动闭包生命周期确实会连 root U 一起剪除"）。 */
     private selectClosureToMerge;
-    /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
-    tryPruneClosures(session: Session, atoms: Atom[], edges: SemanticEdge[], inDegree: Map<number, number>, askCover: Map<number, number>, latestTurn: number): CompactionResult | null;
     /**
      * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
      *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
@@ -851,7 +850,5 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
      */
     rebuildLedgerFromLog(): void;
-    /** 日志尾部的 open turn（pre-step 时刻用于 compaction 括号的 owner）。 */
-    private detectOpenTurn;
 }
 export default ArgpGraphEngine;

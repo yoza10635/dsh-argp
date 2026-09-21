@@ -36,7 +36,7 @@ import { compactCheckpointSource, CompactionId } from '@deepseek-ai/dsh-compacti
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
-import { asSeq, asSeqs, sessionEvents } from '../log-access.js'
+import { asSeq, asSeqs, detectOpenTurn, mainChainReasoningEffort, sessionEvents, turnOf } from '../log-access.js'
 import { ARG_NS, SPLIT_THRESHOLD_CHARS } from './types.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import { autoDshLlmSpec } from './llm-adapter.js'
@@ -773,17 +773,8 @@ interface PendingEntry {
   record: CompressRecord
 }
 
-/** 日志尾部的 open turn（flush 时刻 compaction 括号的 owner；null=standalone）。 */
-function detectOpenTurn(session: Session): number | null {
-  const events = sessionEvents(session)
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event === undefined) continue
-    if (event.type === 'turn/start') return (event.data as { turn: number }).turn
-    if (event.type === 'turn/end') return null
-  }
-  return null
-}
+// 2026-09-21（P5 Wave 3 第 3 步）：detectOpenTurn 已迁 log-access 叶子
+// （与 argp-graph-engine 的逐字相同实现收敛），本模块改调导入的模块函数。
 
 export class PeratomCompressor {
   static inject = [] as const
@@ -1043,7 +1034,7 @@ export class PeratomCompressor {
     let closed: number | null = null
     for (let i = events.length - 1; i >= 0; i -= 1) {
       const event = events[i]
-      if (event?.type === 'turn/end') { closed = (event.data as { turn: number }).turn; break }
+      if (event?.type === 'turn/end') { closed = turnOf(event) ?? null; break }
     }
     if (closed === null) return null
     // 水位（2026-09-21）：缺省取该轮「已规划边界」，只收其后新增事件 ⇒ 同轮可增量再压。
@@ -1057,14 +1048,14 @@ export class PeratomCompressor {
     let endSeq = -1
     let open: number | null = null
     for (const event of events) {
-      if (event.type === 'turn/start') { open = (event.data as { turn: number }).turn; continue }
+      if (event.type === 'turn/start') { open = turnOf(event) ?? null; continue }
       if (event.type === 'turn/end') { open = null; continue }
       if (open !== closed) continue
       if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
       if (!this.isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
       if (event.type !== 'user/message') {
-        const turn = (event.data as { turn?: unknown } | undefined)?.turn
-        if (typeof turn === 'number' && turn !== closed) continue
+        const turn = turnOf(event)
+        if (turn !== undefined && turn !== closed) continue
       }
       turnEvents.push(event)
       if (event.seq < startSeq) startSeq = event.seq
@@ -1089,7 +1080,7 @@ export class PeratomCompressor {
       const event = events[i]
       if (event?.type === 'turn/start') {
         openSeq = event.seq
-        openTurn = (event.data as { turn: number }).turn
+        openTurn = turnOf(event) ?? null
         break
       }
     }
@@ -1107,8 +1098,8 @@ export class PeratomCompressor {
       if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
       if (!this.isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
       if (event.type !== 'user/message' && event.type !== 'turn/end') {
-        const turn = (event.data as { turn?: unknown } | undefined)?.turn
-        if (typeof turn === 'number' && turn !== openTurn) continue
+        const turn = turnOf(event)
+        if (turn !== undefined && turn !== openTurn) continue
       }
       turnEvents.push(event)
       if (event.seq < startSeq) startSeq = event.seq
@@ -1288,14 +1279,8 @@ export class PeratomCompressor {
    * chat_template_kwargs 字段，只有 reasoningEffort——故从它重建，非读现成 ctk）。
    */
   private resolveEffectiveCtk(session: Session): Record<string, unknown> {
-    const events = sessionEvents(session)
-    let mainChainEffort: string | undefined
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i]
-      if (event?.type !== 'request/header') continue
-      const cfg = (event.data as unknown as { header?: { config?: { reasoningEffort?: string } } } | undefined)?.header?.config
-      if (cfg?.reasoningEffort !== undefined) { mainChainEffort = cfg.reasoningEffort; break }
-    }
+    // 2026-09-21（P5 Wave 3 第 3 步）：主链 reasoningEffort 抽取收敛到 log-access 共享访问器。
+    const mainChainEffort = mainChainReasoningEffort(session)
     const ctk: Record<string, unknown> = { ...(this.chatTemplateKwargs ?? {}) }
     ctk['enable_thinking'] = false
     ctk['preserve_thinking'] = false

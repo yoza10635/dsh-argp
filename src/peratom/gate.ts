@@ -19,6 +19,7 @@
  *    后续步骤可能合法引用，排除方向只允许往"少压"错。
  */
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { turnOf } from '../log-access.js'
 import { isArgpUserInfo } from './types.js'
 
 // ---------------------------------------------------------------------------
@@ -58,14 +59,14 @@ export function collectInterruptedTurns(events: readonly SessionEvent[]): Set<nu
   for (const event of events) {
     if (event.type === 'turn/end') {
       if (isInterruptedTurnEnd(event.data)) {
-        const turn = (event.data as { turn?: unknown }).turn
-        if (typeof turn === 'number') turns.add(turn)
+        const turn = turnOf(event)
+        if (turn !== undefined) turns.add(turn)
       }
       continue
     }
     if (event.type === 'assistant/message' && isInterruptedAssistantMessage(event.data)) {
-      const turn = (event.data as { turn?: unknown }).turn
-      if (typeof turn === 'number') turns.add(turn)
+      const turn = turnOf(event)
+      if (turn !== undefined) turns.add(turn)
     }
   }
   return turns

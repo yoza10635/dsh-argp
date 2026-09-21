@@ -23,7 +23,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { asSeq, asSeqs, eventText, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader } from './log-access.js'
+import { asSeq, asSeqs, detectOpenTurn, eventText, formatLogRow, formatRecallOutcome, nodeStateOf, queryLogRange, recallFromLog, sessionEvents, stateHeader, turnOf } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 // eventText 已迁 log-access（P5 Wave 3 第 1 步）；此处转发以维持既有公共 API 与测试 import。
@@ -1260,7 +1260,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (event.type === 'compaction/start') {
         const cid = (event.data as { compactionId?: string } | undefined)?.compactionId
         if (typeof cid === 'string' && !cid.startsWith('argp-')) {
-          this.log.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${(event.data as { turn?: number }).turn ?? '?'})`
+          this.log.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${turnOf(event) ?? '?'})`
             + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt graph pruning')
         }
       }
@@ -1395,7 +1395,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           // per-atom 压缩：轮初必跑；轮中只在 `midTurnActive: true`（1.3.x 对照档）下跑——
           // 它需要 open turn 的原子，且是一次 79s–3min 的阻塞，新默认档的轮中剪刻意不带它。
           if ((turnStart || this.midTurnLegacyGuard)
-            && this.onPrePressureCompress !== undefined && this.detectOpenTurn(session) !== null) {
+            && this.onPrePressureCompress !== undefined && detectOpenTurn(session) !== null) {
             if (await this.isPressureExceeded(agent, incoming)) {
               try {
                 await this.onPrePressureCompress(session)
@@ -2210,7 +2210,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
    *
    * P4 修复：旧实现遍历 **全部 events** 取 max，把 turn/start、注入型 system-reminder
-   * 等非 surface 事件也算进来，与 compactIfNeeded / tryPruneClosures 用的
+   * 等非 surface 事件也算进来，与 compactIfNeeded（含内联闭包降级链）用的
    * "atoms（surface 节点）最大 turn" 口径不一致 —— 同一个防抖判定两端基准不同。
    * 现统一为 surface 节点口径；turnBasis='semantic'（默认）时进一步排除注入型 X 节点，
    * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
@@ -2242,7 +2242,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    * recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。
    *
    * P2 修复：防抖 key 从 closureId 改为 rootSeq。closureId 由 `nextClosureId++` 生成，
-   * tryPruneClosures 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
+   * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
    * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
    * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
    */
@@ -2298,10 +2298,11 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /** P2 选择侧（2026-08-22 拆出）：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
-   *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前 tryPruneClosures
+   *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
    *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
-   *  pruned、统一事务剪"，闭包原子需与已剪集合去重（如 A1/A2 已正常剪 → 闭包仅剩 root U，
-   *  单独退休 root U 是有意设计：P5 注释"自动闭包生命周期确实会连 root U 一起剪除"）。 */
+   *  pruned、统一事务剪"（compactIfNeeded 降级链内联），闭包原子需与已剪集合去重
+   *  （如 A1/A2 已正常剪 → 闭包仅剩 root U，单独退休 root U 是有意设计：P5 注释
+   *  "自动闭包生命周期确实会连 root U 一起剪除"）。 */
   private selectClosureToMerge(
     session: Session,
     atoms: Atom[],
@@ -2418,56 +2419,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
   }
 
-  /** P2：尝试按闭包生命周期剪除一个 PRUNABLE 闭包。返回 CompactionResult 或 null。 */
-  tryPruneClosures(
-    session: Session,
-    atoms: Atom[],
-    edges: SemanticEdge[],
-    inDegree: Map<number, number>,
-    askCover: Map<number, number>,
-    latestTurn: number,
-  ): CompactionResult | null {
-    // 2026-08-22：选择逻辑抽到 selectClosureToMerge（供 compactIfNeeded 降级链并入 pruned 复用），
-    // 本方法保持"独立闭包事务"语义（手动/独立路径）；执行段不变。
-    const chosen = this.selectClosureToMerge(session, atoms, edges, inDegree, askCover, latestTurn, new Set<number>())
-    if (chosen === null) return null
-    const intervals = chosen.intervals
-    for (const iv of intervals) {
-      for (const a of iv.atoms) {
-        const citedBySeq = edges.filter(e => e.to === a.id).map(e => atoms[e.from]?.seq).filter((x): x is number => x !== undefined)
-        const firstLine = a.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
-        this.prunedNodeIndex.set(a.seq, {
-          seq: a.seq,
-          type: a.type,
-          turn: a.turn,
-          firstLine: firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine,
-          citedBySeq,
-          // 闭包剪枝没有 eff map；用 selfImportance 近似（A=5/U=3/R=0；P4：U-info 按 R=0）
-          eff: a.type === 'A' ? 5 : (a.type === 'U' && a.sourceSeq === undefined ? 3 : 0),
-        })
-      }
-    }
-    // P3/P6：tombstone 必须自带 seq 区间（否则 tombstone-within-tombstone 两跳后 seq 信息
-    // 彻底丢失，模型无法 recall），并给出「本区间 K / 闭包合计 N」消歧 —— 同一闭包跨多个
-    // 区间时各 tombstone 的计数都是局部准确值，缺少 N 会让模型误判数据脏。
-    const closureTotal = chosen.seqs.length
-    const tombstones = intervals.map(iv => ({
-      type: 'user' as const,
-      text: '[elided closure ' + chosen.closureId
-        + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-        + ': ' + iv.seqs.length + ' of ' + closureTotal + ' surface nodes in this closure'
-        + ' pruned by ARGP closure lifecycle; root=' + chosen.rootPreview
-        + '; recall_pruned(seq) retrieves original]',
-    }))
-    const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstones)
-    pushBounded(this.closurePrunes, {
-      closureId: chosen.closureId,
-      rootSeq: chosen.root.seq,
-      prunedSeqs: chosen.seqs,
-      at: new Date().toISOString(),
-    }, this.telemetryCap)
-    return result
-  }
+  // 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除（生产零调用、仅测试引用；
+  // 注释自认 2026-08-22 起已被内联）——其选择逻辑即 selectClosureToMerge，执行语义已内联进
+  // compactIfNeeded 降级链（候选耗尽 → 闭包并入 pruned → 统一 pruneIntervals 事务剪）。
 
 /**
  * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
@@ -2868,7 +2822,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
       }
       if (candidateGroups.length === 0) {
-        // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原 tryPruneClosures
+        // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原独立闭包事务
         // 的 return 把正常候选 + 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），
         // 25 次压缩剪除率 0-2%（"压缩饿死"，见 engine-fix-2026-08-22-compaction-starvation.md（已迁出公开仓库））。
         // fail 保持设计语义（§5.9/§5.11：资源用尽/超窗 → 报警终止，全有或全无、不产出）。
@@ -3015,7 +2969,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     const bySeq = new Map(atoms.map(a => [a.seq, a]))
     const intervalAtoms = shadowedSeqs.map(seq => bySeq.get(seq)).filter((a): a is Atom => a !== undefined)
     if (intervalAtoms.some(a => a.type === 'U' || a.type === 'X')) {
-      // P5：措辞 scoped 到手动入口。自动闭包生命周期（tryPruneClosures）确实会连 root U
+      // P5：措辞 scoped 到手动入口。自动闭包生命周期（compactIfNeeded 降级链内联）确实会连 root U
       // （task-init）与 X checkpoint 一起剪除；"ARGP never prunes U/X" 只对本手动入口成立。
       throw new Error('compactRegion (manual) does not prune U/X spans; choose a span without U/X, '
         + 'or let the automatic closure lifecycle retire those nodes together with their closure')
@@ -3160,7 +3114,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     if (useIntervals.length === 0) return null
     const charsBefore = this.visibleChars(session)
-    const openTurn = this.detectOpenTurn(session)
+    const openTurn = detectOpenTurn(session)
     const compactionId = CompactionId('argp-graph-' + randomUUID())
     const lifecycle = { compactionId, turn: openTurn }
     const allSeqs = useIntervals.flatMap(iv => iv.seqs)
@@ -3356,8 +3310,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const turnOfSeq = (seq: number): number => {
       const event = this.session === null ? undefined : sessionEvents(this.session)[seq]
-      const turn = (event?.data as { turn?: unknown } | undefined)?.turn
-      return typeof turn === 'number' ? turn : 0
+      return event === undefined ? 0 : (turnOf(event) ?? 0)
     }
     // 逐 start 配对：收集该事务区间（start..end）内的**全部** compaction/prune 与 end。
     // 2026-09-01 修复：pruneIntervals 改为逐区间发 prune（每区间一个 shadow-price 事件，
@@ -3420,16 +3373,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
   }
 
-  /** 日志尾部的 open turn（pre-step 时刻用于 compaction 括号的 owner）。 */
-  private detectOpenTurn(session: Session): number | null {
-    for (let index = session.seq - 1; index >= 0; index -= 1) {
-      const event = sessionEvents(session)[index]
-      if (event === undefined) continue
-      if (event.type === 'turn/start') return (event.data as { turn: number }).turn
-      if (event.type === 'turn/end') return null
-    }
-    return null
-  }
+  // 2026-09-21（P5 Wave 3 第 3 步）：detectOpenTurn 已迁 log-access 叶子
+  // （与 peratom/compressor 的逐字相同实现收敛），本类改调导入的模块函数。
 }
 
 export default ArgpGraphEngine

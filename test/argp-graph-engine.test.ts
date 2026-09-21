@@ -6,7 +6,7 @@ import { createAssistantMessage, createSystemMessage, createToolResultMessage, c
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { asSeq, asSeqs } from '../src/log-access.ts'
-import { ArgpGraphEngine, EDGE_WEIGHTS, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
+import { ArgpGraphEngine, EDGE_WEIGHTS, buildTombstones, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
@@ -20,7 +20,7 @@ function appendUser(session: Session, text: string): void {
 }
 
 function appendAssistant(session: Session, text: string, turn: number): void {
-  session.append('assistant/message', { stream: [], 
+  session.append('assistant/message', { stream: [],
     turn,
     step: 1,
     message: createAssistantMessage({
@@ -28,6 +28,24 @@ function appendAssistant(session: Session, text: string, turn: number): void {
       content: [{ type: 'text', text }],
     }),
   }, { surfaceOp: 'append' })
+}
+
+/**
+ * 闭包选择侧（private selectClosureToMerge）的白盒访问类型。
+ * 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法 tryPruneClosures 删除（生产零调用），
+ * 闭包选择/守卫/防抖行为改指向生产选择函数 selectClosureToMerge（compactIfNeeded
+ * 降级链复用同一选择逻辑）。本类型仅暴露测试所需的返回字段。
+ */
+type ClosureSelector = {
+  selectClosureToMerge(
+    session: Session,
+    atoms: Atom[],
+    edges: unknown[],
+    inDegree: Map<number, number>,
+    askCover: Map<number, number>,
+    latestTurn: number,
+    alreadyPruned: Set<number>,
+  ): { closureId: string; root: Atom; rootPreview: string; seqs: number[]; atoms: Atom[]; intervals: unknown[] } | null
 }
 
 test('extractCites: bare JSON, fenced JSON, empty cites, invalid, absent', () => {
@@ -1050,7 +1068,7 @@ test('catalogText: sorts pruned U before A when both are pruned', async () => {
   }
 })
 
-test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async () => {
+test('closure lifecycle: completed PRUNABLE closure is selected as a whole', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('closure-prune-test'))
@@ -1064,21 +1082,21 @@ test('closure lifecycle: completed PRUNABLE closure is pruned as a whole', async
     engine.setSession(session)
     const atoms = engine.atomize(session)
     const { edges, inDegree } = engine.buildGraph(atoms)
-    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
-    assert.ok(result !== null)
-    assert.equal(engine.closurePrunes.length, 1)
-    const record = engine.records[0]
-    assert.ok(record !== undefined)
-    const stillSurface = new Set(session.surface.nodes)
-    assert.ok(!stillSurface.has(asSeq(u1Seq)))
-    assert.ok(!stillSurface.has(asSeq(a1Seq)))
-    assert.ok(stillSurface.has(asSeq(u2Seq))) // task two user
+    // 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除；闭包整段选择行为
+    // 改指向生产选择函数 selectClosureToMerge（compactIfNeeded 降级链复用同一逻辑）。
+    const closure = (engine as unknown as ClosureSelector).selectClosureToMerge(session, atoms, edges, inDegree, new Map(), 2, new Set<number>())
+    assert.ok(closure !== null, 'a completed PRUNABLE closure must be selectable')
+    assert.equal(closure.root.seq, u1Seq, 'closure root is the first U (task one)')
+    // 整闭包 = U1 + A1（到下一个 root U2 之前），不含 U2
+    assert.ok(closure.seqs.includes(u1Seq) && closure.seqs.includes(a1Seq), 'closure covers U1 + A1')
+    assert.ok(!closure.seqs.includes(u2Seq), 'closure stops before the next root U2')
+    assert.ok(closure.intervals.length > 0, 'closure yields prunable intervals')
   } finally {
     await ctx.fiber.dispose()
   }
 })
 
-test('closure lifecycle: dependent closure with incoming edge is not pruned first', async () => {
+test('closure lifecycle: dependent closure with incoming edge is not selected first', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('closure-dependent-test'))
@@ -1097,14 +1115,12 @@ test('closure lifecycle: dependent closure with incoming edge is not pruned firs
     assert.ok(a1 !== undefined && a2 !== undefined)
     const edges = [{ from: a1.id, to: a2.id, level: 'supporting' as const }]
     const inDegree = new Map<number, number>([[a2.id, 1]])
-    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
-    assert.ok(result !== null)
-    assert.equal(engine.closurePrunes.length, 1)
-    assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq)
-    const stillSurface = new Set(session.surface.nodes)
-    assert.ok(stillSurface.has(asSeq(u2Seq)))
-    assert.ok(stillSurface.has(asSeq(a2Seq)))
-    assert.ok(!stillSurface.has(asSeq(u1Seq)))
+    // 2026-09-21（P5 Wave 3 第 3 步）：改指向生产选择函数 selectClosureToMerge。
+    // 带入边的依赖闭包（U2，且为最后一个 root）不优先被选；选中的是更早的 closure1（U1）。
+    const closure = (engine as unknown as ClosureSelector).selectClosureToMerge(session, atoms, edges, inDegree, new Map(), 2, new Set<number>())
+    assert.ok(closure !== null, 'a closure must still be selectable')
+    assert.equal(closure.root.seq, u1Seq, 'closure1 (U1) is selected, not the dependent closure2')
+    assert.ok(!closure.seqs.includes(u2Seq) && !closure.seqs.includes(a2Seq), 'closure2 atoms are not merged into the chosen closure')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -1189,15 +1205,24 @@ test('closure tombstone: includes closure id and root preview', async () => {
     appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
     engine.setSession(session)
     const atoms = engine.atomize(session)
-    const { edges, inDegree } = engine.buildGraph(atoms)
-    const result = engine.tryPruneClosures(session, atoms, edges, inDegree, new Map(), 2)
-    assert.ok(result !== null)
-    const tombstone = [...session.snapshotEvents()].find(e => e.type === 'user/message'
-      && (e.data as { content?: { type: string; text: string }[] }).content?.some(b => b.text.includes('[elided closure')))
-    assert.ok(tombstone !== undefined)
-    const text = (tombstone.data as { content: { type: string; text: string }[] }).content.map(b => b.text).join('')
-    assert.ok(text.includes('[elided closure'))
-    assert.ok(text.includes('task one'))
+    const u1 = atoms.find(a => a.type === 'U')
+    const a1 = atoms.find(a => a.type === 'A' && a.turn === 1)
+    assert.ok(u1 !== undefined && a1 !== undefined)
+    // 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除；闭包 tombstone 文本
+    // 改指向生产生成函数 buildTombstones（compactIfNeeded 降级链用同一函数生成闭包墓碑）。
+    const closureId = 'closure-0'
+    const closureSeqMeta = new Map<number, { closureId: string; rootPreview: string; closureTotal: number }>()
+    for (const a of [u1, a1]) closureSeqMeta.set(a.seq, { closureId, rootPreview: 'task one', closureTotal: 2 })
+    const kept = [{ seqs: [u1.seq, a1.seq], chars: u1.text.length + a1.text.length, atoms: [u1, a1], hasSoloR: false }]
+    const tombstones = buildTombstones(kept, closureSeqMeta, new Map(), new Map(), false)
+    assert.equal(tombstones.length, 1)
+    const t = tombstones[0]
+    assert.ok(t !== undefined)
+    assert.equal(t.type, 'user')
+    if (t.type === 'user') {
+      assert.ok(t.text.includes('[elided closure'))
+      assert.ok(t.text.includes('task one'))
+    }
   } finally {
     await ctx.fiber.dispose()
   }
@@ -1395,20 +1420,19 @@ test('critical closure guard: cross-closure critical edge blocks target closure;
     // closure1 是最后 root 的前一个？不——roots=[u1,u2,u3]，u1 非最后 root，
     // 但闭包归属：u1 的闭包 = [u1,A1]，u2 的闭包 = [u2,A2]，u3 的闭包=[u3,A3]。
     // critical 边 A1→A2 使 closure2 有 external critical 入度 → closure2 被守卫。
-    // closure1 无入边 → 候选。排序后 closure1 被剪。
+    // closure1 无入边 → 候选。排序后 closure1 被选。
+    // 2026-09-21（P5 Wave 3 第 3 步）：改指向生产选择函数 selectClosureToMerge；
+    // latestTurn 取真实最大 turn（3），使 recency 检查不掩盖守卫差异。
     const edgesCrit = [{ from: a1.id, to: a2.id, level: 'critical' as const }]
     const inDegreeCrit = new Map<number, number>([[a2.id, 1]])
-    const resultCrit = engine.tryPruneClosures(session, atoms, edgesCrit, inDegreeCrit, new Map(), 2)
-    assert.ok(resultCrit !== null, 'closure1 (no in-edge) must still be prunable')
-    // 关键：closure2 因 external critical 入边被守卫 → 不在剪除范围
-    assert.equal(engine.closurePrunes.length, 1)
-    assert.equal(engine.closurePrunes[0]?.rootSeq, u1Seq, 'closure1 pruned, not closure2')
-    const stillSurfaceCrit = new Set(session.surface.nodes)
-    assert.ok(stillSurfaceCrit.has(asSeq(u2Seq)), 'closure2 (critical in-edge) must stay on surface')
-    assert.ok(stillSurfaceCrit.has(asSeq(a2Seq)))
+    const closureCrit = (engine as unknown as ClosureSelector).selectClosureToMerge(session, atoms, edgesCrit, inDegreeCrit, new Map(), 3, new Set<number>())
+    assert.ok(closureCrit !== null, 'closure1 (no in-edge) must still be selectable')
+    // 关键：closure2 因 external critical 入边被守卫 → 不并入选中闭包
+    assert.equal(closureCrit.root.seq, u1Seq, 'closure1 selected, not closure2')
+    assert.ok(!closureCrit.seqs.includes(u2Seq) && !closureCrit.seqs.includes(a2Seq), 'closure2 (critical in-edge) is not merged')
 
     // 同结构 supporting 边：跨闭包 supporting 不计入 inDegreeByClosure → 无守卫。
-    // 用独立 engine 验证（closurePrunes 是实例数组，跨 session 累计）
+    // 用独立 engine 验证（selectClosureToMerge 为实例方法，跨 session 独立）
     const { ctx: ctx2, engine: engine2 } = await makeEngine()
     try {
       const session2 = Session.create(SessionId('critical-closure-test2'))
@@ -1429,10 +1453,10 @@ test('critical closure guard: cross-closure critical edge blocks target closure;
       assert.ok(a1bAtom !== undefined && a2bAtom !== undefined)
       const edgesSup = [{ from: a1bAtom.id, to: a2bAtom.id, level: 'supporting' as const }]
       const inDegreeSup = new Map<number, number>([[a2bAtom.id, 1]])
-      const resultSup = engine2.tryPruneClosures(session2, atoms2, edgesSup, inDegreeSup, new Map(), 2)
-      // supporting 边不构成闭包守卫 → closure1 仍可剪
-      assert.ok(resultSup !== null, 'supporting edge must not block closure pruning')
-      assert.equal(engine2.closurePrunes.length, 1)
+      const closureSup = (engine2 as unknown as ClosureSelector).selectClosureToMerge(session2, atoms2, edgesSup, inDegreeSup, new Map(), 3, new Set<number>())
+      // supporting 边不构成闭包守卫 → 仍有闭包可被选中（closure1 按 lastRef 优先）
+      assert.ok(closureSup !== null, 'supporting edge must not block closure selection')
+      assert.equal(closureSup.root.seq, u1b, 'closure1 still selected first')
     } finally {
       await ctx2.fiber.dispose()
     }

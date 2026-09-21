@@ -35,7 +35,7 @@ import {
   userIsLong,
 } from './gate.js'
 import type { GateAtom } from './gate.js'
-import { sessionEvents } from '../log-access.js'
+import { mainChainReasoningEffort, sessionEvents, turnOf } from '../log-access.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
 import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_PREFIX_BUDGET_TOKENS } from '../constants.js'
 import { DEFAULT_TELEMETRY_CAP, pushBounded } from '../telemetry.js'
@@ -377,7 +377,7 @@ export function collectDeclAtoms(session: Session, windowTurns: number, splitThr
   let closed: number | null = null
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i]
-    if (event?.type === 'turn/end') { closed = (event.data as { turn: number }).turn; break }
+    if (event?.type === 'turn/end') { closed = turnOf(event) ?? null; break }
   }
   if (closed === null) return null
   const interrupted = collectInterruptedTurns(events).has(closed)
@@ -390,10 +390,10 @@ export function collectDeclAtoms(session: Session, windowTurns: number, splitThr
   const gate: GateAtom[] = []
   let open: number | null = null
   for (const event of events) {
-    if (event.type === 'turn/start') { open = (event.data as { turn: number }).turn; continue }
+    if (event.type === 'turn/start') { open = turnOf(event) ?? null; continue }
     if (event.type === 'turn/end') { open = null; continue }
     const data = event.data as Record<string, unknown> | undefined
-    const declaredTurn = (event.data as { turn?: unknown } | undefined)?.turn
+    const declaredTurn = turnOf(event)
     const turn = event.type === 'user/message' ? open : (typeof declaredTurn === 'number' ? declaredTurn : open)
     if (turn === null) continue
     if (turn !== closed && (turn > closed - 1 || turn < closed - windowTurns)) continue
@@ -539,14 +539,8 @@ export class CiteDeclarer {
 
   /** 方案 B ctk（与 compressor 同款，2026-09-19 定案）：et:false + pt:false + 主链 reasoningEffort 对齐。 */
   private resolveEffectiveCtk(session: Session): Record<string, unknown> {
-    const events = sessionEvents(session)
-    let mainChainEffort: string | undefined
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const event = events[i]
-      if (event?.type !== 'request/header') continue
-      const cfg = (event.data as unknown as { header?: { config?: { reasoningEffort?: string } } } | undefined)?.header?.config
-      if (cfg?.reasoningEffort !== undefined) { mainChainEffort = cfg.reasoningEffort; break }
-    }
+    // 2026-09-21（P5 Wave 3 第 3 步）：主链 reasoningEffort 抽取收敛到 log-access 共享访问器。
+    const mainChainEffort = mainChainReasoningEffort(session)
     const ctk: Record<string, unknown> = { ...(this.chatTemplateKwargs ?? {}) }
     ctk['enable_thinking'] = false
     ctk['preserve_thinking'] = false

@@ -35,6 +35,16 @@ import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session
  */
 export declare function sessionEvents(session: Session): readonly SessionEvent[];
 /**
+ * 事件 turn 号类型化访问器（C-S7 收敛，P5 Wave 3 第 3 步）。
+ *
+ * 根因：宿主包 dsh-session 的 `SessionEvent` 虽是判别联合，但 `turn` 不是公共字段
+ * （仅 turn/start、turn/end、step/*、assistant/message 等部分事件携带），宿主类型
+ * 无法加公共 `turn` 字段，代码库各处因此各自 `event.data as { turn }` 强转。
+ * 本访问器把该强转集中到一处：data 带 number 型 turn 时返回 turn 号，
+ * 否则 undefined（如 user/message 无 turn 字段）。
+ */
+export declare function turnOf(event: SessionEvent): number | undefined;
+/**
  * 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
  *
  * P5 结构重构 Wave 3 第 1 步：自 hub `argp-graph-engine.ts` 迁入本叶子——本函数只依赖
@@ -44,6 +54,24 @@ export declare function sessionEvents(session: Session): readonly SessionEvent[]
  * 既有公共 API 与测试 import 不变。
  */
 export declare function eventText(session: Session, seq: number): string;
+/**
+ * 日志尾部的 open turn（从日志末尾向前找：最近的 turn/start 且其后无 turn/end）。
+ *
+ * P5 Wave 3 第 3 步：自 `ArgpGraphEngine.detectOpenTurn`（private 方法）与
+ * `peratom/compressor.ts` 模块级函数两份逐字相同实现收敛到本叶子（只读
+ * sessionEvents）。返回 open turn 号；无开放轮（末尾已闭合 / 会话头）返回 null。
+ */
+export declare function detectOpenTurn(session: Session): number | null;
+/**
+ * 主链 reasoningEffort：从最近一条携带 `config.reasoningEffort` 的 `request/header`
+ * 事件重建（LlmCallConfig 无 chat_template_kwargs 字段，只有 reasoningEffort——
+ * 故从它重建，非读现成 ctk）。
+ *
+ * P5 Wave 3 第 3 步：自 `peratom/compressor.ts` 与 `peratom/cite-declarer.ts`
+ * 两份逐字相同的抽取强转循环（方案 B ctk 的主链对齐部分）收敛到本叶子
+ * （只读 sessionEvents）。无声明返回 undefined。
+ */
+export declare function mainChainReasoningEffort(session: Session): string | undefined;
 /**
  * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
  *
