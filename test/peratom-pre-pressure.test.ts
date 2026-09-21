@@ -1,9 +1,13 @@
 /**
- * P6 轮内压力压缩（2026-09-19 方案 B）单测锁定。
+ * 轮内主动压缩单测锁定（**逃生阀模式**：`midTurnActive: true`）。
  *
- * 背景：record2 语料 OFF 臂峰值 99,997 ≈ 触发线 100,007 ⇒ 3-turn 语料上轮内压力档
- * 大概率不触发（turn 边界 100K 先达到），端到端 record 复测观测不到新链路 ⇒
- * 以单测锁定机制面（拍板选项 ②）：
+ * 1.4.0 三级触发起，轮内主动压缩**默认关闭**（轮内只留 max-tokens/overflow 反应式；
+ * 默认契约由 `trigger-levels.test.ts` 锁定）。本文件锁定的是显式打开逃生阀后的机制面，
+ * 亦即 1.3.x 的 P6 行为——保留为对照实验与回归护栏。
+ *
+ * 历史背景（2026-09-19 方案 B）：record2 语料 OFF 臂峰值 99,997 ≈ 触发线 100,007 ⇒
+ * 3-turn 语料上轮内压力档大概率不触发（turn 边界 100K 先达到），端到端 record
+ * 复测观测不到新链路 ⇒ 以单测锁定机制面（拍板选项 ②）：
  *
  *  ① pre-step 顺序：压力达标 且 有 open turn ⇒ 先 onPrePressureCompress（压 open
  *     turn 原子）再 compactIfNeeded('pressure')（图剪），同一 pre-step 窗口落地
@@ -137,7 +141,8 @@ function buildSmallSession(id: string): Session {
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp pre-pressure test' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
+  // midTurnActive: true = 打开轮内主动压缩（1.4.0 起默认 false）。本文件测的是逃生阀行为。
+  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, midTurnActive: true, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
 

@@ -123,6 +123,21 @@ export interface ArgpGraphConfig {
     retainRatio?: number;
     recencyGuard?: number;
     turnGuard?: number;
+    /**
+     * 轮内主动压缩逃生阀（三级触发 v1.4.0）。默认 **false**：轮内不做主动压缩，只剩反应式
+     * （输出被外部钳制 / provider overflow）。理由：轮内主动压缩实测近乎无效——turnGuard
+     * 保护当前轮，209K 上下文的一次轮内图剪只剪掉 1 原子/154 tok；而它每次落地都是一次
+     * **轮中** surface 替换 = 断前缀缓存。置 true 恢复 1.3.x 的逐 pre-step 检查（对照组用）。
+     */
+    midTurnActive?: boolean;
+    /**
+     * 反应式补救的最大次数（默认 2）。输出被外部钳制后（`finish=max-tokens` 且
+     * `usage.outputTokens < 本次请求的 maxTokens`，= provider/适配器把输出预算啃小了，
+     * 容量压力的真信号），后续每个 pre-step 允许一次强制剪枝；第 2 次起放宽
+     * recencyGuard/turnGuard（连当前轮一起剪）。用尽后不再重试，交给 overflow 路径
+     * （provider 400）兜底——避免"每步都被钳 → 每步白压"的死循环。
+     */
+    reactiveRetries?: number;
     minSpanChars?: number;
     charsPerToken?: number;
     /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
@@ -376,6 +391,11 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private settingsSource;
     get windowRatio(): number;
     get retainRatio(): number;
+    /**
+     * 守卫读取点统一走 getter：反应式补救（L2）在第 2 次尝试时用 `guardOverride` 临时
+     * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于 settings 值。
+     */
+    private guardOverride;
     get recencyGuard(): number;
     get turnGuard(): number;
     get minSpanChars(): number;
@@ -484,6 +504,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly auditWarnings: string[];
     /** A7：已重建过的 compactionId 集合（跨 session 重置，保证幂等 + 告警不重复）。 */
     private rebuiltCompactionIds;
+    /** L2 反应式：观察到"输出被外部钳制"后置位，由后续 pre-step 消费（attempts = 已用补救次数）。 */
+    private readonly reactivePending;
+    /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
+    private readonly requestMaxTokens;
+    /** 三级触发①②开关（cordis 配置，不进 UI 设置页）。 */
+    private readonly midTurnActive;
+    private readonly reactiveRetries;
     private session;
     private shadowedSession;
     private shadowedSet;
@@ -589,8 +616,16 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
      *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
      *  dsh tokenMeter / 配置函数 / 字符估算。source 标注估计来源（2026-08-29：
-     *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。 */
+     *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。
+     *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
+     *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
+     *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。 */
     private measureTokens;
+    /**
+     * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
+     * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
+     */
+    private incomingTokens;
     /** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
     private static lineOverlap;
     /**
@@ -684,7 +719,22 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * reserve 超窗 / 声明窗口未知）⇒ 调用方跳过轮内压缩。
      */
     private isPressureExceeded;
-    compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
+    /**
+     * L2 反应式补救（三级触发②）：轮中唯一允许的压缩时机。
+     *
+     * 触发源见 `session/event` 里的 max-tokens 判据（输出被宿主/适配器钳制 = 容量压力已由
+     * 上游确认）。执行用 `context-overflow` trigger 走 `compactIfNeeded` —— 该 trigger
+     * **绕过阈值早检**（"仍未回线"的真信号由上游继续钳输出给出），即"强制剪一次"。
+     *
+     * 升级策略：第 2 次起临时放宽 recencyGuard/turnGuard（连当前轮一起进入候选）——因为
+     * 常规轮内剪枝受 turnGuard 保护几乎剪不动，"被钳后回线"需要更狠的手段。用尽
+     * `reactiveRetries` 次即停止重试并交给 overflow 路径（provider 400）兜底：避免
+     * "每步都被钳 → 每步白压"的死循环（那比现状更糟，每圈多吃一次输出）。
+     */
+    private runReactivePrune;
+    compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal, 
+    /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
+    incomingTokens?: number): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
     /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。

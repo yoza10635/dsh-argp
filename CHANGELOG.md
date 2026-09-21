@@ -4,6 +4,30 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.4.0] - 2026-09-21（三级触发：轮初主动 + 轮中只反应式）
+
+真环境实证来源：`session-77c64e66` 全 232 请求的 finish 词表（`tool-calls 232 / stop 13 / max-tokens 3`）+ 三次被钳事件的用量（**1,911 / 1 / 4,714** vs 请求 32,768）+ 宿主 `agent-loop/src/agent.ts:244/250`（先 `claim` 再 dispatch pre-step）与 `compaction/src/invariant.ts:165-177`（编号 bracket 必须落在自己的 open turn 内）。
+
+### Changed —— 触发口径重排为三级
+
+- **① 轮初主动（主力）**：只在**每轮首个 pre-step**（`payload.step === 1`）做压力判定，阈值沿用 `windowRatio`（0.8）。关键修正：估值**计入本步已 claiming、尚未落盘进 surface 的 user 消息**（`payload.messages`）。宿主 `agent.ts:244` 先 `inbox.claim()`、`:250` 才 dispatch pre-step，故轮初拿到的是**新 user 消息的精确内容**——不是预测，也不需要"预测 + 复核"两遍；而旧口径沿用上一请求的 usage 锚点，整块漏掉"这一轮的启动量"，用户恰恰常在轮初粘贴大段文本。
+- **② 轮中只反应式（取消轮内主动阈值）**：轮内**默认不做**主动压缩。两条实测理由：(a) **近乎无效**——turnGuard 保护当前轮，209K 上下文的一次轮内图剪只剪得动 **1 原子 / 154 tok**；(b) 每次落地都是一次**轮中** surface 替换 = 断一次前缀缓存，收益却接近零。取而代之的判据 = 输出被**外部**钳制：`assistant/message` 的 `data.stream` 末项 `finish.reason.kind === 'max-tokens'` **且** `data.usage.outputTokens <` 本次请求声明的 `maxTokens`（由 `agent/request` waterfall 捕获；适配器的钳制发生在其后）。真值分辨：`outputTokens` 远小于预算 = 宿主/适配器把输出啃小了（= 容量压力）；`≈ maxTokens` = 模型自己写满预算，不构成压缩理由。
+- **③ overflow 强制路径**：不变（provider 400 → P4 三步）。
+
+### Added
+
+- **反应式补救（执行面）**：被钳信号置位后，**下一个 pre-step** 以 `compactIfNeeded('context-overflow')` 强制剪一次——该 trigger 绕过阈值早检，"仍未回线"的真信号由上游继续钳输出给出。**升级**：第 2 次起临时放宽 `recencyGuard`/`turnGuard`（连当前轮一起进入候选），"被钳后回线"才有可能。**上限**：`reactiveRetries`（默认 **2**）用尽即停手并交回 overflow 路径——避免"每步都被钳 → 每步白压"的死循环（那比现状更糟：每圈多吃一次输出）。
+- **`midTurnActive`（默认 `false`）**：逃生阀。置 `true` 恢复 1.3.x 的逐 pre-step 主动压缩（对照实验用）。
+
+### 设计取舍（为什么不做"轮末决定 + 下轮落地"的两段式）
+
+图剪 `consolidateTombstones` 是**纯同步、0-LLM**（体内无 await / 无网络）⇒ 判定与落地可以在**同一时刻**完成，拆两段零收益。真正贵的那一件（peratom 的 LLM pass，79s–3min）本来就在轮末起跑、并在 pre-step 有界等待（1.3.5 的 `flushWaitMs`），与图剪无关，保持不动。落点选**轮初**而非轮末：轮末看不到下一条 user 消息（低估），轮初能拿到精确值；且轮初天然复用现成调用点与**编号** bracket（轮末需另开 standalone 路径）。附带修正一条此前的记录：`invariant.ts:165-177` 只要求**编号** bracket 落在自己的 open turn 内，`turn === null` 的 standalone bracket 在轮间是**合法**的——"轮末根本不能图剪"的说法不成立，轮末只是不划算。
+
+### Tests
+
+- 新增 `test/trigger-levels.test.ts`（**8 例**）：轮初含 messages 越线即剪 / 同会话 messages 为空不剪 / 轮内默认不剪 / `midTurnActive:true` 轮内仍剪（对照）/ 被钳强制剪（压力未达标也剪）/ `outputTokens === maxTokens` 不触发 / 放宽守卫升级（只剩当前轮可剪时第 2 次剪动）/ 次数用尽不再重试。**变异检查**：去掉 `step === 1` 门、把 `< budget` 放宽成 `<= budget` ⇒ 对应断言如期失败（L2④ 被探针 1 连带），确认断言非空转。全量 **276/276**（268 + 8）。
+- `test/peratom-pre-pressure.test.ts` 显式改为 `midTurnActive: true`（其锁定对象由"主路径"变为"逃生阀 / 对照"，文件头注释同步更新）。
+
 ## [1.3.5] - 2026-09-21（peratom 轮末 pass「落地等待」+ 手动 /compact 多段剪）
 
 真环境实证来源：`session-77c64e66`（9 次 peratom 事务逐条核对落点；判据 = "压缩事件是否落在上一轮 `turn/end` 与新轮 `user/message` 之间"）。
