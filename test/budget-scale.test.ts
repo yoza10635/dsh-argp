@@ -11,6 +11,8 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine, scaleBudgets } from '../src/argp-graph-engine.ts'
+import { resolveScaledBudgets, type BudgetHost } from '../src/budget.ts'
+import { DEFAULT_WINDOW_TOKENS, DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_RATIO, DEFAULT_RETAIN_RATIO } from '../src/constants.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
@@ -96,4 +98,59 @@ test('no explicit tokens + llm without adapter → fallback static defaults, no 
   } finally {
     await ctx.fiber.dispose()
   }
+})
+
+// ---------------------------------------------------------------------------
+// ⑧ 1.5.1 回归：resolveModelInfo 挂起被 5s 超时兜底——不卡死且走静态默认
+//    P1.3：旧代码用 new AbortController().signal 但 controller 从未 abort ⇒ LLM 服务
+//    挂起时 await 无限阻塞 pre-step。修复：5s setTimeout 把 hang 转成 rejection，
+//    落入 contextWindow=undefined 降级（declaredKnown=false，宁缺勿错）。
+//    注入一个「永不 resolve、但在 signal abort 时 reject」的 resolveModelInfo——真实
+//    适配器监听 AbortSignal，5s 超时即触发 reject；若超时失效则会真正卡死。
+// ---------------------------------------------------------------------------
+
+test('resolveScaledBudgets：resolveModelInfo 挂起被 5s 超时兜底——不卡死且走静态默认', async () => {
+  // 信号感知的「挂起」替身：永不 resolve，仅在 signal abort 时 reject（真适配器同语义）
+  const hangingLlm = {
+    resolveModelInfo(_provider: string, _model: string, signal: AbortSignal) {
+      return new Promise<{ context?: { contextWindow?: number } }>((_resolve, reject) => {
+        if (signal.aborted) { reject(new Error('aborted')); return }
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+    },
+  }
+  const fakeCtx = { get: (name: string) => (name === 'llm' ? hangingLlm : undefined) } as unknown as Context
+  const host: BudgetHost = {
+    explicitWindowTokens: false,
+    windowTokens: DEFAULT_WINDOW_TOKENS,
+    explicitRetainTokens: false,
+    retainTokens: DEFAULT_RETAIN_TOKENS,
+    declaredContextWindows: new WeakMap(),
+    log: { info() {}, warn() {}, error() {} },
+    windowRatio: DEFAULT_WINDOW_RATIO,
+    retainRatio: DEFAULT_RETAIN_RATIO,
+    resolvedWindowTokens: 0,
+    charsPerToken: 4,
+    lastRealAnchorSeq: -1,
+    lastRealPromptTokens: 0,
+    tokenMeter: undefined,
+    ctx: fakeCtx,
+  }
+  const session = Session.create(SessionId('budget-timeout'))
+  const agent = { session, options: { provider: 'p', model: 'm' } } as never
+
+  // 6s 守卫赛跑：若 5s 超时未生效，resolveScaledBudgets 会无限挂起 ⇒ 此处 reject 使测试失败
+  // （证明测试真的卡住 = 超时失效）。主 promise settle 后置 settled=true，避免悬挂 reject 变未处理拒绝。
+  let settled = false
+  const guard = new Promise<never>((_, rej) => {
+    setTimeout(() => { if (!settled) rej(new Error('resolveScaledBudgets 卡死超过 6s —— 5s 超时未生效')) }, 6000)
+  })
+  const result = await Promise.race([resolveScaledBudgets(host, agent), guard])
+  settled = true
+
+  // 超时后 contextWindow 仍 undefined ⇒ scaleBudgets 走 fallbackWindow(=host.windowTokens=DEFAULT)
+  assert.equal(host.resolvedWindowTokens, DEFAULT_WINDOW_TOKENS, 'resolveModelInfo 挂起 ⇒ 走静态默认窗口，不依赖声明值')
+  assert.equal(result.windowTokens, DEFAULT_WINDOW_TOKENS)
+  assert.equal(result.retainTokens, DEFAULT_RETAIN_TOKENS)
+  assert.equal(result.declaredKnown, false, '声明值未知 ⇒ declaredKnown=false（宁缺勿错）')
 })

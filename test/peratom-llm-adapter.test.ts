@@ -13,13 +13,16 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync, readdirSync, rmSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { completeViaDshLlm } from '../src/peratom/llm-adapter.ts'
-import { autoDshLlmSpec } from '../src/peratom/llm-adapter.ts'
+import { completeViaDshLlm, autoDshLlmSpec, serializeWireMessages } from '../src/peratom/llm-adapter.ts'
+import type { DshLlmSpec } from '../src/peratom/llm-adapter.ts'
+import type { Message } from '@deepseek-ai/dsh-llm'
 import { PeratomCompressor } from '../src/peratom/compressor.ts'
 import { CiteDeclarer } from '../src/peratom/cite-declarer.ts'
-import type { DshLlmSpec } from '../src/peratom/llm-adapter.ts'
 
 // ---------------------------------------------------------------------------
 // 测试替身：宿主 llm 服务（LlmRuntime 结构化最小视图）
@@ -337,4 +340,110 @@ test('declarer：自动兜底——armed 随路由到位翻转，声明边照常
   assert.equal(fetchCalled, 0)
   assert.equal(fake.calls[0]?.provider, 'localhost')
   assert.equal(fake.calls[0]?.model, 'Qwen3.8-27B')
+})
+
+// ---------------------------------------------------------------------------
+// ⑥ 1.5.1 回归：同轮 no-endpoint（瞬时态）后重试必须真声明
+//    背景 bug：done.add(collect.turn) 原本放在 interrupted/gate-skipped/no-endpoint
+//    短路之前 ⇒ no-endpoint（路由未就绪 / 启动期 env 未设，属瞬时态）会把该闭合轮
+//    「永久记账」⇒ 后端就绪后同一轮重试仍被幂等门 `done.has` 跳过 ⇒ 该轮 citation
+//    边永久缺失。修复：done.add 移到过门控且有端点之后（仅真正声明过的轮才记账）。
+//    注意：既有 auto-arm 用例（上一条）用的是「turn-1 no-endpoint → turn-2 重试」
+//    ——两call针对不同轮，done.has 永不命中，故抓不到此 bug。本用例对「同一闭合轮」
+//    连续两次 declareCurrentTurn，必然命中 done.has，正是回归点。
+// ---------------------------------------------------------------------------
+
+test('declarer：同轮 no-endpoint 后重试必须真声明（1.5.1 回归：done 记账不得在 no-endpoint 前发生）', async t => {
+  const restoreEnv = withoutLlmEnv()
+  t.after(restoreEnv)
+
+  const session = Session.create(SessionId('llm-same-turn-retry'))
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+
+  let fetchCalled = 0
+  const fetchImpl = (async () => { fetchCalled += 1; throw new Error('fetch must not be used') }) as typeof fetch
+  const declarer = new CiteDeclarer(ctx, { fetchImpl })
+
+  // turn-1 留大 R（to 目标），turn-2 的 assistant 是 from；两 turn 均闭。
+  const r1 = buildCompressibleTurn(session, 1, 'c1')
+  session.append('turn/start', { turn: 2 } as never)
+  appendUser(session, LONG_USER)
+  const a2 = appendAssistantWithToolCall(session, 2, 'c2')
+  appendToolResult(session, 2, 'c2', 'small')
+  session.append('turn/end', { turn: 2, reason: { kind: 'completed' } } as never)
+
+  // ① 后端未就绪：对最新闭合轮（turn-2）声明 → no-endpoint（瞬时态，不得记账）
+  const before = await declarer.declareCurrentTurn(session)
+  assert.equal(before?.error, 'no-endpoint', '无显式后端且路由未知 → 静默跳过')
+  assert.equal(fetchCalled, 0, '未武装时零网络')
+  assert.equal(declarer.cachedEdgeCount, 0, 'no-endpoint 轮不得入缓存')
+
+  // ② 后端到位（宿主路由自动兜底）：同一闭合轮 turn-2 再次声明必须真正发起
+  const fake = fakeLlm([{ text: JSON.stringify({ cites: [{ fromSeq: a2, toSeq: r1.rSeq, level: 'supporting' }] }) }])
+  ;(ctx as unknown as { llm: unknown }).llm = fake.service
+  emitRouting(ctx, session, 'localhost', 'Qwen3.8-27B')
+
+  const record = await declarer.declareCurrentTurn(session) // 同 session ⇒ 仍收集 turn-2
+  assert.ok(record !== null, '同轮重试必须返回观测记录（不幂等跳过）')
+  assert.equal(record.called, true, '同轮 no-endpoint 后后端到位：必须真正发起 LLM 声明（done 记账仅在过门控+有端点后发生）')
+  assert.equal(record.error, undefined, '重试成功 ⇒ 不得仍是 no-endpoint')
+  assert.equal(record.accepted, 1, '声明边应被接受（与显式后端用例同款布局）')
+  assert.equal(declarer.cachedEdgeCount, 1, '声明边照常入缓存')
+  assert.equal(fetchCalled, 0)
+  assert.equal(fake.calls.length, 1, '真正发起了一次 LLM 调用')
+  assert.equal(fake.calls[0]?.provider, 'localhost', '后端 provider 跟随 agent 路由')
+  assert.equal(fake.calls[0]?.model, 'Qwen3.8-27B')
+})
+
+// ---------------------------------------------------------------------------
+// ⑦ 1.5.1 回归：A-2 wire dump 默认脱敏，仅 FULL 落完整正文（数据责任）
+//    serializeWireMessages 在 ARGP_PERATOM_A2_DEBUG 非空时落盘诊断 wire；默认只写
+//    { messageCount, wireSha256, wire:[{role,length}] }（无正文），仅
+//    ARGP_PERATOM_A2_DEBUG_FULL=1 才写完整 wire（含用户消息正文）。
+//    回归点：默认模式不得泄漏消息正文（私密上下文 / PII）。
+// ---------------------------------------------------------------------------
+
+test('A-2 wire dump：默认脱敏（无正文），FULL 才落完整 wire（数据责任 1.5.1 回归）', async t => {
+  // 非 hex 标记串：保证「默认脱敏」模式下 sha256 摘要（纯小写 hex）不会误中
+  const MARKER = 'USER_PRIVATE_MARKER_7b3e9c_DO_NOT_LEAK'
+
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: MARKER }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+  ] as unknown as Message[]
+  const logger = { debug() {} }
+
+  const redactedDir = mkdtempSync(join(tmpdir(), 'a2-redacted-'))
+  const fullDir = mkdtempSync(join(tmpdir(), 'a2-full-'))
+  t.after(() => {
+    rmSync(redactedDir, { recursive: true, force: true })
+    rmSync(fullDir, { recursive: true, force: true })
+  })
+
+  const restoreEnv = () => {
+    delete process.env['ARGP_PERATOM_A2_DEBUG']
+    delete process.env['ARGP_PERATOM_A2_DEBUG_FULL']
+  }
+  t.after(restoreEnv)
+
+  // 默认（仅 ARGP_PERATOM_A2_DEBUG）：dump 不含正文
+  process.env['ARGP_PERATOM_A2_DEBUG'] = redactedDir
+  delete process.env['ARGP_PERATOM_A2_DEBUG_FULL']
+  serializeWireMessages(messages, logger)
+  const redactedFile = readdirSync(redactedDir).find(f => f.startsWith('a-prefix-'))
+  assert.ok(redactedFile !== undefined, '默认模式应生成 dump 文件')
+  const redacted = readFileSync(join(redactedDir, redactedFile), 'utf8')
+  assert.equal(redacted.includes(MARKER), false, '默认脱敏 dump 不得含用户消息正文')
+  assert.ok(redacted.includes('"wireSha256"'), '默认 dump 含 wireSha256 摘要')
+  assert.ok(redacted.includes('"role"'), '默认 dump 含每条 role+length 摘要')
+
+  // FULL 模式（额外 ARGP_PERATOM_A2_DEBUG_FULL=1）：dump 含完整正文
+  process.env['ARGP_PERATOM_A2_DEBUG'] = fullDir
+  process.env['ARGP_PERATOM_A2_DEBUG_FULL'] = '1'
+  serializeWireMessages(messages, logger)
+  const fullFile = readdirSync(fullDir).find(f => f.startsWith('a-prefix-'))
+  assert.ok(fullFile !== undefined, 'FULL 模式应生成 dump 文件')
+  const full = readFileSync(join(fullDir, fullFile), 'utf8')
+  assert.equal(full.includes(MARKER), true, 'FULL 模式 dump 必须含完整用户消息正文（数据责任：须显式开启）')
 })
