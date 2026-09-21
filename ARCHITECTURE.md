@@ -5,7 +5,7 @@
 
 ## 1. 一句话架构
 
-ARGP 把对话历史拆成**原子**（U/A/T/R 四类事件），LLM 每轮声明**引用边**建出依赖图，压缩时按"孤立→contextual→supporting→critical"的**反向拓扑序**纯算法摘除被剪节点——**压缩决策阶段 0 LLM 调用**。被剪内容不销毁，走 recall 从 append-only 日志找回。
+ARGP 把对话历史拆成**原子**（U/A/R/X 四类事件），LLM 每轮声明**引用边**建出依赖图，压缩时按"孤立→contextual→supporting→critical"的**反向拓扑序**纯算法摘除被剪节点——**压缩决策阶段 0 LLM 调用**。被剪内容不销毁，走 recall 从 append-only 日志找回。
 
 ```
 对话事件流（append-only 日志）
@@ -35,17 +35,17 @@ ARGP 把对话历史拆成**原子**（U/A/T/R 四类事件），LLM 每轮声�
 | 原子类型 | 含义 | 来源 |
 |---|---|---|
 | **U** | user 输入 | 原生 user 事件 |
-| **A** | assistant 回复 | 原生 assistant 事件 |
-| **T** | tool call | 原生 tool 事件 |
+| **A** | assistant 回复（tool-call 块内嵌在 A 里；dsh surface 无独立 tool/call 节点） | 原生 assistant 事件 |
 | **R** | tool result | 原生 toolResult 事件 |
+| **X** | compact 墓碑/checkpoint（plugin 注入） | plugin-source 事件 |
 
-**引用边（cites）**：模型每轮回复尾部可携带 `{"cites":[seq,...]}` 尾块，声明"本轮引用了哪些历史节点"。引擎侧 `cites-strip.ts` 剥离尾块（纯函数，服务端/客户端共用同一逻辑），解析出的边入图。
+**引用边（cites）**：模型每轮回复尾部可携带 `{"cites":[{"t":"前缀","l":"c|s|x"}]}` 尾块（`t` = 被引用节点的逐字前缀原文，`l` = 分级 c/s/x；旧式裸字符串 `{"cites":["前缀",...]}` 向后兼容，一律判 supporting），声明"本轮引用了哪些历史节点"。引擎侧 `cites-strip.ts` 剥离尾块（纯函数，服务端/客户端共用同一逻辑），解析出的边入图。
 
 **边的两种来源**（可共存，不能同时归零）：
 - **回复级 cites**：`argp-cites` PromptSection（order 151）驱动模型在回复里声明——默认 `auto`，declarer 管线武装时自动关闭（避免双保险）；
 - **结构化 declarer**：`cite-declarer` 管线在 turn 尾单独调 LLM 声明边，不污染主回复（消灭 UI 显示泄漏）。
 
-**T→R 确定性边**：tool call 与它的 result 之间无需模型声明，引擎自动连边（`toolPairingBalancedBefore/After`）。
+**A→R 确定性边**：assistant 与其 tool result 之间无需模型声明，引擎经 `toolCallId` 自动连边（`toolPairingBalancedBefore/After`）。
 
 ## 3. 反向拓扑剪枝（Stage-2 核心）
 
@@ -69,7 +69,9 @@ pruneIntervals 逐区间成对发射（见 §5 shadow-price 契约）
 
 ## 4. 双引擎生产挂载
 
-`peratom/mount.ts` 的 `mountPeratomStack` 是声明式入口：把三条 Stage-1 管线 + Stage-2 图引擎组装成一个 compaction 插件，挂在宿主 `ctx.compaction` 位。
+**生产路径是引擎构造期自挂**：`config.peratom` 为对象时，`ArgpGraphEngine` 构造期挂载三条 Stage-1 管线并内部接线 `injectEdges` / `onOverflowCompress`（显式传入的同名 config 键被忽略并告警）。之所以自挂：真宿主 bundle patch 只能声明式挂一个插件入口（default export 只有图引擎），自挂是双引擎进入生产分发的唯一路径。
+
+`peratom/mount.ts` 的 `mountPeratomStack` 是**测试/三臂工厂**（与生产自挂同拓扑，供单测与 spike 37 的 A/B/C 臂装配），不是生产挂载路径。
 
 ```
 ctx.compaction === ArgpGraphEngine（peratom 已武装）
@@ -78,7 +80,7 @@ ctx.compaction === ArgpGraphEngine（peratom 已武装）
    └─ zoom        — 两级 recall 工具（Stage-1 P3）
 ```
 
-组件 config 传 `llm: { provider, model }` 走宿主 dsh-llm（生产形态）；不传则按各组件 fetch 环境变量解析（本地实验形态，缺失自然 disabled，零网络）。`peratom: false` 关闭整条 Stage-1 管线，只剩 Stage-2 图引擎。
+组件 config 传 `llm: { provider, model }` 走宿主 dsh-llm（生产形态）；不传则按各组件 fetch 环境变量解析（本地实验形态）；两路皆缺时走宿主路由自动兜底（`autoDshLlmSpec`，1.3.0）；三路都解不出自然 disabled（零网络）。`peratom: false` / `null` 关闭整条 Stage-1 管线（与缺省同语义），只剩 Stage-2 图引擎。
 
 ## 5. shadow-price 契约（与宿主的硬约束）
 
@@ -100,11 +102,11 @@ ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking �
 |---|---|
 | rc.2（0.1.1） | `session.events`（getter，返回全日志数组） |
 | alpha.4（0.1.2+）～0.1.3 | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
-| **0.1.5+（1.1.0 起唯一受支持）** | `snapshotEvents()`；`events` 已彻底不存在 |
+| **0.1.5+（当前支持基线 0.1.6-alpha.1）** | `snapshotEvents()`；`events` 已彻底不存在 |
 
 `log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**：运行时探测 `snapshotEvents`（modern）/ 回退 `events`（legacy），两者皆无则 throw。所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
 
-**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。
+**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。**当前支持基线为 0.1.6-alpha.1**（`package.json` peerDependencies）。
 
 ### 6.2 V3 `SurfaceOp` 键名（`startSeq`/`endSeq`）
 
@@ -145,15 +147,19 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 | `recall-engine.ts` | recall 工具 + argp-contract PromptSection | log-access |
 | `log-access.ts` | 事件日志唯一入口（sessionEvents）+ 日志级访问原语 | dsh-session |
 | `cites-strip.ts` | cites 尾块匹配/剥离（纯函数，零依赖） | — |
+| `token-ontology.ts` | 承重 token 词表 + 保真守卫 + 原子间推断边（共享叶子模块，零依赖） | — |
+| `preset-cleaner.ts` | preset 净化器：挂载期为含 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp` | dsh agentPresets |
 | `peratom/types.ts` | Stage-1 共享类型与常量（叶子模块） | — |
 | `peratom/gate.ts` | 门控判定（纯函数，0 LLM/0 Session） | — |
 | `peratom/split.ts` | 拆分解析与策略（纯函数） | — |
 | `peratom/compressor.ts` | Stage-1 eager 熵降管线 | gate, split, llm-adapter |
 | `peratom/cite-declarer.ts` | Stage-1 引用边声明管线 | gate, llm-adapter |
 | `peratom/recall-zoom.ts` | Stage-1 两级 recall 工具 | log-access |
-| `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地） | dsh-llm |
-| `peratom/mount.ts` | 双引擎声明式挂载工厂 | 以上全部 |
-| `client/index.ts` | 客户端：隐藏 cites 尾块（chat 渲染） | cites-strip |
+| `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / 宿主路由自动兜底 autoDshLlmSpec） | dsh-llm |
+| `peratom/mount.ts` | 测试/三臂挂载工厂（与生产自挂同拓扑；非生产路径） | 以上全部 |
+| `client/index.ts` | 客户端：隐藏 cites 尾块（chat 渲染）+ 注册设置卡片（settings.plugin.item slot） | cites-strip, argp-config-controller |
+| `client/argp-config-controller.ts` | 客户端设置卡片控制器：settings 命名空间上的暂存表单 + locale 包 | — |
+| `client/argp-config-card.ts` | 客户端设置卡片 UI（Settings → Plugins → Plugin configuration，九个引擎旋钮） | argp-config-controller |
 | `index.ts` | 公共导出 | — |
 
 ## 9. 关键不变式清单

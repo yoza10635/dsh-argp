@@ -6,10 +6,10 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its 1.0.0 two-engine form:
+dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its two-engine form (**npm default = 0-LLM graph eviction, i.e. Stage-2 only**; Stage-1 is enabled via the `peratom` config block — see "Install & mount"):
 
 - **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
-- **Stage-2 reference-graph eviction (lazy, at pressure)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly.
+- **Stage-2 reference-graph eviction (lazy, three-tier trigger)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly; triggering is a three-tier ladder: turn-start proactive / mid-turn pressure prune / post-clamp auto-continue (see "Three-tier trigger").
 - **The append-only log is the single source of truth** — originals of everything shrunk or evicted stay in the log forever; two-tier recall `recall_summary` / `recall_detail` (byte-exact, hash-locked by tests) brings them back on demand. The context is a rendered view of the log, not the history itself.
 
 ## Why
@@ -39,7 +39,17 @@ Measured (30-turn synthetic multi-turn coding task, four-arm comparison, spike 3
 
 1. **Atomization + graph building**: deterministic edges (assistant → its tool results, via `toolCallId`) + semantic edges (the model outputs `{"cites":[{"t":"prefix","l":"c|s|x"}]}` per contract, four levels: critical/supporting/contextual/isolated).
 2. **Topological eviction**: repeatedly evict in-degree-0 atoms (ordered by edge level → effective importance → last-reference turn); evicted atoms' outgoing edges vanish and downstream atoms unlock pass by pass; the closure lifecycle (ACTIVE→COMPLETED→PRUNABLE→PRUNED) retires finished task closures whole.
-3. **Budget honored exactly**: window = contextWindow×0.8 trigger, retain = window×0.2 target; the degradation chain lifecycle→summarize→force→fail converges to budget or fails explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
+3. **Budget honored exactly**: trigger line window = contextWindow×0.8 (default), retain target = window×0.2; the trigger timing is the three-tier ladder (see "Three-tier trigger" below); the degradation chain is lifecycle→force→fail (the summarize tier is a stub that always returns null — conservative option a of A6, not implemented; `enableSummarize` defaults to false), converging to budget or failing explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
+
+### Three-tier trigger (the Stage-2 trigger ladder)
+
+Stage-2's "lazy" is not a single threshold check but a three-tier ladder (introduced in 1.4.0, revised in 1.5.0):
+
+1. **Turn-start proactive (L1)**: the pressure check runs only at each turn's first pre-step (`step === 1`), threshold = window (default contextWindow×0.8). The estimate **includes this step's user message that has been claimed but not yet flushed to the surface** — the host claims the new user message before dispatching pre-step, so turn start sees the exact content, not a prediction; a large paste at turn start is never missed. Turn start also runs the per-atom LLM pass (atom shrink) + graph eviction.
+2. **Mid-turn pressure prune (L1', 0-LLM)**: `midTurnPrune` defaults to **true** — when `step > 1` and pressure is reached, **only 0-LLM graph eviction runs** (no per-atom LLM pass — that is a 79s–3min block, not worth it mid-turn), with `turnGuard` relaxed to `midTurnTurnGuard` (default **0**, allowing this turn's older A/R to be evicted; `recencyGuard` still protects the newest nodes). The overage comes from this turn's tool results; the old guard (turnGuard=1) protected the whole turn — the root cause of 1.3.x's mid-turn prune being "nearly ineffective". The prune lands in that pre-step ⇒ the same step's request is already slimmed ⇒ the turn continues naturally.
+3. **Post-clamp auto-continue (L3)**: when the output is externally clamped (`finish=max-tokens` and `outputTokens <` the request's `maxTokens` = the host/adapter shrank the output budget — the true capacity-pressure signal): if the turn is about to end (`agent/turn-stopping` hook) ⇒ force-prune in place + `steer` a continuation message, so **the same turn keeps advancing** (the user need not send "continue"); otherwise (the turn is still running) ⇒ force-prune at the next pre-step. The continuation text can be overridden by `continuationNotice` (empty string = prune without continuing); the cap is `reactiveRetries` (default **2**, per "consecutive clamps" episode; from the 2nd on, recency/turn guards are relaxed; once exhausted, control returns to the overflow path).
+
+Config knobs: `midTurnPrune` (default true) / `midTurnTurnGuard` (default 0) / `continuationNotice` (default built-in sentence) / `reactiveRetries` (default 2); 1.4.0's `midTurnActive` remains as a compatibility alias (true = mid-turn prune on with the default guard, the 1.3.x comparison tier; false = off).
 
 ### Bridging and recall
 
@@ -56,7 +66,7 @@ The quality of per-atom split/shrink decisions depends on the model's instructio
 
 ## Install & mount
 
-Install from npm (the `v1.0.0` two-engine form):
+Install from npm. **npm default = 0-LLM graph eviction (Stage-2 only)**: the package's bundle patch (`cordis.patch.yml`) mounts only the graph engine (config is just `maxPasses: 256` / `recencyGuard: 10`, no `peratom` block) — the three Stage-1 pipelines are not mounted by default:
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
@@ -71,20 +81,24 @@ Disable the stock summarizer in the profile's `cordis.patch.yml`:
 
 > Mounting is handled by the package's own bundle patch (`cordis.patch.yml`) (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
 
-### Two-engine configuration (1.0.0 form)
+### Enabling Stage-1 (two-engine)
 
-Stage-1 components resolve their endpoint from environment variables by default (`DEEPSEEK_API_KEY`); in production, point them explicitly at the host dsh-llm:
+The production mount path is **the engine self-mounting from `config.peratom` at construction**: when the `peratom` block is an object, the three Stage-1 pipelines (compressor / declarer / zoom) are mounted and wired internally at construction; `peratom: false` / `null` = not mounted (same semantics as the default). Add the nested `peratom` block via `modify` in the profile layer (a new session is required for it to take effect):
 
 ```yaml
 - id: dsh-argp
   config:
-    compressor:
-      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm backend
-    declarer:
-      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # may point at a separate lite tier
+    peratom:
+      compressor:
+        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm backend
+      declarer:
+        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # may point at a separate lite tier
+      # zoom: {}   # two-tier recall; mounted by default when the block is present
 ```
 
-Without `llm` config, it falls back to OpenAI-compatible direct connection via `endpoint`/`apiKey` config or environment variables (the local llama.cpp experiment form; behavior unchanged). Stage-2 budgets are ratio-driven by default (window=ctx×0.8 / retain=window×0.2); no hardcoding needed.
+The `llm` sub-block is optional: when both `llm` and `endpoint`/`apiKey` are absent, the backend **automatically follows the host's routing** (1.3.0's `autoDshLlmSpec`: in a real session it reads `agent.options.{provider,model}` on the fly + the host's `ctx.llm` service, following the host when it switches models); when all three paths fail to resolve, the component is naturally disabled (zero network). With `llm` set, it uses the host dsh-llm (production form); otherwise it falls back to OpenAI-compatible direct connection via `endpoint`/`apiKey` config or environment variables (the local llama.cpp experiment form). Stage-2 budgets are ratio-driven by default (window=ctx×0.8 / retain=window×0.2); no hardcoding needed.
+
+`presetClean` is **on by default**: at mount time it generates a cleaned copy `<id>-argp` for each shipped preset that still carries the stock summarizer (removing `compaction-basic`/`tool-result-pruner`, keeping `command-compact` — `/compact` then routes to ARGP graph eviction); idempotent and fail-soft; set `presetClean: false` to disable it.
 
 ## Validation results
 

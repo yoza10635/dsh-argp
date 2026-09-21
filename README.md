@@ -6,10 +6,10 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（1.0.0 双引擎形态）：
+dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（双引擎形态；**npm 默认 = 0-LLM 图剪枝，即仅 Stage-2**，Stage-1 经 `peratom` 配置块启用，见"安装与挂载"）：
 
 - **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
-- **Stage-2 引用图剪枝（lazy，超阈值时）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现。
+- **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
 - **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail`（逐字节一致，哈希测试锁定）随取随回。上下文是日志的一个渲染视图，不是历史本身。
 
 ## 为什么
@@ -39,7 +39,17 @@ ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"
 
 1. **原子化 + 建图**：确定性边（assistant → 其 tool result，经 toolCallId）+ 语义边（模型按契约输出的 `{"cites":[{"t":"前缀","l":"c|s|x"}]}`，四级分级 critical/supporting/contextual/isolated）。
 2. **拓扑剪枝**：反复摘除入度为 0 的原子（边等级 → 有效重要性 → 最近引用轮次排序），被剪引用方的出边消失、下游逐 pass 解锁；闭包生命周期（ACTIVE→COMPLETED→PRUNABLE→PRUNED）整闭包退休已完成任务。
-3. **压缩率精确兑现**：window = contextWindow×0.8 触发、retain = window×0.2 目标；降级链 lifecycle→summarize→force→fail 收敛到预算或显式失败，实测 200K→160K 触发→32K 保留精确落地。
+3. **压缩率精确兑现**：触发线 window = contextWindow×0.8（默认）、保留目标 retain = window×0.2；触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（summarize 档是恒返回 null 的 stub——A6 保守选项 a 不实现，`enableSummarize` 默认 false）收敛到预算或显式失败，实测 200K→160K 触发→32K 保留精确落地。
+
+### 三级触发（Stage-2 触发阶梯）
+
+Stage-2 的"lazy"不是单一阈值检查，而是三级阶梯（1.4.0 引入、1.5.0 修订）：
+
+1. **轮初主动（L1）**：只在每轮首个 pre-step（`step === 1`）做压力判定，阈值 = window（默认 contextWindow×0.8）。估值**计入本步已 claim、尚未落盘进 surface 的 user 消息**——宿主先 claim 新 user 消息再 dispatch pre-step，轮初拿到的是精确内容而非预测，用户轮初的大段粘贴不会漏；轮初同时跑 per-atom LLM pass（原子降熵）+ 图剪。
+2. **轮中压力剪（L1'，0-LLM）**：`midTurnPrune` 默认 **true**——`step > 1` 且压力达标时**只做 0-LLM 图剪**（不跑 per-atom LLM pass——那是 79s–3min 的阻塞，轮内不划算），并把 `turnGuard` 放宽到 `midTurnTurnGuard`（默认 **0**，允许剪本轮的旧 A/R；`recencyGuard` 照常保护最新节点）。超额的来源恰恰是本轮的 tool result，旧守卫（turnGuard=1）把整轮保护起来正是 1.3.x 轮中剪"几乎无效"的根因；剪落在那个 pre-step ⇒ 同一个 step 的请求即已瘦身 ⇒ 天然自动继续本 turn。
+3. **截断自动续写（L3）**：输出被外部钳制（`finish=max-tokens` 且 `outputTokens <` 本次请求的 `maxTokens` = 宿主/适配器把输出预算啃小了，容量压力的真信号）时：若本 turn 随后要结束（`agent/turn-stopping` 钩子）⇒ 就地强制剪 + `steer` 一条续写消息，**同一个 turn 继续推进**（用户不必再发"继续"）；否则（turn 还在跑）⇒ 下一个 pre-step 强制剪。续写文案可用 `continuationNotice` 覆盖（空串 = 只剪不续）；上限 `reactiveRetries`（默认 **2**，每次"连续被钳" episode 内，第 2 次起放宽 recency/turn 守卫，用尽交回 overflow 路径）。
+
+配置旋钮：`midTurnPrune`（默认 true）/ `midTurnTurnGuard`（默认 0）/ `continuationNotice`（默认内置一句）/ `reactiveRetries`（默认 2）；1.4.0 的 `midTurnActive` 保留为兼容别名（true = 轮中剪开 + 沿用默认守卫的 1.3.x 对照档，false = 关）。
 
 ### 桥接与召回
 
@@ -55,7 +65,7 @@ per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫�
 
 ## 安装与挂载
 
-从 npm 安装（`v1.0.0` 双引擎形态）：
+从 npm 安装。**npm 默认 = 0-LLM 图剪枝（仅 Stage-2）**：包的 bundle patch（`cordis.patch.yml`）只挂图引擎（config 仅 `maxPasses: 256` / `recencyGuard: 10`，无 `peratom` 块），Stage-1 三管线默认不挂载：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
@@ -70,20 +80,24 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 
 > 挂载由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
 
-### 双引擎配置（1.0.0 形态）
+### 启用 Stage-1（双引擎）
 
-Stage-1 组件默认跟随环境变量解析端点（`DEEPSEEK_API_KEY`）；生产建议显式指向宿主 dsh-llm：
+生产挂载路径是**引擎构造期经 `config.peratom` 自挂**：`peratom` 块为对象时，Stage-1 三管线（compressor / declarer / zoom）在构造期挂载并内部接线；`peratom: false` / `null` = 不挂（与缺省同语义）。在 profile 层 modify 加 `peratom` 嵌套块（改后须开新会话生效）：
 
 ```yaml
 - id: dsh-argp
   config:
-    compressor:
-      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm 后端
-    declarer:
-      llm: { provider: deepseek-official, model: deepseek-v4-flash }   # 可指向独立 lite 档
+    peratom:
+      compressor:
+        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm 后端
+      declarer:
+        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # 可指向独立 lite 档
+      # zoom: {}   # 两级 recall；块内缺省即挂载
 ```
 
-不配 `llm` 时按 `endpoint`/`apiKey` config 或环境变量走 OpenAI 兼容直连（本地 llama.cpp 实验形态，行为不变）。Stage-2 预算默认比例驱动（window=ctx×0.8 / retain=window×0.2），无须硬编码。
+`llm` 子块可省：`llm` 与 `endpoint`/`apiKey` 两路皆缺时**自动跟随宿主路由**（1.3.0 的 `autoDshLlmSpec`：真会话里现取 `agent.options.{provider,model}` + 宿主 `ctx.llm` 服务，宿主换模型自动跟随）；三路都解不出时组件自然 disabled（零网络）。配了 `llm` 走宿主 dsh-llm（生产形态）；否则按 `endpoint`/`apiKey` config 或环境变量走 OpenAI 兼容直连（本地 llama.cpp 实验形态）。Stage-2 预算默认比例驱动（window=ctx×0.8 / retain=window×0.2），无须硬编码。
+
+`presetClean` **默认开启**：挂载期对仍挂 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp`（摘除 `compaction-basic`/`tool-result-pruner`、保留 `command-compact`——`/compact` 自动指向 ARGP 图剪），幂等、fail-soft；`presetClean: false` 关闭。
 
 ## 验证结果
 

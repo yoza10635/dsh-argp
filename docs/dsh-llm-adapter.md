@@ -11,9 +11,9 @@ P0-P5 期间 compressor / cite-declarer 的 LLM 调用走 **fetch 旁路**(OpenA
 | 后端 | 接线 | 特性 |
 |---|---|---|
 | `dsh-llm`(生产) | `config.llm = { provider, model }` → `completeViaDshLlm(ctx, spec, prompt, timeoutMs)` → `ctx.llm.stream()` | `purpose: 'compaction'` 归类辅助调用;usage 从流内 usage 块记账进 `record.usage`;**无 response_format**(GenerateOptions 词表不含 schema 约束)→ 依赖 `extractJson` 兜底,无 schema 重试舞蹈 |
-| `fetch`(遗产,默认) | `endpoint`/`apiKey`/`model` config 或环境变量(DEEPSEEK_API_KEY / ARGP_MODEL_SOURCE=qwen-local) | `response_format: json_schema` 强制 + 被拒降级裸 prompt 重试一次;行为与 v0.3.2 完全一致 |
+| `fetch`(遗产) | `endpoint`/`apiKey`/`model` config 或环境变量(DEEPSEEK_API_KEY / ARGP_MODEL_SOURCE=qwen-local) | `response_format: json_schema` 强制 + 被拒降级裸 prompt 重试一次;行为与 v0.3.2 完全一致 |
 
-**优先级**:`config.llm` 存在 → dsh-llm 后端,endpoint/apiKey 被忽略;两者皆缺省 → fetch 环境变量口径(既有行为不变,disabled 语义不变)。
+**优先级(三路)**:① `config.llm` 存在 → dsh-llm 后端,endpoint/apiKey 被忽略;② `endpoint`/`apiKey`/环境变量存在 → fetch 后端;③ 两路皆缺省 → **宿主路由自动兜底** `autoDshLlmSpec`(1.3.0):真会话的 `agent/status` / `agent/pre-step` 钩子里现取 `agent.options.{provider,model}`,配合宿主 `ctx.llm` 服务合成 spec,宿主换模型自动跟随、分发物不必钉死 provider/model。判定从严:路由缺任一项、或宿主无 llm 服务即返回 null,组件保持 disabled(零网络,disabled 语义不变)。
 
 ## 多模型分工(台账 D21 口径)
 
@@ -21,7 +21,7 @@ compressor 与 cite-declarer 的 `llm` 各自独立指定,可指向不同 provid
 
 ## 宿主要求
 
-dsh-llm 后端要求宿主已注册 `llm` 服务(任意 LlmRuntime 实现)。服务缺失时 `completeViaDshLlm` 明确报错(`no llm service`),经 CompressRecord.error / CiteRecord.error 观测,**绝不阻断会话**(安全方向:该轮保原文)。
+dsh-llm 后端要求宿主已注册 `llm` 服务(任意 LlmRuntime 实现)。显式 `config.llm` 选中 dsh-llm 而后服务缺失时 `completeViaDshLlm` 明确报错(`no llm service`),经 CompressRecord.error / CiteRecord.error 观测,**绝不阻断会话**(安全方向:该轮保原文)。自动兜底路径下宿主缺 llm 服务则不报错——`autoDshLlmSpec` 返回 null,组件保持 disabled(零网络)。
 
 ## 已知边界
 
