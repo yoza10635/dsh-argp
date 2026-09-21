@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ARG_NS } from '../src/peratom/types.ts'
@@ -115,6 +115,24 @@ async function makeHarness(config: Record<string, unknown> = {}): Promise<Harnes
 
 async function dispose(h: Harness): Promise<void> {
   await h.ctx.fiber.dispose()
+}
+
+/**
+ * P3.6：按 (type, surfaceOp) 在事务窗口内查找事件，替代固定偏移（endIdx-4/-3/-2/-1）。
+ * 固定偏移对"事务里 append 了什么"强耦合——未来增删任一事件即静默错位（读到错误事件
+ * 却仍通过断言 = 假绿）。按 kind 查找对布局变化稳健：只要该 kind 的事件在事务内存在即可命中。
+ * 窗口 = (startIdx, endIdx) 开区间，即 compaction/start 之后、compaction/end 之前的全部事务步。
+ */
+function txEvent(events: readonly SessionEvent[], startIdx: number, endIdx: number, type: string, mode: 'append' | 'replace'): SessionEvent {
+  const window = events.slice(startIdx + 1, endIdx) as unknown as Array<{ type: string; surfaceOp?: unknown }>
+  const found = window.find(e =>
+    e.type === type &&
+    (mode === 'append'
+      ? e.surfaceOp === 'append'
+      : e.surfaceOp !== undefined && e.surfaceOp !== 'append' && (e.surfaceOp as { op: string }).op === 'replace'),
+  )
+  assert.ok(found !== undefined, `事务内须存在 ${type}（${mode}）事件`)
+  return found as unknown as SessionEvent
 }
 
 // ---------------------------------------------------------------------------
@@ -234,7 +252,8 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal((session.snapshotEvents()[endIdx]?.data as { error?: string }).error, undefined)
 
   // 事件 ①：dialog replace（原位替换，compact checkpoint 署名——UI 节点关联，无 ARG_NS 标记）
-  const dialogEvent = session.snapshotEvents()[endIdx! - 4]
+  // P3.6：按 (type, surfaceOp) 查找替代固定偏移 endIdx-4
+  const dialogEvent = txEvent(session.snapshotEvents(), startIdx, endIdx, 'user/message', 'replace')
   assert.equal(dialogEvent?.type, 'user/message')
   const dData = dialogEvent?.data as unknown as { source?: { plugin?: string; compactionId?: string }; content?: { text: string }[]; [k: string]: unknown }
   // 2026-08-28：user 替换副本 source = compact checkpoint（宿主 CompactionNodeView 关联）
@@ -251,7 +270,8 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   )
 
   // 事件 ②：U-info append（info 标记 + sourceSeq + summary）
-  const infoEvent = session.snapshotEvents()[endIdx! - 3]
+  // P3.6：按 (type, surfaceOp) 查找替代固定偏移 endIdx-3
+  const infoEvent = txEvent(session.snapshotEvents(), startIdx, endIdx, 'user/message', 'append')
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { [k: string]: unknown }
   assert.equal(isArgpUserInfo(iData), true, 'U-info 标记落盘')
@@ -262,7 +282,8 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   assert.equal(infoEvent?.surfaceOp, 'append')
 
   // 事件 ③：tool replace 副本（dsh-session 硬约束：只许改 content，故无 ARG_NS 元数据）
-  const toolEvent = session.snapshotEvents()[endIdx! - 2]
+  // P3.6：按 (type, surfaceOp) 查找替代固定偏移 endIdx-2
+  const toolEvent = txEvent(session.snapshotEvents(), startIdx, endIdx, 'tool/result', 'replace')
   assert.equal(toolEvent?.type, 'tool/result')
   const tData = toolEvent?.data as unknown as {
     message?: { content?: { toolCallId?: string; content?: { text: string }[] }[] }
@@ -803,11 +824,15 @@ test('端到端：split 带 infoLevel=extract → U-info 节点落盘压缩文�
   })
   const record = await h.compressor.compressCurrentTurn(session)
   assert.equal(record?.appliedReplaces, 2, 'dialog replace + tool replace')
-  const kinds = session.snapshotEvents().map(e => e.type)
+  const events = session.snapshotEvents()
+  const kinds = events.map(e => e.type)
+  const startIdx = kinds.lastIndexOf('compaction/start')
   const endIdx = kinds.lastIndexOf('compaction/end')
-  // compaction/summary 在最后一个事务步与 end 之间（2026-08-28 UI 节点文本通道）
-  assert.equal(kinds[endIdx! - 1], 'compaction/summary', 'display summary event precedes end')
-  const infoEvent = session.snapshotEvents()[endIdx! - 3]
+  // P3.6：compaction/summary 在最后一个事务步与 end 之间（2026-08-28 UI 节点文本通道）——
+  // 按 kind 在事务窗口内查找替代固定偏移 endIdx-1（窗口开区间已保证"先于 end"）。
+  const summaries = events.slice(startIdx + 1, endIdx).filter(e => e.type === 'compaction/summary')
+  assert.equal(summaries.length, 1, 'display summary event precedes end（事务内恰一条）')
+  const infoEvent = txEvent(events, startIdx, endIdx, 'user/message', 'append')
   assert.equal(infoEvent?.type, 'user/message')
   const iData = infoEvent?.data as unknown as { content?: { text: string }[]; [k: string]: unknown }
   assert.equal(iData.content?.[0]?.text, compressedInfo, 'U-info surface = 模型压缩 extract 文本')

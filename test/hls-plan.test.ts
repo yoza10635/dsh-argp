@@ -42,6 +42,11 @@ test('I-B1: 任意候选的 repaired 通过保真守卫（50 轮随机扰动 pro
     const kept = shuffle(toks).slice(0, Math.floor(Math.random() * toks.length)) // 随机保留 0..n-1 个
     const candidate = 'summary ' + kept.join(' ')
     const guard = fidelityGuard(original, candidate)
+    // P3.6 真空守卫：kept 至多保留 n-1 个 token（slice 上界 < toks.length）⇒ 候选必丢
+    // ≥1 个承重 token ⇒ guard.missing 非空 ⇒ 下方 repaired 真正走了"尾注补全"修复路径。
+    // 若未来改动使 missing 恒空，repaired 退化为 candidate 恒等、断言平凡通过 = 假绿，
+    // 此守卫立即失败。
+    assert.ok(guard.missing.length > 0, `round ${i}: 候选须丢失 ≥1 个承重 token（否则修复路径未被执行，真空通过）`)
     const repaired = repairWithTrailer(candidate, guard.missing)
     assert.equal(fidelityGuard(original, repaired).ok, true,
       `round ${i}: repaired 必须 100% 硬 token 保真（保真由构造）`)

@@ -56,20 +56,30 @@ test('I-A1: 每条推断边存在某承重 token 双端逐字包含（200 轮随
   for (let round = 0; round < 200; round += 1) {
     const atoms: OntologyAtom[] = []
     let seq = 0
+    // P3.6 真空守卫的构造性前提：每轮挑一个 seed token，强制同时放进首个数据原子
+    // 与首个 A 原子（A 较新、seq 更大）。ratio=1 停词停用 + seed ≥6 字符 ⇒ 该轮
+    // deriveInferredEdges 必产出 ≥1 条边，下方空数组守卫不会误伤（非 flaky）。
+    const seed = TOKEN_POOL[Math.floor(Math.random() * TOKEN_POOL.length)]!
     // 先数据原子（较旧），后 A 原子（较新）：seq 严格递增保证"更旧"语义
     const nData = 1 + Math.floor(Math.random() * 4)
     for (let i = 0; i < nData; i += 1) {
       seq += 1
       const toks = TOKEN_POOL.filter(() => Math.random() < 0.4)
+      if (i === 0 && !toks.includes(seed)) toks.unshift(seed)
       atoms.push({ seq, turn: 1, type: Math.random() < 0.5 ? 'U' : 'R', text: 'data body ' + toks.join(' | ') })
     }
     const nA = 1 + Math.floor(Math.random() * 3)
     for (let i = 0; i < nA; i += 1) {
       seq += 1
       const toks = TOKEN_POOL.filter(() => Math.random() < 0.4)
+      if (i === 0 && !toks.includes(seed)) toks.unshift(seed)
       atoms.push({ seq, turn: 1 + i, type: 'A', text: 'reply body ' + toks.join(' | ') })
     }
     const pairs = deriveInferredEdges(atoms, { stopwordRatio: 1 }) // ratio=1 → 停词机制停用（count/len ≤ 1 永不过阈）
+    // P3.6 真空守卫：若某轮随机数据使 deriveInferredEdges 返回空数组，下方断言循环
+    // 零执行 = 真空通过（假绿）。seed 双端在场保证此守卫恒过（构造性），但一旦未来
+    // 词表/派生逻辑改动使 seed 不再命中，这里立即失败而非静默假绿。
+    assert.ok(pairs.length > 0, `round ${round}: 推断边不得为空（seed token 双端在场，构造性保证 ≥1 条边）`)
     for (const p of pairs) {
       const from = atoms.find(a => a.seq === p.fromSeq)!
       const to = atoms.find(a => a.seq === p.toSeq)!

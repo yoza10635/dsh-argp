@@ -89,8 +89,9 @@ test('no explicit tokens + llm without adapter → fallback static defaults, no 
     appendAssistant(session, 'x'.repeat(100), 1)
     appendAssistant(session, 'latest: y', 2)
     engine.setSession(session)
-    const result = await engine.compactIfNeeded(fakeAgent(session), 'pressure', new AbortController().signal)
-    assert.ok(result === null || result !== null, 'no crash on llm-unavailable')
+    // 无显式 token + llm 无 adapter：不抛错即"no crash"（compactIfNeeded 正常返回）；
+    // 真实断言落在回退静态默认窗口 16384（P3.1：原 :93 恒真断言已删）。
+    await engine.compactIfNeeded(fakeAgent(session), 'pressure', new AbortController().signal)
     assert.equal((engine as unknown as { resolvedWindowTokens: number }).resolvedWindowTokens, 16_384)
   } finally {
     await ctx.fiber.dispose()

@@ -68,10 +68,25 @@ class ScriptAdapter extends LlmAdapter {
   }
 }
 
-function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
-  return new Promise(resolve => {
+/**
+ * 等待 agent 回到 idle。P3.5 兜底超时：node:test 无默认超时，若 idle 事件丢失
+ * （宿主/钩子异常）原实现永不 resolve ⇒ 整组挂死而非失败。现加 setTimeout 兜底，
+ * 超时即 reject（测试失败而非挂死）；正常 idle 到达则清掉定时器。
+ */
+function waitForIdle(ctx: Context, agent: Agent, timeoutMs = 15_000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      dispose()
+      reject(new Error('waitForIdle: no idle event within ' + timeoutMs + 'ms (idle event lost)'))
+    }, timeoutMs)
     const dispose = ctx.on('agent/status', ({ agent: subject, status }) => {
       if (subject === agent && status === 'idle') {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
         dispose()
         resolve()
       }

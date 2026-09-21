@@ -115,6 +115,11 @@ test('version-chain redirect: no redirect when old R has no newer same-path vers
     engine.setSession(session)
     await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
 
+    // P3.5：「不重定向」须无条件锁定——无论该 R 是否恰好被剪，recall 都必须返回原文
+    // 且不带重定向标注（原实现仅在节点被剪时才断言，未剪场景零断言通过 = 假绿）。
+    const text = await runTool(ctx, 'recall_pruned', { seq: rOnly })
+    assert.ok(text.includes('SOLO-FILE-CONTENT'), '无同路径新版本 → recall 返回原文')
+    assert.ok(!text.includes('version-chain redirect'), '无同路径新版本 → 无重定向标注')
     // 若被剪且无同路径新版本，latestOfPath 应为 undefined（不重定向，走普通召回）
     const info = engine.prunedNodeIndex.get(rOnly)
     if (info !== undefined) {
