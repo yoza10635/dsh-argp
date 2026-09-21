@@ -325,6 +325,100 @@ export interface InferredStats {
     accepted: number;
     skippedDup: number;
 }
+/**
+ * P5 结构重构 Wave 3 第 2 步（C 报告 S2）：compactIfNeeded 拆分出的模块级纯函数。
+ *
+ * 背景：compactIfNeeded 原约 365 行单函数，内含 3 个闭包（isAtomCandidate /
+ * isGroupCandidate / sortKey，闭包捕获 this 与局部 state）+ ~100 行贪心 for-pass
+ * 循环 + ~80 行区间归并/tombstone 生成，单函数不可测不可读。现将「无 this 副作用」
+ * 的判定/排序/归并/墓碑段提升为模块级纯函数：原来闭包捕获的 this 字段与局部量
+ * 打包成显式 state 参数（PruneState）传入，函数体逻辑逐字保留（this.x → state.x）。
+ * 贪心 for-pass 循环与 this 交互过深（selectClosureToMerge 会 this.nextClosureId++、
+ * 写 this.closurePrunes、调 this.summarizeCriticalChain、读 this.degradationStrategy/
+ * maxPasses/enableSummarize、process.env 调试副作用），抽出会改变控制流/副作用顺序，
+ * 故保留在方法内（见 compactIfNeeded）。
+ *
+ * 导出（export function）供未来独立单测；**不**加进 src/index.ts 公共 API。
+ */
+/** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
+export interface PruneInterval {
+    seqs: number[];
+    chars: number;
+    atoms: Atom[];
+    hasSoloR: boolean;
+}
+/** 区间 tombstone 规格：user 文本墓碑 或 tool 占位墓碑（保留 callId 配对 issuer A 的 tool_calls）。 */
+export type PruneTombstone = {
+    type: 'user';
+    text: string;
+} | {
+    type: 'tool';
+    seq: number;
+    callId: string;
+};
+/**
+ * compactIfNeeded 拆出纯函数共享的显式 state：原 3 个闭包捕获的 this 字段与局部量。
+ * - turnGuard / sortMode / charsPerToken：原闭包读 this.<getter>；此处快照为值（方法执行期间
+ *   guardOverride/argpSettings 稳定，快照等价）。
+ * - curInDegree / curInDegreeDecl：每 pass 重推（链式解锁），方法内每 pass 更新本字段，
+ *   纯函数按调用时读取当前 pass 值（与原闭包捕获 let 绑定的语义一致）。
+ * - chainLen：findVersionDuplicates 产物；仅 sortKey 使用，且 sortKey 只在 pass 循环内调用
+ *   （届时已回填），构造期占位空 Map 不会被读到。
+ */
+export interface PruneState {
+    turnGuard: number;
+    askCoverage: Map<number, number>;
+    position: Map<number, number>;
+    recencyCut: number;
+    latestTurn: number;
+    edges: SemanticEdge[];
+    atoms: Atom[];
+    curInDegree: Map<number, number>;
+    curInDegreeDecl: Map<number, number>;
+    deterministicEdges: DeterministicEdge[];
+    touchesSemantic: Set<number>;
+    eff: Map<number, number>;
+    sortMode: 'legacy' | 'density' | 'density-chain';
+    chainLen: Map<number, number>;
+    lastRef: Map<number, number>;
+    charsPerToken: number;
+}
+/**
+ * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
+ * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走
+ * recencyGuard/turnGuard/citesFailed/A10 结构保护/入度门槛。
+ */
+export declare function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneState): boolean;
+/** 组候选判定（原 isGroupCandidate 闭包）：组内全部原子均候选。 */
+export declare function isGroupCandidate(g: Atom[], allowInDegree: boolean, state: PruneState): boolean;
+/**
+ * 排序键（原 sortKey 闭包，§4.5 + spike 18 提案）：默认 legacy = [lvl, eff, lastRef, seq]；
+ * density = eff 同档内 token 降序（大 token 先剪）；density-chain = density + 链代表 eff 叠加。
+ */
+export declare function sortKey(a: Atom, state: PruneState): string;
+/**
+ * 区间归并（原 compactIfNeeded 内区间归并段，逐字保留）。
+ * 按极大连续区间归并 pruned 原子；R 原子（issuer A 未被剪）强制单独成区间（tool 占位墓碑
+ * 的 surface replace 必须恰好替换 1 节点）；双向守卫防孤儿 tool 消息；
+ * 区间可见量 < minSpanChars 的放回（不剪）。
+ * 入参 = pruned 原子集合 + position/issuerByCall 局部量 + minSpanChars（原 this.minSpanChars）；
+ * 出参 = 归并后区间 kept + droppedIntervals（放回区间数，原方法内计算但未被读取，保留以逐字对应）。
+ */
+export declare function mergeIntervals(pruned: Map<number, Atom>, position: Map<number, number>, issuerByCall: Map<string, Atom>, minSpanChars: number): {
+    kept: PruneInterval[];
+    droppedIntervals: number;
+};
+/**
+ * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留）。
+ * 区间原子全部来自同一闭包 → 闭包 tombstone（带 root/计数，recall 消歧）；
+ * 单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的 tool_calls）；
+ * 否则默认 user 文本墓碑（forced 时标注）。
+ */
+export declare function buildTombstones(kept: PruneInterval[], closureSeqMeta: Map<number, {
+    closureId: string;
+    rootPreview: string;
+    closureTotal: number;
+}>, issuerByCall: Map<string, Atom>, pruned: Map<number, Atom>, forced: boolean): PruneTombstone[];
 /** list_pruned 工具的剪枝节点目录条目。 */
 export interface PrunedNodeInfo {
     seq: number;
