@@ -190,8 +190,8 @@ export declare class CiteDeclarer {
      */
     private prefixWithinBudget;
     /**
-     * idle 触发段（公开入口供单测 / P4 直驱）：幂等记账 → 中断轮短路 → 孤立原子门控
-     * （turnCompressible 共用谓词）→ disabled 短路 → LLM（1 次静默重试）→ 边入缓存。
+     * idle 触发段（公开入口供单测 / P4 直驱）：幂等查询 → 中断轮短路 → 孤立原子门控
+     * （turnCompressible 共用谓词）→ disabled 短路（**不记账**）→ 记账 → LLM（1 次静默重试）→ 边入缓存。
      * 返回观测记录；无可声明轮（无闭合 turn）返回 null。
      */
     declareCurrentTurn(session: Session): Promise<CiteRecord | null>;
