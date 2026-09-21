@@ -16,6 +16,13 @@ docs/handoff-*.md
 docs/publication-plan.md
 blocker-log.md
 run-baseline.bat
+# 本地工具评测记录（仅本机参考，不进仓库）
+docs/fuck-u-code-report-*.md
+# 审查报告与排期（本地工作文档，开源排除）
+docs/audit-full-2026-09-21.md
+docs/audit-compare-2026-09-21.md
+docs/audit-engineering-2026-09-21.md
+docs/audit-roadmap-2026-09-21.md
 
 # AI 工作台账（本机会话记忆，不进公开仓库）
 .workbuddy/
