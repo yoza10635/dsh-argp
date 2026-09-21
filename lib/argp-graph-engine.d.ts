@@ -166,6 +166,8 @@ export interface ArgpGraphConfig {
     maxPasses?: number;
     /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
     reserveTokens?: number;
+    /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+    telemetryCap?: number;
     /** 可选显式 token 测量函数；不传则退化为字符估算。 */
     measureTokens?: (session: Session) => {
         contextTokens: number;
@@ -440,6 +442,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly enableOverlapChain: boolean;
     /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
     private readonly tokenMeter;
+    /** 遥测数组容量上限（P4.5：records/recallCalls/recallQueryCalls/closurePrunes/auditWarnings 有界）。 */
+    readonly telemetryCap: number;
     readonly records: GraphPruneRecord[];
     readonly recallCalls: {
         seq: number;

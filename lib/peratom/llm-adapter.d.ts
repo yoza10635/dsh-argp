@@ -53,7 +53,11 @@ export declare function hostHasLlm(ctx: Context): boolean;
  * 深冻结的源消息只读不改；一条 dsh Message 可能展开为多条 wire 消息
  * （user 消息内嵌 tool-result 时）。
  */
-export declare function serializeWireMessages(messages: readonly Message[]): Record<string, unknown>[];
+/** 最小日志面（P4.1：wire 观测走宿主 logger，不再裸 console）。 */
+export interface WireLogger {
+    debug: (msg: string) => void;
+}
+export declare function serializeWireMessages(messages: readonly Message[], logger?: WireLogger): Record<string, unknown>[];
 /**
  * dsh-llm `ToolSchema[]` → OpenAI wire tools。
  *

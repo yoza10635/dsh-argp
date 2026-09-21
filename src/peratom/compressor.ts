@@ -58,6 +58,8 @@ import {
 } from './gate.js'
 import type { GateOptions, GateToolResult, GateUserLong, NeedCompress, VersionChainIndex } from './gate.js'
 import { DEFAULT_HLS_ROI_THRESHOLD, hlsRepairEconomics, repairWithTrailer } from '../token-ontology.js'
+import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_PREFIX_BUDGET_TOKENS } from '../constants.js'
+import { DEFAULT_TELEMETRY_CAP, pushBounded } from '../telemetry.js'
 
 /** 插件署名（dialog replace / U-info append 副本的 message.source.plugin）。 */
 const PLUGIN_NAME = 'dsh-argp'
@@ -96,6 +98,8 @@ export interface PeratomCompressorConfig {
    * 超时 ⇒ 告警后照旧放行（事务在后续窗口落地，即旧行为）。
    */
   flushWaitMs?: number
+  /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+  telemetryCap?: number
   /**
    * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
    * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
@@ -821,6 +825,8 @@ export class PeratomCompressor {
   private _calls = 0
   get calls(): number { return this._calls }
 
+  /** 遥测数组容量上限（P4.5：records 有界）。 */
+  readonly telemetryCap: number
   /** 全部压缩尝试记录（时间序）。 */
   readonly records: CompressRecord[] = []
 
@@ -925,13 +931,14 @@ export class PeratomCompressor {
       : (config.apiKey !== undefined ? { endpoint: config.endpoint ?? 'https://api.deepseek.com/chat/completions', model: config.model ?? 'deepseek-v4-flash', apiKey: config.apiKey } : defaultEndpoint())
     this.splitThresholdChars = config.splitThresholdChars ?? SPLIT_THRESHOLD_CHARS
     this.smallResultChars = config.smallResultChars ?? DEFAULT_SMALL_RESULT_CHARS
-    this.timeoutMs = config.timeoutMs ?? 180_000
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
     this.flushWaitMs = config.flushWaitMs ?? 180_000
+    this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
     this.hlsMode = config.hlsMode ?? 'trailer'
     this.hlsRoiThreshold = config.hlsRoiThreshold ?? DEFAULT_HLS_ROI_THRESHOLD
     this.chatTemplateKwargs = config.chatTemplateKwargs
     this.maxCompletionTokens = config.maxCompletionTokens ?? 16_384
-    this.prefixBudgetTokens = config.prefixBudgetTokens ?? 132_000
+    this.prefixBudgetTokens = config.prefixBudgetTokens ?? DEFAULT_PREFIX_BUDGET_TOKENS
     if (config.toolPolicies !== undefined) {
       for (const [name, policy] of config.toolPolicies) this.toolPolicies.set(name, policy)
     }
@@ -940,9 +947,9 @@ export class PeratomCompressor {
     this.llmAutoEligible = config.llm === undefined && this.endpoint === null
     if (this.endpoint === null && this.dshLlm === null) {
       if (this.llmAutoEligible) {
-        ctx.logger.info('peratom-compressor: no explicit LLM backend; auto mode — will follow the host dsh-llm + agent route once a real session provides one (disabled, zero network, until then)')
+        ctx.logger.info('[argp-peratom] compressor: no explicit LLM backend; auto mode — will follow the host dsh-llm + agent route once a real session provides one (disabled, zero network, until then)')
       } else {
-        ctx.logger.warn('peratom-compressor: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); compressor disabled')
+        ctx.logger.warn('[argp-peratom] compressor: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); compressor disabled')
       }
     }
 
@@ -952,7 +959,7 @@ export class PeratomCompressor {
       this.rememberRoute(agent)
       if (status !== 'idle') return
       const pass = this.prepareCurrentTurn(agent.session).catch(error => {
-        this.ctx.logger.warn(`peratom-compressor prepare failed: ${error instanceof Error ? error.message : String(error)}`)
+        this.ctx.logger.warn(`[argp-peratom] compressor prepare failed: ${error instanceof Error ? error.message : String(error)}`)
       })
       const prior = this.inFlightPass.get(agent.session)
       this.inFlightPass.set(agent.session, prior === undefined ? pass : prior.then(() => pass, () => pass))
@@ -980,7 +987,7 @@ export class PeratomCompressor {
     const pass = this.inFlightPass.get(session)
     if (pass === undefined || this.flushWaitMs <= 0) return Promise.resolve()
     this.inFlightPass.delete(session)
-    this.ctx.logger.info(`peratom-compressor: turn-end pass in flight; holding this pre-step up to ${this.flushWaitMs}ms for it to land (avoids mid-turn surface replacement)`)
+    this.ctx.logger.info(`[argp-peratom] compressor: turn-end pass in flight; holding this pre-step up to ${this.flushWaitMs}ms for it to land (avoids mid-turn surface replacement)`)
     return new Promise<void>(resolve => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -989,7 +996,7 @@ export class PeratomCompressor {
         settled = true
         if (timer !== undefined) clearTimeout(timer)
         if (timedOut) {
-          this.ctx.logger.warn(`peratom-compressor: turn-end pass still in flight after ${this.flushWaitMs}ms; releasing this turn's first request without it (the transaction lands at a later pre-step window)`)
+          this.ctx.logger.warn(`[argp-peratom] compressor: turn-end pass still in flight after ${this.flushWaitMs}ms; releasing this turn's first request without it (the transaction lands at a later pre-step window)`)
         }
         resolve()
       }
@@ -1179,12 +1186,12 @@ export class PeratomCompressor {
     const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 中断轮：error/aborted 收尾，半成品不进候选（宁全勿漏）；不推进水位
     }
     if (!turnCompressible([...collect.userLong, ...collect.toolResults], chain, this.gateOptions())) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'no-candidate' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路；不推进水位
     }
     const entry = await this.callAndStash(session, collect)
@@ -1202,8 +1209,8 @@ export class PeratomCompressor {
         this.flushEntry(entry.session, entry.collect, entry.decision, entry.record)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.ctx.logger.warn(`peratom-compressor flush failed: ${message}`)
-        this.records.push({ at: new Date().toISOString(), turn: entry.collect.turn, called: true, error: message })
+        this.ctx.logger.warn(`[argp-peratom] compressor flush failed: ${message}`)
+        pushBounded(this.records, { at: new Date().toISOString(), turn: entry.collect.turn, called: true, error: message }, this.telemetryCap)
       }
     }
   }
@@ -1233,12 +1240,12 @@ export class PeratomCompressor {
     const chain = buildVersionChainIndex(sessionEvents(session))
     if (collect.interrupted) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'interrupted' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 不推进水位：该轮仍可被后续 pass 处理
     }
     if (!turnCompressible([...collect.userLong, ...collect.toolResults], chain, this.gateOptions())) {
       const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, skipReason: 'no-candidate' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 不推进水位（原实现在此之前 done.add ⇒ 一次 no-candidate 永久作废该轮）
     }
     const entry = await this.callAndStash(session, collect)
@@ -1325,7 +1332,7 @@ export class PeratomCompressor {
 
   private async callAndStash(session: Session, collect: CurrentTurnCollect): Promise<CompressRecord> {
     const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
-    this.records.push(record)
+    pushBounded(this.records, record, this.telemetryCap)
     const backend = this.backend()
     if (backend === null) {
       record.error = 'no-endpoint'
@@ -1358,7 +1365,7 @@ export class PeratomCompressor {
         if (res.usage !== undefined) record.usage = res.usage
         ms = Date.now() - started
       } else {
-        const contextWire = usePrefix ? serializeWireMessages(context.messages) : undefined
+        const contextWire = usePrefix ? serializeWireMessages(context.messages, this.ctx.logger) : undefined
         const contextTools = usePrefix ? serializeWireTools(context.tools) : undefined
         try {
           raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, effectiveCtk, contextWire, contextTools, this.maxCompletionTokens)

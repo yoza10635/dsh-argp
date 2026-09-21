@@ -28,6 +28,15 @@ import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
 import type { ParsedCite, CiteLevel } from './cites-strip.js'
+import {
+  DEFAULT_CHARS_PER_TOKEN,
+  DEFAULT_MAX_PASSES,
+  DEFAULT_RETAIN_RATIO,
+  DEFAULT_RETAIN_TOKENS,
+  DEFAULT_WINDOW_RATIO,
+  DEFAULT_WINDOW_TOKENS,
+} from './constants.js'
+import { DEFAULT_TELEMETRY_CAP, pushBounded } from './telemetry.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
 import { deriveInferredEdges, type InferredEdgeOptions } from './token-ontology.js'
 import { cleanShippedPresets, type PresetCleanOptions, type PresetRosterLike } from './preset-cleaner.js'
@@ -73,15 +82,15 @@ export const ARG_SETTINGS_KEY = 'dsh-argp'
 
 /** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
 export const ArgpUserSettingsSchema = z.object({
-  windowRatio: z.number().min(0.1).max(1).default(0.8),
-  retainRatio: z.number().min(0.05).max(1).default(0.2),
-  maxPasses: z.number().step(1).min(1).default(16),
+  windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO),
+  retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO),
+  maxPasses: z.number().step(1).min(1).default(DEFAULT_MAX_PASSES),
   recencyGuard: z.number().step(1).min(0).default(4),
   turnGuard: z.number().step(1).min(0).default(1),
   minSpanChars: z.number().step(1).min(0).default(0),
   enableSummarize: z.boolean().default(false),
   sortMode: z.string().default('density'),
-  charsPerToken: z.number().min(0.5).max(8).default(3.5),
+  charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN),
 }) as z<ArgpUserSettings>
 
 /**
@@ -135,13 +144,13 @@ export function scaleBudgets(
   contextWindow: number | undefined,
   opts: { windowRatio?: number; retainRatio?: number; explicitWindow?: number; explicitRetain?: number; fallbackWindow?: number; fallbackRetain?: number },
 ): { windowTokens: number; retainTokens: number } {
-  const windowRatio = opts.windowRatio ?? 0.8
-  const retainRatio = opts.retainRatio ?? 0.2
+  const windowRatio = opts.windowRatio ?? DEFAULT_WINDOW_RATIO
+  const retainRatio = opts.retainRatio ?? DEFAULT_RETAIN_RATIO
   if (opts.explicitWindow !== undefined && opts.explicitRetain !== undefined) {
     return { windowTokens: opts.explicitWindow, retainTokens: opts.explicitRetain }
   }
   if (contextWindow === undefined || contextWindow <= 0) {
-    return { windowTokens: opts.fallbackWindow ?? 16_384, retainTokens: opts.fallbackRetain ?? 8_192 }
+    return { windowTokens: opts.fallbackWindow ?? DEFAULT_WINDOW_TOKENS, retainTokens: opts.fallbackRetain ?? DEFAULT_RETAIN_TOKENS }
   }
   const windowTokens = opts.explicitWindow ?? Math.floor(contextWindow * windowRatio)
   const retainTokens = opts.explicitRetain ?? Math.floor(windowTokens * retainRatio)
@@ -246,6 +255,8 @@ export interface ArgpGraphConfig {
   maxPasses?: number
   /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
   reserveTokens?: number
+  /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+  telemetryCap?: number
   /** 可选显式 token 测量函数；不传则退化为字符估算。 */
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   /** 是否启用 summarize 降级。默认 false：本地单 slot 模型下 summarize 会破坏 KV cache，ARGP 走 force_prune。 */
@@ -524,7 +535,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
   private readonly explicitRetainTokens: boolean
   /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
-  private resolvedWindowTokens = 16_384
+  private resolvedWindowTokens = DEFAULT_WINDOW_TOKENS
   readonly reserveTokens: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
@@ -566,6 +577,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter: { measure(session: Session): { totalTokens: number; surfaceTokens: number } } | undefined
 
+  /** 遥测数组容量上限（P4.5：records/recallCalls/recallQueryCalls/closurePrunes/auditWarnings 有界）。 */
+  readonly telemetryCap: number
   readonly records: GraphPruneRecord[] = []
   readonly recallCalls: { seq: number; hit: boolean; state?: NodeStateLabel }[] = []
   readonly recallQueryCalls: { query: string; count: number; hits: number }[] = []
@@ -668,14 +681,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.log = ctx.logger
     // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
     // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。
-    this.windowTokens = config.windowTokens ?? 16_384
-    this.retainTokens = config.retainTokens ?? 8_192
+    this.windowTokens = config.windowTokens ?? DEFAULT_WINDOW_TOKENS
+    this.retainTokens = config.retainTokens ?? DEFAULT_RETAIN_TOKENS
     this.explicitWindowTokens = config.windowTokens !== undefined
     this.explicitRetainTokens = config.retainTokens !== undefined
     // 顶层旋钮（windowRatio/retainRatio/recencyGuard/turnGuard/minSpanChars/charsPerToken/
     // maxPasses/enableSummarize/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
     // （见下方 settings 注册块），此处不再逐字段赋值；getter 读取 this.argpSettings。
     this.reserveTokens = config.reserveTokens ?? 0
+    this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
     this.tokenMeterFn = config.measureTokens
     // tokenMeter 不作为 required inject（避免测试/最小化组合缺少该服务时构造失败），
     // 运行时尝试从 ctx 获取；真会话中 dsh-token-meter 已挂载即可使用。
@@ -695,15 +709,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 后 onChange 实时刷新 this.argpSettings，getter 透出即时生效（无需重启）。settings 服务缺失时
     // 优雅回退到 cordis 基线（settingsSource 保持 () => this.argpSettings）。
     const settingsEntry: ArgpUserSettings = {
-      windowRatio: config.windowRatio ?? 0.8,
-      retainRatio: config.retainRatio ?? 0.2,
-      maxPasses: config.maxPasses ?? 16,
+      windowRatio: config.windowRatio ?? DEFAULT_WINDOW_RATIO,
+      retainRatio: config.retainRatio ?? DEFAULT_RETAIN_RATIO,
+      maxPasses: config.maxPasses ?? DEFAULT_MAX_PASSES,
       recencyGuard: config.recencyGuard ?? 4,
       turnGuard: config.turnGuard ?? 1,
       minSpanChars: config.minSpanChars ?? 0,
       enableSummarize: config.enableSummarize ?? false,
       sortMode: config.sortMode ?? 'density',
-      charsPerToken: config.charsPerToken ?? 3.5,
+      charsPerToken: config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN,
     }
     this.argpSettings = settingsEntry
     this.settingsSource = () => settingsEntry
@@ -824,7 +838,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 使掉出可见上下文但未被 ARGP 替换的节点（适配器窗口丢弃 / 从不进 surface）也可召回。
         const shadowed = this.shadowedSeqsOf(this.session)
         const outcome = recallFromLog(this.session, seq, s => shadowed.has(s), eventText)
-        this.recallCalls.push({ seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined })
+        pushBounded(this.recallCalls, { seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined }, this.telemetryCap)
         if (!outcome.ok) return formatRecallOutcome('recall_pruned', seq, outcome)
         this.noteRecallHit(seq)
         // 版本链重定向（2026-08-23）：被剪旧 R 若属于某路径版本链，重定向返回该路径最新存活版本原文，
@@ -1153,7 +1167,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       const isStepOne = retries < 1
       // 耗尽判定：事件#3（retries≥2 三步用尽）或未注入 compressor 的事件#2（现役即止）。
       if (!isStepOne && (this.onOverflowCompress === undefined || retries >= 2)) {
-        ctx.logger.warn(`argp-graph overflow recovery exhausted (retries=${retries}); preserving the original request error`)
+        this.log.warn(`[argp-graph] overflow recovery exhausted (retries=${retries}); preserving the original request error`)
         return next()
       }
       // ② per-atom 降熵（仅事件#2；① 成功就不会进到这里，故不空转）。
@@ -1164,7 +1178,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           await this.onOverflowCompress(session)
         } catch (compressError: unknown) {
           const message = compressError instanceof Error ? compressError.message : String(compressError)
-          ctx.logger.warn(`argp-graph overflow per-atom compress failed: ${message}; relying on step-3 forcePrune`)
+          this.log.warn(`[argp-graph] overflow per-atom compress failed: ${message}; relying on step-3 forcePrune`)
         }
       }
       // ①（事件#1）/ ③（事件#2）forcePrune
@@ -1176,17 +1190,17 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 剪枝可能在 summarize 之类后续阶段抛错前已落地（模型无关的确定性占位
         // 替换）；或 ② 已换代。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
         if (!signal.aborted && session.surface.replaceGeneration > genBefore) {
-          ctx.logger.warn(`argp-graph overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
+          this.log.warn(`[argp-graph] overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
           this.overflowRetries.set(agent, retries + 1)
           return { kind: 'retry' }
         }
-        ctx.logger.warn(`argp-graph overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
+        this.log.warn(`[argp-graph] overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
         return next()
       }
       if (signal.aborted || session.surface.replaceGeneration <= genBefore) return next()
       if (result !== null) {
-        ctx.logger.info(
-          `argp-graph context-overflow step-${isStepOne ? 1 : 3} prune: shadowed ${result.shadowedSeqs.length} surface nodes `
+        this.log.info(
+          `[argp-graph] context-overflow step-${isStepOne ? 1 : 3} prune: shadowed ${result.shadowedSeqs.length} surface nodes `
           + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
         )
       }
@@ -1233,7 +1247,7 @@ export class ArgpGraphEngine extends CompactionEngine {
               } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error)
                 this.log.error('[argp-graph] pre-pressure peratom compress FAILED: ' + message)
-                ctx.logger.warn(`argp-graph pre-pressure compress failed: ${message}; proceeding to graph prune`)
+                this.log.warn(`[argp-graph] pre-pressure compress failed: ${message}; proceeding to graph prune`)
               }
             }
           }
@@ -1250,7 +1264,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error)
             this.log.error('[argp-graph] pressure prune FAILED: ' + message + (error instanceof Error && error.stack ? '\n' + error.stack.split('\n').slice(0, 6).join('\n') : ''))
-            ctx.logger.warn(`argp-graph pressure prune failed: ${message}; continuing the turn`)
+            this.log.warn(`[argp-graph] pressure prune failed: ${message}; continuing the turn`)
           } finally {
             this.guardOverride = previousOverride
           }
@@ -1503,7 +1517,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     hits.sort((a, b) => b.score - a.score || (a.type === 'U' ? -1 : b.type === 'U' ? 1 : a.seq - b.seq))
     const selected = hits.slice(0, maxResults)
     for (const h of selected) this.noteRecallHit(h.seq)
-    this.recallQueryCalls.push({ query, count: selected.length, hits: selected.length })
+    pushBounded(this.recallQueryCalls, { query, count: selected.length, hits: selected.length }, this.telemetryCap)
     if (selected.length === 0) return 'recall: no pruned nodes match query "' + query + '"'
     const lines = selected.map(h => '[' + h.type + (h.turn !== 0 ? h.turn : '') + '] ' + h.text)
     return 'Recalled ' + selected.length + ' pruned atom(s) for "' + query + '":\n' + lines.join('\n')
@@ -2291,12 +2305,12 @@ export class ArgpGraphEngine extends CompactionEngine {
         + '; recall_pruned(seq) retrieves original]',
     }))
     const result = this.pruneIntervals(session, intervals, 0, 0, false, tombstones)
-    this.closurePrunes.push({
+    pushBounded(this.closurePrunes, {
       closureId: chosen.closureId,
       rootSeq: chosen.root.seq,
       prunedSeqs: chosen.seqs,
       at: new Date().toISOString(),
-    })
+    }, this.telemetryCap)
     return result
   }
 
@@ -2523,7 +2537,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       this.log.error('[argp-graph] reactive prune FAILED: ' + message)
-      ctx.logger.warn(`argp-graph reactive prune failed: ${message}; leaving recovery to the overflow path`)
+      this.log.warn(`[argp-graph] reactive prune failed: ${message}; leaving recovery to the overflow path`)
     } finally {
       this.guardOverride = previousOverride
     }
@@ -2751,12 +2765,12 @@ export class ArgpGraphEngine extends CompactionEngine {
             pruned.set(a.id, a)
             closureSeqMeta.set(a.seq, { closureId: closure.closureId, rootPreview: closure.rootPreview, closureTotal })
           }
-          this.closurePrunes.push({
+          pushBounded(this.closurePrunes, {
             closureId: closure.closureId,
             rootSeq: closure.root.seq,
             prunedSeqs: closure.seqs,
             at: new Date().toISOString(),
-          })
+          }, this.telemetryCap)
           continue // 重推后继续：可能还有更多可剪闭包 / force
         }
         if (this.degradationStrategy === 'summarize' && this.enableSummarize) {
@@ -3195,7 +3209,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       } as never)
       const endEvent = session.append('compaction/end', lifecycle)
       const charsAfter = this.visibleChars(session)
-      this.records.push({
+      pushBounded(this.records, {
         at: new Date().toISOString(),
         compactionId,
         ...this.compactSourceCommandId === undefined ? {} : { sourceCommandId: this.compactSourceCommandId },
@@ -3210,7 +3224,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         charsBefore,
         charsAfter,
         forced,
-      })
+      }, this.telemetryCap)
       // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）
       this.recallCharsUsed = 0
       // 2026-08-23：压缩换代 surface——旧真实锚点（压缩前的 provider usage）失效，
@@ -3302,7 +3316,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (end === undefined) {
         // 未闭合 start：仅告警，不重建记录；标记已处理防止重复告警
         if (!this.rebuiltCompactionIds.has(s.compactionId)) {
-          this.auditWarnings.push('unclosed compaction start at seq ' + s.seq + ' (compactionId=' + s.compactionId + '); transaction may have been interrupted')
+          pushBounded(this.auditWarnings, 'unclosed compaction start at seq ' + s.seq + ' (compactionId=' + s.compactionId + '); transaction may have been interrupted', this.telemetryCap)
           this.rebuiltCompactionIds.add(s.compactionId)
         }
         continue
@@ -3321,7 +3335,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         ? [{ start: intervalSeqs[0] as number, end: intervalSeqs[intervalSeqs.length - 1] as number, tombstoneSeq: end.endSeq }]
         : []
       const prunedAtoms: { id: number; type: AtomType; seq: number }[] = intervalSeqs.map(seq => ({ id: seq, type: typeOfSeq(seq), seq }))
-      this.records.push({
+      pushBounded(this.records, {
         at: String((s.lifecycle as { at?: unknown }).at ?? ''),
         compactionId: s.compactionId,
         intervals: intervalRecords,
@@ -3335,7 +3349,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         charsBefore,
         charsAfter,
         forced: false,
-      })
+      }, this.telemetryCap)
       for (const seq of intervalSeqs) {
         if (!this.prunedNodeIndex.has(seq)) {
           this.prunedNodeIndex.set(seq, {

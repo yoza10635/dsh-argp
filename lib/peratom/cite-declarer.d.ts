@@ -88,8 +88,10 @@ export interface CiteDeclarerConfig {
     llm?: DshLlmSpec;
     /** 声明窗口轮数（默认 CITATION_WINDOW_TURNS=10）。 */
     windowTurns?: number;
-    /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
+    /** 单次请求超时（默认 DEFAULT_LLM_TIMEOUT_MS=180s，P4.3 统一）。 */
     timeoutMs?: number;
+    /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+    telemetryCap?: number;
     /**
      * 追加到请求体的模板参数**基础层**（本地 llama.cpp + Qwen 的
      * `{ enable_thinking: false }` 等）。A 形态下 `resolveEffectiveCtk` 以最近
@@ -167,6 +169,8 @@ export declare class CiteDeclarer {
     private _calls;
     get calls(): number;
     /** 全部声明尝试记录（时间序）。 */
+    /** 遥测数组容量上限（P4.5：records 有界）。 */
+    readonly telemetryCap: number;
     readonly records: CiteRecord[];
     /** 缓存中的声明边数（测试断言用）。 */
     get cachedEdgeCount(): number;

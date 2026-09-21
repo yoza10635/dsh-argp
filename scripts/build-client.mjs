@@ -14,6 +14,12 @@
  * (those packages are not installed here).
  */
 import { build } from 'esbuild'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'))
 
 const ID = 'dsh-argp'
 
@@ -28,12 +34,13 @@ await build({
   jsxImportSource: 'react',
   external: ['react', 'react/jsx-runtime'],
   banner: {
-    js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {\n`
+    js: `/* dsh-argp client bundle v${pkg.version} */\n`
+      + `window.__ModuleLoader__.load({ id: ${JSON.stringify(ID)}, factory: (require) => {\n`
       + 'var module = { exports: {} }; var exports = module.exports;',
   },
   footer: {
     js: 'return module.exports; } });',
   },
-  sourcemap: false,
+  sourcemap: true,
   logLevel: 'info',
 })

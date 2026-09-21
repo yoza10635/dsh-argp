@@ -196,7 +196,12 @@ function flattenWireText(blocks: readonly ContentBlock[]): string {
  * 深冻结的源消息只读不改；一条 dsh Message 可能展开为多条 wire 消息
  * （user 消息内嵌 tool-result 时）。
  */
-export function serializeWireMessages(messages: readonly Message[]): Record<string, unknown>[] {
+/** 最小日志面（P4.1：wire 观测走宿主 logger，不再裸 console）。 */
+export interface WireLogger {
+  debug: (msg: string) => void
+}
+
+export function serializeWireMessages(messages: readonly Message[], logger?: WireLogger): Record<string, unknown>[] {
   const wire: Record<string, unknown>[] = []
   for (const message of messages) {
     if (message.role === 'system') {
@@ -237,9 +242,8 @@ export function serializeWireMessages(messages: readonly Message[]): Record<stri
   const reasoningChars = wire
     .map(m => (typeof (m as { reasoning?: unknown }).reasoning === 'string' ? (m as { reasoning: string }).reasoning.length : 0))
     .reduce((a, b) => a + b, 0)
-  if (wire.length !== messages.length || reasoningChars > 0) {
-    // eslint-disable-next-line no-console
-    console.log(`[argp-peratom] wire-prefix: dsh=${messages.length} msgs → wire=${wire.length} msgs (tool-result 展开 ${wire.length - messages.length >= 0 ? wire.length - messages.length : 0}) reasoning=${reasoningChars} chars`)
+  if ((wire.length !== messages.length || reasoningChars > 0) && logger !== undefined) {
+    logger.debug(`[argp-peratom] wire-prefix: dsh=${messages.length} msgs → wire=${wire.length} msgs (tool-result 展开 ${wire.length - messages.length >= 0 ? wire.length - messages.length : 0}) reasoning=${reasoningChars} chars`)
   }
   // A-2 落地期诊断：env 门控 dump 序列化后的 A 前缀 wire，供与 agent 实际请求
   // 逐字节对齐（验证序列化器 = agent-loop 渲染）。生产默认关。
@@ -261,7 +265,7 @@ export function serializeWireMessages(messages: readonly Message[]): Record<stri
             wire: wire.map(m => ({ role: m.role, length: JSON.stringify(m).length })),
           }
       writeFileSync(file, JSON.stringify(payload, null, 2))
-      // eslint-disable-next-line no-console
+      // 诊断 dump 确认行：env 门控（生产默认关），保留 console 直出（无 logger 依赖）。
       console.log(`[argp-peratom] a2-debug: dump → ${file} (${full ? 'FULL' : 'redacted'})`)
     } catch { /* 诊断失败不影响主流程 */ }
   }

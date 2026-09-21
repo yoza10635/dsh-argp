@@ -37,6 +37,8 @@ import {
 import type { GateAtom } from './gate.js'
 import { sessionEvents } from '../log-access.js'
 import { SPLIT_THRESHOLD_CHARS } from './types.js'
+import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_PREFIX_BUDGET_TOKENS } from '../constants.js'
+import { DEFAULT_TELEMETRY_CAP, pushBounded } from '../telemetry.js'
 import { completeViaDshLlm } from './llm-adapter.js'
 import { autoDshLlmSpec } from './llm-adapter.js'
 import { serializeWireMessages, serializeWireTools } from './llm-adapter.js'
@@ -119,8 +121,10 @@ export interface CiteDeclarerConfig {
   llm?: DshLlmSpec
   /** 声明窗口轮数（默认 CITATION_WINDOW_TURNS=10）。 */
   windowTurns?: number
-  /** 单次请求超时（默认 120s，边声明比压缩轻）。 */
+  /** 单次请求超时（默认 DEFAULT_LLM_TIMEOUT_MS=180s，P4.3 统一）。 */
   timeoutMs?: number
+  /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+  telemetryCap?: number
   /**
    * 追加到请求体的模板参数**基础层**（本地 llama.cpp + Qwen 的
    * `{ enable_thinking: false }` 等）。A 形态下 `resolveEffectiveCtk` 以最近
@@ -468,6 +472,8 @@ export class CiteDeclarer {
   get calls(): number { return this._calls }
 
   /** 全部声明尝试记录（时间序）。 */
+  /** 遥测数组容量上限（P4.5：records 有界）。 */
+  readonly telemetryCap: number
   readonly records: CiteRecord[] = []
 
   /** 缓存中的声明边数（测试断言用）。 */
@@ -485,18 +491,19 @@ export class CiteDeclarer {
         ? { endpoint: config.endpoint ?? 'https://api.deepseek.com/chat/completions', model: config.model ?? 'deepseek-v4-flash', apiKey: config.apiKey }
         : citeDeclarerDefaultEndpoint())
     this.windowTurns = config.windowTurns ?? CITATION_WINDOW_TURNS
-    this.timeoutMs = config.timeoutMs ?? 120_000
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
+    this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
     this.chatTemplateKwargs = config.chatTemplateKwargs
     this.maxCompletionTokens = config.maxCompletionTokens ?? 4096
-    this.prefixBudgetTokens = config.prefixBudgetTokens ?? 132_000
+    this.prefixBudgetTokens = config.prefixBudgetTokens ?? DEFAULT_PREFIX_BUDGET_TOKENS
     this.fetchImpl = config.fetchImpl ?? ((...args) => fetch(...args))
     // 显式 llm 与 fetch 两路都缺省 ⇒ 进入自动兜底（真会话里解析 agent 路由）。
     this.llmAutoEligible = config.llm === undefined && this.endpoint === null
     if (this.endpoint === null && this.dshLlm === null) {
       if (this.llmAutoEligible) {
-        ctx.logger.info('cite-declarer: no explicit LLM backend; auto mode — will follow the host dsh-llm + agent route once a real session provides one (disabled, zero network, until then)')
+        ctx.logger.info('[argp-peratom] declarer: no explicit LLM backend; auto mode — will follow the host dsh-llm + agent route once a real session provides one (disabled, zero network, until then)')
       } else {
-        ctx.logger.warn('cite-declarer: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); declarer disabled')
+        ctx.logger.warn('[argp-peratom] declarer: no LLM backend resolved (set DEEPSEEK_API_KEY, pass config.llm, or pass config); declarer disabled')
       }
     }
 
@@ -506,7 +513,7 @@ export class CiteDeclarer {
       this.rememberRoute(agent)
       if (status !== 'idle') return
       void this.declareCurrentTurn(agent.session).catch(error => {
-        this.ctx.logger.warn(`cite-declarer declare failed: ${error instanceof Error ? error.message : String(error)}`)
+        this.ctx.logger.warn(`[argp-peratom] declarer declare failed: ${error instanceof Error ? error.message : String(error)}`)
       })
     })
   }
@@ -580,23 +587,23 @@ export class CiteDeclarer {
 
     if (collect.interrupted) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'interrupted-turn' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 中断轮：半成品原子不进引用声明（宁全勿漏）
     }
     if (!turnCompressible(collect.gateAtoms, buildVersionChainIndex(sessionEvents(session)))) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'gate-skipped' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // 孤立原子规则：纯 dialog / 全版本链 / 全小结果 → 零调用、零建边
     }
     const backend = this.backend()
     if (backend === null) {
       const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: false, error: 'no-endpoint' }
-      this.records.push(record)
+      pushBounded(this.records, record, this.telemetryCap)
       return record // disabled：静默跳过
     }
     this._calls += 1
     const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
-    this.records.push(record)
+    pushBounded(this.records, record, this.telemetryCap)
     // A 形态前缀（与 compressor 同语义）：agent 当前 deriveMessages() + requestHeader().tools。
     // 预算门控：超预算该次降级 C（丢前缀只发指令），防爆上限。
     const contextMessages = session.deriveMessages()
@@ -612,7 +619,7 @@ export class CiteDeclarer {
         // dsh-llm 生产后端：一次到位（GenerateOptions 无 response_format，extractJson 兜底）。
         raw = (await completeViaDshLlm(this.ctx, backend.spec, prompt, this.timeoutMs, usePrefix ? contextMessages : undefined, usePrefix ? contextTools : undefined)).text
       } else {
-        const contextWire = usePrefix ? serializeWireMessages(contextMessages) : undefined
+        const contextWire = usePrefix ? serializeWireMessages(contextMessages, this.ctx.logger) : undefined
         const contextToolsWire = usePrefix ? serializeWireTools(contextTools) : undefined
         try {
           raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, effectiveCtk, contextWire, contextToolsWire, this.maxCompletionTokens)

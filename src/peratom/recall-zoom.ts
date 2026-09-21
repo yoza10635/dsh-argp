@@ -35,13 +35,12 @@ import { formatRecallOutcome, rawEventText, recallFromLog, scanShadowedSeqs, ses
 import type { NodeState } from '../log-access.js'
 import { ARG_NS } from './types.js'
 import type { ArgpUserMeta } from './types.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_WINDOW_TOKENS } from '../constants.js'
+import { DEFAULT_TELEMETRY_CAP, pushBounded } from '../telemetry.js'
 
 /** 决策⑤ 4 倍制：summary 档预算 = budgetRatio × detail 档。默认 4。 */
 export const DEFAULT_BUDGET_RATIO = 4
 
-/** 默认窗口锚（未显式给预算时按 windowTokens × 比例解析）。 */
-const DEFAULT_WINDOW_TOKENS = 16_384
-const DEFAULT_CHARS_PER_TOKEN = 3.5
 /** detail 档预算占窗口比例（单窗累计，字符）。 */
 const DETAIL_WINDOW_RATIO = 0.05
 
@@ -82,6 +81,8 @@ export interface RecallZoomConfig {
   charsPerToken?: number
   /** 是否注册工具与契约 section（默认 true）。测试可关断只留纯函数。 */
   enabled?: boolean
+  /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+  telemetryCap?: number
 }
 
 /**
@@ -153,6 +154,8 @@ export class RecallZoom {
   /** summary 档单窗累计字符（compaction/end 归零）。 */
   private summaryCharsUsed = 0
 
+  /** 遥测数组容量上限（P4.5：records 有界）。 */
+  readonly telemetryCap: number
   /** 全部召回尝试记录（时间序）。 */
   readonly records: RecallZoomRecord[] = []
 
@@ -160,6 +163,7 @@ export class RecallZoom {
     this.ctx = ctx
     this.budgetRatio = config.budgetRatio ?? DEFAULT_BUDGET_RATIO
     this.enabled = config.enabled ?? true
+    this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
     const charsPerToken = config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
     const windowTokens = config.windowTokens ?? DEFAULT_WINDOW_TOKENS
     this.detailBudgetChars = config.detailBudgetTokens !== undefined
@@ -268,12 +272,12 @@ export class RecallZoom {
     const session = this.session
     const budget = this.summaryBudget
     if (this.summaryCharsUsed >= budget) {
-      this.records.push({ tool: 'recall_summary', seq, hit: false, chars: 0, budgetBlocked: 'summary' })
+      pushBounded(this.records, { tool: 'recall_summary', seq, hit: false, chars: 0, budgetBlocked: 'summary' }, this.telemetryCap)
       return this.budgetGuidance('summary', this.summaryCharsUsed, budget)
     }
     const resolution = resolveSummaryText(session, seq)
     if (resolution === null) {
-      this.records.push({ tool: 'recall_summary', seq, hit: false, chars: 0, reason: 'no-text' })
+      pushBounded(this.records, { tool: 'recall_summary', seq, hit: false, chars: 0, reason: 'no-text' }, this.telemetryCap)
       return formatRecallOutcome('recall_summary', seq, { ok: false, reason: 'no-text', state: nodeState(session, seq) })
     }
     const state = nodeState(session, seq)
@@ -285,7 +289,7 @@ export class RecallZoom {
       ? resolution.text.slice(0, allowed) + '…(truncated: summary recall budget ' + post + '/' + budget + ' chars)'
       : resolution.text
     this.summaryCharsUsed = post
-    this.records.push({ tool: 'recall_summary', seq, hit: true, state, source: resolution.source, chars: allowed })
+    pushBounded(this.records, { tool: 'recall_summary', seq, hit: true, state, source: resolution.source, chars: allowed }, this.telemetryCap)
     const suffix = resolution.source === 'original'
       ? '\n[no stored summary for seq ' + seq + ' — returning original text]'
       : ''
@@ -307,13 +311,13 @@ export class RecallZoom {
     const session = this.session
     const budget = this.detailBudget
     if (this.detailCharsUsed >= budget) {
-      this.records.push({ tool: 'recall_detail', seq, hit: false, chars: 0, budgetBlocked: 'detail' })
+      pushBounded(this.records, { tool: 'recall_detail', seq, hit: false, chars: 0, budgetBlocked: 'detail' }, this.telemetryCap)
       return this.budgetGuidance('detail', this.detailCharsUsed, budget)
     }
     const shadowed = scanShadowedSeqs(session)
     const outcome = recallFromLog(session, seq, s => shadowed.has(s), (s, q) => rawEventText(s, q)?.text ?? '')
     if (!outcome.ok) {
-      this.records.push({ tool: 'recall_detail', seq, hit: false, chars: 0, reason: outcome.reason === 'out-of-range' ? 'out-of-range' : 'no-text' })
+      pushBounded(this.records, { tool: 'recall_detail', seq, hit: false, chars: 0, reason: outcome.reason === 'out-of-range' ? 'out-of-range' : 'no-text' }, this.telemetryCap)
       return formatRecallOutcome('recall_detail', seq, outcome)
     }
     const raw = rawEventText(session, seq)
@@ -324,7 +328,7 @@ export class RecallZoom {
     const note = raw?.reconstructed && raw.note !== undefined ? '\n[note: ' + raw.note + ']' : ''
     const remaining = text.length - from
     if (remaining <= 0) {
-      this.records.push({ tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: 0 })
+      pushBounded(this.records, { tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: 0 }, this.telemetryCap)
       return header + '\n…(end of content at seq ' + seq + ': nothing beyond char ' + from + ')' + note
     }
     const allowed = Math.min(remaining, budget - this.detailCharsUsed, limit ?? remaining)
@@ -335,7 +339,7 @@ export class RecallZoom {
         ? '…(truncated at ' + end + '/' + text.length + ' chars; call recall_detail(seq=' + seq + ', from=' + end + ') to continue)'
         : '')
     this.detailCharsUsed = post
-    this.records.push({ tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: allowed })
+    pushBounded(this.records, { tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: allowed }, this.telemetryCap)
     return header + '\n' + body + note
   }
 }

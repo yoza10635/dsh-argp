@@ -37,6 +37,8 @@ export interface RecallZoomConfig {
     charsPerToken?: number;
     /** 是否注册工具与契约 section（默认 true）。测试可关断只留纯函数。 */
     enabled?: boolean;
+    /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+    telemetryCap?: number;
 }
 /**
  * 解析某 seq 的"最佳可用 summary 文本"，三档降级（设计 §4 + plan P3）：
@@ -57,6 +59,8 @@ export declare class RecallZoom {
     private detailCharsUsed;
     /** summary 档单窗累计字符（compaction/end 归零）。 */
     private summaryCharsUsed;
+    /** 遥测数组容量上限（P4.5：records 有界）。 */
+    readonly telemetryCap: number;
     /** 全部召回尝试记录（时间序）。 */
     readonly records: RecallZoomRecord[];
     constructor(ctx: Context, config?: RecallZoomConfig);

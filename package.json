@@ -99,6 +99,6 @@
     "@deepseek-ai/dsh-tools": "0.1.6-alpha.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "esbuild": "^0.24.2",
-    "typescript": "^5.5.0"
+    "typescript": "^5.7.0"
   }
 }

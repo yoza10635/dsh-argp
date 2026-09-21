@@ -32,6 +32,8 @@ export interface PeratomCompressorConfig {
      * 超时 ⇒ 告警后照旧放行（事务在后续窗口落地，即旧行为）。
      */
     flushWaitMs?: number;
+    /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
+    telemetryCap?: number;
     /**
      * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
      * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
@@ -284,6 +286,8 @@ export declare class PeratomCompressor {
     /** LLM 压缩调用计数器（纯 dialog 轮零调用的断言读这里）。 */
     private _calls;
     get calls(): number;
+    /** 遥测数组容量上限（P4.5：records 有界）。 */
+    readonly telemetryCap: number;
     /** 全部压缩尝试记录（时间序）。 */
     readonly records: CompressRecord[];
     /** 当前暂存待发射的事务数（测试/P4 判断 stash 是否就绪）。 */
