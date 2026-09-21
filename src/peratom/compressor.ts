@@ -12,6 +12,11 @@
  *    loop 先跑 preStep 再落盘消息）。原因：dsh-session invariant 规定 tool/result 的
  *    surface replace 是"durable turn work"，只允许在 open turn 内追加；idle 时 openTurn=null。
  *    推迟发射不损缓存语义：前 N-1 轮前缀字节不变，替换发生在下一次请求组装之前。
+ *  - **"轮外"只在调用先于下一条消息返回时成立**（2026-09-21 修）：若调用仍在飞而用户
+ *    已发下一条消息，新轮首个 pre-step 无条目可发射 ⇒ 事务落到新轮**中途**（真环境实证：
+ *    跨进程 resume 的 pass 晚 6 步落盘，前 6 步跑在未压缩上下文上 + 中途换 surface 断
+ *    KV）。故 pre-step **有界等待**在飞 pass（`flushWaitMs`，默认 180s；超时告警后放行
+ *    ——事务顺延到后续窗口，即旧行为），使"下一个 user message 等待"成为确定性语义。
  *  - 防重复处理：按 (session, turn) 记**压缩水位**（见 passWatermark）——已规划过的
  *    前缀不再入候选，重复 idle / pre-step 因窗口为空而幂等短路；成功 pass 之后
  *    同轮新增内容仍可再压（2026-09-21 起，替代原"轮级一次性"记账）。
@@ -77,6 +82,20 @@ export interface PeratomCompressorConfig {
   smallResultChars?: number
   /** 单次请求超时（默认 180s，spike 32 同款）。 */
   timeoutMs?: number
+  /**
+   * 轮末 pass 的"落地等待"上界（ms，默认 180_000 = 与 timeoutMs 同量级；0 = 不等）。
+   *
+   * 两段式设计下，轮末 idle 发起的 LLM 调用本应在**轮外**跑完，再由下一轮首个
+   * `agent/pre-step` 发射事务。但若调用仍在飞、用户已经发了下一条消息，新轮首个
+   * pre-step 无条目可发射 ⇒ 替换副本被顺延到新轮的**任意后续** pre-step：新轮前几步
+   * 跑在未压缩上下文上（"付了钱的压缩"没兑现），替换点还落在轮中途（断一次前缀缓存）。
+   * 真环境实证（session-77c64e66 #9，2026-09-21）：跨进程 resume 的在飞 pass 晚 **6 步**
+   * 落盘（13:38:41 新轮开 → 13:44:41 才发）。
+   *
+   * 本旋钮让 pre-step **有界等待**在飞 pass：等到 ⇒ 本轮首个请求即带上压缩结果；
+   * 超时 ⇒ 告警后照旧放行（事务在后续窗口落地，即旧行为）。
+   */
+  flushWaitMs?: number
   /**
    * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
    * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
@@ -776,6 +795,14 @@ export class PeratomCompressor {
   readonly maxCompletionTokens: number
   /** A 形态前缀预算（默认 132000 ≈ 0.76×174080；前缀超预算 ⇒ 该次降级 C 形态）。 */
   readonly prefixBudgetTokens: number
+  /** 轮末 pass 落地等待上界（ms，默认 180_000；0 = 不等，退回"绝不 await 网络"）。 */
+  readonly flushWaitMs: number
+  /**
+   * 在飞的轮末 pass（仅 idle 路径登记）：pre-step 据此决定是否等待其落地。
+   * 值 = "该 session 的全部在飞 pass 都已 settle" 的**屏障** promise——新 pass 到来时
+   * 串联在旧屏障之后（`prior.then(() => pass)`；pass 本身已在跑，不因此串行化）。
+   */
+  private readonly inFlightPass = new WeakMap<Session, Promise<unknown>>()
   private readonly chatTemplateKwargs: Record<string, unknown> | undefined
 
   private readonly endpoint: ResolvedEndpoint | null
@@ -899,6 +926,7 @@ export class PeratomCompressor {
     this.splitThresholdChars = config.splitThresholdChars ?? SPLIT_THRESHOLD_CHARS
     this.smallResultChars = config.smallResultChars ?? DEFAULT_SMALL_RESULT_CHARS
     this.timeoutMs = config.timeoutMs ?? 180_000
+    this.flushWaitMs = config.flushWaitMs ?? 180_000
     this.hlsMode = config.hlsMode ?? 'trailer'
     this.hlsRoiThreshold = config.hlsRoiThreshold ?? DEFAULT_HLS_ROI_THRESHOLD
     this.chatTemplateKwargs = config.chatTemplateKwargs
@@ -919,20 +947,54 @@ export class PeratomCompressor {
     }
 
     // 触发钩子：轮末 idle（当轮必已闭）→ 收集 + LLM（异步，不阻塞状态切换）。
+    // 同时把该 pass 登记为"在飞"（屏障），供 pre-step 决定是否等待（见 flushWaitMs）。
     ctx.on('agent/status', ({ agent, status }) => {
       this.rememberRoute(agent)
       if (status !== 'idle') return
-      void this.prepareCurrentTurn(agent.session).catch(error => {
+      const pass = this.prepareCurrentTurn(agent.session).catch(error => {
         this.ctx.logger.warn(`peratom-compressor prepare failed: ${error instanceof Error ? error.message : String(error)}`)
       })
+      const prior = this.inFlightPass.get(agent.session)
+      this.inFlightPass.set(agent.session, prior === undefined ? pass : prior.then(() => pass, () => pass))
     })
 
     // 发射窗口：下一次 agent/pre-step（open turn 已开、新 user/message 未落盘）。
-    // 只 flush 已就绪条目，绝不 await 网络——waterfall 内同步追加后立刻放行。
+    // 先**有界等待**在飞的轮末 pass（flushWaitMs，默认 180s），再同步追加已就绪条目
+    // （flushStashed 本身仍是同步、不 await 网络）。等待保证"下一个 user message 的
+    // 首个请求"带上本次压缩结果，而不是让替换副本落在新轮中途。超时不阻塞：告警后照旧
+    // 放行，事务在后续窗口落地。
     ctx.on('agent/pre-step', async ({ agent }, next) => {
       this.rememberRoute(agent)
+      await this.awaitInFlightPass(agent.session)
       this.flushStashed(agent.session)
       return next()
+    })
+  }
+
+  /**
+   * 有界等待在飞的轮末 pass（见 `PeratomCompressorConfig.flushWaitMs`）。
+   * 取走屏障（同一批 pass 只在首个 pre-step 等一次）；超时/失败都不抛——宁可放行让
+   * 事务顺延到后续窗口，也不把用户这一轮卡死。
+   */
+  private awaitInFlightPass(session: Session): Promise<void> {
+    const pass = this.inFlightPass.get(session)
+    if (pass === undefined || this.flushWaitMs <= 0) return Promise.resolve()
+    this.inFlightPass.delete(session)
+    this.ctx.logger.info(`peratom-compressor: turn-end pass in flight; holding this pre-step up to ${this.flushWaitMs}ms for it to land (avoids mid-turn surface replacement)`)
+    return new Promise<void>(resolve => {
+      let settled = false
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const finish = (timedOut: boolean): void => {
+        if (settled) return
+        settled = true
+        if (timer !== undefined) clearTimeout(timer)
+        if (timedOut) {
+          this.ctx.logger.warn(`peratom-compressor: turn-end pass still in flight after ${this.flushWaitMs}ms; releasing this turn's first request without it (the transaction lands at a later pre-step window)`)
+        }
+        resolve()
+      }
+      timer = setTimeout(() => finish(true), this.flushWaitMs)
+      void pass.then(() => finish(false), () => finish(false))
     })
   }
 

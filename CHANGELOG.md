@@ -4,6 +4,18 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.3.5] - 2026-09-21（peratom 轮末 pass「落地等待」+ 手动 /compact 多段剪）
+
+真环境实证来源：`session-77c64e66`（9 次 peratom 事务逐条核对落点；判据 = "压缩事件是否落在上一轮 `turn/end` 与新轮 `user/message` 之间"）。
+
+### Fixed
+
+- **轮末 pass 在飞时，下一个 user message 会绕过压缩（替换副本落到新轮中途）**。两段式设计的发射窗口是下一轮首个 `agent/pre-step`，旧实现却显式"绝不 await 网络"（只 flush 已就绪条目）⇒ 若轮末 LLM 调用仍在飞而用户已发下一条消息，新轮首个 pre-step **无条目可发射**，事务被顺延到新轮任意后续 pre-step。实测（#9，跨进程 resume 场景）：**晚 6 步**落盘（13:38:41 新轮开 → **13:44:41** 才发），新轮 step 1–6 全跑在未压缩上下文上（step 1 `in=191,116`），且替换点落在轮中途 ⇒ 断一次前缀缓存。修复：pre-step **先有界等待在飞轮末 pass**，再发射——等到 ⇒ 本轮首个请求即带压缩结果；超时 ⇒ WARN 后照旧放行（事务顺延，即旧行为）。新旋钮 **`flushWaitMs`（默认 180_000 ms = 与 `timeoutMs` 同量级；`0` = 关闭等待）**。登记方式 = 屏障 promise（`prior.then(() => pass)`）：新 pass 串联在既有屏障之后，**不改变 pass 自身的并发性**，只让一次等待覆盖该 session 的全部在飞 pass。9 次事务回看：7 次本就在窗口内及时落盘（新逻辑等价）、1 次为轮内压力路径（`compressOpenTurn`，本就在轮内压，不受影响）、1 次即 #9（本次目标场景）。
+- **手动 `/compact` 压不动（只剪最老一小段）**。`selectManualRange` 扫描 surface 时，遇到第一个不合格节点（U/X、或落在 turnGuard / recencyGuard 保护窗内）就 `break`，而真实会话的 surface 是「U A R A R U A R …」被用户消息切碎的多段结构 ⇒ `/compact` **永远只剪最老一段**（表现为"图剪压不动"：手动触发后上下文几乎不降）。修复：改为收集**全部**极大连续 A/R 段（`selectManualRanges`），逐段复核边界（配对平衡 / 段内不含 U/X / 段内有可剪原子）后合并为**一笔** `pruneIntervals` 事务剪除；不合格区间**静默剔除**而非整体失败（旧实现下首个区间边界不平衡会直接 `throw`）。保护语义不变：turnGuard / recencyGuard 窗内原子仍不参剪，U/X 骨架仍不剪。
+- 单测 **1 项**新增（`test/manual-compact.test.ts`）：被 U 切碎的多段 A/R 全部剪除。**变异检查**（把段闭合改回旧的"遇阻即停"）⇒ 该例如期失败（`both A/R segments must be pruned, got 2` = 旧行为只剪最老一段），确认用例非空转。
+- 文档：`Config.turnGuard` 注释里的默认值由错误的 `2` 修正为 `1`（与 schema `default(1)`、构造回退 `?? 1` 一致）。
+- 单测 **4 项**新增（`test/peratom-flush-wait.test.ts`）：在飞必须等待（旧实现此处立即放行）/ 超时上界生效后放行 / 已就绪时立即发射（不引入额外等待）/ `flushWaitMs:0` 逃生阀。并做**变异检查**（临时注释掉等待 ⇒ 前两例如期失败），确认用例非空转。全量回归 **268/268**（263 + 4 + 1）。
+
 ## [1.3.4] - 2026-09-21（resume 锚点回填 + peratom 压缩水位）
 
 真环境实测来源：`session-77c64e66`（standard-argp，11 轮 / 232 步 / 334 工具调用）逐事件复盘 + 存档重放（`.sess-tools/replay-real.mjs` / `replay-sweep.mjs`）。

@@ -687,8 +687,22 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
-    /** 为手动 compactNow 选择一个确定性的最老 A/R 连续块。 */
-    private selectManualRange;
+    /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
+     *
+     *  入选判据（与旧版一致，仅去掉"遇阻即停"）：段内原子必须
+     *  ① 是对话载体 A/R（U/X 不参剪，手动入口不剪骨架，见 compactRegion 的 P5 约束）；
+     *  ② 不落在 turnGuard（最近 N 轮）与 recencyGuard（surface 末尾 N 节点）保护窗口内。
+     *
+     *  修复（2026-09-21）：旧实现扫到第一个不合格节点就 `break`，而真实会话的 surface 被
+     *  用户消息切成「U A R A R U A R …」多段结构 ⇒ 手动 /compact 永远只剪最老一小段
+     *  （表现为"图剪压不动"）。现在改为收集全部极大连续段，交给一笔 pruneIntervals 事务剪除。
+     */
+    private selectManualRanges;
+    /** 手动多区间压缩：逐段复核边界后合并为一笔事务剪除。
+     *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
+     *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
+     *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。 */
+    private compactRegions;
     /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
      *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
      *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id

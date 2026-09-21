@@ -138,3 +138,41 @@ test('compactRegion: 手动 span 含 U/X → 拒绝（P5 语义）', async () =>
     await ctx.fiber.dispose()
   }
 })
+
+/** 多段会话：U A A | U A A | U A（末段 turnGuard 保护）。真实会话即此形态。 */
+function buildSegmentedSession(): Session {
+  const session = Session.create(SessionId('manual-segmented'))
+  appendUser(session, 'u1 anchor', 1)
+  appendAssistant(session, 'A1: ' + 'x'.repeat(200), 1)
+  appendAssistant(session, 'A2: ' + 'y'.repeat(200), 1)
+  appendUser(session, 'u2 anchor', 2)
+  appendAssistant(session, 'A3: ' + 'p'.repeat(200), 2)
+  appendAssistant(session, 'A4: ' + 'q'.repeat(200), 2)
+  appendUser(session, 'u3 anchor', 3)
+  appendAssistant(session, 'A5 latest: ' + 'z'.repeat(200), 4)
+  return session
+}
+
+test('/compact: 被 U 切碎的多段 A/R 全部剪除（旧实现只剪最老一段）', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = buildSegmentedSession()
+    engine.setSession(session)
+    const result = await engine.compactNow(stubManualAgent(session, [0]), new AbortController().signal)
+    assert.ok(result !== null, 'segmented session must compact')
+    // seq 布局（无 turn/start）：0=U1, 1=A1, 2=A2, 3=U2, 4=A3, 5=A4, 6=U3, 7=A5
+    assert.ok(
+      result.shadowedSeqs.length >= 4,
+      'both A/R segments must be pruned, got ' + result.shadowedSeqs.length,
+    )
+    const surface = new Set(session.surface.nodes)
+    for (const pruned of [1, 2, 4, 5]) {
+      assert.ok(!surface.has(asSeq(pruned)), 'A/R at seq ' + pruned + ' must be pruned')
+    }
+    for (const kept of [0, 3, 6, 7]) {
+      assert.ok(surface.has(asSeq(kept)), 'U anchor / protected latest A at seq ' + kept + ' must survive')
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

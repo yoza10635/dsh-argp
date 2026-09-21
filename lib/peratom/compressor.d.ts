@@ -19,6 +19,20 @@ export interface PeratomCompressorConfig {
     /** 单次请求超时（默认 180s，spike 32 同款）。 */
     timeoutMs?: number;
     /**
+     * 轮末 pass 的"落地等待"上界（ms，默认 180_000 = 与 timeoutMs 同量级；0 = 不等）。
+     *
+     * 两段式设计下，轮末 idle 发起的 LLM 调用本应在**轮外**跑完，再由下一轮首个
+     * `agent/pre-step` 发射事务。但若调用仍在飞、用户已经发了下一条消息，新轮首个
+     * pre-step 无条目可发射 ⇒ 替换副本被顺延到新轮的**任意后续** pre-step：新轮前几步
+     * 跑在未压缩上下文上（"付了钱的压缩"没兑现），替换点还落在轮中途（断一次前缀缓存）。
+     * 真环境实证（session-77c64e66 #9，2026-09-21）：跨进程 resume 的在飞 pass 晚 **6 步**
+     * 落盘（13:38:41 新轮开 → 13:44:41 才发）。
+     *
+     * 本旋钮让 pre-step **有界等待**在飞 pass：等到 ⇒ 本轮首个请求即带上压缩结果；
+     * 超时 ⇒ 告警后照旧放行（事务在后续窗口落地，即旧行为）。
+     */
+    flushWaitMs?: number;
+    /**
      * 追加到请求体的模板参数**基础层**（如本地 llama.cpp + Qwen3 的 `{ enable_thinking: false }`）。
      * A 形态（带前缀）下，`resolveEffectiveCtk` 会以**最近一次真实 agent 请求的
      * `chat_template_kwargs` 为基础**再叠加本基础层 + `enable_thinking:false` 覆盖
@@ -247,6 +261,14 @@ export declare class PeratomCompressor {
     readonly maxCompletionTokens: number;
     /** A 形态前缀预算（默认 132000 ≈ 0.76×174080；前缀超预算 ⇒ 该次降级 C 形态）。 */
     readonly prefixBudgetTokens: number;
+    /** 轮末 pass 落地等待上界（ms，默认 180_000；0 = 不等，退回"绝不 await 网络"）。 */
+    readonly flushWaitMs: number;
+    /**
+     * 在飞的轮末 pass（仅 idle 路径登记）：pre-step 据此决定是否等待其落地。
+     * 值 = "该 session 的全部在飞 pass 都已 settle" 的**屏障** promise——新 pass 到来时
+     * 串联在旧屏障之后（`prior.then(() => pass)`；pass 本身已在跑，不因此串行化）。
+     */
+    private readonly inFlightPass;
     private readonly chatTemplateKwargs;
     private readonly endpoint;
     private readonly dshLlm;
@@ -320,6 +342,12 @@ export declare class PeratomCompressor {
      */
     private isMaterial;
     constructor(ctx: Context, config?: PeratomCompressorConfig);
+    /**
+     * 有界等待在飞的轮末 pass（见 `PeratomCompressorConfig.flushWaitMs`）。
+     * 取走屏障（同一批 pass 只在首个 pre-step 等一次）；超时/失败都不抛——宁可放行让
+     * 事务顺延到后续窗口，也不把用户这一轮卡死。
+     */
+    private awaitInFlightPass;
     /**
      * 记住 agent 路由（§11.13.1 自动兜底）。构造期拿不到路由，只能在真会话的
      * `agent/status` / `agent/pre-step` 钩子里现取。非自动模式直接短路。
