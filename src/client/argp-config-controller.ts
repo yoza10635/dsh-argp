@@ -243,8 +243,22 @@ export interface CardActions {
   discard: () => void
 }
 
-/** A whole-number field. Empty clears; non-finite blocks the save. */
-export function numberField(field: string): CardFieldSpec {
+/** Range/integer constraints for a number field (mirrors the server-side schema bounds). */
+export interface NumberFieldSpec {
+  /** Inclusive lower bound. */
+  min?: number
+  /** Inclusive upper bound. */
+  max?: number
+  /** Require an integral value. */
+  integer?: boolean
+}
+
+/**
+ * A number field with optional range/integer constraints. Empty clears;
+ * non-finite, out-of-range, or non-integer text is invalid (blocks the save,
+ * never silently stored).
+ */
+export function numberField(field: string, spec?: NumberFieldSpec): CardFieldSpec {
   return {
     field,
     format: value => (typeof value === 'number' ? String(value) : ''),
@@ -252,19 +266,36 @@ export function numberField(field: string): CardFieldSpec {
       const trimmed = text.trim()
       if (trimmed === '') return { kind: 'clear' }
       const parsed = Number(trimmed)
-      return Number.isFinite(parsed) ? { kind: 'set', value: parsed } : undefined
+      if (!Number.isFinite(parsed)) return undefined
+      if (spec !== undefined) {
+        if (spec.integer === true && !Number.isInteger(parsed)) return undefined
+        if (spec.min !== undefined && parsed < spec.min) return undefined
+        if (spec.max !== undefined && parsed > spec.max) return undefined
+      }
+      return { kind: 'set', value: parsed }
     },
   }
 }
 
-/** A free-text field (used for the sortMode enum). Empty clears. */
-export function textField(field: string): CardFieldSpec {
+/** Constraints for a text field. */
+export interface TextFieldSpec {
+  /** Accepted values; any other value is invalid (blocks the save). */
+  enum?: readonly string[]
+}
+
+/**
+ * A text field with an optional enum constraint (used for the sortMode enum).
+ * Empty clears; a value outside the enum is invalid (never silently stored).
+ */
+export function textField(field: string, spec?: TextFieldSpec): CardFieldSpec {
   return {
     field,
     format: value => (typeof value === 'string' ? value : ''),
     parse: (text) => {
       const trimmed = text.trim()
-      return trimmed === '' ? { kind: 'clear' } : { kind: 'set', value: trimmed }
+      if (trimmed === '') return { kind: 'clear' }
+      if (spec?.enum !== undefined && !spec.enum.includes(trimmed)) return undefined
+      return { kind: 'set', value: trimmed }
     },
   }
 }
@@ -297,6 +328,7 @@ interface PlannedWrite {
 
 /** Stages one card's edits over one settings namespace and writes them on save. */
 export class CardForm<T> {
+  private readonly scope: SettingsScopeLike<T>
   private readonly specs: Map<string, CardFieldSpec>
   private readonly staged = new Map<string, StagedEdit>()
   private readonly listeners = new Set<() => void>()
@@ -304,9 +336,13 @@ export class CardForm<T> {
   private failed = false
 
   constructor(
-    private readonly scope: SettingsScopeLike<T>,
+    scope: SettingsScopeLike<T>,
     specs: CardFieldSpec[],
   ) {
+    // Explicit field (not a parameter property): the client bundle is also
+    // evaluated by Node's strip-only TS loader in tests, which rejects
+    // parameter properties.
+    this.scope = scope
     this.specs = new Map(specs.map(spec => [spec.field, spec]))
     scope.subscribe(() => { this.publish() })
   }
@@ -482,16 +518,19 @@ export class ArgpConfigController {
 
   /** @param scope - the bound settings scope for the `dsh-argp` namespace. */
   constructor(scope: SettingsScopeLike<ArgpUserSettings>) {
+    // Bounds mirror the server-side ArgpUserSettingsSchema (argp-graph-engine.ts):
+    // the client must reject out-of-spec drafts before they are ever staged for
+    // a write, so an out-of-range value can never silently land in the namespace.
     this.form = new CardForm(scope, [
-      numberField('windowRatio'),
-      numberField('retainRatio'),
-      numberField('maxPasses'),
-      numberField('recencyGuard'),
-      numberField('turnGuard'),
-      numberField('minSpanChars'),
+      numberField('windowRatio', { min: 0.1, max: 1 }),
+      numberField('retainRatio', { min: 0.05, max: 1 }),
+      numberField('maxPasses', { min: 1, integer: true }),
+      numberField('recencyGuard', { min: 0, integer: true }),
+      numberField('turnGuard', { min: 0, integer: true }),
+      numberField('minSpanChars', { min: 0, integer: true }),
       booleanField('enableSummarize'),
-      textField('sortMode'),
-      numberField('charsPerToken'),
+      textField('sortMode', { enum: ['legacy', 'density', 'density-chain'] }),
+      numberField('charsPerToken', { min: 0.5, max: 8 }),
     ])
     this.store = this.form.bind(() => this.projection())
   }

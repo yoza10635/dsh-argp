@@ -135,10 +135,31 @@ export interface CardActions {
     /** Drop every staged edit. */
     discard: () => void;
 }
-/** A whole-number field. Empty clears; non-finite blocks the save. */
-export declare function numberField(field: string): CardFieldSpec;
-/** A free-text field (used for the sortMode enum). Empty clears. */
-export declare function textField(field: string): CardFieldSpec;
+/** Range/integer constraints for a number field (mirrors the server-side schema bounds). */
+export interface NumberFieldSpec {
+    /** Inclusive lower bound. */
+    min?: number;
+    /** Inclusive upper bound. */
+    max?: number;
+    /** Require an integral value. */
+    integer?: boolean;
+}
+/**
+ * A number field with optional range/integer constraints. Empty clears;
+ * non-finite, out-of-range, or non-integer text is invalid (blocks the save,
+ * never silently stored).
+ */
+export declare function numberField(field: string, spec?: NumberFieldSpec): CardFieldSpec;
+/** Constraints for a text field. */
+export interface TextFieldSpec {
+    /** Accepted values; any other value is invalid (blocks the save). */
+    enum?: readonly string[];
+}
+/**
+ * A text field with an optional enum constraint (used for the sortMode enum).
+ * Empty clears; a value outside the enum is invalid (never silently stored).
+ */
+export declare function textField(field: string, spec?: TextFieldSpec): CardFieldSpec;
 /** A boolean field rendered as a checkbox ('true'/'false' draft). */
 export declare function booleanField(field: string): CardFieldSpec;
 /** Stages one card's edits over one settings namespace and writes them on save. */
