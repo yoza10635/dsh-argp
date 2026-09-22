@@ -4,7 +4,7 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
-## [1.5.1] - 未发布
+## [1.5.1] - 2026-09-22（doneTurns 记账修复 + retain 恒定压缩率 + drag-weight 排序）
 
 **问题**：1.5.0 发布后回归审查发现 `CiteDeclarer` 的幂等记账时机缺陷——`done.add(turn)` 位于所有短路分支**之前**，`no-endpoint`（自动模式路由未就绪 / 启动期 env 未设，属**瞬时态**）命中即把该闭合轮永久标记"已处理"，后端就绪后同一轮重试仍被 `done.has` 跳过 ⇒ **该轮的 citation 边永久缺失**。既有 auto-arm 用例是"turn-1 no-endpoint → turn-2 重试"（两次针对不同轮，`done.has` 永不命中），抓不到此缺陷。
 
