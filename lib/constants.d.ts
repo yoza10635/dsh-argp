@@ -18,5 +18,7 @@ export declare const DEFAULT_WINDOW_RATIO = 0.8;
 export declare const DEFAULT_RETAIN_RATIO = 0.2;
 /** LLM 调用超时（ms）。peratom compressor/declarer timeoutMs 缺省锚（P4.3 统一）。 */
 export declare const DEFAULT_LLM_TIMEOUT_MS = 180000;
-/** 贪心剪枝最大 pass 数（graph 引擎 maxPasses 缺省锚）。 */
-export declare const DEFAULT_MAX_PASSES = 16;
+/** 贪心剪枝最大 pass 数（graph 引擎 maxPasses 缺省锚）。
+ *  2026-09-22：由 16 提到 10000——剪枝循环正常靠「压缩率达标 / 全保护 / 无进展」自然终止，
+ *  此值退化为纯安全上限（防极端空转），不再作为「每次压缩只剪 16 组」的增量节流阀。 */
+export declare const DEFAULT_MAX_PASSES = 10000;
