@@ -39,7 +39,7 @@ ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"
 
 1. **原子化 + 建图**：确定性边（assistant → 其 tool result，经 toolCallId）+ 语义边（模型按契约输出的 `{"cites":[{"t":"前缀","l":"c|s|x"}]}`，四级分级 critical/supporting/contextual/isolated）。
 2. **拓扑剪枝**：反复摘除入度为 0 的原子（边等级 → 有效重要性 → 最近引用轮次排序），被剪引用方的出边消失、下游逐 pass 解锁；闭包生命周期（ACTIVE→COMPLETED→PRUNABLE→PRUNED）整闭包退休已完成任务。
-3. **压缩率精确兑现**：触发线 window = contextWindow×0.8（默认）、保留目标 retain = window×0.2；触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（summarize 档是恒返回 null 的 stub——A6 保守选项 a 不实现，`enableSummarize` 默认 false）收敛到预算或显式失败，实测 200K→160K 触发→32K 保留精确落地。
+3. **压缩率精确兑现**：触发线 window = contextWindow×0.8（默认）；保留目标 retain = **可压缩内容 × 0.2**（1.5.1 起：可压缩内容 = 完整请求 − system/tools/MCP 固定开销 = 剪枝目标量 visible，恒定压缩率 80%；旧公式 retain = window×0.2 = 0.16W 把固定开销算进基数，与目标量不含固定开销不对称）。触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（summarize 档是恒返回 null 的 stub——A6 保守选项 a 不实现，`enableSummarize` 默认 false）+ 反应式补救阶梯（第 2 次起放宽 recency/turn 守卫）收敛到预算或显式失败。
 
 ### 三级触发（Stage-2 触发阶梯）
 

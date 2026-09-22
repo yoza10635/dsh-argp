@@ -24,6 +24,10 @@
 - **`lib/` 产物按 LF 源码重建**：esbuild 把 `sourcesContent`（源码原文）嵌进 `lib/client.js.map`；此前提交的 lib 由 CRLF 工作区构建（map 69.2kb），CI 检出受 `.gitattributes` `eol=lf` 约束重建出 66.7kb ⇒ `git diff --exit-code lib/` 必挂（本地 CRLF 工作区不复现）。15 个 `src/` 文件归一 LF 后重建提交。
 - `package-lock.json` 根版本 1.3.0 → 1.5.0 对齐（不动依赖解析）。
 
+### Changed
+
+- **保留目标改为「可压缩内容 × retainRatio」（恒定压缩率）**：旧公式 `retain = windowTokens × retainRatio = 0.8W × 0.2 = 0.16W` 用**含固定开销（system+tools+MCP）的触发线**做基数，但剪枝目标量 `visible`（原子文本和）**不含**固定开销——两阈值口径不对称（触发线含、目标线不含）。新公式 `retain = initialVisible × retainRatio`，`initialVisible` = 剪枝前全部 U/A/R 原子文本和 = 完整请求 − 固定开销，天然排除不可剪前缀 ⇒ 压缩率恒定 `1 − retainRatio`（默认 80%），不再随触发点浮动。显式 `retainTokens` 保留旧绝对值语义（逃生阀：配置了绝对目标的用户行为不变）。
+
 ## [1.5.0] - 2026-09-21（轮中压力剪 + 截断自动续写；1.4.1 号作废不发布）
 
 > 本条目自 1.5.0 开发起累积：首笔 = 被钳不再等于任务中断（轮中压力剪 + 截断自动续写）；排期 P1–P5 的修复全部并入本条目后一次性发布。
