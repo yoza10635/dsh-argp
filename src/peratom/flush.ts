@@ -54,6 +54,8 @@ export interface FlushHost {
   pending: PendingEntry[]
   hlsMode: 'trailer' | 'off'
   hlsRoiThreshold: number
+  /** tool/result 压缩副本头部标记开关（v1.6.1）；生产由 PeratomCompressor 配置驱动。 */
+  toolCopyMarker: boolean
   inFlightPass: WeakMap<Session, Promise<unknown>>
   flushWaitMs: number
   llmAutoEligible: boolean
@@ -296,7 +298,11 @@ export async function compressCollect(host: FlushHost, session: Session, collect
 // -- 事务括号发射（仿 t1：start..end，双事件/多事件发射，断言内联）-------
 
 export function flushEntry(host: FlushHost, session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord): void {
-  const plan = planReplacements(collect, decision, sessionEvents(session), { hlsMode: host.hlsMode, hlsRoiThreshold: host.hlsRoiThreshold })
+  const plan = planReplacements(collect, decision, sessionEvents(session), {
+    hlsMode: host.hlsMode,
+    hlsRoiThreshold: host.hlsRoiThreshold,
+    marker: host.toolCopyMarker ? 'on' : 'off',
+  })
   if (plan.steps.length === 0) {
     // 全部动作被拒（保真守卫/回退）或零动作：不开空事务，但统计直接落账到本次记录。
     record.skippedFallbackDialog = plan.skippedFallbackDialog

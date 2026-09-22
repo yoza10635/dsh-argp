@@ -54,7 +54,7 @@ import type { NeedCompress } from './gate.js';
 import type { PeratomCompressorConfig, CurrentTurnCollect, CompressRecord } from './compressor-types.js';
 export type { PeratomCompressorConfig, UserSplit, ToolAction, CompressDecision, CurrentTurnCollect, CompressRecord, PlanOptions, } from './compressor-types.js';
 export { defaultEndpoint } from './compressor-types.js';
-export { normalizeDecision, planReplacements } from './decision.js';
+export { normalizeDecision, planReplacements, toolCopyMarkerText, TOOL_COPY_MARKER_RE } from './decision.js';
 export declare class PeratomCompressor {
     static inject: readonly [];
     readonly splitThresholdChars: number;
@@ -64,6 +64,14 @@ export declare class PeratomCompressor {
     readonly hlsMode: 'trailer' | 'off';
     /** HLS 经济学门槛 θ（v1.2.0 门控修正；缺省 1）。 */
     readonly hlsRoiThreshold: number;
+    /** tool/result 压缩副本头部标记（v1.6.1；生产缺省 true = 开启，false = v1.6 无标记）。 */
+    readonly toolCopyMarker: boolean;
+    /**
+     * 逐原子压缩跳过的上下文形态（v1.6.1；缺省 `DEFAULT_SKIP_CONTEXT_FORMS` =
+     * `relay`/`notice` ⇒ 子代理汇报类消息不进压缩、只交给 Stage-2 图剪）。
+     * 传空数组 = 关闭本门控，退回 v1.6.0 行为。语义见该常量注释。
+     */
+    readonly skipContextForms: readonly string[];
     /** 压缩调用输出 cap（默认 4096；JSON plan 输出通常几百 token，小 cap 给 prompt 让出 margin）。 */
     readonly maxCompletionTokens: number;
     /** A 形态前缀预算（默认 132000 ≈ 0.76×174080；前缀超预算 ⇒ 该次降级 C 形态）。 */

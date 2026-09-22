@@ -96,6 +96,25 @@ export interface PeratomCompressorConfig {
      * 修复后比原文还长（ROI < 0）在任何 θ ≥ 0 下都被拒——这是代价盲的修正。
      */
     hlsRoiThreshold?: number;
+    /**
+     * tool/result 压缩副本的头部标记开关（v1.6.1，默认 `true`）：
+     * `true` = 副本正文头部拼 `[已压缩-摘取 seq=N]` / `[已压缩-摘要 seq=N]`，使 LLM 能
+     * 把压缩副本与真实工具输出区分开（详见 `PlanOptions.marker` 的存在理由）。
+     *
+     * 宿主硬约束下这是**唯一**的 model-visible 通道（不能挂元数据、不能换 source），
+     * 故默认开启；`false` 退回 v1.6 无标记行为（供 A/B 或极端省 token 场景逃生）。
+     * 代价：每原子约 8-12 token，且收益门已计入该长度（`decision.planReplacements`）。
+     */
+    toolCopyMarker?: boolean;
+    /**
+     * 逐原子压缩**跳过**的上下文形态（`source.form`，dsh-llm `ContextForm` 词汇表；
+     * v1.6.1，缺省 `DEFAULT_SKIP_CONTEXT_FORMS` = `relay`/`notice`）。
+     *
+     * 这两类是子代理**已浓缩过一次的产物**（实战语料实证：行重复率 0%、承重密度
+     * 0.1–1.5%，本身是 10–20× 提炼结果）⇒ 不进逐原子压缩，交给 Stage-2 图剪处理。
+     * 传**空数组** = 关闭门控，退回 v1.6.0 行为。
+     */
+    skipContextForms?: readonly string[];
     /** fetch 注入点（测试替身；生产缺省 globalThis.fetch）。 */
     fetchImpl?: typeof fetch;
 }
@@ -224,4 +243,18 @@ export interface PlanOptions {
     hlsMode?: 'trailer' | 'off';
     /** HLS 经济学门槛 θ（缺省 1）；仅 trailer 档生效。 */
     hlsRoiThreshold?: number;
+    /**
+     * tool/result 压缩副本的**头部标记**（v1.6.1）：`'on'` = 副本正文头部拼
+     * `[已压缩-摘取 seq=N]` / `[已压缩-摘要 seq=N]`（详见 decision.toolCopyMarkerText）。
+     *
+     * 独立调用方缺省 `'off'`（v1.6 既有行为逐字节不变，既有单测零改动）；
+     * 生产路径由 `PeratomCompressor` 传自身配置（config 缺省 `'on'`）。
+     *
+     * 存在理由（2026-09-23 核查）：dsh-session 硬约束使 tool/result 副本**不能**挂
+     * `data[ARG_NS]` 元数据、也**不能**换 source（`decision.toolCopyPayload` /
+     * `flush.flushEntry` 注释），且副本 `source.kind` 仍是 `'tool'` ⇒ LLM 侧没有任何
+     * 信号能把它与真实工具输出区分开。extract 档尤甚：prompt 要求 text 是原文**逐字**
+     * 片段，与完整工具输出逐字不可辨。标记是宿主硬约束下唯一的 model-visible 通道。
+     */
+    marker?: 'on' | 'off';
 }

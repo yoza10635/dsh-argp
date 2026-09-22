@@ -105,6 +105,12 @@ export interface GateOptions {
      * （决策序第 1 层先行短路）；未声明的工具走大小启发式（缺席默认，设计 §6-5）。
      */
     toolPolicies?: ReadonlyMap<string, NeedCompress>;
+    /**
+     * 逐原子压缩**跳过**的上下文形态（`source.form`，dsh-llm `ContextForm` 词汇表）。
+     * 缺省 = `DEFAULT_SKIP_CONTEXT_FORMS`（`relay` / `notice`）；传**空数组** = 关闭
+     * 本门控（v1.6.0 行为：子代理汇报类消息照旧进候选）。语义与理由见该常量的注释。
+     */
+    skipContextForms?: readonly string[];
 }
 /**
  * R 档位裁决（设计 §2 决策序，先命中先生效）：

@@ -218,7 +218,10 @@ test('assistant/message.interrupted 直挂标记同样使轮次排除（rc.2 流
 // ---------------------------------------------------------------------------
 
 test('可压轮单次调用：dialog replace + U-info append 双事件、tool replace 副本、事务括号与断言全过', async t => {
-  const h = await makeHarness()
+  // v1.7.0 逃生阀：本例断言 tool 副本正文**逐字**等于模型输出（v1.6 契约）。生产默认
+  // 已开启头部标记（宿主硬约束下唯一 model-visible 通道）⇒ 显式关标记以保留本例原语义；
+  // 新契约由 `test/tool-copy-marker.test.ts` 专项覆盖。
+  const h = await makeHarness({ toolCopyMarker: false })
   t.after(() => dispose(h))
   const session = Session.create(SessionId('pc-normal'))
   const { uSeq, rSeq } = buildCompressibleTurn(session, 1, 'c1')

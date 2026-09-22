@@ -25,6 +25,8 @@ export interface FlushHost {
     pending: PendingEntry[];
     hlsMode: 'trailer' | 'off';
     hlsRoiThreshold: number;
+    /** tool/result 压缩副本头部标记开关（v1.6.1）；生产由 PeratomCompressor 配置驱动。 */
+    toolCopyMarker: boolean;
     inFlightPass: WeakMap<Session, Promise<unknown>>;
     flushWaitMs: number;
     llmAutoEligible: boolean;

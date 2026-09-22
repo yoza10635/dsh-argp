@@ -4,6 +4,37 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.6.1] - 2026-09-23（tool/result 压缩副本头部标记）
+
+**问题**：逐原子压缩用压缩文本替换 tool/result，但副本在 LLM 侧与真实工具输出**不可辨**。dsh-session 硬约束使副本不能挂 `data[ARG_NS]` 元数据（`decision.toolCopyPayload`）、也不能换 source（`flush.flushEntry` ⇒ UI 同样看不出），且副本 `source.kind` 仍是 `'tool'`——宿主约束下**没有任何** model-visible 信号。extract 档尤甚：prompt 契约要求 text 是原文**逐字**片段，与完整工具输出同形。图剪路径早有标记体系（`[elided seq=N..M]` 墓碑 + `argp-contract` 告知），逐原子路径是唯一缺口。
+（背景：该缺口此前未被实证检验——`cordis.patch.yml` 整个 git 历史从未写入 `peratom` 块，Stage-1 在默认安装下结构性不可达，受控语料里 6386 次替换全是 `[elided]` 墓碑。一旦 Stage-1 挂载，缺口即成实际风险。）
+
+### Added
+
+- **tool/result 压缩副本头部标记**（`PlanOptions.marker`；生产 `config.toolCopyMarker` 默认 `true`）：副本正文头部拼 `[已压缩-摘取 seq=N]`（extract）/ `[已压缩-摘要 seq=N]`（summary）。
+  - **分档**给出措辞可信度信号：`argp-cites` 要求"逐字抄前 10-20 词"，而 summary 档措辞是改写而非原文 ⇒ 标记明示"这段不可逐字引用"；extract 档是原文子串，可逐字引用。成本与单一标记等同（同字数）。
+  - **带 seq 是必需的**：seq 是日志内部序号，模型在 tool/result 里看不到它 ⇒ 不带则 `recall_detail(N)` 无参数可调，召回通路实际是断的（图剪墓碑把 seq 写进正文是同一理由）。
+  - **召回指引不进副本**：每原子重复一段指引纯属浪费上下文，统一由 `argp-contract` system 段一次性声明（静态段，不破坏前缀缓存）。
+- **no-op 守卫计入标记长度**：守卫原本只在模型输出 `action.text` 上判收益，看不见标记开销 ⇒ 会出现"加了标记反而与原文持平/变长"的白压。现按**落地后**真实长度判（`action.text.length + marker.length`），这类原子退回原文保面（错误方向仍是少压）。
+- **导出 `toolCopyMarkerText` / `TOOL_COPY_MARKER_RE`**：后者供语料侧审计剥离标记——新增字面量会进入语料正文，须按 `^\[已压缩-(摘取|摘要) seq=\d+\]\n` 剥离后再统计，否则重复 `[restored]` / `cites` 字面量假阳性的老问题。
+- **上下文形态门控 `DEFAULT_SKIP_CONTEXT_FORMS = ['relay','notice']`**：`source.form` 命中该清单的 user-role 消息**不进逐原子压缩候选**（`collect.isMaterial` 第三道判据）。
+  - **为什么需要**：子代理的成果汇报在主流里落地为 `user/message`，其 source 是 dsh-agent 的 **merge 扩展 kind**（`agent-message` / `subagent-settled`）——它们**不等于 `'plugin'`**，因此逃过既有的「插件注入」判据，被当成普通长用户消息送进 Stage-1。实测（session-53e3e89f）：relay 4 条 19,347ch + settled 4 条 17,453ch 全部进候选。
+  - **为什么该跳过**：这两类是**已浓缩过一次的产物**——子代理把 46K–75K 字符的工作过程提炼成 3.6–7.1K 字符报告（10–20×）。实测行重复率 **0%**（无内部冗余可丢）、承重 token 密度 0.1–1.5%（散文式报告而非结构化数据）⇒ 逐原子压缩只会造成二次损失。它们适合 Stage-2 图剪：全留或全删 + 墓碑 + `recall_pruned(seq)` 可召回，而非中间态的有损摘要。
+  - **两条正交轴别混用**：`source.kind === 'plugin'` 是**来源**轴（谁生产的），`form` 是**性质**轴（这是什么）。本次只加性质轴；`kind='plugin'` 的消息（含 `tool-jobs` / `tool-goal` / `system-prompt` 等带 form 的）仍由既有判据排除。
+  - **逃生阀**：`config.skipContextForms` / `GateOptions.skipContextForms` 传空数组 = 关闭门控，退回 v1.6.0 行为。
+
+### Changed
+
+- **`argp-contract` system 段新增一条**：说明压缩副本不是完整原文、两种标记形态、以及引用前先用 `recall_detail(N)` / `recall_pruned(N)` 取原文。
+- **旧用例开逃生阀而非改断言**：`peratom-compressor.test.ts` 的"可压轮单次调用"断言副本正文逐字等于模型输出（v1.6 契约），改走 `makeHarness({ toolCopyMarker: false })`；新契约由 `test/tool-copy-marker.test.ts` 专项覆盖。独立调用 `planReplacements` 缺省 `marker:'off'` ⇒ v1.6 行为逐字节不变。
+
+### Tests
+
+- 新增 `test/tool-copy-marker.test.ts`（7 例）：extract/summary 分档落地、缺省与显式 off 无标记、收益门计入标记长度（fixture 自检 + off 臂对照）、标记与 HLS `[restored]` 尾注共存（头标记 + 尾尾注，剥离后 100% 硬 token 保真）、剥离正则只认行首、生产默认 on + config 可关。
+- 新增 `test/context-form-gate.test.ts`（5 例）：relay/notice 被排除、`kind='plugin'` 仍按来源轴排除、无 form 的 `user`/`agent-message`/`goal` 不误伤、空数组逃生阀关闭门控（同构造 on/off 双臂对照）、生产默认 = `DEFAULT_SKIP_CONTEXT_FORMS`。
+  - ⚠️ 构造教训：一轮里只有被排除的那条时 `collectFromWindow` 因窗口为空返回 **null**（而非空候选）⇒ 断言 `userLong.length === 0` 拿到 undefined，无法区分「精确排除」与「整轮没材料」。测试须加一条普通 user 作锚，断言「收到 1 条、正是锚」才能证明门控是**选择性**的。
+- 全量 **334 全绿**（原 322 + 新 12）。
+
 ## [1.6.0] - 2026-09-22（剪枝终止条件补全 + id/seq 错配修复 + 配置卡片简化）
 
 **问题**：1.5.1 的剪枝 pass 循环有两个潜伏缺陷——(a) 候选耗尽降级到闭包生命周期时，`selectClosureToMerge` 的 `alreadyPruned` 误传**原子 id 集合**（`pruned.keys()`），但其内部按 **seq** 过滤，id≠seq 永不命中 ⇒ 已剪闭包被反复选中 → 空闭包 `continue` 死转、`force_prune` 饿死（压缩率仅 ~5%，c2344 空转 161.6s）；(b) 循环缺少「一轮无进展」判停，极端空转只能靠 `maxPasses` 硬上限兜底（旧默认 16，对 7/9 实战快照 binding，把「剪到达标」压成「增量式 16 组」）。

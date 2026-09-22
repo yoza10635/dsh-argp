@@ -18,6 +18,7 @@
  */
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { sessionEvents, turnOf } from '../log-access.js'
+import { DEFAULT_SKIP_CONTEXT_FORMS } from '../constants.js'
 import {
   buildToolNameIndex,
   buildVersionChainIndex,
@@ -55,16 +56,25 @@ export interface CollectHost {
  *    边界若把它们算进去，纯注入窗口会返回"空候选的非 null 收集"（同上噪声问题）。
  *
  * 判据口径与 `argp-t1-engine.shadowedSeqs` 的 replace 判定一致。
+ *
+ * 第三道（v1.6.1）：`skipForms` —— user-role 消息的 `source.form` 命中清单即排除。
+ * 这是**性质**轴（"这是什么"），与上一道的**来源**轴（"谁生产的"）正交：插件注入
+ * 未必是浓缩产物，而 dsh-agent 的 merge 扩展 kind（`agent-message` /
+ * `subagent-settled`）不等于 `'plugin'` 却正是浓缩产物。详见
+ * `DEFAULT_SKIP_CONTEXT_FORMS` 注释（含实战语料的密度实证）。
  */
-function isMaterial(event: SessionEvent): boolean {
+function isMaterial(event: SessionEvent, skipForms: readonly string[]): boolean {
   // 只有对话载体（U/A/R）才构成压缩窗口；turn/start·end、compaction/*、
   // request/header 等旁路事件既不是候选、也不该把窗口撑成"非空"。
   if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return false
   const surfaceOp = (event as { surfaceOp?: unknown }).surfaceOp
   if (surfaceOp !== undefined && surfaceOp !== 'append') return false
   if (event.type !== 'user/message') return true
-  const kind = (event.data as { source?: { kind?: string } } | undefined)?.source?.kind
-  return kind !== 'plugin'
+  const src = (event.data as { source?: { kind?: string; form?: string } } | undefined)?.source
+  if (src?.kind === 'plugin') return false
+  // 性质轴：子代理汇报 / 一次性通知 = 已浓缩产物，不进逐原子压缩（交给 Stage-2 图剪）。
+  if (src?.form !== undefined && skipForms.includes(src.form)) return false
+  return true
 }
 
 /** 某轮已规划过的最大 seq（-1 = 未压过）。 */
@@ -93,6 +103,7 @@ export function collectFromWindow(
 ): CurrentTurnCollect | null {
   const events = sessionEvents(session)
   if (endSeq < 0) return null
+  const skipForms = host.gateOptions().skipContextForms ?? DEFAULT_SKIP_CONTEXT_FORMS
 
   const interrupted = collectInterruptedTurns(events).has(turn)
   const collect: CurrentTurnCollect = {
@@ -110,7 +121,7 @@ export function collectFromWindow(
   const nameByCall = buildToolNameIndex(events)
   const rawAtoms: Array<GateUserLong | GateToolResult> = []
   for (const event of turnEvents) {
-    if (!isMaterial(event)) continue // 安全网：非材料（压缩产物 / 插件注入）永不入候选
+    if (!isMaterial(event, skipForms)) continue // 安全网：非材料（压缩产物 / 插件注入）永不入候选
     const data = event.data as Record<string, unknown> | undefined
     if (event.type === 'user/message') {
       // U-info 聚合副本 / checkpoint / A 形态指令均为 plugin-source —— 已由 isMaterial 排除。
@@ -148,6 +159,7 @@ export function collectFromWindow(
  */
 export function collectCurrentTurn(host: CollectHost, session: Session, afterSeq?: number): CurrentTurnCollect | null {
   const events = sessionEvents(session)
+  const skipForms = host.gateOptions().skipContextForms ?? DEFAULT_SKIP_CONTEXT_FORMS
   let closed: number | null = null
   for (let i = events.length - 1; i >= 0; i -= 1) {
     const event = events[i]
@@ -169,7 +181,7 @@ export function collectCurrentTurn(host: CollectHost, session: Session, afterSeq
     if (event.type === 'turn/end') { open = null; continue }
     if (open !== closed) continue
     if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
-    if (!isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
+    if (!isMaterial(event, skipForms)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
     if (event.type !== 'user/message') {
       const turn = turnOf(event)
       if (turn !== undefined && turn !== closed) continue
@@ -191,6 +203,7 @@ export function collectCurrentTurn(host: CollectHost, session: Session, afterSeq
  */
 export function collectOpenTurn(host: CollectHost, session: Session, afterSeq?: number): CurrentTurnCollect | null {
   const events = sessionEvents(session)
+  const skipForms = host.gateOptions().skipContextForms ?? DEFAULT_SKIP_CONTEXT_FORMS
   let openSeq = -1
   let openTurn: number | null = null
   for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -213,7 +226,7 @@ export function collectOpenTurn(host: CollectHost, session: Session, afterSeq?: 
   for (const event of events) {
     if (event.seq <= openSeq) continue
     if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
-    if (!isMaterial(event)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
+    if (!isMaterial(event, skipForms)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
     if (event.type !== 'user/message' && event.type !== 'turn/end') {
       const turn = turnOf(event)
       if (turn !== undefined && turn !== openTurn) continue
