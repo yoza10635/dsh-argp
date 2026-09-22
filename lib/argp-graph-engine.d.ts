@@ -28,7 +28,7 @@ export { looksAskText, classifyUserMessage, extractCites } from './graph-build.j
 export type { CiteStats, InferredStats } from './graph-build.js';
 export { scaleBudgets } from './budget.js';
 import { type PrunedNodeInfo } from './prune-selection.js';
-export { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones } from './prune-selection.js';
+export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones } from './prune-selection.js';
 export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js';
 import { type GraphPruneRecord } from './prune-tx.js';
 export { isMergeableTombstone } from './prune-tx.js';

@@ -27,6 +27,11 @@
 ### Changed
 
 - **保留目标改为「可压缩内容 × retainRatio」（恒定压缩率）**：旧公式 `retain = windowTokens × retainRatio = 0.8W × 0.2 = 0.16W` 用**含固定开销（system+tools+MCP）的触发线**做基数，但剪枝目标量 `visible`（原子文本和）**不含**固定开销——两阈值口径不对称（触发线含、目标线不含）。新公式 `retain = initialVisible × retainRatio`，`initialVisible` = 剪枝前全部 U/A/R 原子文本和 = 完整请求 − 固定开销，天然排除不可剪前缀 ⇒ 压缩率恒定 `1 − retainRatio`（默认 80%），不再随触发点浮动。显式 `retainTokens` 保留旧绝对值语义（逃生阀：配置了绝对目标的用户行为不变）。
+- **剪枝排序键计入 A 的应答 R 体积（drag 集合）**：剪 A 必无条件连带剪其全部 R（防孤儿 tool 400），但旧 `sortKey` 的 token 键只算 A 自身文本 ⇒ 两个同级别 A，一个带 90K 大 R、一个带 1K 小 R，"能带走大 R 的"排不到前面，贪心达标慢、大 R 死重滞留。现带 tool-call 的 A 用「自身文本 + 应答 R 之和」（`PruneState.aGroupChars` 静态快照）作 token 键，大 R 的 A 先剪。
+
+### Fixed
+
+- **`compareSortKeys` 数值比较修复 `localeCompare` 符号 bug + NaN 陷阱**：density 档 token 降序键含负数组件，`localeCompare` 把 `-` 当可变权重字符、主比较级忽略 ⇒ 同位数内方向反了（`-18` 排在 `-24` 前，而意图是"大 token 先剪"=`-24` 排前）。改用逐组件数值比较 `compareSortKeys`。**关键坑**：`padStart(10,'0')` 对负数把 0 塞到负号**前**（`"0000000-18"`），`Number()` 解析为 NaN ⇒ 朴素 `Number(xc[i])` 让比较恒返 NaN ⇒ `Array.sort` 视其相等 ⇒ 排序退化为"保 surface 原序"的 no-op（drag 权重完全失效）。修法：解析前先 `replace(/^0+(?=-)/,'')` 剥掉负号前的前导 0 还原 `-18`；非负组件无 `-`、`replace` 不命中、行为不变。
 
 ## [1.5.0] - 2026-09-21（轮中压力剪 + 截断自动续写；1.4.1 号作废不发布）
 

@@ -61,6 +61,8 @@ export interface PruneState {
     chainLen: Map<number, number>;
     lastRef: Map<number, number>;
     charsPerToken: number;
+    /** 1.5.1：A 原子有效体积（字符）= 自身文本 + 其应答 R 之和（drag 集合）。仅带 tool-call 的 A 有值。 */
+    aGroupChars: Map<number, number>;
 }
 /**
  * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
@@ -73,8 +75,24 @@ export declare function isGroupCandidate(g: Atom[], allowInDegree: boolean, stat
 /**
  * 排序键（原 sortKey 闭包，§4.5 + spike 18 提案）：默认 legacy = [lvl, eff, lastRef, seq]；
  * density = eff 同档内 token 降序（大 token 先剪）；density-chain = density + 链代表 eff 叠加。
+ * 键格式 = 定宽补零整数以 '|' 连接；**比较必须走 compareSortKeys**（localeCompare 对
+ * 负数组件方向反了，见 1.5.1 修复）。
  */
 export declare function sortKey(a: Atom, state: PruneState): string;
+/**
+ * 排序键数值比较（1.5.1 修复 localeCompare 符号 bug）。
+ *
+ * 病灶：localeCompare 的 locale 排序把 '-' 当可变权重字符、主比较级忽略 ⇒ 负数组件
+ * （density 档 token 降序键）在**同位数**内比较方向反了（'-18' 排在 '-24' 前，而意图
+ * 是"大 token 先剪" = -24 排前）；跨位数时补零位移又碰巧方向对 ⇒ 表现为"大致按
+ * 绝对值升序"，与设计意图相反。
+ * 修法：键格式不变（定宽补零整数以 '|' 连接），比较改为按组件数值比较。
+ * ⚠ 关键坑：padStart(10,'0') 对负数把 0 塞到负号**前**，产出 "0000000-18" 这种
+ * Number() 无法解析的串（= NaN）⇒ 朴素 `Number(xc[i])` 让比较恒返 NaN ⇒ Array.sort
+ * 视其为相等 ⇒ 排序退化为"保 surface 原序"的 no-op（drag 权重完全失效）。
+ * 故须先剥掉负号前的前导 0 还原 "-18" 再解析；非负组件无 '-'，replace 不命中、行为不变。
+ */
+export declare function compareSortKeys(x: string, y: string): number;
 /**
  * 区间归并（原 compactIfNeeded 内区间归并段，逐字保留）。
  * 按极大连续区间归并 pruned 原子；R 原子（issuer A 未被剪）强制单独成区间（tool 占位墓碑

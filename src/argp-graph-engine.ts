@@ -50,8 +50,8 @@ export { scaleBudgets } from './budget.js'
 import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
 // 剪枝选择模块（P5 Wave 3 第 4 步）：isAtomCandidate/isGroupCandidate/sortKey/
 // mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
-import { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones, selectClosureToMerge, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
-export { isAtomCandidate, isGroupCandidate, sortKey, mergeIntervals, buildTombstones } from './prune-selection.js'
+import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
+export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones } from './prune-selection.js'
 export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
 // 剪枝事务模块（P5 Wave 3 第 4 步）：pruneIntervals/consolidateTombstones/
 // compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
@@ -1405,6 +1405,19 @@ export class ArgpGraphEngine extends CompactionEngine {
     // R by callId（半拆组连带剪用：剪 A 时把应答其 call 的 R 一并剪除）
     const rByCallForPrune = new Map<string, Atom>()
     for (const r of atoms) if (r.type === 'R' && r.toolCallIds[0] !== undefined) rByCallForPrune.set(r.toolCallIds[0], r)
+    // 1.5.1：A 原子有效体积 = 自身文本 + 其应答 R 之和（drag 集合）。sortKey 用它作 token 键，
+    // 让"能带走大 R 的 A"排前，贪心更少 pass 达标。静态快照（不随 pass 更新）：若某 R 先被
+    // 独立剪除，A 的键略高估——无害（方向仍是"大的先剪"，且该 R 已不在 visible 里）。
+    const aGroupChars = new Map<number, number>()
+    for (const a of atoms) {
+      if (a.type !== 'A' || a.toolCallIds.length === 0) continue
+      let total = a.text.length
+      for (const cid of a.toolCallIds) {
+        const r = rByCallForPrune.get(cid)
+        if (r !== undefined) total += r.text.length
+      }
+      aGroupChars.set(a.id, total)
+    }
     const groupOf = new Map<number, number>()
     const groups: Atom[][] = []
     for (const a of atoms) {
@@ -1434,6 +1447,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       chainLen: new Map<number, number>(),
       lastRef,
       charsPerToken: this.charsPerToken,
+      aGroupChars,
     }
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false, pruneState)).length
     const pruned = new Map<number, Atom>()
@@ -1507,7 +1521,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         forced = true
       }
       const groupKey = (g: Atom[]): string => g.map(a => sortKey(a, pruneState)).sort()[0] as string
-      candidateGroups.sort((x, y) => groupKey(x).localeCompare(groupKey(y)))
+      // 1.5.1：数值比较（localeCompare 对负数 token 键方向反了，见 compareSortKeys 注释）
+      candidateGroups.sort((x, y) => compareSortKeys(groupKey(x), groupKey(y)))
       const top = candidateGroups[0] as Atom[]
       for (const a of top) {
         pruned.set(a.id, a)
