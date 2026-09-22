@@ -259,7 +259,12 @@ function SelectField(props: {
   onReset: () => void
 }): React.ReactElement {
   const { id, label, hint, state, t, onEdit, onReset } = props
-  const options: string[] = ['legacy', 'density', 'density-chain']
+  const options: string[] = ['density', 'density-chain', 'legacy']
+  const labels: Record<string, string> = {
+    density: t('sortModeDensity'),
+    'density-chain': t('sortModeChain'),
+    legacy: t('sortModeLegacy'),
+  }
   return h('div', { style: fieldStyle },
     h('div', { style: fieldHeadStyle },
       h('label', { htmlFor: id, style: labelStyle }, label),
@@ -279,7 +284,7 @@ function SelectField(props: {
       style: inputStyle,
       value: state.text,
       onChange: (e: any) => { onEdit(e.target.value) },
-    }, ...options.map(opt => h('option', { value: opt, key: opt }, opt))),
+    }, ...options.map(opt => h('option', { value: opt, key: opt }, labels[opt] ?? opt))),
     h('p', { style: hintStyle }, hint),
   )
 }
@@ -291,6 +296,7 @@ function SelectField(props: {
  */
 export function ArgpConfigCard(props: ArgpCardProps): React.ReactElement | null {
   const [open, setOpen] = React.useState(false)
+  const [advOpen, setAdvOpen] = React.useState(false)
   const saveStarted = React.useRef(false)
   const state = props.useArgpConfig(s => s)
   React.useEffect(() => {
@@ -348,74 +354,71 @@ export function ArgpConfigCard(props: ArgpCardProps): React.ReactElement | null 
             onEdit: (text: string) => { props.edit('retainRatio', text) },
             onReset: () => { props.resetField('retainRatio') },
           }),
-          h(TextField, {
-            id: 'argp-maxPasses',
-            label: t('maxPasses'),
-            hint: t('maxPassesHint'),
-            state: state.maxPasses,
-            numeric: true,
-            t,
-            onEdit: (text: string) => { props.edit('maxPasses', text) },
-            onReset: () => { props.resetField('maxPasses') },
-          }),
-          h(TextField, {
-            id: 'argp-recencyGuard',
-            label: t('recencyGuard'),
-            hint: t('recencyGuardHint'),
-            state: state.recencyGuard,
-            numeric: true,
-            t,
-            onEdit: (text: string) => { props.edit('recencyGuard', text) },
-            onReset: () => { props.resetField('recencyGuard') },
-          }),
-          h(TextField, {
-            id: 'argp-turnGuard',
-            label: t('turnGuard'),
-            hint: t('turnGuardHint'),
-            state: state.turnGuard,
-            numeric: true,
-            t,
-            onEdit: (text: string) => { props.edit('turnGuard', text) },
-            onReset: () => { props.resetField('turnGuard') },
-          }),
-          h(TextField, {
-            id: 'argp-minSpanChars',
-            label: t('minSpanChars'),
-            hint: t('minSpanCharsHint'),
-            state: state.minSpanChars,
-            numeric: true,
-            t,
-            onEdit: (text: string) => { props.edit('minSpanChars', text) },
-            onReset: () => { props.resetField('minSpanChars') },
-          }),
-          h(BoolField, {
-            id: 'argp-enableSummarize',
-            label: t('enableSummarize'),
-            hint: t('enableSummarizeHint'),
-            state: state.enableSummarize,
-            t,
-            onEdit: (text: string) => { props.edit('enableSummarize', text) },
-            onReset: () => { props.resetField('enableSummarize') },
-          }),
-          h(SelectField, {
-            id: 'argp-sortMode',
-            label: t('sortMode'),
-            hint: t('sortModeHint'),
-            state: state.sortMode,
-            t,
-            onEdit: (text: string) => { props.edit('sortMode', text) },
-            onReset: () => { props.resetField('sortMode') },
-          }),
-          h(TextField, {
-            id: 'argp-charsPerToken',
-            label: t('charsPerToken'),
-            hint: t('charsPerTokenHint'),
-            state: state.charsPerToken,
-            numeric: true,
-            t,
-            onEdit: (text: string) => { props.edit('charsPerToken', text) },
-            onReset: () => { props.resetField('charsPerToken') },
-          }),
+          h('button', {
+            type: 'button',
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              width: '100%',
+              padding: '8px 0',
+              marginTop: 8,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 13,
+              fontWeight: 500,
+              color: 'var(--dsw-alias-label-secondary, #4c5057)',
+            },
+            'aria-expanded': advOpen,
+            onClick: () => { setAdvOpen(!advOpen) },
+          },
+            h('span', { style: chevronStyle(advOpen) }, '▾'),
+            t('advanced'),
+          ),
+          advOpen
+            ? h('div', { style: { paddingLeft: 16, borderLeft: '2px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))' } },
+                h(TextField, {
+                  id: 'argp-maxPasses',
+                  label: t('maxPasses'),
+                  hint: t('maxPassesHint'),
+                  state: state.maxPasses,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('maxPasses', text) },
+                  onReset: () => { props.resetField('maxPasses') },
+                }),
+                h(TextField, {
+                  id: 'argp-recencyGuard',
+                  label: t('recencyGuard'),
+                  hint: t('recencyGuardHint'),
+                  state: state.recencyGuard,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('recencyGuard', text) },
+                  onReset: () => { props.resetField('recencyGuard') },
+                }),
+                h(TextField, {
+                  id: 'argp-turnGuard',
+                  label: t('turnGuard'),
+                  hint: t('turnGuardHint'),
+                  state: state.turnGuard,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('turnGuard', text) },
+                  onReset: () => { props.resetField('turnGuard') },
+                }),
+                h(SelectField, {
+                  id: 'argp-sortMode',
+                  label: t('sortMode'),
+                  hint: t('sortModeHint'),
+                  state: state.sortMode,
+                  t,
+                  onEdit: (text: string) => { props.edit('sortMode', text) },
+                  onReset: () => { props.resetField('sortMode') },
+                }),
+              )
+            : null,
           h('div', { style: footerStyle },
             state.failed
               ? h('p', { style: failedStyle, role: 'status' }, t('saveFailed'))

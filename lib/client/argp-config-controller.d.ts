@@ -15,7 +15,13 @@
  * through a snapshot selector, while both the scope and the local drafts
  * change underneath; every projection is rebuilt from the two together.
  */
-/** The nine engine knobs this card edits (mirrors the server ArgpUserSettings). */
+/**
+ * The engine knobs the `dsh-argp` namespace holds (mirrors the server schema).
+ * The card surfaces six of them — two core (windowRatio/retainRatio) plus four
+ * advanced (maxPasses/recencyGuard/turnGuard/sortMode); the remaining three
+ * (minSpanChars/enableSummarize/charsPerToken) are schema-only escape hatches
+ * not exposed in the UI.
+ */
 export interface ArgpUserSettings {
     /** Compaction window as a fraction of the context budget. */
     windowRatio: number;
@@ -39,7 +45,7 @@ export interface ArgpUserSettings {
 /** Settings namespace this card owns (must equal the server-registered one). */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /** Locale keys the ARGP card renders. */
-export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'maxPasses' | 'maxPassesHint' | 'recencyGuard' | 'recencyGuardHint' | 'turnGuard' | 'turnGuardHint' | 'minSpanChars' | 'minSpanCharsHint' | 'enableSummarize' | 'enableSummarizeHint' | 'sortMode' | 'sortModeHint' | 'charsPerToken' | 'charsPerTokenHint' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
+export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'maxPasses' | 'maxPassesHint' | 'recencyGuard' | 'recencyGuardHint' | 'turnGuard' | 'turnGuardHint' | 'sortMode' | 'sortModeHint' | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
 /** English copy. */
 export declare const en: Record<ArgpLocaleKey, string>;
 /** Simplified Chinese copy. */
@@ -200,10 +206,7 @@ export interface ArgpConfigState extends CardShell {
     maxPasses: CardFieldState;
     recencyGuard: CardFieldState;
     turnGuard: CardFieldState;
-    minSpanChars: CardFieldState;
-    enableSummarize: CardFieldState;
     sortMode: CardFieldState;
-    charsPerToken: CardFieldState;
 }
 /** The registration-side face the slot entry injects. */
 export interface ArgpConfigFace extends CardActions {
