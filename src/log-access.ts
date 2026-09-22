@@ -69,6 +69,14 @@ export function turnOf(event: SessionEvent): number | undefined {
 export function eventText(session: Session, seq: number): string {
   const event = sessionEvents(session)[seq]
   if (event === undefined) return ''
+  return eventTextOf(event)
+}
+
+/**
+ * 从单个事件投影模型可见文本（`eventText` 的纯事件形态，P1 收敛：peratom/gate 的
+ * `projectSurfaceText` 私有镜像与本函数逐字相同，现统一委托到这里，单一事实源）。
+ */
+export function eventTextOf(event: SessionEvent): string {
   const data = event.data as Record<string, unknown> | undefined
   const parts: string[] = []
   if (event.type === 'tool/call') {

@@ -4,9 +4,29 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
-## [1.5.0] - 未发布（2026-09-21 起开发；1.4.1 号作废不发布）
+## [1.5.1] - 未发布
 
-> 本条目自 1.5.0 开发起累积：首笔 = 被钳不再等于任务中断（轮中压力剪 + 截断自动续写）；排期 P1–P5 的修复将陆续并入本条目，全部完成并复审后一次性发布。
+**问题**：1.5.0 发布后回归审查发现 `CiteDeclarer` 的幂等记账时机缺陷——`done.add(turn)` 位于所有短路分支**之前**，`no-endpoint`（自动模式路由未就绪 / 启动期 env 未设，属**瞬时态**）命中即把该闭合轮永久标记"已处理"，后端就绪后同一轮重试仍被 `done.has` 跳过 ⇒ **该轮的 citation 边永久缺失**。既有 auto-arm 用例是"turn-1 no-endpoint → turn-2 重试"（两次针对不同轮，`done.has` 永不命中），抓不到此缺陷。
+
+### Fixed
+
+- **`done.add` 下沉到 `backend === null` 检查之后**：仅"过门控且有端点"的轮才记账；`interrupted` / `gate-skipped` / `no-endpoint` 三个短路态一律不记账，可重试。与 compressor 的 `passWatermark`「仅成功规划才推进」同语义。
+
+### Tests
+
+- 补 1.5.0 审查发现的 3 个测试洞（318 → **321**）：
+  - **同轮 no-endpoint 后重试必须真声明**：对**同一闭合轮**连续两次 `declareCurrentTurn`，必然命中幂等门。变异验证：`done.add` 挪回短路之前 ⇒ 本例失败（`record.called` 期望 true 实得 false），还原后通过。
+  - **A-2 wire dump 默认脱敏**：非 hex 标记串断言默认 dump 不含用户消息正文（含 `wireSha256` + role/length 摘要），仅 `ARGP_PERATOM_A2_DEBUG_FULL=1` 才落完整 wire。
+  - **`resolveModelInfo` 挂起被 5s 超时兜底**：信号感知的"永不 resolve"替身 + 6s 守卫赛跑（超时失效 ⇒ 守卫 reject 而非无限挂起）；降级断言走静态默认、`declaredKnown=false`。
+
+### Fixed (CI)
+
+- **`lib/` 产物按 LF 源码重建**：esbuild 把 `sourcesContent`（源码原文）嵌进 `lib/client.js.map`；此前提交的 lib 由 CRLF 工作区构建（map 69.2kb），CI 检出受 `.gitattributes` `eol=lf` 约束重建出 66.7kb ⇒ `git diff --exit-code lib/` 必挂（本地 CRLF 工作区不复现）。15 个 `src/` 文件归一 LF 后重建提交。
+- `package-lock.json` 根版本 1.3.0 → 1.5.0 对齐（不动依赖解析）。
+
+## [1.5.0] - 2026-09-21（轮中压力剪 + 截断自动续写；1.4.1 号作废不发布）
+
+> 本条目自 1.5.0 开发起累积：首笔 = 被钳不再等于任务中断（轮中压力剪 + 截断自动续写）；排期 P1–P5 的修复全部并入本条目后一次性发布。
 
 **问题（用户纠正 + 存档实证）**：1.4.0 把轮中主动压缩关掉、只留"下一个 pre-step 强制剪"，且续写要等用户开口。但上下文超限的两个主要形态恰恰都在轮内——(a) **拿到 tool result 之后才超**（L1 只在轮初判定，看不见它）；(b) **输出过程中被钳**。两者都应在图剪之后**自动继续推进当前轮次的任务**，而 1.4.0 做不到：存档全库 5/5 次钳制后面紧跟的都是 `step/end > turn/end`（`77c64e66`@2318/2326/2356、`a56061c2`@1071/1081/1091/1103；其中 `a56061c2`@1071 发生在 **turn 5 step 15**——典型"轮内长跑被 tool result 推爆"），没有一次续跑。
 

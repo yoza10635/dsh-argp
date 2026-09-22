@@ -55,6 +55,11 @@ export declare function turnOf(event: SessionEvent): number | undefined;
  */
 export declare function eventText(session: Session, seq: number): string;
 /**
+ * 从单个事件投影模型可见文本（`eventText` 的纯事件形态，P1 收敛：peratom/gate 的
+ * `projectSurfaceText` 私有镜像与本函数逐字相同，现统一委托到这里，单一事实源）。
+ */
+export declare function eventTextOf(event: SessionEvent): string;
+/**
  * 日志尾部的 open turn（从日志末尾向前找：最近的 turn/start 且其后无 turn/end）。
  *
  * P5 Wave 3 第 3 步：自 `ArgpGraphEngine.detectOpenTurn`（private 方法）与

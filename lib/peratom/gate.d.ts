@@ -65,8 +65,11 @@ export declare function buildToolNameIndex(events: readonly SessionEvent[]): Map
 export declare function buildVersionChainIndex(events: readonly SessionEvent[]): VersionChainIndex;
 /**
  * 事件 → 模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
- * 与 argp-graph-engine eventText 同口径的本模块私有镜像：gate 保持叶子纯净，
- * 不为投影功能反向依赖 Stage-2 引擎模块。
+ *
+ * P1 收敛：原先这里是与 `log-access.eventText` 逐字相同的"私有镜像"（注释声称
+ * "gate 保持叶子纯净"——但 gate 本就 import 本模块的 `turnOf`，且 `log-access` 是
+ * 叶子而非 Stage-2 引擎，镜像既无隔离收益又造成双份维护）。现统一委托
+ * `eventTextOf`（单一事实源），本名保留以维持 peratom/测试的既有 import。
  */
 export declare function projectSurfaceText(event: SessionEvent): string;
 /** need_compress 三档（false=保原文 / summary=一句话概括 / extract=关键内容摘录）。 */
