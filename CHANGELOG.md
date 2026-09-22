@@ -4,6 +4,25 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.6.0] - 2026-09-22（剪枝终止条件补全 + id/seq 错配修复 + 配置卡片简化）
+
+**问题**：1.5.1 的剪枝 pass 循环有两个潜伏缺陷——(a) 候选耗尽降级到闭包生命周期时，`selectClosureToMerge` 的 `alreadyPruned` 误传**原子 id 集合**（`pruned.keys()`），但其内部按 **seq** 过滤，id≠seq 永不命中 ⇒ 已剪闭包被反复选中 → 空闭包 `continue` 死转、`force_prune` 饿死（压缩率仅 ~5%，c2344 空转 161.6s）；(b) 循环缺少「一轮无进展」判停，极端空转只能靠 `maxPasses` 硬上限兜底（旧默认 16，对 7/9 实战快照 binding，把「剪到达标」压成「增量式 16 组」）。
+
+### Fixed
+
+- **`selectClosureToMerge` 的 `alreadyPruned` 改传 seq 集合**：原传 `pruned.keys()`（原子 id，局部 0 递增），内部 `seqs.filter(s => !alreadyPruned.has(s))` 按事件 seq（数千量级）过滤 ⇒ id 与 seq 永不碰撞 ⇒ 已剪原子永不被排除。改传 `pruned.values()` 的 seq 集合后，空闭包消失、`force_prune` 可达。c2344 剪枝率 5.2%→96.5%、161.6s→1.35s（127×）。
+- **剪枝 pass 循环新增「无进展固定点」判停**：某 pass 未新增任何原子（`pruned.size` 不变）即 break（O(1)/pass）。`pruned` 单调增、每 pass 结果仅由 `pruned` 决定 ⇒ 无进展即真固定点，再跑必空转。正常终止仍靠「压缩率达标 / 全保护」，此判停只兜底任何残留空转。
+
+### Changed
+
+- **`DEFAULT_MAX_PASSES` 16 → 10000（退化为纯安全上限）**：修 id/seq 后空转本已消失，正常压缩在「达标 / 无可剪 / 无进展」处自然停，`maxPasses` 不再 binding（旧 16 对 7/9 实战快照 binding）。提到 10000 仅作极端空转的安全网。
+- **配置卡片简化为「2 核心 + 4 高级」+ 紧凑文案**：主视图只留 `windowRatio`（剪枝触发阈值）+ `retainRatio`（压缩率）两个核心旋钮；`maxPasses` / `recencyGuard` / `turnGuard` / `sortMode` 折叠进「高级设置」；`minSpanChars` / `enableSummarize` / `charsPerToken` 降为 schema-only 逃生阀（UI 不再暴露）。6 个暴露旋钮统一「术语 · 简短说明」紧凑文案（zh/en 双写）；`sortMode` 选项改友好标签（信息密度优先 / 按出现顺序 / 密度+版本链）。
+
+### 口径说明
+
+- **剪枝 vs 压缩**：本插件 **剪枝(prune)=图剪枝 pass 循环**，**压缩(compaction)=整体压缩事件/retain 目标**，二者文案不混用。
+- **压缩率 = retain 比例**：`retainRatio` 0.2 ⇒ 压缩率 20%（剪枝率 80%）。c2344 的「96.5%」是 **JSON-wire 口径的剪枝率**（非压缩率）；其「冲过 20% 目标」源于**闭包粒度**（闭包不可拆 + 每 pass 一个 + lifecycle 最旧优先退休），对 context-overflow 触发是必要的 by-design（引擎必须压到硬限以下）。
+
 ## [1.5.1] - 2026-09-22（doneTurns 记账修复 + retain 恒定压缩率 + drag-weight 排序）
 
 **问题**：1.5.0 发布后回归审查发现 `CiteDeclarer` 的幂等记账时机缺陷——`done.add(turn)` 位于所有短路分支**之前**，`no-endpoint`（自动模式路由未就绪 / 启动期 env 未设，属**瞬时态**）命中即把该闭合轮永久标记"已处理"，后端就绪后同一轮重试仍被 `done.has` 跳过 ⇒ **该轮的 citation 边永久缺失**。既有 auto-arm 用例是"turn-1 no-endpoint → turn-2 重试"（两次针对不同轮，`done.has` 永不命中），抓不到此缺陷。
