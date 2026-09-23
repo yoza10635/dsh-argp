@@ -301,7 +301,7 @@ test('prune emits compaction/prune (ledger) + compaction/summary (UI display)', 
     const pruneEvents = events.filter(e => e.type === 'compaction/prune')
     const summaryEvents = events.filter(e => e.type === 'compaction/summary')
     assert.equal(pruneEvents.length, 1)
-    // 2026-08-28 设计修订（docs/webui-liaison-2026-08-28.md §8）：compaction/summary
+    // 2026-08-28 设计修订（内部协作记录 §8，不随包发布）：compaction/summary
     // 是宿主 CompactionNodeView 的唯一显示文本通道——不发则 UI 节点显示"压缩摘要不可用"。
     // 账本语义不变：权威剪枝账本仍只认 compaction/prune，summary 仅供 UI 展示。
     assert.equal(summaryEvents.length, 1)

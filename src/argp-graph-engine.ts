@@ -858,7 +858,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * 真实 token 锚点回填（2026-09-21 修，问题定位见 docs/audit-prune-priority / 当日台账）。
+   * 真实 token 锚点回填（2026-09-21 修，问题定位见内部根因台账）。
    *
    * 背景：`lastRealPromptTokens` / `lastRealAnchorSeq` 原先**只**由 `ctx.on('session/event')`
    * 的 `assistant/message` 处理器写入。宿主进程重启后 resume 的会话若不再把该事件喂给本

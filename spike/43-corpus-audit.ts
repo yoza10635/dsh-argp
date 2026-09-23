@@ -1,5 +1,5 @@
 /**
- * spike 43 — 受控语料自检（docs/corpus-run-spec.md 的配套审计）
+ * spike 43 — 受控语料自检（受控语料跑批规格书的配套审计；该规格书为本地内部文档，不随包发布）
  *
  * 跑完一份受控 session 后立刻判定：**这份语料能支撑哪些测量、不能支撑哪些**。
  * 不给"大概行"——逐条硬判，不过就不要拿它下结论。
@@ -279,7 +279,7 @@ function main(): void {
     console.log('[skip] 未找到 session 文件（给路径或先跑一份受控 session）——退出码 0')
     return
   }
-  console.log(`[spike43] 受控语料自检（规格：docs/corpus-run-spec.md）`)
+  console.log(`[spike43] 受控语料自检（规格：本地跑批规格书，不随包发布）`)
   console.log(`  session: ${path.basename(path.dirname(file))}`)
   const r = auditSession(file)
 
@@ -338,7 +338,7 @@ function main(): void {
   console.log(`    ✘ 收敛/指纹回归——**需要跨多轮压缩序列**，单份 session 不够`)
 
   const report = {
-    meta: { runAt: new Date().toISOString(), privacy: '仅聚合量', spec: 'docs/corpus-run-spec.md' },
+    meta: { runAt: new Date().toISOString(), privacy: '仅聚合量', spec: 'corpus-run-spec（本地内部规格书，不随包发布）' },
     session: r.file,
     structure: { turns: r.turns, atoms: r.atoms, dataAtoms: r.dataAtoms, chars: r.chars, compactionStarts: r.compactionStarts, pruneEvents: r.pruneEvents, prunedSeqs: r.prunedSeqs, replaces: r.replaces },
     scenario: { cites: r.cites, assistantAppends: r.assistantAppends, citeRate, crossTurnHandles: r.crossTurnHandles, toolResultWithTokens: r.toolResultWithTokens, bigToolResults: r.bigToolResults, edges: r.edges, singleTokenEdges: r.singleTokenEdges },

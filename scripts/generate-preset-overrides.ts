@@ -14,8 +14,9 @@
  * 用法：
  *   node --import ./scripts/ts-import-rewrite-loader.mjs scripts/generate-preset-overrides.ts [presetsDir]
  *
- * presetsDir 缺省依次取：argv[2] → 环境变量 DSH_WEB_APP_PRESETS → 本机
- * deepseek-harness checkout 的 packages/bundle/web-app/presets。
+ * presetsDir 缺省依次取：argv[2] → 环境变量 DSH_WEB_APP_PRESETS → 与插件仓库**同级**
+ * 的 deepseek-harness checkout（`<repo>/../deepseek-harness/packages/bundle/web-app/presets`）。
+ * 若宿主检出不在同级位置，请显式传 argv[2] 或设 DSH_WEB_APP_PRESETS。
  */
 import { readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -32,9 +33,10 @@ const MARK_END = '# === end ARGP preset overrides ==='
 const PRESETS = ['standard', 'cordis', 'ptc'] as const
 
 function defaultPresetsDir(): string {
-  if (process.env.DSH_WEB_APP_PRESETS !== undefined) return resolve(process.env.DSH_WEB_APP_PRESETS)
-  const checkout = join(resolve('C:\\Agent\\deepseek-harness'), 'packages', 'bundle', 'web-app', 'presets')
-  return checkout
+  const fromEnv = process.env.DSH_WEB_APP_PRESETS
+  if (fromEnv !== undefined) return resolve(fromEnv)
+  // 与插件仓库同级的宿主检出——不写死任何绝对路径 / 用户目录。
+  return join(resolve(ROOT, '..', 'deepseek-harness'), 'packages', 'bundle', 'web-app', 'presets')
 }
 
 async function main(): Promise<void> {

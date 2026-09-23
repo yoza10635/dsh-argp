@@ -60,7 +60,7 @@
 
 - 全量 **370 例**（`npm run check`：typecheck + typecheck:spike + smoke + test + build）。逐版本增量：beta.0 → 351 绿（+17）、beta.1 → 354（14 例 preset-cleaner 重写）、beta.2 → 359（`peratom-flush-reload` 5 例）、beta.3 → 364（`client` 第 ④ 层 +5）、beta.4/beta.5 复跑、**1.7.0 → 370**。
 - **变异实测**（在独立 worktree 注入候选改动后摘除修复，主树零风险）：P0-A（per-atom prune）⇒ 1 red；P0-B（prune-tx `sourceCommandId`）⇒ 1 red；P0-B₂（只摘 checkpoint 第 2 参）⇒ 同 1 red；**④（`ended` 守卫，两处同摘）⇒ 恰 2 red**（`compaction-tx-brackets` ① + `peratom-flush-reload` ①c），而反向对照 ② 仍绿 ⇒ 判别力精准、非平凡通过。
-- **端到端契约验证**（`dsh-argp-itest`）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑 `compactNow`——修复路径三事件 + checkpoint 一致、invariant 实时通过；对照旧形态被 invariant 拦截。
+- **端到端契约验证**（独立集成测试工程，不入本仓库）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑 `compactNow`——修复路径三事件 + checkpoint 一致、invariant 实时通过；对照旧形态被 invariant 拦截。
 
 ### 已知问题与限制
 
@@ -90,7 +90,7 @@
 ### Tests
 
 - `test/manual-compact.test.ts` 新增回归例「sourceCommandId 一致性——start/summary/end 三事件同值」：`/compact` 带命令 ID 后，数据层直接断言 start/summary/end **及压缩 checkpoint** 的 `sourceCommandId` 逐字相等（确定性、不依赖 invariant 是否安装）。旧代码下 summary/end/checkpoint 为 `undefined` ≠ start 的命令 ID，此例必失败——正是本次 P0 的回归锁。
-- 端到端契约验证（`dsh-argp-itest/verify-scid.mjs`）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑已构建 beta.5 的 `compactNow`——① 修复路径三事件 + checkpoint 一致、invariant 实时校验通过；② 对照旧形态（start 带 scid / summary 不带）被 invariant 拦截（`compaction/summary sourceCommandId undefined does not match compaction/start`）——证明测试能区分新旧形态。
+- 端到端契约验证（独立集成测试工程中的 `verify-scid` 脚本，不入本仓库）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑已构建 beta.5 的 `compactNow`——① 修复路径三事件 + checkpoint 一致、invariant 实时校验通过；② 对照旧形态（start 带 scid / summary 不带）被 invariant 拦截（`compaction/summary sourceCommandId undefined does not match compaction/start`）——证明测试能区分新旧形态。
 - 集成测试 T4 后续的最终重启（首次含 `/compact` 图剪事务）：修复前 `SessionFormatError`，修复后会话正常加载。
 - `npm run check` 全绿：typecheck + typecheck:spike + smoke + test（365 例）+ build。
 
@@ -448,7 +448,7 @@
 > **口径勘误（同日，重要）**：复盘初期据 `profiles/web/cordis.patch.yml` 的 `windowRatio: 0.3815`（09-17 层）推定"压力检查迟触发 2.1×、图剪全程只跑 1 次 = 缺陷"，属**读错配置层**。该会话实际生效的是更外层的 `~/.dsh/settings.yaml` → `dsh-argp.windowRatio: 0.8`（写入时刻 03:14:56，turn 1 内），触发线 = 262144 × 0.8 = **209,715**。
 > 按 0.8 复算：该会话 232 个请求中**仅 1 个**越过触发线（turn 6 step 84，真实 210,719 = 线的 100.5%）；锚定估算在 **pre-step 85 = 213,070 ≥ 209,715** 触发（step 84 的估算 209,639 差 **76 tok** 未越）⇒ **引擎在越线后一步即压缩，行为与设计完全一致**。"图剪只跑 1 次"是"只有一次越线"的必然结果，非缺陷。
 > 同理，"锚点丢失"这一诊断不成立：若锚点真的缺失，chars 口径在该会话的上限只有 ≈118K，**永不可能越过 209,715**，与实测的触发事件自相矛盾。故下文 ① 的定位由"修复生产缺陷"下调为"补齐 resume 首请求前的口径精度"。
-> ✅ **配置层对齐（同日）**：`windowRatio` 原存两处不一致值——`~/.dsh/settings.yaml`（0.8，运行时生效）与 `~/.dsh/profiles/web/cordis.patch.yml`（0.3815，2026-09-15 语料跑批用）。现已把 profile 层同样改为 **0.8**，两层一致 ⇒ 既消除"settings 键被重置即静默滑回 100K 触发线"的陷阱，也使 0.8/0.2（触发线 ≈209,715 / 保留 ≈41,943）成为唯一口径。代码内置默认值本就是 0.8（schema `:76`、回退 `:138`、构造器 `:643`），无需改动。跑语料若需 100K 触发线，请在跑批 profile 显式覆盖（`docs/corpus-run-spec.md` §3.4 已加现状注记）。
+> ✅ **配置层对齐（同日）**：`windowRatio` 原存两处不一致值——`~/.dsh/settings.yaml`（0.8，运行时生效）与 `~/.dsh/profiles/web/cordis.patch.yml`（0.3815，2026-09-15 语料跑批用）。现已把 profile 层同样改为 **0.8**，两层一致 ⇒ 既消除"settings 键被重置即静默滑回 100K 触发线"的陷阱，也使 0.8/0.2（触发线 ≈209,715 / 保留 ≈41,943）成为唯一口径。代码内置默认值本就是 0.8（schema `:76`、回退 `:138`、构造器 `:643`），无需改动。跑语料若需 100K 触发线，请在跑批 profile 显式覆盖（受控语料跑批规格书 §3.4 已加现状注记；该规格书为内部文档，不随包发布）。
 
 ### Fixed
 
@@ -499,7 +499,7 @@
 
 ### Fixed
 
-- **§11.8① 墓碑地板不可再剪（tombstone-merge）**：X 原子在 `isAtomCandidate` 结构性不可剪（`type ∉ {A,R,U}` 直接 return false）→ 每次压缩注入的 `[elided …]` 墓碑单调累积成"地板"，剪到候选耗尽仍超窗。受控语料两臂独立复现同形态 `CONTEXT_WINDOW_EXCEEDED`（run1 T17 / run2 T16，provider 报错数字同为 `141,313+32,768>174,080`）；run2 dump 重放投影实测 **1297/1310 surface 节点是墓碑、284,786 chars ≈142K tok、最长连续段 1295**。修复：新增导出纯函数 `isMergeableTombstone`（三判据 `[elided` 开头 + `pruned by ARGP` + `recall_pruned`；宿主注入 / 官方 checkpoint / tool 占位墓碑不合并）+ `consolidateTombstones()`（找第一段 ≥N 连续墓碑，tool-pairing 平衡校验后复用 `pruneIntervals` 事务骨架归并为单条聚合墓碑——聚合碑保持可再归并形态，地板随轮次收敛到常数；失败非致命）；挂点 `compactIfNeeded` 压力门槛后、建图前（热路径零开销）。旋钮 `tombstoneMergeMinRun`（默认 8，**0=关闭**，对照臂 A/B 用）。端到端实测：run2 T16 归并 ×1294 碑 → 1 条 192 字符聚合碑，surface elided 从 1297 节点/285K chars 塌至 6 节点/1459 chars，T16–T22 全部跑完、零再撞墙（237/237 测试绿，新增 4 项）。详见 `docs/corpus-run-spec.md` §11.8.1。
+- **§11.8① 墓碑地板不可再剪（tombstone-merge）**：X 原子在 `isAtomCandidate` 结构性不可剪（`type ∉ {A,R,U}` 直接 return false）→ 每次压缩注入的 `[elided …]` 墓碑单调累积成"地板"，剪到候选耗尽仍超窗。受控语料两臂独立复现同形态 `CONTEXT_WINDOW_EXCEEDED`（run1 T17 / run2 T16，provider 报错数字同为 `141,313+32,768>174,080`）；run2 dump 重放投影实测 **1297/1310 surface 节点是墓碑、284,786 chars ≈142K tok、最长连续段 1295**。修复：新增导出纯函数 `isMergeableTombstone`（三判据 `[elided` 开头 + `pruned by ARGP` + `recall_pruned`；宿主注入 / 官方 checkpoint / tool 占位墓碑不合并）+ `consolidateTombstones()`（找第一段 ≥N 连续墓碑，tool-pairing 平衡校验后复用 `pruneIntervals` 事务骨架归并为单条聚合墓碑——聚合碑保持可再归并形态，地板随轮次收敛到常数；失败非致命）；挂点 `compactIfNeeded` 压力门槛后、建图前（热路径零开销）。旋钮 `tombstoneMergeMinRun`（默认 8，**0=关闭**，对照臂 A/B 用）。端到端实测：run2 T16 归并 ×1294 碑 → 1 条 192 字符聚合碑，surface elided 从 1297 节点/285K chars 塌至 6 节点/1459 chars，T16–T22 全部跑完、零再撞墙（237/237 测试绿，新增 4 项）。详见受控语料跑批规格书 §11.8.1（内部文档，不随包发布）。
 
 ### Added
 

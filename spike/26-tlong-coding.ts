@@ -1,7 +1,7 @@
 /**
  * spike 26：real-coding t-long 长程复测（编码任务形态，50 轮，DeepSeek v4-flash）
  *
- * 设计稿：docs/experiment-realcoding-design.md
+ * 设计稿：内部实验设计文档（本地文档区，不随包发布）
  * 与 spike 6（合成遥测形态）的骨架同构，任务体换成"实现一个 mini 限流微服务"——
  * 真实工具流量（write/read/edit 交错 + 错误-纠正循环），复测三件事：
  *   1. R 找回闭环在异构内容上依然成立（合成 7/7 → 真实内容分布复测）

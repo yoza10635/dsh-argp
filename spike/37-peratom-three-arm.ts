@@ -765,7 +765,7 @@ fs.writeFileSync(path.join(outDir, 'events.jsonl'), agent.session.events.map(e =
 // P5-bis：E 臂提前死亡属预期（职责=K_no 校准），不计失败
 verdict('P5-turns', (completedTurns === items.length && !aborted) || (ARM === 'E' && deathReason === 'context-window-exceeded'),
   '完成轮数 ' + completedTurns + '/' + items.length + (aborted ? '（中止于 ' + maxSustained + '，原因 ' + (deathReason ?? 'retry-exhausted') + '）' : ''))
-// P5-bis 轮次放大判定链（判据预注册见 docs/p5bis-turn-amplification.md）：
+// P5-bis 轮次放大判定链（判据预注册见内部实验设计文档，不随包发布）：
 // K_no = 反事实死亡轮-1；K_arm = completedTurns；放大 = K_arm / K_no。
 if (ARM === 'E') {
   verdict('P5-K-no-observed', deathTurn !== undefined,
