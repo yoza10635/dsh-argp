@@ -8,6 +8,11 @@
  *     locale 服务存在时以 dsh-argp 命名空间注册卡片文案。
  *  ③ 跨端契约：client 的 ARG_SETTINGS_KEY === server 端 settings.register 的
  *     namespace 键（两者不一致则设置卡片永远进不了渲染交集——跨端 bug）。
+ *  ④ re-apply 安全：两处注册都由 ctx.effect 持有 disposer；宿主 retract
+ *     （disable→enable / HMR / 版本变更 = dispose fiber + 重新 apply）后二次
+ *     apply 不得抛 `locale namespace "dsh-argp" already has locale "zh"`。
+ *     locale stub 忠实复刻宿主"重复注册即抛"语义，并配负控证明修复依赖回收
+ *     而非 stub 宽容。
  *
  *  P4.6：numberField/textField 的 parse 范围/整数/枚举校验——越界/非整数/非法
  *     枚举值 → parse 返回 undefined（CardFieldState.invalid，阻断保存），
@@ -84,19 +89,78 @@ interface AssistantDisplaySeam {
   register(filter: DisplayFilter): () => void
 }
 
-/** locale 服务面。 */
+/** locale 服务面（register 返回移除本次登记的 disposer）。 */
 interface LocaleService {
-  register(namespace: string, dictionary: { readonly zh: Record<string, string>; readonly en: Record<string, string> }): void
+  register(namespace: string, dictionary: { readonly zh: Record<string, string>; readonly en: Record<string, string> }): () => void
 }
 
-/** 最小 client ctx：只有 get（无 inject → 设置卡片注册路径提前退出，即降级路径）。 */
-interface ArgpClientCtxStub {
+/**
+ * 最小 client ctx：`get` + `effect`。无 inject → 设置卡片注册路径提前退出
+ * （即降级路径），但 effect 通道完整，可模拟宿主 retract（dispose fiber）。
+ */
+interface EffectHost {
   get<T>(name: string): T | undefined
+  effect(execute: () => unknown, label?: string): unknown
+  /** 模拟 fiber 卸载：按逆序运行已收集的 effect disposer（同 cordis）。 */
+  disposeEffects(): void
+  /** 本次 apply 注册的 effect 标签（诊断/契约断言用）。 */
+  effectLabels(): string[]
 }
 
-function makeCtx(services: Record<string, unknown>): ArgpClientCtxStub {
+function makeCtx(services: Record<string, unknown>): EffectHost {
+  const disposers: Array<() => void> = []
+  const labels: string[] = []
   return {
     get: (name) => (name in services ? (services[name] as never) : undefined),
+    effect: (execute, label) => {
+      labels.push(label ?? 'anonymous')
+      const disposer = execute()
+      if (typeof disposer === 'function') disposers.push(disposer as () => void)
+      return disposer
+    },
+    disposeEffects: () => {
+      for (const disposer of disposers.splice(0).reverse()) disposer()
+    },
+    effectLabels: () => labels.slice(),
+  }
+}
+
+/**
+ * dsh-client-locale 的最小忠实镜像：同 namespace + 同 locale 二次注册**抛错**
+ * （宿主 lib/client.js:1393
+ * `locale namespace "${ns}" already has locale "${locale}"`），
+ * `register` 返回移除本次登记的 disposer。修复前 apply() 泄漏字典 ⇒ 宿主
+ * retract 后重新 apply 必抛，正是「插件未能完成同步」的报错。
+ */
+function makeLocaleService(): {
+  service: LocaleService
+  locales: (namespace: string) => string[]
+  namespaces: () => string[]
+} {
+  const dicts = new Map<string, Set<string>>()
+  const service: LocaleService = {
+    register: (namespace, dictionary) => {
+      let locales = dicts.get(namespace)
+      if (locales === undefined) {
+        locales = new Set<string>()
+        dicts.set(namespace, locales)
+      }
+      const added = Object.keys(dictionary)
+      for (const locale of added) {
+        if (locales.has(locale)) {
+          throw new Error(`locale namespace "${namespace}" already has locale "${locale}"`)
+        }
+      }
+      for (const locale of added) locales.add(locale)
+      return () => {
+        for (const locale of added) locales.delete(locale)
+      }
+    },
+  }
+  return {
+    service,
+    locales: (namespace) => [...(dicts.get(namespace) ?? [])].sort(),
+    namespaces: () => [...dicts.keys()],
   }
 }
 
@@ -188,7 +252,7 @@ test('② assistantDisplay 缺失 → apply() 不抛错', () => {
 test('② locale 服务存在 → 以 dsh-argp 命名空间注册卡片文案，不抛错', () => {
   const seen: string[] = []
   const locale: LocaleService = {
-    register: (ns) => { seen.push(ns) },
+    register: (ns) => { seen.push(ns); return () => {} },
   }
   assert.doesNotThrow(() => apply(makeCtx({ locale })))
   assert.deepEqual(seen, [clientKey], 'locale.register 以 dsh-argp 命名空间调用')
@@ -314,4 +378,77 @@ test('P4.6 CardForm：sortMode 非法枚举草稿 → invalid 阻断保存', asy
   form.actions().save()
   await tick()
   assert.equal(snapshot().user?.sortMode, 'legacy')
+})
+
+// ---------------------------------------------------------------------------
+// ④ re-apply 安全：宿主 retract（dispose fiber）后重新 apply 必须合法
+//
+// 宿主把插件 disable→enable、HMR 重载、或客户端版本变更都实现为
+// 「dispose 旧 fiber → 重新 apply client half」（dsh-cordis-client-runner
+// lib/client.js:637 `fiber?.dispose()`）。locale 服务对同 namespace+locale
+// 的二次注册抛错（dsh-client-locale lib/client.js:1393），所以 apply() 的注册
+// 必须挂 ctx.effect 由 fiber 持有 disposer；否则第二次 apply 抛
+// `locale namespace "dsh-argp" already has locale "zh"`，宿主以
+// 「插件未能完成同步；服务端的启用状态保持不变」报回。
+// ---------------------------------------------------------------------------
+
+test('④ apply 的两处注册都挂在 effect 上（标签即契约）', () => {
+  const locale = makeLocaleService()
+  const ctx = makeCtx({ locale: locale.service, assistantDisplay: { register: () => () => {} } })
+  apply(ctx)
+  assert.deepEqual(
+    ctx.effectLabels(),
+    ['dsh-argp: cites display filter', 'dsh-argp: settings card dictionaries'],
+    '两处注册都必须由 ctx.effect 持有 disposer（否则 re-apply 泄漏/叠加）',
+  )
+})
+
+test('④ re-apply：effect disposal 后二次 apply 不抛，字典被正确摘除', () => {
+  const locale = makeLocaleService()
+  const ctx = makeCtx({ locale: locale.service })
+
+  apply(ctx)
+  assert.deepEqual(locale.locales(clientKey), ['en', 'zh'], '首次 apply 登记 zh+en')
+
+  // 宿主 retract：dispose fiber → effect disposer 摘除本次登记的字典
+  ctx.disposeEffects()
+  assert.deepEqual(locale.locales(clientKey), [], 'disposer 必须摘除本次登记的字典')
+
+  // 重新激活同一 client half（enable 状态同步 / HMR / 版本变更路径）
+  assert.doesNotThrow(() => apply(ctx), '二次 apply 必须合法（这正是被报告的失败点）')
+  assert.deepEqual(locale.locales(clientKey), ['en', 'zh'], '二次 apply 后字典回到 zh+en')
+})
+
+test('④ 负控：未 dispose 就二次 apply → 忠实镜像的宿主 locale 必抛', () => {
+  const locale = makeLocaleService()
+  const ctx = makeCtx({ locale: locale.service })
+  apply(ctx)
+  // 证明：① stub 忠实复刻宿主语义；② 修复确实依赖 effect 回收，而非 stub 宽容。
+  assert.throws(
+    () => apply(ctx),
+    /locale namespace "dsh-argp" already has locale "zh"/,
+    '未回收就重注册必须抛 —— 与宿主 dsh-client-locale 行为一致',
+  )
+})
+
+test('④ re-apply：assistantDisplay 过滤器不叠加（dispose 后仍只有一个）', () => {
+  let active = 0
+  const ctx = makeCtx({
+    assistantDisplay: {
+      register: () => { active += 1; return () => { active -= 1 } },
+    },
+  })
+  apply(ctx)
+  assert.equal(active, 1, '首次 apply 注册一个过滤器')
+  ctx.disposeEffects()
+  assert.equal(active, 0, 'disposer 必须解除注册')
+  apply(ctx)
+  assert.equal(active, 1, '二次 apply 不得叠加第二个过滤器')
+})
+
+test('④ 无 effect 的退化 ctx：注册照旧发生（无 fiber 可持有 disposer 时不抛）', () => {
+  const locale = makeLocaleService()
+  const bare = { get: (name: string) => (name === 'locale' ? (locale.service as never) : undefined) }
+  assert.doesNotThrow(() => apply(bare))
+  assert.deepEqual(locale.locales(clientKey), ['en', 'zh'], '退化路径仍完成注册')
 })

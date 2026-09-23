@@ -32,6 +32,14 @@
  * rest of this bundle keeps working. A third-party bundle carries zero
  * cross-plugin value imports (client bundle purity gate) — collaboration
  * happens through the cordis service, the sanctioned cross-plugin channel.
+ *
+ * Re-apply safety: both registrations this bundle makes are effect-owned
+ * (`registerDisposable`), because the host retracts a plugin by disposing its
+ * fiber and applying the client half afresh — the settings page's enable-state
+ * sync, an HMR reload, and a version bump all take that path. A leaked locale
+ * dictionary makes that second apply throw (`locale namespace "dsh-argp"
+ * already has locale "zh"`), which the page surfaces as "插件未能完成同步"
+ * while leaving the server-side enable state unchanged.
  */
 
 import { stripCitesTail } from '../cites-strip.js'
@@ -81,21 +89,72 @@ interface SlotsService {
   ): unknown
 }
 
-/** Structural face of the locale service (cordis). */
+/**
+ * Structural face of the locale service (cordis).
+ *
+ * `register` returns the disposer that removes exactly the dictionaries this
+ * call added. The disposer is load-bearing, not decorative: registering a
+ * namespace+locale the service already holds THROWS — `locale namespace
+ * "dsh-argp" already has locale "zh"` — so the disposer is the only thing that
+ * makes a second `apply()` of this bundle legal (see `registerDisposable`).
+ */
 interface LocaleService {
-  register(namespace: string, dictionary: { readonly zh: Record<string, string>; readonly en: Record<string, string> }): void
+  register(
+    namespace: string,
+    dictionary: { readonly zh: Record<string, string>; readonly en: Record<string, string> },
+  ): () => void
 }
 
 /** Structural root context the cordis loader provides to apply. */
 interface ArgpClientContext {
   /** cordis optional service fetch: returns undefined for absent services. */
   get<T>(name: string): T | undefined
+  /**
+   * cordis disposal-aware effect: runs `execute` now and disposes whatever it
+   * returns when the owning fiber unloads or is replaced. Optional only for
+   * degenerate hosts/stubs — every real client context carries it.
+   */
+  effect?(execute: () => unknown, label?: string): unknown
 }
 
 /** The injection entry point a client context exposes for waiting on a service. */
 interface InjectableContext {
   /** Run `callback` once every named service is composed; re-run on recompose. */
   inject(services: string[], callback: (scoped: ArgpClientContext) => void): void
+}
+
+/**
+ * Run one registration inside a cordis effect so its disposer is owned by the
+ * plugin fiber.
+ *
+ * Required for re-apply safety. The host retracts a plugin by disposing its
+ * fiber and applying the (possibly new) client half afresh — the enable-state
+ * sync on the settings page, an HMR reload, and a version bump all take that
+ * path. Two of our registrations are single-shot by contract:
+ *
+ * - `locale.register(ns, dict)` throws on a namespace+locale it already holds,
+ *   so a leaked dictionary turns every later apply into
+ *   `locale namespace "dsh-argp" already has locale "zh"` and the page reports
+ *   a failed sync instead of activating the plugin.
+ * - `assistantDisplay.register(filter)` would silently stack a second filter.
+ *
+ * Every stock client plugin wraps its registration the same way
+ * (`ctx.effect(() => ctx.locale.register(NS, {...}))`), which is what makes
+ * their reloads safe. The callback returns the service's own disposer, so
+ * cordis runs it at fiber teardown.
+ *
+ * @param ctx - the browser plugin context.
+ * @param execute - the registration call; returns its disposer.
+ * @param label - cordis effect label, surfaced in disposal diagnostics.
+ */
+function registerDisposable(ctx: ArgpClientContext, execute: () => unknown, label: string): void {
+  if (typeof ctx.effect === 'function') {
+    ctx.effect(execute, label)
+    return
+  }
+  // Degenerate host without `effect` (structural stubs): still register, but
+  // there is no fiber to own the disposer.
+  execute()
 }
 
 /**
@@ -128,8 +187,14 @@ function registerArgpSettingsCard(ctx: ArgpClientContext): void {
   const locale = ctx.get<LocaleService>('locale')
   if (locale?.register !== undefined) {
     // Register the card's copy under its own namespace; the slot's `locale`
-    // field points the card's `t` at it.
-    locale.register(ARG_SETTINGS_KEY, { zh, en })
+    // field points the card's `t` at it. Effect-wrapped so a re-apply disposes
+    // the previous dictionary first — a leaked one makes the service throw
+    // (see `registerDisposable`).
+    registerDisposable(
+      ctx,
+      () => locale.register(ARG_SETTINGS_KEY, { zh, en }),
+      'dsh-argp: settings card dictionaries',
+    )
   }
 
   const injectable = ctx as unknown as InjectableContext
@@ -162,7 +227,9 @@ function registerArgpSettingsCard(ctx: ArgpClientContext): void {
 export function apply(ctx: ArgpClientContext): void {
   const display = ctx.get<AssistantDisplaySeam>('assistantDisplay')
   if (display?.register !== undefined) {
-    display.register((blocks) => {
+    // Effect-wrapped for the same reason as the locale dictionary: a re-apply
+    // that kept the old filter would stack a second one on the render seam.
+    registerDisposable(ctx, () => display.register((blocks) => {
       // Only the trailing text block can carry the protocol marker.
       let lastText = -1
       for (let i = blocks.length - 1; i >= 0; i -= 1) {
@@ -179,7 +246,7 @@ export function apply(ctx: ArgpClientContext): void {
       const next = blocks.slice()
       next[lastText] = { ...blocks[lastText], text: body }
       return next
-    })
+    }), 'dsh-argp: cites display filter')
   }
 
   registerArgpSettingsCard(ctx)

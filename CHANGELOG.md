@@ -4,6 +4,31 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.7.0-beta.3] - 2026-09-23（客户端 locale 注册泄漏：插件 enable/disable 与设置页同步失败）
+
+> **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.2（Issue #2 加载期契约修复）。本版修**客户端 half 的注册泄漏**——它让 dsh-argp 在「宿主 retract 后重新激活」这条路径上**必然**失败，也就是设置页里的插件 enable/disable、客户端版本变更（每次装新版都会触发）、HMR 重载。
+
+**现象**：设置页报 `dsh-argp: Error: locale namespace "dsh-argp" already has locale "zh"`，并提示「本页面的插件未能完成同步；服务端的启用状态保持不变」⇒ 激活事务被整段回滚，插件状态无法同步。
+
+**根因**：`src/client/index.ts` 的 `apply()` 里两处注册都没把 disposer 交给 fiber：
+
+- `locale.register('dsh-argp', { zh, en })`：宿主 `dsh-client-locale`（`lib/client.js:1393`）对**同 namespace + 同 locale 的二次注册直接抛错**，而 `register()` 返回的 disposer 正是唯一让二次 apply 合法的东西。
+- `assistantDisplay.register(filter)`：泄漏则不抛错，但每次 apply 静默叠加一个渲染过滤器。
+
+宿主「重新激活」的语义 = **dispose 旧 fiber + 重新 apply client half**（`dsh-cordis-client-runner` `lib/client.js:637` `fiber?.dispose()`）。我们泄漏的字典在 fiber teardown 时无人摘除 ⇒ 第二次 apply 抛错 ⇒ 页面回滚激活。宿主自带的客户端插件全部写成 `ctx.effect(() => ctx.locale.register(NS, {...}))`，正是为此免疫。
+
+**修法**：新增 `registerDisposable(ctx, execute, label)`（= `ctx.effect(execute, label)`；无 `effect` 的退化 ctx 直接执行）；两处注册改走它，标签 `dsh-argp: cites display filter` / `dsh-argp: settings card dictionaries`。
+
+### Tests
+
+`test/client.test.ts` 新增第 ④ 层（5 例，合计 18 例）：effect 标签契约；**宿主 retract 后二次 apply 不抛**（复现被报告的失败点）；**负控**（未 dispose 就二次 apply 必须抛——证明 locale stub 忠实复刻宿主语义、修复确实依赖回收而非 stub 宽容）；assistantDisplay 过滤器不叠加；无 `effect` 的退化路径仍完成注册。locale stub 复刻宿主「重复注册即抛」语义。
+
+### 发布后核验
+
+- `npm run check` 全绿：typecheck + typecheck:spike + smoke + test（364 例）+ build。
+- `test/client.test.ts` 18 例全过（原 13 + 新 5）。
+- 产物一致性：本地 `npm pack` 的 `sha512-`（base64）应与 publish 输出的 `integrity` 逐字符相同。
+
 ## [1.7.0-beta.2] - 2026-09-23（Issue #2 修复：peratom / prune-tx 的 compaction/summary 加载期契约）
 
 > **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.1（preset-cleaner override-only 自净化），本版修复 **Issue #2**——peratom flush 与 prune-tx 的 `compaction/summary` 在**会话重启加载期**违约（`shadowedSeqs` 非"发出时刻当前 surface 连续切片"）导致**会话打不开**。是 1.7.0 正式版前最后一个正确性修复。

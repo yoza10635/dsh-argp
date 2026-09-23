@@ -32,11 +32,25 @@
  * rest of this bundle keeps working. A third-party bundle carries zero
  * cross-plugin value imports (client bundle purity gate) — collaboration
  * happens through the cordis service, the sanctioned cross-plugin channel.
+ *
+ * Re-apply safety: both registrations this bundle makes are effect-owned
+ * (`registerDisposable`), because the host retracts a plugin by disposing its
+ * fiber and applying the client half afresh — the settings page's enable-state
+ * sync, an HMR reload, and a version bump all take that path. A leaked locale
+ * dictionary makes that second apply throw (`locale namespace "dsh-argp"
+ * already has locale "zh"`), which the page surfaces as "插件未能完成同步"
+ * while leaving the server-side enable state unchanged.
  */
 /** Structural root context the cordis loader provides to apply. */
 interface ArgpClientContext {
     /** cordis optional service fetch: returns undefined for absent services. */
     get<T>(name: string): T | undefined;
+    /**
+     * cordis disposal-aware effect: runs `execute` now and disposes whatever it
+     * returns when the owning fiber unloads or is replaced. Optional only for
+     * degenerate hosts/stubs — every real client context carries it.
+     */
+    effect?(execute: () => unknown, label?: string): unknown;
 }
 /**
  * Module-level dependency list for the client half. `locale` and `slots` are
