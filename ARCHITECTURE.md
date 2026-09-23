@@ -141,7 +141,7 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 
 | 文件 | 职责 | 依赖 |
 |---|---|---|
-| `argp-graph-engine.ts` | Stage-2 图引擎**组合根**：持有字段 + 1–4 行薄转发方法，编排下方 hub 模块（3,313 → 1,646 行） | argp-types, constants, telemetry, log-access, token-ontology, preset-cleaner, graph-build, budget, recall, prune-selection, prune-tx, recall-tools, session-lifecycle, peratom/* |
+| `argp-graph-engine.ts` | Stage-2 图引擎**组合根**：持有字段 + 1–4 行薄转发方法，编排下方 hub 模块（3,313 → 1,646 行） | argp-types, constants, telemetry, log-access, token-ontology, graph-build, budget, recall, prune-selection, prune-tx, recall-tools, session-lifecycle, peratom/* |
 | `argp-types.ts` | 共享类型与常量（Atom/AtomType/SemanticEdge/DeterministicEdge/EdgeLevel/ArgpUserSettings/EDGE_WEIGHTS/LEVEL_ORDER），叶子 | cites-strip（type-only） |
 | `constants.ts` | 跨引擎共享默认阈值/预算/比例/超时（具名常量），叶子 | — |
 | `telemetry.ts` | 有界环形缓冲 `pushBounded`（诊断/遥测数组），叶子 | — |
@@ -155,7 +155,7 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 | `log-access.ts` | 事件日志唯一入口（sessionEvents）+ 日志级访问原语（eventText / detectOpenTurn / turnOf / rawEventText） | dsh-session, peratom/types |
 | `cites-strip.ts` | cites 尾块匹配/剥离（纯函数，零依赖） | — |
 | `token-ontology.ts` | 承重 token 词表 + 保真守卫 + 原子间推断边（共享叶子模块，零依赖） | — |
-| `preset-cleaner.ts` | preset 净化器：挂载期为含 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp` | dsh agentPresets |
+| `preset-cleaner.ts` | preset 净化器（0.1.7 override-only）：纯文本摘除 stock 摘要器行 + compaction isolate 块，把 shipped preset 转成顶层 modify 行；由 build 脚本 `scripts/generate-preset-overrides.ts` 烘焙进 `cordis.patch.yml`（无运行时 registry 变更） | —（纯文本函数，零运行时依赖） |
 | `peratom/types.ts` | Stage-1 共享类型与常量（叶子模块） | — |
 | `peratom/gate.ts` | 门控判定（纯函数，0 LLM/0 Session） | — |
 | `peratom/split.ts` | 拆分解析与策略（纯函数） | — |

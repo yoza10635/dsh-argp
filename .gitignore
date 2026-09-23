@@ -1,4 +1,6 @@
 node_modules/
+# 依赖 bump 时保留的旧版 node_modules 备份（本地物料，不进仓库）
+node_modules.old-*/
 dist/
 *.log
 *-out.txt

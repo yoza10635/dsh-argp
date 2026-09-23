@@ -1,20 +1,20 @@
 /**
- * preset-cleaner 单元测试（2026-09-04 Q8 收口）。
+ * preset-cleaner 单元测试（0.1.7 版：patch-composition override）。
  *
- * 覆盖：行手术的块边界（缩进/空行/注释归属）、幂等性、空组级联删除、
- * 无匹配原文返回，以及 cleanShippedPresets 对 fake roster 的编排语义
- * （copy→strip→写回、已存在自愈、已净化零写入、broken/无 stock 跳过）。
- * fixture 为 shipped standard/agent.cordis.yml 的结构等价样例（含 `!!js`
- * 标签行，确保手术不触碰不解析的行）。
+ * 覆盖：
+ * - 行手术的块边界（缩进/空行/注释归属）、幂等性、空组级联删除、无匹配原文返回
+ *   （stripPresetRows / dropEmptyGroups / stripIsolateBlock，纯文本，不解析）；
+ * - {@link purifyPresetPatch} 把 shipped preset 的 `- insert:` 声明转成顶层
+ *   modify override 行（去缩进 4、丢弃包装与前导注释）、摘除 stock compaction
+ *   行 + compaction 组 isolate、保留 command-compact 与其他组的 isolate、幂等；
+ * - {@link toModifyRow} 的包装转换与无包装 no-op。
+ * fixture 含 `!!js` 标签行，确保手术不触碰不解析的行。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { copyFile, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { cleanShippedPresets, dropEmptyGroups, stripIsolateBlock, stripPresetRows, type PresetRosterLike, type PresetRow } from '../src/preset-cleaner.js'
+import { dropEmptyGroups, purifyPresetPatch, stripIsolateBlock, stripPresetRows, toModifyRow } from '../src/preset-cleaner.js'
 
+/** composition 文本样例（standard 的结构等价，含 `!!js` 标签行）。 */
 const FIXTURE = [
   '# The `standard` agent preset: the full coding agent.',
   '',
@@ -25,7 +25,7 @@ const FIXTURE = [
   '',
   '- id: tool-bash',
   "  name: '@deepseek-ai/dsh-tool-bash'",
-  '  disabled: !!js process.platform === \'win32\'',
+  "  disabled: !!js process.platform === 'win32'",
   '',
   '- id: compaction',
   '  name: cordis:group',
@@ -56,27 +56,42 @@ const FIXTURE = [
   '',
 ].join('\n')
 
-function row(id: string, path: string, trust: 'system' | 'user', broken?: string): PresetRow {
-  return { id, trust, path, ...(broken === undefined ? {} : { broken }) }
-}
-
-/** 磁盘 roster：copy = 文件复制，read = 磁盘读，list 每次重扫目录（对齐 discovery 语义）。 */
-function diskRoster(dir: string, knownTrust: ReadonlyMap<string, 'system' | 'user'>): PresetRosterLike {
-  const pathOf = (id: string): string => join(dir, id + '.yml')
-  return {
-    async list(): Promise<PresetRow[]> {
-      const names = (await readdir(dir)).filter(n => n.endsWith('.yml')).map(n => n.slice(0, -4))
-      return names.map(id => row(id, pathOf(id), knownTrust.get(id) ?? 'user'))
-    },
-    async copy(from: string, id: string): Promise<void> {
-      if (existsSync(pathOf(id))) throw new Error(`preset id ${id} already taken`)
-      await copyFile(pathOf(from), pathOf(id))
-    },
-    async read(id: string): Promise<string> {
-      return await readFile(pathOf(id), 'utf8')
-    },
-  }
-}
+/** shipped preset patch 文件样例（含 `- insert:` 包装 + compaction/planning 两组）。 */
+const PRESET_FIXTURE = [
+  '# Agent preset standard: test fixture.',
+  '- insert:',
+  '    - id: preset-standard',
+  "      name: '@deepseek-ai/dsh-agent-preset'",
+  '      config:',
+  '        id: standard',
+  '        order: 1',
+  '        plugins:',
+  '          - id: persona',
+  "            name: '@deepseek-ai/dsh-persona'",
+  '          - id: planning',
+  '            name: cordis:group',
+  '            group: true',
+  '            isolate:',
+  '              planMode: true',
+  '            config:',
+  '              - id: plan-mode',
+  "                name: '@deepseek-ai/dsh-plan-mode'",
+  '          - id: compaction',
+  '            name: cordis:group',
+  '            group: true',
+  '            isolate:',
+  '              compaction: true',
+  '              toolResultPruner: true',
+  '            config:',
+  '              - id: compaction-basic',
+  "                name: '@deepseek-ai/dsh-compaction-basic'",
+  '              - id: command-compact',
+  "                name: '@deepseek-ai/dsh-command-compact'",
+  '              - id: tool-result-pruner',
+  "                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'",
+  '                config:',
+  '                  thresholdChars: 8192',
+].join('\n')
 
 test('stripPresetRows removes target rows whole and keeps siblings byte-exact', () => {
   const { text, removed } = stripPresetRows(FIXTURE, ['compaction-basic', 'tool-result-pruner'])
@@ -181,58 +196,65 @@ test('stripIsolateBlock does not touch other groups\' isolate blocks', () => {
   assert.ok(text.includes('- id: planning'))
 })
 
-test('cleanShippedPresets copies + strips shipped presets and leaves user presets alone', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'argp-preset-'))
-  const standardFile = join(dir, 'standard.yml')
-  await writeFile(standardFile, FIXTURE, 'utf8')
-  const minimalFile = join(dir, 'minimal.yml')
-  await writeFile(minimalFile, FIXTURE.replace(/- id: compaction[\s\S]*?\n\n(?=- id: delegation)/, ''), 'utf8')
-  const userFile = join(dir, 'my-preset.yml')
-  await writeFile(userFile, FIXTURE, 'utf8')
-  const roster = diskRoster(dir, new Map([['standard', 'system'], ['minimal', 'system'], ['my-preset', 'user']] as const))
-  const report = await cleanShippedPresets(roster)
-  // minimal 无 stock → 跳过；user preset 永不触碰；standard 生成净化副本
-  const bySource = new Map(report.outcomes.map(o => [o.source, o]))
-  assert.equal(bySource.get('minimal')?.status, 'skipped')
-  assert.equal(bySource.get('my-preset'), undefined)
-  const std = bySource.get('standard')
-  assert.equal(std?.status, 'created')
-  assert.equal(std?.target, 'standard-argp')
-  assert.deepEqual(std?.removed, ['compaction-basic', 'tool-result-pruner', 'isolate:compaction'])
-  const cleanedText = await roster.read('standard-argp')
-  assert.ok(!cleanedText.includes('dsh-compaction-basic'))
-  assert.ok(cleanedText.includes('command-compact'))
-  // isolate 块被摘除（command-compact 的 inject 将回落到宿主平面）
-  assert.ok(!cleanedText.includes('isolate:'))
-  // 源文件逐字未动
-  assert.equal(await readFile(standardFile, 'utf8'), FIXTURE)
-  // 净化副本落盘
-  const argpFile = join(dir, 'standard-argp.yml')
-  assert.ok((await readFile(argpFile, 'utf8')).includes('command-compact'))
+test('purifyPresetPatch converts - insert: to a top-level modify override row', () => {
+  const { text, removed, changed } = purifyPresetPatch(PRESET_FIXTURE)
+  assert.ok(changed)
+  assert.deepEqual(removed, ['compaction-basic', 'tool-result-pruner', 'isolate:compaction'])
+  // - insert: 包装消失；行变顶层
+  assert.ok(!text.includes('- insert:'))
+  assert.ok(text.startsWith('- id: preset-standard\n'))
+  // name/config 逐字段重述（override 整体替换 config）
+  assert.ok(text.includes("  name: '@deepseek-ai/dsh-agent-preset'"))
+  assert.ok(text.includes('  config:'))
+  assert.ok(text.includes('    id: standard'))
+  assert.ok(text.includes('    order: 1'))
+  // 去缩进 4：plugins 项落到 column 6
+  assert.ok(text.includes('      - id: persona'))
+  assert.ok(text.includes('        name:'))
 })
 
-test('cleanShippedPresets is idempotent and heals drifted targets', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'argp-preset-'))
-  await writeFile(join(dir, 'standard.yml'), FIXTURE, 'utf8')
-  const roster = diskRoster(dir, new Map([['standard', 'system']] as const))
-  const first = await cleanShippedPresets(roster)
-  assert.equal(first.outcomes[0]?.status, 'created')
-  // 第二轮：副本已净 → already-clean，零写入
-  const second = await cleanShippedPresets(roster)
-  assert.equal(second.outcomes[0]?.status, 'already-clean')
-  // 漂移自愈：向副本塞回一行 stock → healed 并再次摘除
-  const targetFile = join(dir, 'standard-argp.yml')
-  await writeFile(targetFile, (await readFile(targetFile, 'utf8')) + "    - id: compaction-basic\n      name: '@deepseek-ai/dsh-compaction-basic'\n", 'utf8')
-  const third = await cleanShippedPresets(roster)
-  assert.equal(third.outcomes[0]?.status, 'healed')
-  assert.deepEqual(third.outcomes[0]?.removed, ['compaction-basic'])
-  assert.ok(!(await roster.read('standard-argp')).includes('dsh-compaction-basic'))
+test('purifyPresetPatch strips stock compaction + compaction isolate but keeps command-compact and other groups\' isolate', () => {
+  const { text } = purifyPresetPatch(PRESET_FIXTURE)
+  // stock compaction 行消失
+  assert.ok(!text.includes('dsh-compaction-basic'))
+  assert.ok(!text.includes('tool-result-pruner'))
+  assert.ok(!text.includes('thresholdChars'))
+  // compaction 组的 isolate 消失（compaction: true / toolResultPruner: true 不再出现）
+  assert.ok(!text.includes('toolResultPruner: true'))
+  // command-compact 保留（/compact 将沿 scope 链回落到宿主 ARGP）
+  assert.ok(text.includes('- id: command-compact'))
+  // compaction 组仍在（command-compact 幸存，非空组）
+  assert.ok(text.includes('- id: compaction'))
+  // planning 组的 isolate 保留（各自服务的正确生命周期隔离，不能动）
+  assert.ok(text.includes('planMode: true'))
+  assert.ok(text.includes('- id: planning'))
 })
 
-test('cleanShippedPresets honors sources whitelist and reports unknown-source absence', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'argp-preset-'))
-  await writeFile(join(dir, 'standard.yml'), FIXTURE, 'utf8')
-  const roster = diskRoster(dir, new Map([['standard', 'system']] as const))
-  const report = await cleanShippedPresets(roster, { sources: ['minimal'] })
-  assert.deepEqual(report.outcomes, [])
+test('purifyPresetPatch is idempotent', () => {
+  const once = purifyPresetPatch(PRESET_FIXTURE)
+  const twice = purifyPresetPatch(once.text)
+  assert.equal(twice.text, once.text)
+  assert.ok(!twice.changed)
+  assert.deepEqual(twice.removed, [])
+})
+
+test('purifyPresetPatch is a no-op for an already-clean preset', () => {
+  const clean = purifyPresetPatch(PRESET_FIXTURE).text
+  const result = purifyPresetPatch(clean)
+  assert.ok(!result.changed)
+  assert.equal(result.text, clean)
+})
+
+test('toModifyRow de-indents the - insert: wrapped row and drops the wrapper + leading comments', () => {
+  const out = toModifyRow(PRESET_FIXTURE)
+  assert.ok(!out.includes('- insert:'))
+  assert.ok(!out.startsWith('#'))
+  assert.ok(out.startsWith('- id: preset-standard\n'))
+  assert.ok(out.includes("  name: '@deepseek-ai/dsh-agent-preset'"))
+  assert.ok(out.includes('    id: standard'))
+})
+
+test('toModifyRow is a no-op when there is no - insert: wrapper', () => {
+  const modifyRow = '- id: preset-standard\n  name: x\n  config:\n    id: standard'
+  assert.equal(toModifyRow(modifyRow), modifyRow)
 })

@@ -12,9 +12,8 @@
  * peratom → argp-types（叶子），回边消除。
  *
  * 留在 hub 的类型：`ArgpGraphConfig`——它引用 peratom 三个管线 config
- * （PeratomCompressorConfig / CiteDeclarerConfig / RecallZoomConfig）与
- * PresetCleanOptions，若迁入本叶子会迫使 argp-types 反向 import peratom，
- * 形成类型环并破坏叶子性，故按「深度依赖则留 hub」原则保留在引擎侧。
+ * （PeratomCompressorConfig / CiteDeclarerConfig / RecallZoomConfig），若迁入本叶子会迫使
+ * argp-types 反向 import peratom，形成类型环并破坏叶子性，故按「深度依赖则留 hub」原则保留在引擎侧。
  */
 import type { ParsedCite } from './cites-strip.js'
 

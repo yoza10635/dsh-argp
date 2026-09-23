@@ -11,8 +11,8 @@
  * 所有函数体逐字保留，仅 `this.x` → `host.x`（窄接口 LifecycleHost + `this as unknown as
  * LifecycleHost` 调用，编译期类型、运行时同一实例；方法引用经 host 派发回 class 薄编排方法，
  * this 绑定语义不变）。构造期副作用顺序由 hub 构造器调用次序保证（normalizeConfig →
- * registerSettings → mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on →
- * presetClean），与原先逐字一致。
+ * registerSettings → mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on），
+ * 与原先逐字一致。
  *
  * 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
  * 随 registerSettings 一并迁入本模块：ArgpUserSettingsSchema 是运行时值（z.object 产物），
@@ -20,7 +20,7 @@
  * 公共 API 不变（index.ts 的 `export *` 透出）。
  *
  * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）；它是 hub 侧的宽接口
- * （引用 peratom 三管线 config + PresetCleanOptions），若迁入本模块会迫使本模块 import peratom
+ * （引用 peratom 三管线 config），若迁入本模块会迫使本模块 import peratom
  * 全部 config 类型，故按「深度依赖则留 hub」原则保留在 hub，本模块仅 type-only 引用。
  */
 import type { Context } from '@deepseek-ai/cordis';

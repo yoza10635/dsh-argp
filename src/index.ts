@@ -44,13 +44,16 @@ export type {
 // 双引擎生产挂载工厂（P4）：三管线 + Stage-2 图引擎组装为声明式可挂载整体；P5 三臂开关
 export { mountPeratomStack } from './peratom/mount.js'
 export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js'
-// Preset 净化器（Q8 收口）：安装期自动生成 `<id>-argp` 净化 preset，摘除 stock
-// compaction-basic/tool-result-pruner，/compact 经 realm 链解析到 ARGP 图剪
-export { cleanShippedPresets, DEFAULT_STRIP_ROWS, dropEmptyGroups, stripPresetRows } from './preset-cleaner.js'
-export type {
-  PresetCleanOptions,
-  PresetCleanOutcome,
-  PresetCleanReport,
-  PresetRosterLike,
-  PresetRow,
+// Preset 净化器（0.1.7：patch-composition override）。纯文本手术 + 把 shipped
+// preset 的 `- insert:` 声明转成顶层 modify override 行（cordis.patch.yml 的
+// override 段由 scripts/generate-preset-overrides.ts 生成，随包分发）。
+export {
+  purifyPresetPatch,
+  toModifyRow,
+  DEFAULT_STRIP_ROWS,
+  DEFAULT_ISOLATE_GROUP,
+  dropEmptyGroups,
+  stripIsolateBlock,
+  stripPresetRows,
 } from './preset-cleaner.js'
+export type { PurifyOptions, PurifyResult } from './preset-cleaner.js'

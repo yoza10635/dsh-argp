@@ -4,9 +4,43 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.7.0-beta.1] - 2026-09-23（0.1.7 preset-cleaner：override-only 自净化）
+
+> **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.0（宿主 0.1.7 三处结构性变更全吸收 + U-info 附件保留），本版补上 0.1.7 下 **preset 对 ARGP 的遮蔽**这一遗漏——是 1.7.0 正式版的最后一块。
+
+**问题**：0.1.7 把 agent 平面移入 **agent preset**（`@deepseek-ai/dsh-agent-preset` 声明式 patch 行，由 `AgentPresetRegistry.register()` 装配）。默认 preset（standard / cordis / ptc）的 `compaction` 组是 `isolate:{compaction,toolResultPruner}` + stock `compaction-basic`。agent scope 把 `compaction` 解析到 **preset 自带的隔离 stock provider**，而非宿主的 `ArgpGraphEngine` ⇒ 默认 preset 下 ARGP 的 Stage-2 图剪被 stock compaction-basic **遮蔽**（`command-compact` 的 `inject:['commands','compaction']` 命中隔离的 stock，而非宿主 ARGP）。0.1.6 的 preset-cleaner（复制到用户根 + 运行时手术）在 0.1.7 **结构性失效**——`AgentPresetRegistry` 无 copy/read/mutate API，`register()` 对重复 id 直接 throw。
+
+**修法（C 方案，override-only）**：0.1.7 唯一的 preset 覆盖机制是 **patch 组合的 modify 行**（last-write-wins 整块替换 `config`）。新增 build 脚本 `scripts/generate-preset-overrides.ts`：
+- 读 shipped preset patch（`web-app/presets/{standard,cordis,ptc}.patch.yml`），
+- 纯文本净化（`purifyPresetPatch`）：摘除 stock `compaction-basic` + `tool-result-pruner` 行 + 该组 `isolate` 块，**保留** `command-compact`（组变普通组 ⇒ `inject` 回落到宿主 ARGP 的 scope 链）；
+- 转成**顶层 modify 行**（`toModifyRow`：去 `- insert:` 包裹 + 反缩进），烘焙进本包 `cordis.patch.yml` 两条幂等标记之间；
+- dsh-argp 是 bundle 顺序**最后一位** ⇒ 其 modify 覆盖 web-app 的 insert（last-write-wins）；
+- **保留** planning / delegation 的 isolate（其它服务的正确生命周期隔离）+ cordis 的 `tool-cordis` + ptc 的 `tool-presentation`；
+- 幂等：重复运行字节一致；已净化的 preset 是 no-op。
+
+**已知限制（0.1.7 机制固有）**：modify 行是**整块 config 重述**，不自动合并未来 builtin 变更——若 web-app 未来改某 preset 的**非 compaction** 字段，本 override 会遮蔽该变更直到重新生成（`node scripts/generate-preset-overrides.ts <presets-dir>`）。
+
+### Changed
+
+- **`preset-cleaner.ts` 重写为 override-only**：删除 0.1.6 的 `cleanShippedPresets` / `PresetRosterLike` / `PresetRow` / `PresetCleanOptions` / `PresetCleanReport`（依赖运行时 registry 的 copy 路径，0.1.7 无此 API）；保留三个纯文本手术助手（`stripPresetRows` / `dropEmptyGroups` / `stripIsolateBlock`）+ `DEFAULT_STRIP_ROWS`；新增 `purifyPresetPatch` / `toModifyRow` / `PurifyOptions` / `PurifyResult` / `DEFAULT_ISOLATE_GROUP`。
+- **`argp-graph-engine.ts` 摘除 0.1.6 挂载块**：删除 `presetClean` 配置项 + 构造期 `ctx.inject(['agentPresets'], ...)` 的 `cleanShippedPresets` 调用（0.1.7 无 registry 变更 API，运行时净化不可行）；hub 不再依赖 preset-cleaner。
+- **`index.ts` 导出更新**：`purifyPresetPatch` / `toModifyRow` / `DEFAULT_STRIP_ROWS` / `DEFAULT_ISOLATE_GROUP` / 三个手术助手 + `PurifyOptions` / `PurifyResult` 类型（替换旧的 `cleanShippedPresets` 导出）。
+- **`cordis.patch.yml` 烘焙 3 条 override**：`preset-standard` / `preset-cordis` / `preset-ptc` 各一条顶层 modify 行（compaction 组只留 `command-compact`）。`minimal` 无 compaction 组，跳过。
+- **文档**：`ARCHITECTURE.md` 模块表更新（preset-cleaner 改 override-only 描述 + hub 依赖去掉 preset-cleaner）；`session-lifecycle.ts` / `argp-types.ts` 注释去掉已删的 `presetClean` / `PresetCleanOptions` 引用。
+
+### Tests
+
+- `test/preset-cleaner.test.ts` 重写：**14 例**（8 手术助手 + 6 `purifyPresetPatch`/`toModifyRow`：insert→modify 转换、摘 stock+isolate 但保 command-compact 与他组 isolate、幂等、已净化 no-op、去包裹+反缩进、无包裹 no-op）。
+- 全量 **354 全绿**（typecheck + typecheck:spike + test + build 全过）。
+
+### 发布后核验（用户侧）
+
+- 重启宿主后，profile 的 `cordis.yml`（组合解析产物）里三个 preset 的 `compaction` 组应只剩 `command-compact`（无 `compaction-basic` / `tool-result-pruner` / `isolate`）；`/compact` 走宿主 ARGP 而非 stock。
+- ⚠️ profile 层 `cordis.patch.yml` 的 `windowRatio`（现 0.8）与 `~/.dsh/settings.yaml` 的 `dsh-argp.windowRatio` 是**另一层**（运行时赢），与本 preset override 正交，勿混。
+
 ## [1.7.0] - 2026-09-23（宿主 0.1.7 结构性变更全吸收 + U-info 附件保留）
 
-> **发布状态**：当前以 **`1.7.0-beta.0`** 先行发布（`npm publish --tag beta`）；**`latest` 保持 1.6.0**（不 promote 1.6.1-beta.0，按用户拍板）。待用户实战 session 核查效果后再决定 1.7.0 正式版。
+> **发布状态**：以 **`1.7.0-beta.0`**（宿主 0.1.7 三处结构性变更 + U-info 附件）→ **`1.7.0-beta.1`**（preset-cleaner override-only 自净化）先行发布（`npm publish --tag beta`）；**`latest` 保持 1.6.0**（不 promote 1.6.1-beta.0，按用户拍板）。待用户实战 session 核查效果后再决定 1.7.0 正式版。
 
 **问题**：宿主 `0.1.6-alpha.1 → 0.1.7-alpha.2` 引入三处**结构性**变更，dsh-argp 若不吸收，在 0.1.7 宿主上会**类型编译失败 + 运行时准入被拒**：
 1. **V3→V4**：tool/result 从 `role:'user'` 内嵌 `tool-result` 包装块，变成**一等 `role:'tool'` 消息**（content 直接数组、`toolCallId`/`isError` 升顶层）；日志文件 `session.v3.jsonl.zstd` → `session.v4.jsonl.zstd`。

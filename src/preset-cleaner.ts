@@ -1,84 +1,49 @@
 /**
- * Preset 净化器（2026-09-04 Q8 根因的产品化收口）。
+ * Preset 净化器（0.1.7 版：patch-composition override）。
  *
- * 背景：dsh rc.2 起 agent 组成迁入 agent preset 平面，standard/cordis/ptc 的
- * `agent.cordis.yml` 在 `compaction` 组内各自挂载 `compaction-basic`——宿主 profile
- * 的 `disabled: true` 只作用于宿主组成树，管不到 preset 子树（mount.ts 经 Include
- * 直挂文件，不经任何 patch 层）。结果是官方摘要器与 ARGP 双引擎并存：外来 lossy
- * 摘要先于图剪发生（外来压缩检测告警的根因），且其英文 checkpoint 大块注入会把
- * 会话语言锚点拽向英文。
+ * 背景：0.1.7 起 agent preset 是声明式 patch 行（`- id: preset-<id>`，由
+ * `@deepseek-ai/dsh-agent-preset` 插件经 `AgentPresetRegistry.register()` 消费），
+ * 不再是 0.1.6 的 `~/.dsh/.agent-presets/` 文件 roster。0.1.7 的 registry
+ * **没有 copy/read/变更 API**（`register` 对重复 id 直接抛错），因此 0.1.6 的
+ * 「copy 到 user root + 行手术」路径整体失效。
  *
- * 本模块在 ARGP 挂载期（宿主平面）对 roster 中每个仍挂 stock compaction 的 shipped
- * preset 自动生成净化副本 `<id>-argp`：整体目录 copy（官方 authoring API，处理权限
- * 与元数据）→ 文本级行手术摘除 `compaction-basic`（及可选 `tool-result-pruner`）
- * → 摘除 compaction 组的 `isolate` 块 → 写回。保留 `command-compact` 行：
- * cordis 的 `isolate(name)` 创建入口局部 realm（全新 symbol，**不回落到父 realm**），
- * 剥离 stock 提供者后该 realm 为空，`command-compact` 的
- * `inject=['commands','compaction']` 永久 "waiting for compaction"。摘除 `isolate`
- * 后组变普通组，消费端沿 scope 链解析到宿主平面的 `ctx.compaction`——即本插件的
- * ArgpGraphEngine（extends CompactionEngine，服务名 `compaction`）。因此净化副本里
- * `/compact` 自动指向 ARGP 的确定性 compactNow，零额外接线。
+ * 0.1.7 唯一能改 preset 配置的机制＝**patch 组合层按行 id override**：后层
+ * patch 写 `- id: preset-<id>` 的 modify 行，last-write-wins 整体替换 `config`
+ * （SKILL: editing-cordis-compositions「override replaces the complete config」）。
+ * dsh-argp 是 web profile 的**最后一个 bundle**（base → web-app → dsh-argp），
+ * 故本包 `cordis.patch.yml` 里的 override 行必然压过 web-app 的 preset insert
+ * 声明。
  *
- * 安全边界：
- * - 只 copy/写 user root（`~/.dsh/.agent-presets/`），永不触碰 shipped 安装目录；
- * - 幂等：目标已存在时只做自愈式重清理（内容无 stock 行则零写入）；
- * - 行手术按缩进块整体删除 YAML 列表项，不解析不求值（shipped 文件带 `!!js` 标签，
- *   通用 YAML 库会拒载），删除整个列表项不会破坏文档语法；组内清空时连组删除；
- * - 全程 fail-soft：任何失败只记日志，绝不阻断引擎挂载。
+ * 本模块提供**纯文本手术**（不解析、不求值——shipped 文件带 `!!js` 标签，通用
+ * YAML 库拒载；整块删列表项不破坏语法）：
+ * - {@link stripPresetRows} 整块摘除 stock compaction 行（compaction-basic /
+ *   tool-result-pruner）；
+ * - {@link stripIsolateBlock} 摘除 compaction 组的 `isolate` 块——剥离 stock
+ *   提供者后若保留 isolate，cordis 的 `isolate(name)` 建全新 symbol（入口局部
+ *   realm，**不回落到父 realm**），`command-compact` 的 `inject=['commands',
+ *   'compaction']` 会在空 realm 里永久 "waiting for compaction"；摘除后组变
+ *   普通组，消费端沿 scope 链解析到宿主平面的 `ctx.compaction`＝本插件的
+ *   ArgpGraphEngine（extends CompactionEngine，服务名 `compaction`），`/compact`
+ *   自动指向 ARGP 的确定性 compactNow，零额外接线；
+ * - {@link dropEmptyGroups} 组内清空时连组删除（loader 的 entryListProblem 会
+ *   拒「group must hold a list」）；
+ * - {@link purifyPresetPatch} 把 shipped preset 的 `- insert:` 声明转成顶层
+ *   modify override 行（去缩进 4），供 `scripts/generate-preset-overrides.mjs`
+ *   生成 `cordis.patch.yml` 的 override 段。
  *
- * 世代语义：roster 的 ensureStanding 以 composition 文件戳（mtime+size）判定世代，
- * 写回后下一个新会话自动挂新 generation——无需重启宿主；已开过口的会话固定旧组成。
+ * 世代/自愈语义：override 行随包分发（tgz 内 cordis.patch.yml），每次安装/
+ * 升级自动落位——这是 0.1.7 的「自愈」形态（对比 0.1.6 需运行时 copy+重清理）。
+ * 宿主若更新 shipped preset（增删插件），用生成脚本重跑 override 段即可重新
+ * 对齐（override 整体替换 config，不会自动合并宿主后续改动——registry README
+ * 明示的已知限制）。
  * @module dsh-argp/preset-cleaner
  */
-
-import { writeFile } from 'node:fs/promises'
 
 /** preset 文件里必须摘除的 stock compaction 行（compaction-basic 是双引擎冲突本体）。 */
 export const DEFAULT_STRIP_ROWS = ['compaction-basic', 'tool-result-pruner'] as const
 
-/** dsh-compaction-basic 的包名——presence 判定用，避免匹配到注释外的普通词。 */
-const STOCK_BASIC_PACKAGE = "'@deepseek-ai/dsh-compaction-basic'"
-
-/** roster 服务（@deepseek-ai/dsh-agent-presets 的 AgentPresets）的最小结构面。 */
-export interface PresetRosterLike {
-  list(): Promise<PresetRow[]>
-  copy(from: string, id: string, name?: string): Promise<void>
-  read(id: string): Promise<string>
-}
-
-/** roster.list() 行（AgentPreset 的结构子集）。 */
-export interface PresetRow {
-  id: string
-  trust: 'system' | 'user'
-  /** composition 文件（agent.cordis.yml）的绝对路径。 */
-  path: string
-  name?: string
-  broken?: string
-}
-
-/** 净化选项。 */
-export interface PresetCleanOptions {
-  /** 摘除的行 id 集合；默认 compaction-basic + tool-result-pruner（8192 截断破坏 R 原子保真）。 */
-  strip?: readonly string[]
-  /** 目标 id 后缀；默认 `-argp`。 */
-  suffix?: string
-  /** 只处理这些源 id；缺省 = 全部含 stock compaction 的 shipped preset。 */
-  sources?: readonly string[]
-}
-
-/** 单 preset 的净化结果。 */
-export interface PresetCleanOutcome {
-  source: string
-  target: string
-  status: 'created' | 'healed' | 'already-clean' | 'skipped'
-  removed: string[]
-  reason?: string
-}
-
-/** 一轮净化的总报告。 */
-export interface PresetCleanReport {
-  outcomes: PresetCleanOutcome[]
-}
+/** 默认要摘除 isolate 块的组 id。 */
+export const DEFAULT_ISOLATE_GROUP = 'compaction'
 
 /**
  * 从 preset composition 文本中整块删除指定 `- id: <row>` 列表项。
@@ -275,74 +240,71 @@ export function stripIsolateBlock(source: string, groupId: string): { text: stri
   return { text: out.join('\n'), removed: found }
 }
 
+/** {@link purifyPresetPatch} 选项。 */
+export interface PurifyOptions {
+  /** 摘除的行 id 集合；默认 compaction-basic + tool-result-pruner。 */
+  strip?: readonly string[]
+  /** 要摘除 isolate 块的组 id；默认 compaction。 */
+  isolateGroup?: string
+}
+
+/** {@link purifyPresetPatch} 结果。 */
+export interface PurifyResult {
+  /** 净化后的顶层 modify override 行（YAML 文本）。 */
+  text: string
+  /** 实际摘除的标记（行 id 列表 + `isolate:<group>`）。 */
+  removed: string[]
+  /** 相对「未手术的同源 override」是否发生实质修改（幂等判定用）。 */
+  changed: boolean
+}
+
 /**
- * 净化 roster 中所有仍挂 stock compaction 的 shipped preset。
+ * 把 shipped preset 的 `- insert:` 声明净化为顶层 modify override 行。
  *
- * 对每个 `trust === 'system'` 且 composition 含 `dsh-compaction-basic` 引用的 preset：
- * 目标副本 `<id><suffix>` 不存在时经官方 `copy()` 生成（权限/元数据由 authoring 承担），
- * 随后对副本做行手术并写回。目标已存在时按自愈语义重跑手术（内容已净则零写入）。
- * 源 preset 无 stock compaction（如 minimal）时跳过。单 preset 失败不阻断其余。
- * @param presets - roster 服务的结构面（构造期经 `ctx.inject(['agentPresets'])` 取得）。
- * @param options - strip 集合 / 后缀 / 源白名单。
- * @returns 每个 preset 的处置报告（日志与测试消费）。
+ * 步骤：行手术摘除 stock compaction 行 → 摘除 compaction 组 isolate 块 →
+ * 删除空组 → 把 `- insert:` 包装转成顶层 modify 行（去缩进 4，丢弃 `- insert:`
+ * 与前导注释）。源已是 modify 行（无 `- insert:`）时包装转换是 no-op，手术幂等。
+ * @param source - shipped preset patch 文件文本（含 `- insert:` 包装）。
+ * @param options - strip 集合 / isolate 组 id。
+ * @returns override 行文本、摘除标记、是否实质修改。
  */
-export async function cleanShippedPresets(
-  presets: PresetRosterLike,
-  options: PresetCleanOptions = {},
-): Promise<PresetCleanReport> {
+export function purifyPresetPatch(source: string, options: PurifyOptions = {}): PurifyResult {
   const strip = options.strip ?? DEFAULT_STRIP_ROWS
-  const suffix = options.suffix ?? '-argp'
-  const outcomes: PresetCleanOutcome[] = []
-  const roster = await presets.list()
-  const candidates = roster.filter(row =>
-    row.trust === 'system'
-    && row.broken === undefined
-    && (options.sources === undefined || options.sources.includes(row.id)),
-  )
-  for (const source of candidates) {
-    try {
-      const sourceText = await presets.read(source.id)
-      if (!sourceText.includes(STOCK_BASIC_PACKAGE)) {
-        outcomes.push({ source: source.id, target: '', status: 'skipped', removed: [], reason: 'no stock compaction-basic' })
-        continue
-      }
-      const targetId = source.id + suffix
-      const existing = roster.find(row => row.id === targetId)
-      let targetPath: string
-      let status: PresetCleanOutcome['status']
-      if (existing === undefined) {
-        await presets.copy(source.id, targetId, `${source.name ?? source.id} (ARGP)`)
-        const refreshed = (await presets.list()).find(row => row.id === targetId)
-        if (refreshed === undefined) throw new Error(`copy reported success but roster lost ${targetId}`)
-        targetPath = refreshed.path
-        status = 'created'
-      } else {
-        targetPath = existing.path
-        status = existing.broken !== undefined ? 'skipped' : 'healed'
-      }
-      if (status === 'skipped') {
-        outcomes.push({ source: source.id, target: targetId, status, removed: [], reason: 'existing target is broken' })
-        continue
-      }
-      const targetText = await presets.read(targetId)
-      const stripped = stripPresetRows(targetText, strip)
-      let finalText = dropEmptyGroups(stripped.text)
-      // 剥离 stock 行后 compaction 组内无提供者；摘除 isolate 块让
-      // command-compact 的 inject 沿 scope 链回落到宿主平面的 ArgpGraphEngine。
-      // 幂等：无 isolate 块时零修改。
-      const deisolated = stripIsolateBlock(finalText, 'compaction')
-      finalText = deisolated.text
-      if (finalText === targetText) {
-        outcomes.push({ source: source.id, target: targetId, status: 'already-clean', removed: [], reason: status === 'created' ? 'copy already clean' : 'no drift' })
-        continue
-      }
-      await writeFile(targetPath, finalText, 'utf8')
-      const removedList = [...stripped.removed]
-      if (deisolated.removed) removedList.push('isolate:compaction')
-      outcomes.push({ source: source.id, target: targetId, status, removed: removedList })
-    } catch (error) {
-      outcomes.push({ source: source.id, target: source.id + suffix, status: 'skipped', removed: [], reason: String(error) })
-    }
+  const isolateGroup = options.isolateGroup ?? DEFAULT_ISOLATE_GROUP
+  const stripped = stripPresetRows(source, strip)
+  const deisolated = stripIsolateBlock(stripped.text, isolateGroup)
+  const finalText = dropEmptyGroups(deisolated.text)
+  const removed = [...stripped.removed]
+  if (deisolated.removed) removed.push(`isolate:${isolateGroup}`)
+  const text = toModifyRow(finalText)
+  const changed = text !== toModifyRow(source)
+  return { text, removed, changed }
+}
+
+/**
+ * 把 `- insert:` 包装的 preset 行转成顶层 modify 行。
+ *
+ * 定位 `- insert:` 行后的第一个 `- id:` 列表项，取其到文件尾的所有行并整体
+ * 去缩进（= 该 `- id:` 行的缩进，shipped 文件恒为 4）；丢弃 `- insert:` 行与
+ * 其前的注释。空行原样保留（无缩进可去）。源无 `- insert:` 包装时原样返回
+ * （幂等：对已是 modify 行的文本是 no-op）。
+ * @param source - preset patch 文本。
+ * @returns 顶层 modify 行文本。
+ */
+export function toModifyRow(source: string): string {
+  const lines = source.split('\n')
+  const insertIdx = lines.findIndex(l => l.trim() === '- insert:')
+  if (insertIdx === -1) return source
+  let rowIdx = -1
+  for (let i = insertIdx + 1; i < lines.length; i += 1) {
+    if (/^\s*- id: \S+/.test(lines[i])) { rowIdx = i; break }
   }
-  return { outcomes }
+  if (rowIdx === -1) return source
+  const rowIndent = lines[rowIdx].length - lines[rowIdx].trimStart().length
+  const out: string[] = []
+  for (let i = rowIdx; i < lines.length; i += 1) {
+    const line = lines[i]
+    out.push(line.trim() === '' ? '' : line.slice(rowIndent))
+  }
+  return out.join('\n')
 }
