@@ -4,6 +4,28 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.6.2] - 2026-09-23（P0 补丁：`/compact` 事务的 sourceCommandId 一致性）
+
+> **发布状态**：1.6.x 线**补丁版**，`npm publish` 后 **`latest` 指向 1.6.2**（修当前 `latest` 1.6.0 的 P0）。宿主仍为 **0.1.6**（`peerDependencies` 不变）。
+> **为何是 1.6.2 而非 1.6.1**：npm 上已存在 `1.6.1-beta.0`（tool/result 压缩副本头部标记，从未 promote 的功能 beta，内容与本补丁不同）。复用同一基础号 `1.6.1` 会造成「同号不同内容」的版本混淆（release 抽段/版本排序都易踩），故本补丁直接取下一可用号 **1.6.2**，版本序无歧义：`1.6.0 < 1.6.1-beta.0 < 1.6.2`。
+
+**问题（P0，命中当前 `latest` 1.6.0）**：手动 `/compact` 的图剪事务（`prune-tx.ts`）只在 `compaction/start` 携带发起命令 `sourceCommandId`，而 `compaction/summary` / `compaction/end` / **压缩 checkpoint** 都不携带。宿主对一笔压缩事务的全部受校验事件要求携带**同一个** `sourceCommandId`（由 `dsh-compaction` invariant 的 `validateSourceCommandId`/`validateCheckpoint` 与 v3-to-v4 `relationships.compactionOwner` 双重校验），`undefined !== 'cmd-…'` 即违约 ⇒ **任何跑过 `/compact` 的会话在重启加载期必炸**（`SessionFormatError: compaction/summary has no matching compaction/start`）。写入侧 `Session.append` 不校验 `compaction/*` ⇒ **静默损坏**（与 1.7.0-beta.5 修的同一缺陷，本补丁把修复回移到 1.6.x 线）。peratom 自动压缩路径 `compactSourceCommandId` 恒 `undefined`（各事件一致），不受影响——缺陷只在手动 `/compact` 触发。
+
+**修法**：把可选 `sourceCommandId` 提成 `sourceCommandIdField`（`compactSourceCommandId === undefined ? {} : { sourceCommandId }`），在 `compaction/start` / `compaction/summary` / 成功 `compaction/end` / catch 错误 `compaction/end` 四处**统一展开**——三事件（含失败路径）恒携带同一个值。压缩 checkpoint 改 `compactCheckpointSource(compactionId, host.compactSourceCommandId)`（0.1.6 的该函数**已是 2 参**签名，与 0.1.7 逐字相同）。`CommandId` 类型本就 import，`host.compactSourceCommandId` 本就是 `CommandId | undefined`，类型闭合。
+
+### Fixed
+
+- `src/prune-tx.ts`：`pruneIntervals` 新增 `sourceCommandIdField`，`compaction/start` / `compaction/summary` / `compaction/end`（成功 + catch 错误两路径）四处统一展开；压缩 checkpoint 改 `compactCheckpointSource(compactionId, host.compactSourceCommandId)`——保证一笔事务的**全部五个**受校验事件（start / summary / end / checkpoint）`sourceCommandId` 同值。
+
+### Tests
+
+- `test/manual-compact.test.ts` 新增回归例「sourceCommandId 一致性——start/summary/end/checkpoint 同值」：`/compact` 带命令 ID 后，数据层直接断言 start/summary/end **及压缩 checkpoint** 的 `sourceCommandId` 逐字相等（确定性、不依赖 invariant 是否安装；checkpoint 用宿主自带谓词 `isCompactCheckpointSource` 识别，跨 0.1.6/0.1.7 稳健）。**变异实测**：摘掉 summary 的 `sourceCommandIdField` 展开 ⇒ 本例必失败（`summary sourceCommandId must equal start`，实得 `undefined`），还原后通过——证明该测试对 P0 有判别力。
+- 宿主 **0.1.6** 上 `npm run check` 全绿：typecheck + typecheck:spike + smoke + test（**323 例**）+ build。
+
+### 存量坏会话
+
+- 1.6.0 及更早写出的、跑过 `/compact` 的存量会话仍无法加载（历史数据损坏）。**可修、不必丢弃**：把每笔事务 `start.sourceCommandId` 传播到同事务的 summary/end/checkpoint（纯确定性、不改内容），或更简地直接删掉每笔 `compaction/start` 的 `sourceCommandId`（宿主判据 `value === expected` 对全 `undefined` 同样合法）。无论哪条都要先备份 → 整文件重写（多帧 zstd 是 append-only）→ 逐文件过宿主校验器。
+
 ## [1.6.0] - 2026-09-22（剪枝终止条件补全 + id/seq 错配修复 + 配置卡片简化）
 
 **问题**：1.5.1 的剪枝 pass 循环有两个潜伏缺陷——(a) 候选耗尽降级到闭包生命周期时，`selectClosureToMerge` 的 `alreadyPruned` 误传**原子 id 集合**（`pruned.keys()`），但其内部按 **seq** 过滤，id≠seq 永不命中 ⇒ 已剪闭包被反复选中 → 空闭包 `continue` 死转、`force_prune` 饿死（压缩率仅 ~5%，c2344 空转 161.6s）；(b) 循环缺少「一轮无进展」判停，极端空转只能靠 `maxPasses` 硬上限兜底（旧默认 16，对 7/9 实战快照 binding，把「剪到达标」压成「增量式 16 组」）。

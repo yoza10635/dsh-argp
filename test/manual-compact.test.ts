@@ -17,6 +17,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction'
+import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
@@ -119,6 +120,52 @@ test('/compact: sourceCommandId 透传到事务事件与台账', async () => {
     await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     const later = engine.records.slice(recordCount).find(r => r.sourceCommandId !== undefined)
     assert.equal(later, undefined, 'automatic compactions must NOT inherit the command id')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('/compact: sourceCommandId 一致性——start/summary/end/checkpoint 同值（加载期 fold 契约）', async () => {
+  // 回归锁定（2026-09-23 P0，自 1.7.0-beta.5 移植）：旧实现只给 compaction/start 带
+  // sourceCommandId，summary/end/checkpoint 不带。宿主 dsh-compaction invariant
+  // （validateSourceCommandId）与 v3-to-v4 relationships.compactionOwner 都要求一笔事务的
+  // 全部受校验事件携带**同一个** sourceCommandId，否则 /compact 过的会话在加载期 fold 时
+  // throw "no matching compaction/start"（实测 session-bffe40b6 无法重新加载）。本测试在
+  // 数据层直接断言 start/summary/end/checkpoint 同值——确定性、不依赖 invariant 是否安装，
+  // 故任何回归都会在此失败。
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = buildPrunableSession()
+    engine.setSession(session)
+    const commandId = 'cmd-compact-scid' as unknown as CommandId
+    const result = await engine.compactNow(stubManualAgent(session, [0]), new AbortController().signal, commandId)
+    assert.ok(result !== null, 'prunable session must compact')
+    const events = session.snapshotEvents()
+    const starts = events.filter(e => e.type === 'compaction/start')
+    const summaries = events.filter(e => e.type === 'compaction/summary')
+    const ends = events.filter(e => e.type === 'compaction/end')
+    assert.equal(starts.length, 1, 'exactly one compaction/start')
+    assert.equal(summaries.length, 1, 'exactly one compaction/summary')
+    assert.equal(ends.length, 1, 'exactly one compaction/end')
+    const startScid = (starts[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    const summaryScid = (summaries[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    const endScid = (ends[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    assert.equal(startScid, commandId, 'start carries the initiating command id')
+    assert.equal(summaryScid, startScid, 'summary sourceCommandId must equal start (load-time fold contract)')
+    assert.equal(endScid, startScid, 'end sourceCommandId must equal start (load-time fold contract)')
+    // 第五个受校验事件：压缩 checkpoint（user/message + compactCheckpointSource）。
+    // 宿主 invariant validateCheckpoint → validateSourceCommandId 要求 checkpoint 的
+    // source.sourceCommandId 与 start 同值；旧实现 compactCheckpointSource(compactionId)
+    // 只传 compactionId（sourceCommandId 缺省 undefined）⇒ 手动 /compact 时同样违约。
+    // 0.1.6 的 checkpoint 标记是 {kind:'plugin', plugin:'compact'}（0.1.7 改为 kind:'compact-checkpoint'），
+    // 故用宿主自带谓词 isCompactCheckpointSource 识别，不重复标记字面量（跨宿主版本稳健）。
+    const checkpoints = events.filter(e => e.type === 'user/message'
+      && isCompactCheckpointSource((e.data as { source?: unknown }).source as never))
+    assert.ok(checkpoints.length >= 1, 'graph prune must emit at least one compact-checkpoint')
+    for (const cp of checkpoints) {
+      const cpScid = (cp.data as { source: { sourceCommandId?: string } }).source.sourceCommandId
+      assert.equal(cpScid, startScid, 'checkpoint sourceCommandId must equal start (validateCheckpoint)')
+    }
   } finally {
     await ctx.fiber.dispose()
   }

@@ -150,6 +150,12 @@ export function pruneIntervals(
   const openTurn = detectOpenTurn(session)
   const compactionId = CompactionId('argp-graph-' + randomUUID())
   const lifecycle = { compactionId, turn: openTurn }
+  // sourceCommandId 一致性契约（宿主 validateSourceCommandId / relationships.compactionOwner）：
+  // 一笔压缩事务的 start / summary / end / checkpoint 必须携带**同一个** sourceCommandId。
+  // 旧实现只在 start 展开它 ⇒ 手动 /compact 时 summary/end/checkpoint 为 undefined ≠ start 的命令 ID
+  // ⇒ 会话重启加载期 fold 违约（"no matching compaction/start"）。提成字段统一展开到全部受校验事件。
+  const sourceCommandIdField: { sourceCommandId?: CommandId } =
+    host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId }
   const allSeqs = useIntervals.flatMap(iv => iv.seqs)
   const first = useIntervals[0]?.seqs[0] ?? 0
   const last = useIntervals[useIntervals.length - 1]?.seqs[useIntervals[useIntervals.length - 1]!.seqs.length - 1] ?? first
@@ -157,7 +163,7 @@ export function pruneIntervals(
   const startEvent = session.append('compaction/start', {
     ...lifecycle,
     // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）
-    ...host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId },
+    ...sourceCommandIdField,
   })
   try {
     const shadowedTokenCount = Math.ceil(useIntervals.reduce((s, iv) => s + iv.chars, 0) / host.charsPerToken)
@@ -223,7 +229,7 @@ export function pruneIntervals(
           + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
       const tombstone = session.append('user/message', createUserMessage({
         content: [{ type: 'text', text }],
-        source: compactCheckpointSource(compactionId),
+        source: compactCheckpointSource(compactionId, host.compactSourceCommandId),
       }), {
         surfaceOp: { op: 'replace', startSeq: asSeq(start), endSeq: asSeq(end) },
         sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
@@ -237,6 +243,7 @@ export function pruneIntervals(
     const charsBefore0 = useIntervals.reduce((sum, iv) => sum + iv.chars, 0)
     session.append('compaction/summary', {
       ...lifecycle,
+      ...sourceCommandIdField,
       summary: [{
         type: 'text',
         text: summaryKind === 'tombstone-merge'
@@ -249,7 +256,7 @@ export function pruneIntervals(
       provider: 'argp',
       model: 'deterministic-guards',
     } as never)
-    const endEvent = session.append('compaction/end', lifecycle)
+    const endEvent = session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField })
     const charsAfter = visibleChars(session)
     pushBounded(host.records, {
       at: new Date().toISOString(),
@@ -292,7 +299,7 @@ export function pruneIntervals(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     try {
-      session.append('compaction/end', { ...lifecycle, error: message })
+      session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField, error: message })
     } catch {
       // 关闭失败保留未配对 start，可被 inspectCompactionEntryState 检出
     }
