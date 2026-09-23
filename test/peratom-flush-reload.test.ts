@@ -14,17 +14,26 @@
  * （surface 顺序），离散性被"整窗"吸收；加防御自检（窗口非有效 span / 覆盖受保护
  * system head ⇒ throw，catch 落带 error 的 end，不发坏 summary）。
  *
- * 两层测试（Issue #2 明确要求，不可互相替代）：
+ * 三层测试（Issue #2 明确要求，不可互相替代）：
  *  ① 单测：stub host + 真 Session，**直接调 flushEntry**，断言发射顺序
  *     compaction/start → compaction/summary → replace → compaction/end，
  *     且 summary.shadowedSeqs = 发出时刻整轮窗口连续切片。
  *  ② 回归：真 PeratomCompressor 端到端 flush（collect→LLM→flushEntry）→ 全事件流经
  *     宿主 surface 重放 + validateShadowedSeqs 契约，必须通过（= 重启加载不炸）。
+ *  ③ 回归：同一条真实日志经**宿主原生完整加载链**（encodeCurrentHeader/Event →
+ *     createRestore → assertV4RowAdmission → decodeRow → assertReleasedV4Relationships）
+ *     必须通过——即 issue 给出的 `validate.mjs` 入口（= 用户重启 dsh 打开会话的
+ *     同一条路径）。② 与 ③ 是三路等价校验，但宿主入口是 issue 点名要求的那一道。
+ *
+ * 变异实测（2026-09-24）：把 `flushEntry` 的 summary 块整体移到 replace 循环**之后**
+ * （复刻 issue 的 fatal ①）⇒ ① / ② / ②c / **③** 共 4 红，4 条负控全绿 ⇒ 判别力精准。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, KNOWN_SESSION_EVENT_TYPES, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { sessionFormatCatalog as formatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
+import { assertReleasedV4Relationships, assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 // 0.1.7 宿主 shadow-price fold（内部函数，主入口仅导出 TokenMeter）：peratom 路径的
@@ -493,5 +502,146 @@ test('②d-负控：旧 bug 形态（整窗 summary 后直接单原子 replace�
     () => replayShadowPrice(events),
     /no adjacent shadow price/,
     '旧 bug 形态（整窗 summary 撞单原子 replace）必须被宿主 shadow-price fold 拒绝',
+  )
+})
+
+// ---------------------------------------------------------------------------
+// ③ 宿主**完整加载链**（Issue #2 点名要求的 assertReleasedV4Relationships 入口）
+// ---------------------------------------------------------------------------
+
+/**
+ * 走宿主完整加载链重载会话（= Issue #2 给出的 `validate.mjs` 等价物）：
+ *
+ *   encodeCurrentHeader / encodeCurrentEvent → createRestore(header, …)
+ *   → assertV4RowAdmission(row) → decodeRow(row) → assertReleasedV4Relationships
+ *
+ * 任一环节违规即 throw——这正是用户重启 dsh、重新打开会话时走的同一条路径
+ * （`SessionLogScanner.finish() → assertReleasedV4Relationships`）。
+ *
+ * 与 ② 的分工（**不可互相替代**）：② 用宿主 `foldSurface` / token-meter
+ * `foldSurfaceProjection` / 本仓自写重放器做等价校验；③ 补上 issue 指定的**宿主原生
+ * 入口**，把"插件发射顺序 + range/seqs 取值"整链交给宿主自己的 v3-to-v4 关系校验。
+ *
+ * 头部：`session.header` 是**逻辑**头（version/id/createdAt/isSeeded），物理 v4 头另需
+ * `delegationDepth`——`assertReleasedV4Header` 的 5 个必填之一（其余 cwd/parentSession/
+ * origin/agentPreset 可选），故补 0。
+ */
+function reloadThroughHostLoadChain(session: Session): void {
+  const s = session as unknown as { header: Record<string, unknown>; inheritedEventCount: number }
+  const headerRow = formatCatalog.encodeCurrentHeader({ ...s.header, delegationDepth: 0 } as never, s.inheritedEventCount)
+  const rows = [headerRow, ...session.snapshotEvents().map(e => formatCatalog.encodeCurrentEvent(e as never))]
+  const restore = formatCatalog.createRestore(rows[0], { recovery: 'strict', validation: 'transformed' })
+  for (let i = 1; i < rows.length; i += 1) {
+    assertV4RowAdmission(rows[i], KNOWN_SESSION_EVENT_TYPES)
+    restore.decodeRow(rows[i])
+  }
+  assertReleasedV4Relationships(restore.finish(), KNOWN_SESSION_EVENT_TYPES)
+}
+
+/**
+ * V4 tool/result 载荷：`role:'tool'` + `toolCallId`/`isError` 顶层 + `content` 为
+ * ContentBlock[]（与 `src/log-access.ts` 读取侧支持的 V4 形态一致）。
+ * 原地复用同一函数可保证"只换 content"——宿主 `assertToolResultRewrite` 要求
+ * tool/result 的 surface replace **只能**改 content（改 id/source 会先被拒）。
+ */
+function toolResultV4Payload(turn: number, callId: string, text: string) {
+  return {
+    turn,
+    step: 1,
+    message: {
+      role: 'tool',
+      toolCallId: callId,
+      isError: false,
+      content: [{ type: 'text', text }],
+      source: { kind: 'tool', callId },
+      id: 'm_' + callId,
+    },
+  }
+}
+
+function appendToolResultV4(session: Session, turn: number, callId: string, text: string): number {
+  session.append('tool/result', toolResultV4Payload(turn, callId, text) as never, { surfaceOp: 'append' })
+  return session.snapshotEvents().length - 1
+}
+
+/**
+ * V4 生命周期**合法**的可压轮。② 用的 `buildCompressibleTurn` 缺 `step/start` 与
+ * `tool/call`——只够跑插件自身的 surface 校验，过不了宿主 v3-to-v4 的关系链
+ * （`Relationships.tool()` 要求 tool/result 前该 `toolCallId` 已被 assistant/message
+ * 广告**且** `started`，否则报 "is not the exact TOOL_NOT_STARTED repair"）。
+ * 本构造器补齐：turn/start → user → step/start → assistant(tool-call) → tool/call
+ * → tool/result → step/end → turn/end。
+ */
+function buildV4CompressibleTurn(session: Session, turn: number, callId: string): { uSeq: number; aSeq: number; rSeq: number } {
+  session.append('turn/start', { turn })
+  const uSeq = appendUser(session, LONG_USER)
+  session.append('step/start', { turn, step: 1 } as never)
+  const aSeq = appendAssistantWithToolCall(session, turn, callId)
+  session.append('tool/call', { turn, step: 1, callId, name: 'read_file', arguments: '{"path":"log.txt"}' } as never)
+  const rSeq = appendToolResultV4(session, turn, callId, TOOL_TEXT)
+  session.append('step/end', { turn, step: 1 } as never)
+  session.append('turn/end', { turn, reason: { kind: 'completed' } } as never)
+  return { uSeq, aSeq, rSeq }
+}
+
+test('③ 回归：真实 peratom flush 的日志经宿主完整加载链（assertReleasedV4Relationships）通过', async t => {
+  const h = await makeHarness()
+  t.after(async () => { await h.ctx.fiber.dispose() })
+  const session = Session.create(SessionId('flush-loadchain-e2e'))
+  const { uSeq, rSeq } = buildV4CompressibleTurn(session, 1, 'c1')
+  // 压缩事务发生在**下一轮已开启**时——与真实 flush 同构（被收集轮已结束、当前轮开放；
+  // issue 日志即"收集 turn 16 / 事务 turn 17"）。这不是测试装置：宿主
+  // `Relationships.tool()` 对 tool/result 的 replace 走 `requireTurn`，无开放 turn 时
+  // 替换必被拒，故开放轮是真实前置条件。
+  session.append('turn/start', { turn: 2 })
+
+  h.respond({
+    splits: [{ seq: uSeq, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'EADDRINUSE :::3000 (compressed)' }],
+    tools: [{ seq: rSeq, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const record = await h.compressor.compressCurrentTurn(session)
+  assert.ok(record !== null, 'compressCurrentTurn 必须产出记录')
+  assert.ok((record.appliedReplaces ?? 0) >= 1, '必须真实落地至少一次 replace')
+
+  // 关键断言：宿主完整加载链必须吃下这份日志（= 重启 dsh 后可正常打开会话）。
+  reloadThroughHostLoadChain(session)
+})
+
+test('③-负控：旧 bug 形态（replace 先于 summary、seqs 只含被替换原子）必被加载链拒绝', () => {
+  // 复刻 Issue #2 旧 flushEntry 的发射序列：compaction/start → replace 循环**先**落地
+  // （被替换原子离开 surface）→ compaction/summary **后**发，且 shadowedSeqs 只平铺
+  // 真正被替换的原子（而非整窗连续切片）。
+  // 期望：宿主 `Relationships.span()` 在 `assertReleasedV4Relationships` 处抛出与线上
+  // 逐字相同的错误——证明本测试能区分新旧形态（旧实现必红）。
+  const session = Session.create(SessionId('flush-loadchain-negctl'))
+  const { uSeq, rSeq } = buildV4CompressibleTurn(session, 1, 'c1')
+  session.append('turn/start', { turn: 2 })
+
+  const cid = 'argp-peratom-00000000-0000-4000-8000-0000000000ff'
+  session.append('compaction/start', { compactionId: cid, turn: 2 } as never)
+  // 旧 bug ①：replace 先于 summary
+  // （`surfaceOp` 的 startSeq/endSeq 在类型上是 branded `SessionSeq`，裸 number 需收窄——
+  //  与 flush.ts 生产路径同一收窄惯例。）
+  session.append('tool/result', toolResultV4Payload(1, 'c1', 'compressed') as never, {
+    surfaceOp: { op: 'replace', startSeq: rSeq, endSeq: rSeq },
+    sourceEventSeqs: [rSeq],
+  } as never)
+  // 旧 bug ②：range 取整轮窗口、seqs 只含被替换原子
+  session.append('compaction/summary', {
+    compactionId: cid,
+    turn: 2,
+    summary: [{ type: 'text', text: 'probe' }],
+    shadowedRange: { start: uSeq, end: rSeq },
+    shadowedSeqs: [rSeq],
+    shadowedTokenCount: 100,
+    provider: 'argp',
+    model: 'deterministic-guards',
+  } as never)
+  session.append('compaction/end', { compactionId: cid, turn: 2 } as never)
+
+  assert.throws(
+    () => reloadThroughHostLoadChain(session),
+    /shadowedSeqs do not name an exact current surface span/,
+    '旧 bug 形态必须被宿主完整加载链拒绝（= issue 报的 stored log is corrupt）',
   )
 })
