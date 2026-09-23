@@ -27,6 +27,12 @@ import { Context } from '@deepseek-ai/cordis'
 import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { foldSurface } from '@deepseek-ai/dsh-session/surface'
+// 0.1.7 宿主 shadow-price fold（内部函数，主入口仅导出 TokenMeter）：peratom 路径的
+// **重启加载投影**契约核验（P0-A 回归锁）。经相对路径直引构建产物，与
+// compaction-prune-017.test.ts 同型。旧实现（整窗 summary 撞单原子 replace）在此必
+// throw "no adjacent shadow price"——本文件其余测试（replayValidateShadowedSeqs /
+// foldSurface）都不覆盖 shadow-price，故 peratom 路径此前对 P0-A 全盲。
+import { foldSurfaceProjection as _foldSurfaceProjection } from '../node_modules/@deepseek-ai/dsh-token-meter/lib/types/surface-projection.js'
 import { PeratomCompressor } from '../src/peratom/compressor.ts'
 import { flushEntry } from '../src/peratom/flush.ts'
 import type { FlushHost } from '../src/peratom/flush.ts'
@@ -262,6 +268,42 @@ test('①b 单测：窗口非当前 surface 有效 span ⇒ flushEntry throw 且
   assert.ok(endEvent.data.error !== undefined && endEvent.data.error.length > 0, 'catch 必须落一条带 error 的 compaction/end')
 })
 
+test('①c 单测：成功 end 之后的语句抛出 ⇒ 恰好一条 end，且不带 error（ended 守卫；旧实现为 2）', () => {
+  const session = Session.create(SessionId('flush-reload-unit-after-end'))
+  const { uSeq, rSeq } = buildCompressibleTurn(session, 1, 'c1')
+  const collect: CurrentTurnCollect = {
+    turn: 1,
+    startSeq: uSeq,
+    endSeq: rSeq,
+    interrupted: false,
+    userLong: [{ kind: 'user-long', seq: uSeq, turn: 1, text: LONG_USER }],
+    toolResults: [{ kind: 'tool-result', seq: rSeq, turn: 1, text: TOOL_TEXT, callId: 'c1' }],
+  }
+  const decision: CompressDecision = {
+    splits: [{ seq: uSeq, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'EADDRINUSE :::3000 (compressed)' }],
+    tools: [{ seq: rSeq, level: 'extract', text: 'EADDRINUSE stack' }],
+  }
+  // record 冻结 ⇒ 成功 `compaction/end` 之后的第一条记账语句（`record.appliedReplaces = …`）
+  // 在严格模式下必抛（写冻结对象 = TypeError）⇒ 走进 catch。旧实现 catch **无条件**再补一条
+  // 带 error 的 end，同一 compactionId 因此出现**两条** end：写入侧不校验（当场无感），重启
+  // 加载期第二条 end 命中宿主 invariant `compaction/end has no matching compaction/start`
+  // ⇒ 会话**永久打不开**。ended 守卫下此处不得再补 end（与 test/compaction-tx-brackets.test.ts
+  // ① 的 prune-tx 侧同一条不变量）。
+  const record = Object.freeze({ at: new Date().toISOString(), turn: 1, called: true }) as CompressRecord
+
+  assert.throws(
+    () => flushEntry(makeStubHost(), session, collect, decision, record),
+    '成功 end 之后的记账写入（冻结 record）必须抛出——本用例的注入点',
+  )
+
+  const events = session.snapshotEvents()
+  const kinds = events.map(e => e.type)
+  assert.equal(kinds.filter(t => t === 'compaction/start').length, 1, '恰一条 compaction/start')
+  assert.equal(kinds.filter(t => t === 'compaction/end').length, 1, '恰一条 compaction/end（ended 守卫；旧实现为 2）')
+  const endEvent = events[kinds.lastIndexOf('compaction/end')] as unknown as { data: { error?: string } }
+  assert.equal(endEvent.data.error, undefined, '保留的 end 必须是成功路径那条（不带 error），不是 catch 补的')
+})
+
 // ---------------------------------------------------------------------------
 // ② 回归：真 PeratomCompressor 端到端 flush → 加载期契约重放必须通过
 // ---------------------------------------------------------------------------
@@ -375,4 +417,81 @@ test('②c 回归：多步同事务（user split + 两 tool）重放仍通过加
   const events = session.snapshotEvents()
   replayValidateShadowedSeqs(events)
   foldSurface(events as never)
+})
+
+// ---------------------------------------------------------------------------
+// ②d shadow-price 回归锁（P0-A）：peratom flush 全事件流经宿主**真实**
+// foldSurfaceProjection 无 "no adjacent shadow price"（= 重启加载投影不炸）
+// ---------------------------------------------------------------------------
+
+/** 宽松 claim 类型：规避宿主 branded SessionSeq（运行时即 number）。 */
+type LooseClaim = { start: number; end: number; tokens: number } | undefined
+const foldSurfaceProjection = _foldSurfaceProjection as unknown as (
+  claim: LooseClaim,
+  event: { type: string; data?: unknown; seq?: number; surfaceOp?: unknown },
+) => { deltaTokens: number; claim: LooseClaim }
+
+/**
+ * 按序重放事件、维护宿主 shadow-price claim 状态机（与宿主 resume 的
+ * `usage-projection.ts` 同构）：compaction/summary|prune 武装 claim，surface
+ * append 过期 claim，surface replace 消费 claim 且要求范围**严格相等**——不等即
+ * throw "no adjacent shadow price"。任一违约即 throw = 重启加载失败（P0-A 失败模式）。
+ */
+function replayShadowPrice(events: readonly (SessionEvent | ReplayEvent)[]): void {
+  let claim: LooseClaim = undefined
+  for (const event of events) {
+    const folded = foldSurfaceProjection(claim, event as never)
+    claim = folded.claim
+  }
+}
+
+test('②d 回归：真实 peratom flush 全事件流经宿主 foldSurfaceProjection 无 "no adjacent shadow price"（P0-A 锁）', async t => {
+  const h = await makeHarness()
+  t.after(async () => { await h.ctx.fiber.dispose() })
+  const session = Session.create(SessionId('flush-shadowprice-e2e'))
+  const { uSeq, rSeq } = buildCompressibleTurn(session, 1, 'c1')
+
+  h.respond({
+    splits: [{ seq: uSeq, quotes: [DIALOG_QUOTE], infoLevel: 'extract', infoText: 'EADDRINUSE :::3000 (compressed)' }],
+    tools: [{ seq: rSeq, level: 'extract', text: 'EADDRINUSE stack' }],
+  })
+  const record = await h.compressor.compressCurrentTurn(session)
+  assert.ok(record !== null, 'compressCurrentTurn 必须产出记录')
+  assert.ok((record.appliedReplaces ?? 0) >= 1, '必须真实落地至少一次 replace')
+
+  // 关键：全事件流经宿主真实 shadow-price fold（= 重启加载的投影路径）。
+  // 旧 beta.2 形态（整窗 summary 撞单原子 replace）在此必 throw；修复后每条
+  // replace 前有同范围 per-atom prune 覆盖整窗 claim ⇒ 不 throw。
+  replayShadowPrice(session.snapshotEvents())
+})
+
+test('②d-负控：旧 bug 形态（整窗 summary 后直接单原子 replace、无 per-atom prune）必被 foldSurfaceProjection 拒绝', () => {
+  // 复刻 beta.2 旧 flushEntry 的发射序列：整窗 compaction/summary（range=整轮窗口）
+  // 后**直接**单原子 replace（range=该原子），中间无 per-atom prune 覆盖 claim。
+  // 首条 replace 撞整窗 claim（8-46 ≠ 9-9）⇒ foldSurfaceProjection 必 throw
+  // "no adjacent shadow price"——这正是 P0-A 的失败模式，证明本测试能区分新旧形态。
+  // surface 事件须带最小 message 载荷：真实 foldSurfaceProjection 对 append/replace
+  // 会调 estimateMessage 计价（user→data、assistant/tool→data.message），缺 role/content
+  // 会先于 shadow-price 判定抛 TypeError。这里给最小合法载荷，让断言落在 shadow-price 上。
+  const userMsg = { role: 'user', content: [{ type: 'text', text: 'x' }] }
+  const asstMsg = { role: 'assistant', content: [{ type: 'text', text: 'x' }] }
+  const toolMsg = { role: 'tool', content: [{ type: 'text', text: 'x' }] }
+  const events: ReplayEvent[] = [
+    { seq: 0, type: 'turn/start' },
+    { seq: 1, type: 'user/message', surfaceOp: 'append', data: { ...userMsg } },
+    { seq: 2, type: 'assistant/message', surfaceOp: 'append', data: { message: { ...asstMsg } } },
+    { seq: 3, type: 'tool/result', surfaceOp: 'append', data: { message: { ...toolMsg } } },
+    { seq: 4, type: 'turn/end' },
+    { seq: 5, type: 'compaction/start' },
+    // 整窗 summary（range 1-3）武装 claim {1,3}
+    { seq: 6, type: 'compaction/summary', data: { shadowedRange: { start: 1, end: 3 }, shadowedSeqs: [1, 2, 3], shadowedTokenCount: 10 } },
+    // 旧 bug：无 per-atom prune，直接单原子 replace（range 1-1）撞整窗 claim {1,3}
+    { seq: 7, type: 'user/message', surfaceOp: { op: 'replace', startSeq: 1, endSeq: 1 }, data: { ...userMsg } },
+    { seq: 8, type: 'compaction/end' },
+  ]
+  assert.throws(
+    () => replayShadowPrice(events),
+    /no adjacent shadow price/,
+    '旧 bug 形态（整窗 summary 撞单原子 replace）必须被宿主 shadow-price fold 拒绝',
+  )
 })

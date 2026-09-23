@@ -4,6 +4,115 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.7.0] - 2026-09-23（宿主 0.1.7 全量对齐 + 三条「重启才炸」加载期契约修复；汇总 beta.0~beta.5）
+
+> **发行说明（汇总版）**：本版由 **1.7.0-beta.0 ~ beta.5** 六个 beta **汇总**而成（另含未 promote 的 **1.6.1-beta.0**）。其中 beta.0 / beta.1 / beta.2 / beta.3 曾以 `npm publish --tag beta` 单独发布；**beta.4 / beta.5 从未单独发布**（仅存在于工作树），内容一并并入本版。
+>
+> 宿主基线 **`0.1.6-alpha.1` → `0.1.7-alpha.2`** 是**破坏性**迁移：0.1.7 把 tool/result 升为一等 `role:'tool'` 消息（日志格式 V3→V4）、取消 `source.kind:'plugin'` 兜底 kind、把 `compaction/prune` 提升为原生事件，并在 `token-meter` 引入 **shadow-price 协议**、在 `compaction` 侧收紧两条加载期校验。本版一次性吸收全部结构性变更，并修掉**三条**「`compaction/*` 写入侧不校验 ⇒ 落盘静默成功；重启 `session/created` 重放才 throw ⇒ **会话永久打不开**」的契约违约。
+
+### 升级指引
+
+- **npm `latest` 由 `1.6.2` 直接进入 `1.7.0`**——不补发 beta.4 / beta.5，也不 promote `1.6.1-beta.0`。
+- 本版要求宿主 **`0.1.7-alpha.2`**；peer 范围 `^0.1.7-alpha.2` 按 semver 预发布规则**含** `0.1.7-rc.1`、**不含** `0.1.6-*`。仍在 `0.1.6` 宿主上的部署**不要**升到 1.7.0：实测 1.6.0 代码 × 0.1.7 宿主 = **6 个真回归 + 18 处类型错误**，反向亦然（`^0.1.6-alpha.1` 同样排除 0.1.7 全套）。
+- **会话格式双向兼容**：V3（`session.v3.jsonl.zstd`）与 V4（`session.v4.jsonl.zstd`）都可读；语料读取器已改为 glob 两者（不改会**静默漏读** 0.1.7 起的全部 v4 会话）。
+- **已被 beta.2 / beta.4 / beta.5 写坏的会话不会自动恢复**——损坏已落盘为 `compaction/*` 日志事件（off-surface，不改变可见内容）。升级只保证**新写入**不再产生坏记录；存量坏会话需按其派生事件带备份重写。
+
+### Fixed ① —— 三条「写入无感、重启才炸」的加载期契约（会话永久打不开）
+
+四条修复同属一类失败模式：`Session.append` **不校验** `compaction/*` ⇒ 落盘静默成功，**重启加载**（`session/created` 重放）才抛 ⇒ 会话打不开。
+
+| # | 进入版本 | 违约内容 | 宿主校验（0.1.7） | 触发面 |
+|---|---|---|---|---|
+| ① | beta.2（Issue #2） | `compaction/summary` 的 `shadowedSeqs` 取「真正被替换的**离散**原子」，而非「**发出时刻**当前 surface 在 `[range.start, range.end]` 的**连续切片**」；且 summary 发在 replace 循环**之后**（原原子已离开 surface） | `dsh-compaction` invariant `validateShadowedSeqs` + v3-to-v4 `Relationships.span()` | peratom flush + Stage-2 图剪，**每次压缩** |
+| ② | beta.4 | peratom flush 发**一条整窗** `summary`（range=整轮窗口）+ **多条单原子** `replace`（range=该原子）⇒ 首个 replace 撞整窗 claim，范围**不严格相等** | `token-meter` `foldSurfaceProjection` 的 **shadow-price 协议**（append 与 replay **两侧**都跑 ⇒ 活轮与重启**双双**炸） | peratom flush，**每次压缩** |
+| ③ | beta.5 | `/compact` 事务只在 `compaction/start` 带 `sourceCommandId`，`summary` / `end` / **压缩 checkpoint** 不带 | invariant `validateSourceCommandId` + v3-to-v4 `Relationships.compactionOwner` | **跑过 `/compact` 且会话被重新加载** |
+| ④ | **1.7.0（本版新增）** | 成功 `compaction/end` 之后的语句（断言 2b / 记账 / 遥测）抛出时，`catch` **无条件**再补一条 end ⇒ 同一 `compactionId` 写出**两条 end** | invariant `applyCompactionTransition`（对 `end` 无分支 ⇒ 首条 end 已清空 `trace.compaction`，第二条命中 `compaction/end has no matching compaction/start`） | 需先有内部不一致（可达性低，但后果**不可逆**） |
+
+- **① 修法**（beta.2）：`compaction/summary` 移到 replace 循环**之前**（发出时刻整窗仍完整），`shadowedSeqs` = 整窗连续 surface 切片（离散性被"整窗"吸收）；加**防御自检**（窗口非有效当前 span / 覆盖受保护 system head ⇒ throw + 落带 `error` 的 `end`，**不发坏 summary**）。peratom 与 prune-tx 同失败类一并修。
+- **② 修法**（beta.4）：对齐 `prune-tx` 既有纪律——每条 replace 前各发一条 **per-atom `compaction/prune`**，`shadowedRange = {start: seq, end: seq}`（与该 replace **严格相等**）、`shadowedSeqs = [seq]`（单节点连续切片，同时满足 ①）、`shadowedTokenCount = ceil(原字符数 / 4)`（宿主 `CHARS_PER_TOKEN = 4`）。整窗 `summary` 的 claim 被首条 prune 覆盖、末尾被 off-surface `end` 清掉，无冲突。
+- **③ 修法**（beta.5）：把可选 `sourceCommandId` 提成 `sourceCommandIdField`，在 `start` / `summary` / 成功 `end` / catch 错误 `end` **四处统一展开**；压缩 checkpoint 改 `compactCheckpointSource(compactionId, host.compactSourceCommandId)` ⇒ 一笔事务的**全部五个**受校验事件（start / summary / end / checkpoint）同值（自动压缩时一致为 `undefined`，同样合法）。
+- **④ 修法（本版新增）**：`ended` 守卫——成功 `end` 落地后置 `true`，`catch` 内 `if (!ended)`。把"防御性断言把可恢复错误升级为不可逆损坏"这条路径关掉。
+
+### Fixed ② —— 其它
+
+- **客户端 half 注册泄漏**（beta.3）：`apply()` 里 `locale.register(ns, dict)` 与 `assistantDisplay.register(filter)` 都丢弃了返回的 disposer。宿主的"重新激活" = **dispose 旧 fiber + 重新 apply client half**（设置页 enable/disable、客户端版本变更——**每次装新版都会触发**、HMR 重载都走这条），泄漏的字典在 teardown 时无人摘除 ⇒ 第二次 apply 时 `dsh-client-locale` 直接抛 `locale namespace "dsh-argp" already has locale "zh"`，设置页报「本页面的插件未能完成同步」并**回滚激活**；`assistantDisplay` 不抛但会**叠加**过滤器。修法：新增 `registerDisposable(ctx, execute, label)`（= `ctx.effect(execute, label)`，无 `effect` 的退化 ctx 直接执行），两处注册改走它。
+- **中断轮并入下一轮**（beta.0）：中断轮 N 的**完整**原子（U-long + R）不在 N 自己的 pass 压（轮刚被中断，racy），而是**并入下一轮 N+1 的 pass**（settled，无 race）；`collect` / `flush` / `cite-declarer` 三处语义对齐，落地后**同时推进** `closed` 与 `prevTurn` 两个水位。边界：连续多轮中断时只并入"紧邻上一轮"。
+- **语料读取器 v3+v4**（beta.0）：从硬编码 `session.v3.jsonl.zstd` 改为 glob `['session.v3.jsonl.zstd','session.v4.jsonl.zstd']` 取存在者——不改则 0.1.7 起的 v4 会话被**静默漏读**，语料审计/回归系统性偏少。
+
+### Added
+
+- **U-info 副本保留附件块**（beta.0；`decision.attachmentBlocksOf` + `userCopyPayload` 第三参）：peratom 压缩一条**带图片/文件附件**的 user 消息时，U-info 副本 = 压缩文本 + **原样 image/file 块**（不再静默丢弃）。宿主附件模型里附件是**引用块**（指向持久存储），LLM 侧只渲染为 `[image omitted]` 占位 ⇒ 旧实现产出纯文本 content 会把附件块**从模型实时上下文静默丢掉**（原文仍在 append-only 日志可 recall，但 surface 没了）。宿主合法性已核：`planSurfaceEvent` 对 user/message 的 surface replace 只校验 range + provenance。无附件场景产物与 1.6 逐字节一致（零回归）。**前瞻防御**——受控语料 18 session / 251 条 user 消息中 0 条带附件。
+- **`OWN_SOURCE_KINDS` 正向白名单 + `isOwnSourceKind(kind)`**（beta.0）：`['plugin','argp','compact-checkpoint']`，替代散落的 `kind === 'plugin'` 字面比较。取舍依据：反转逻辑（`kind === 'user' ? 'U' : 'X'`）的失败模式是"新的真实用户 kind 被误判 ⇒ **丢召回**（数据丢失）"；正向白名单的失败模式是"新的注入 kind 被当 U ⇒ **轻微噪声**"。**白名单失败模式更安全。**
+- **`llm-source-augment.d.ts`**（beta.0）：向宿主 `MessageSourceMap` 声明 `argp` kind（`{kind:'argp'} & ContextFormed`），使 `{kind:'argp'}` 字面量通过 0.1.7 的 `createUserMessage` 类型检查（宿主自家包同款先例）。纯 `.d.ts`，不参与 `lib/` 发射、运行时无影响。
+- **tool/result 压缩副本头部标记**（来自未 promote 的 **1.6.1-beta.0**）：副本正文头部拼 `[已压缩-摘取 seq=N]`（extract）/ `[已压缩-摘要 seq=N]`（summary），生产默认 `config.toolCopyMarker = true`。理由：extract 档 prompt 契约要求 text 是原文**逐字**片段，与完整工具输出**同形**；summary 档是改写 ⇒ 标记明示"这段不可逐字引用"。**带 seq 是必需的**——seq 是日志内部序号，模型在 tool/result 里看不到，不带则 `recall_detail(N)` 无参数可调、召回通路实际是断的。配套：no-op 守卫改为按**落地后**真实长度（`action.text.length + marker.length`）判收益，消除"加标记反而持平/变长"的白压；导出 `toolCopyMarkerText` / `TOOL_COPY_MARKER_RE` 供语料审计剥离标记。
+- **`compaction/prune` 0.1.7 协议核验测试**（beta.0）：核 0.1.7 宿主**接受** dsh-argp 的 `compaction/prune` 发射（无 `ignorable` 也过准入）+ shadow-price 协议在 0.1.7 成立。
+- **事务括号配对测试**（1.7.0）：`test/compaction-tx-brackets.test.ts`——prune-tx 侧两条（守卫回归 + 反向对照），peratom 侧见 `test/peratom-flush-reload.test.ts` ①c。
+
+### Changed
+
+- **依赖 bump `0.1.6-alpha.1 → 0.1.7-alpha.2`**（beta.0）：`peerDependencies`（dsh-agent / commands / compaction / llm / session / tools）+ `devDependencies`（含 dsh-agent-loop / compaction-basic / invariants / llm-deepseek / llm-pi-ai / session / system-prompt / token-meter / tool-bash / tools）全对齐 `0.1.7-alpha.2`；`cordis ^4.0.2` / `schemastery ^3.18.1` 不动。
+- **V3→V4 tool/result 双形状（写侧）**（beta.0）：`decision.toolCopyPayload` 与 `prune-tx` tool 占位墓碑都按 `role === 'tool'`（V4：content 换单 text block，顶层 `role`/`source`/`toolCallId`/`isError` 经展开原样保留，满足 `assertToolResultRewrite`"只改 content"）与 `role === 'user'` 内嵌 `tool-result`（V3：只改该 block 的 inner text）双分支产出。**读侧零改动**（V4 直接数组走既有 `block.type === 'text'` 分支；callId 全走 `source.callId`）。
+- **source.kind 去 `'plugin'` 化**（beta.0）：steer 通知 `{kind:'plugin', plugin:'dsh-argp', form:'notice'}` → `{kind:'argp', form:'notice'}`（唯一裸 plugin 持久化写点）；`userCopyPayload` `{kind:'plugin'}` → `{kind:'argp'}`（瞬时，flush 统一覆盖成 `compact-checkpoint`）。读点统一改走 `isArgpUserInfo(data)`（U-info 恒 U，先判）+ `isOwnSourceKind(kind) ? 'X' : 'U'`，三场景（新建 V4 / 迁移 V3→V4 / 纯 V3）判据全部正确。
+- **0.1.7 preset-cleaner 重写为 override-only 自净化**（beta.1）：0.1.7 把 agent 平面移入 **agent preset**，默认 preset（standard / cordis / ptc）的 `compaction` 组自带**隔离的 stock provider** ⇒ 默认 preset 下 ARGP 的 Stage-2 图剪被 stock `compaction-basic` **遮蔽**；而 0.1.6 的 preset-cleaner（复制到用户根 + 运行时手术）在 0.1.7 **结构性失效**（`AgentPresetRegistry` 无 copy/read/mutate API，`register()` 对重复 id 直接 throw）。新方案：`scripts/generate-preset-overrides.ts` 读 shipped preset patch → 纯文本净化（`purifyPresetPatch`：摘除 stock `compaction-basic` + `tool-result-pruner` 行与该组 `isolate` 块，**保留** `command-compact` ⇒ 组变普通组、`inject` 回落到宿主 ARGP 的 scope 链）→ 转成**顶层 modify 行**（`toModifyRow`）烘焙进本包 `cordis.patch.yml`。dsh-argp 是 bundle 顺序**最后一位** ⇒ modify 覆盖 web-app 的 insert（last-write-wins）。保留 planning / delegation 的 isolate 与 cordis 的 `tool-cordis` / ptc 的 `tool-presentation`；幂等（重复运行字节一致，已净化的 preset 是 no-op）。同时删除 0.1.6 的 `cleanShippedPresets` 系列导出与 `argp-graph-engine` 的构造期净化挂载点，`index.ts` 导出与 `ARCHITECTURE.md` 模块表同步。
+- **语料读取器 v3+v4**（见上）。
+
+### Tests
+
+- 全量 **370 例**（`npm run check`：typecheck + typecheck:spike + smoke + test + build）。逐版本增量：beta.0 → 351 绿（+17）、beta.1 → 354（14 例 preset-cleaner 重写）、beta.2 → 359（`peratom-flush-reload` 5 例）、beta.3 → 364（`client` 第 ④ 层 +5）、beta.4/beta.5 复跑、**1.7.0 → 370**。
+- **变异实测**（在独立 worktree 注入候选改动后摘除修复，主树零风险）：P0-A（per-atom prune）⇒ 1 red；P0-B（prune-tx `sourceCommandId`）⇒ 1 red；P0-B₂（只摘 checkpoint 第 2 参）⇒ 同 1 red；**④（`ended` 守卫，两处同摘）⇒ 恰 2 red**（`compaction-tx-brackets` ① + `peratom-flush-reload` ①c），而反向对照 ② 仍绿 ⇒ 判别力精准、非平凡通过。
+- **端到端契约验证**（`dsh-argp-itest`）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑 `compactNow`——修复路径三事件 + checkpoint 一致、invariant 实时通过；对照旧形态被 invariant 拦截。
+
+### 已知问题与限制
+
+- **① `preset-cleaner` 的 modify 行是整块 config 重述**（0.1.7 机制固有，beta.1 起）：不自动合并未来 builtin 变更——若 web-app 未来改某 preset 的**非 compaction** 字段，本 override 会遮蔽该变更直到重新生成（`node scripts/generate-preset-overrides.ts <presets-dir>`）。
+- **② 连续多轮中断时只并入"紧邻上一轮"**（beta.0 起）：更早的中断轮可能漏压（罕见，后续可扩为"全部未处理中断轮"）。
+- **③ `cordis.yml` 不能用于验证 preset override**：该文件内容恒为 `[]`——组合树由 `package.json` 的 `dsh.profile.bundles` + `cordis.patch.yml` 在**加载期**组装，**不落盘**。preset override 只能**行为验证**（`/compact` 产出 `[elided seq=N..M]` 墓碑、被剪内容可 recall）。
+- **④ profile 的 `windowRatio` 是两层配置**：`~/.dsh/settings.yaml`（运行时赢）> `~/.dsh/profiles/*/cordis.patch.yml`。跑受控语料需**显式覆盖** `windowRatio`（覆盖值随跑批规格书维护，该规格书为内部文档、不随包发布）。
+
+## [1.7.0-beta.5] - 2026-09-23（P0 回归修复：prune-tx 的 sourceCommandId 一致性）
+
+> **发布状态**：**未单独发布**（仅存在于工作树），内容**并入 [1.7.0]**（见上）。承接 1.7.0-beta.4（peratom shadow-price 修复）。本版修 **Stage-2 图剪（`prune-tx.ts`）的 P0 缺陷**——`/compact` 手动压缩事务的 `compaction/start` 携带发起命令 `sourceCommandId`，但 `compaction/summary` 与 `compaction/end` 不携带，违反宿主 **sourceCommandId 一致性契约**，导致**任何跑过 `/compact` 的会话在重启加载期必炸**（`SessionFormatError: compaction/summary has no matching compaction/start`）。
+
+**现象**：集成测试 T4（Stage-2 图剪）跑 `/compact` 后，会话 `session-bffe40b6` 在**最终重启**（首次包含该图剪事务）加载失败：`failed to project session ...: compaction/summary has no matching compaction/start`（gateway/internal）。此前 T1 的两次重启都在 `/compact` 之前，故未触发——该缺陷是**预存在**的（非 beta 系列引入），只在「跑过 `/compact` 且会话被重新加载」时显现。
+
+**根因**：宿主对一笔压缩事务的 `compaction/start` / `compaction/summary` / `compaction/end` 三事件要求携带**同一个** `sourceCommandId`（可选，标识发起的手动命令），由两处独立校验：
+- `dsh-compaction` invariant 的 `validateSourceCommandId`（`invariant.ts:85`）：`summary`/`end` 的 `sourceCommandId` 必须 `=== start` 的（`undefined !== 'cmd-...'` 即 fail）。
+- `session-format-v3-to-v4` 的 `Relationships.compactionOwner`（`relationships.ts:248`）：`start` 把 `command: data['sourceCommandId']` 记入 open compaction，`summary`/`end` 要求 `this.compaction.command === data['sourceCommandId']`，不等则 throw（错误信息误导为 "no matching compaction/start"，实为 sourceCommandId 不匹配）。
+
+`prune-tx.ts` 的 `pruneIntervals` 只在 `compaction/start`（`line 159`）展开 `sourceCommandId: host.compactSourceCommandId`，`compaction/summary`（`line 192`）与两处 `compaction/end`（成功 `line 281` / catch 错误 `line 324`）只展开 `lifecycle`（无 sourceCommandId）。`/compact` 路径 `compactSourceCommandId` 非空 ⇒ start 带、summary/end 不带 ⇒ 加载期 fold 违约。peratom 路径 `compactSourceCommandId` 恒为 `undefined`（自动压缩），三事件一致为 `undefined`，故 peratom 事务不受影响——这也解释了为何缺陷只在 `/compact` 触发。
+
+**修法**：把可选 `sourceCommandId` 提成一个 `sourceCommandIdField`（`compactSourceCommandId === undefined ? {} : { sourceCommandId }`），在 `start` / `summary` / 成功 `end` / catch 错误 `end` 四处**统一展开**——三事件（含失败路径）恒携带同一个值（自动压缩时一致为 `undefined`，同样满足契约）。此外，**压缩 checkpoint**（`user/message` + `compactCheckpointSource`）是宿主 invariant 校验的**第五个**事件——`validateCheckpoint` 要求其 `source.sourceCommandId` 与 start 同值，而旧实现 `compactCheckpointSource(compactionId)` 只传 compactionId（`sourceCommandId` 缺省 `undefined`）⇒ 手动 `/compact` 时同样违约。修法：`compactCheckpointSource(compactionId, host.compactSourceCommandId)`。`CommandId` 类型本就 import，`host.compactSourceCommandId` 本就是 `CommandId | undefined`，类型闭合。peratom 路径 `compactSourceCommandId` 恒为 `undefined`，其 checkpoint 本就一致，不受影响。
+
+### Changed
+
+- `src/prune-tx.ts`：`pruneIntervals` 新增 `sourceCommandIdField`，`compaction/start` / `compaction/summary` / `compaction/end`（成功 + catch 错误两路径）四处统一展开；压缩 checkpoint 改 `compactCheckpointSource(compactionId, host.compactSourceCommandId)`——保证一笔事务的**全部五个**受校验事件（start / summary / end / checkpoint）`sourceCommandId` 同值。
+
+### Tests
+
+- `test/manual-compact.test.ts` 新增回归例「sourceCommandId 一致性——start/summary/end 三事件同值」：`/compact` 带命令 ID 后，数据层直接断言 start/summary/end **及压缩 checkpoint** 的 `sourceCommandId` 逐字相等（确定性、不依赖 invariant 是否安装）。旧代码下 summary/end/checkpoint 为 `undefined` ≠ start 的命令 ID，此例必失败——正是本次 P0 的回归锁。
+- 端到端契约验证（`dsh-argp-itest/verify-scid.mjs`）：用宿主真实加载期校验栈（SessionStore + InvariantRegistry + CompactionInvariant）跑已构建 beta.5 的 `compactNow`——① 修复路径三事件 + checkpoint 一致、invariant 实时校验通过；② 对照旧形态（start 带 scid / summary 不带）被 invariant 拦截（`compaction/summary sourceCommandId undefined does not match compaction/start`）——证明测试能区分新旧形态。
+- 集成测试 T4 后续的最终重启（首次含 `/compact` 图剪事务）：修复前 `SessionFormatError`，修复后会话正常加载。
+- `npm run check` 全绿：typecheck + typecheck:spike + smoke + test（365 例）+ build。
+
+## [1.7.0-beta.4] - 2026-09-23（P0 回归修复：peratom flush 的 shadow-price 契约）
+
+> **发布状态**：**未单独发布**（仅存在于工作树），内容**并入 [1.7.0]**（见上）。承接 1.7.0-beta.3（客户端 locale 注册泄漏修复）。本版修 **beta.2 的 Issue #2 修复引入的 P0 回归**——peratom flush 的 `compaction/summary` + 多 replace 组合违反宿主 0.1.7 新增的 **shadow-price 协议**，导致**会话重启加载必炸**（`token surface: replace at seq N over range X-X has no adjacent shadow price (armed claim covers S-E)`）。
+
+**现象**：peratom 压缩一次后，会话重启（`session/created` 重放）即报 `failed to project session ...: token surface: replace at seq 56 over range 28-28 has no adjacent shadow price (armed claim covers 8-48)`，会话打不开。集成测试 T1（压缩一次后连重启两遍）首次复现。
+
+**根因**：宿主 0.1.7 在 `token-meter/surface-projection.ts` 引入 **shadow-price 协议**——surface `replace` 前**紧邻**的计量事件（`compaction/summary` 或 `compaction/prune`）必须声明**被替换范围**的启发式 token 价，`foldSurfaceProjection` 要求 `claim.start === op.startSeq && claim.end === op.endSeq`（范围**严格相等**），否则 throw。beta.2 的 `flushEntry` 发**一条整窗** `compaction/summary`（`shadowedRange = {start: collect.startSeq, end: collect.endSeq}`，如 8-48）+ **多条单原子** replace（`{op:'replace', startSeq: step.at, endSeq: step.at}`，如 28-28）——首条 replace 撞上整窗 claim（8-48 ≠ 28-28）即 throw。该 fold 在 **append 与 replay 两侧都跑**（`usage-projection.ts` 的 `contextPressureProjectionDefinition.apply`），故**活轮与重启加载双双炸**。
+
+**修法**：对齐 `prune-tx.ts` 的既有纪律——每条 replace 前各发一条 `compaction/prune`，`shadowedRange = {start: step.at, end: step.at}`（该单原子，与紧随的 replace 范围**严格相等**），`shadowedSeqs = [step.at]`（单节点连续切片，同时满足加载期 `validateShadowedSeqs`），`shadowedTokenCount = ceil(原原子字符数 / 4)`（宿主 `CHARS_PER_TOKEN = 4` 口径）。开头整窗 `compaction/summary` 的 claim 被首条 prune 覆盖、末尾被 off-surface `compaction/end` 清掉，无契约冲突。`compaction/prune` 是**独立**事件（`invariant.ts` 只对它跑 `validateShadowedSeqs`，不要求事务上下文），故 per-atom 发射合法。
+
+### Changed
+
+- `src/peratom/flush.ts`：`flushEntry` 的 replace 循环每条 replace 前各发一条 per-atom `compaction/prune`（range = 该单原子）；新增 `textLenBySeq`（原原子 seq → 字符数）供 `shadowedTokenCount` 估算。整窗 `compaction/summary` 保留（UI 展示 + 审计），其 claim 被首条 prune 覆盖。
+
+### Tests
+
+- 集成测试 T1（压缩一次后连重启两遍）：修复前**必炸**（`no adjacent shadow price`），修复后会话正常加载、二次重启复用已持久化事件亦正常。
+- `npm run check` 全绿：typecheck + typecheck:spike + smoke + test + build。
+
 ## [1.7.0-beta.3] - 2026-09-23（客户端 locale 注册泄漏：插件 enable/disable 与设置页同步失败）
 
 > **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.2（Issue #2 加载期契约修复）。本版修**客户端 half 的注册泄漏**——它让 dsh-argp 在「宿主 retract 后重新激活」这条路径上**必然**失败，也就是设置页里的插件 enable/disable、客户端版本变更（每次装新版都会触发）、HMR 重载。
@@ -88,10 +197,11 @@
 
 ### 发布后核验（用户侧）
 
-- 重启宿主后，profile 的 `cordis.yml`（组合解析产物）里三个 preset 的 `compaction` 组应只剩 `command-compact`（无 `compaction-basic` / `tool-result-pruner` / `isolate`）；`/compact` 走宿主 ARGP 而非 stock。
+- 重启宿主后，`/compact`（或上下文压力触发）应走宿主 ARGP 而非 stock：产出 `[elided seq=N..M]` 墓碑、被剪内容可 recall。
+  - ⚠️ **核验方式更正（2026-09-23 实测）**：原文让 grep `profile` 的 `cordis.yml`，但该文件内容就是 `[]`——组合树在**加载期**由 `package.json` 的 `dsh.profile.bundles` + `cordis.patch.yml` 组装，**不落盘**，grep 必然为空。preset override 只能**行为验证**。
 - ⚠️ profile 层 `cordis.patch.yml` 的 `windowRatio`（现 0.8）与 `~/.dsh/settings.yaml` 的 `dsh-argp.windowRatio` 是**另一层**（运行时赢），与本 preset override 正交，勿混。
 
-## [1.7.0] - 2026-09-23（宿主 0.1.7 结构性变更全吸收 + U-info 附件保留）
+## [1.7.0-beta.0] - 2026-09-23（宿主 0.1.7 结构性变更全吸收 + U-info 附件保留）
 
 > **发布状态**：以 **`1.7.0-beta.0`**（宿主 0.1.7 三处结构性变更 + U-info 附件）→ **`1.7.0-beta.1`**（preset-cleaner override-only 自净化）先行发布（`npm publish --tag beta`）；**`latest` 保持 1.6.0**（不 promote 1.6.1-beta.0，按用户拍板）。待用户实战 session 核查效果后再决定 1.7.0 正式版。
 
@@ -140,7 +250,7 @@
 - 既有全量 **351 全绿**（原 334 + 新 17）。
 - 供应链核验：0.1.7-alpha.2 沿用既有核验法（`npm pack` → 解包 → 与 node_modules 逐文件 sha256 diff + registry `time`/`maintainers`/`dist.integrity` 溯源）。
 
-## [1.6.1] - 2026-09-23（tool/result 压缩副本头部标记）
+## [1.6.1-beta.0] - 2026-09-23（tool/result 压缩副本头部标记）
 
 **问题**：逐原子压缩用压缩文本替换 tool/result，但副本在 LLM 侧与真实工具输出**不可辨**。dsh-session 硬约束使副本不能挂 `data[ARG_NS]` 元数据（`decision.toolCopyPayload`）、也不能换 source（`flush.flushEntry` ⇒ UI 同样看不出），且副本 `source.kind` 仍是 `'tool'`——宿主约束下**没有任何** model-visible 信号。extract 档尤甚：prompt 契约要求 text 是原文**逐字**片段，与完整工具输出同形。图剪路径早有标记体系（`[elided seq=N..M]` 墓碑 + `argp-contract` 告知），逐原子路径是唯一缺口。
 （背景：该缺口此前未被实证检验——`cordis.patch.yml` 整个 git 历史从未写入 `peratom` 块，Stage-1 在默认安装下结构性不可达，受控语料里 6386 次替换全是 `[elided]` 墓碑。一旦 Stage-1 挂载，缺口即成实际风险。）

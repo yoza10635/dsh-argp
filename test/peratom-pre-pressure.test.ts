@@ -262,10 +262,13 @@ test('① 集成：真 compressor 自挂载，一次 pre-step = 压缩事务（�
     const kinds = session.snapshotEvents().map(e => e.type)
     const firstStart = kinds.indexOf('compaction/start')
     const firstEnd = kinds.indexOf('compaction/end')
-    const firstPrune = kinds.indexOf('compaction/prune')
+    // beta.4：peratom flush 也发 per-atom compaction/prune（shadow-price 契约），落在**自己**
+    // 事务括号内 ⇒ "第一条 compaction/prune" 不再是图剪的。图剪事务是**第二个**
+    // compaction/start..end 括号（prune-tx 自带 start/end）。据此定位图剪事务。
+    const secondStart = kinds.indexOf('compaction/start', firstStart + 1)
     assert.ok(firstStart >= 0 && firstEnd > firstStart, '压缩事务括号存在')
-    assert.ok(firstPrune > firstEnd, '图剪发生在压缩事务之后（先压后剪）')
-    const between = kinds.slice(firstEnd, firstPrune)
+    assert.ok(secondStart > firstEnd, '图剪发生在压缩事务之后（先压后剪）')
+    const between = kinds.slice(firstEnd, secondStart)
     assert.equal(between.includes('turn/start'), false, '两变异之间无轮边界 ⇒ 同一 pre-step 窗口落地')
     assert.equal(between.includes('turn/end'), false)
     assert.ok(engine.records.length >= 1, '图剪记录存在')

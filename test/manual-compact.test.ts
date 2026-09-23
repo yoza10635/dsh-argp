@@ -124,6 +124,49 @@ test('/compact: sourceCommandId 透传到事务事件与台账', async () => {
   }
 })
 
+test('/compact: sourceCommandId 一致性——start/summary/end 三事件同值（加载期 fold 契约）', async () => {
+  // 回归锁定（2026-09-23 P0）：旧实现只给 compaction/start 带 sourceCommandId，
+  // summary/end 不带。宿主 dsh-compaction invariant（validateSourceCommandId）与
+  // v3-to-v4 relationships.compactionOwner 都要求三事件携带**同一个** sourceCommandId，
+  // 否则 /compact 过的会话在加载期 fold 时 throw "no matching compaction/start"（实测
+  // session-bffe40b6 无法重新加载）。本测试在数据层直接断言三事件同值——确定性、
+  // 不依赖 invariant 是否被安装，故任何回归都会在此失败。
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = buildPrunableSession()
+    engine.setSession(session)
+    const commandId = 'cmd-compact-scid' as unknown as CommandId
+    const result = await engine.compactNow(stubManualAgent(session, [0]), new AbortController().signal, commandId)
+    assert.ok(result !== null, 'prunable session must compact')
+    const events = session.snapshotEvents()
+    const starts = events.filter(e => e.type === 'compaction/start')
+    const summaries = events.filter(e => e.type === 'compaction/summary')
+    const ends = events.filter(e => e.type === 'compaction/end')
+    assert.equal(starts.length, 1, 'exactly one compaction/start')
+    assert.equal(summaries.length, 1, 'exactly one compaction/summary')
+    assert.equal(ends.length, 1, 'exactly one compaction/end')
+    const startScid = (starts[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    const summaryScid = (summaries[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    const endScid = (ends[0]!.data as { sourceCommandId?: string }).sourceCommandId
+    assert.equal(startScid, commandId, 'start carries the initiating command id')
+    assert.equal(summaryScid, startScid, 'summary sourceCommandId must equal start (load-time fold contract)')
+    assert.equal(endScid, startScid, 'end sourceCommandId must equal start (load-time fold contract)')
+    // 第五个受校验事件：压缩 checkpoint（user/message + compactCheckpointSource）。
+    // 宿主 invariant validateCheckpoint → validateSourceCommandId 要求 checkpoint 的
+    // source.sourceCommandId 与 start 同值；旧实现 compactCheckpointSource(compactionId)
+    // 只传 compactionId（sourceCommandId 缺省 undefined）⇒ 手动 /compact 时同样违约。
+    const checkpoints = events.filter(e => e.type === 'user/message'
+      && (e.data as { source?: { kind?: string } }).source?.kind === 'compact-checkpoint')
+    assert.ok(checkpoints.length >= 1, 'graph prune must emit at least one compact-checkpoint')
+    for (const cp of checkpoints) {
+      const cpScid = (cp.data as { source: { sourceCommandId?: string } }).source.sourceCommandId
+      assert.equal(cpScid, startScid, 'checkpoint sourceCommandId must equal start (validateCheckpoint)')
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 test('compactRegion: 手动 span 含 U/X → 拒绝（P5 语义）', async () => {
   const { ctx, engine } = await makeEngine()
   try {

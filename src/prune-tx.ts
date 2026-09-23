@@ -152,15 +152,28 @@ export function pruneIntervals(
   const openTurn = detectOpenTurn(session)
   const compactionId = CompactionId('argp-graph-' + randomUUID())
   const lifecycle = { compactionId, turn: openTurn }
+  // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）。
+  // sourceCommandId 一致性契约（宿主 dsh-compaction invariant validateSourceCommandId +
+  // v3-to-v4 relationships.compactionOwner）：start/summary/end 三事件必须携带**同一个**
+  // sourceCommandId——只 start 带而 summary/end 不带，加载期 v3-to-v4 fold 会 throw
+  // "no matching compaction/start"（2026-09-23 实测：/compact 过的会话无法重新加载）。
+  // 故把可选字段提出来，三个事件统一展开（自动压缩时 compactSourceCommandId 为 undefined，
+  // 三事件一致为 undefined，同样满足契约）。
+  const sourceCommandIdField: { sourceCommandId?: CommandId } =
+    host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId }
   const allSeqs = useIntervals.flatMap(iv => iv.seqs)
   const first = useIntervals[0]?.seqs[0] ?? 0
   const last = useIntervals[useIntervals.length - 1]?.seqs[useIntervals[useIntervals.length - 1]!.seqs.length - 1] ?? first
 
   const startEvent = session.append('compaction/start', {
     ...lifecycle,
-    // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）
-    ...host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId },
+    ...sourceCommandIdField,
   })
+  // 事务括号配对守卫（2026-09-23）：成功 end 之后仍有可抛语句（checkpoint 记 seq、记账、
+  // 锚点重置、返回体构造），一旦抛出，catch 会再补一条 end ⇒ 同一 compactionId 出现**两条** end。
+  // 写入侧不校验，加载期第二条 end 命中 invariant 的
+  // "compaction/end has no matching compaction/start" ⇒ 会话永久打不开。ended 保证恰好一条 end。
+  let ended = false
   try {
     const shadowedTokenCount = Math.ceil(useIntervals.reduce((s, iv) => s + iv.chars, 0) / host.charsPerToken)
     // ---- compaction/summary 先于 prune/replace 循环发出（宿主 span() 契约，Issue #2 同类修复）----
@@ -191,6 +204,7 @@ export function pruneIntervals(
     const charsBefore0 = useIntervals.reduce((sum, iv) => sum + iv.chars, 0)
     session.append('compaction/summary', {
       ...lifecycle,
+      ...sourceCommandIdField,
       summary: [{
         type: 'text',
         text: summaryKind === 'tombstone-merge'
@@ -271,14 +285,18 @@ export function pruneIntervals(
           + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
       const tombstone = session.append('user/message', createUserMessage({
         content: [{ type: 'text', text }],
-        source: compactCheckpointSource(compactionId),
+        // checkpoint 的 source.sourceCommandId 必须与 start 一致（宿主 invariant
+        // validateCheckpoint → validateSourceCommandId）：/compact 手动压缩时传发起命令 ID，
+        // 自动压缩时 compactSourceCommandId 为 undefined（与 start 一致为 undefined）。
+        source: compactCheckpointSource(compactionId, host.compactSourceCommandId),
       }), {
         surfaceOp: { op: 'replace', startSeq: asSeq(start), endSeq: asSeq(end) },
         sourceEventSeqs: asSeqs([startEvent.seq, intervalPrune.seq, ...iv.seqs]),
       })
       intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
     }
-    const endEvent = session.append('compaction/end', lifecycle)
+    const endEvent = session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField })
+    ended = true
     const charsAfter = visibleChars(session)
     pushBounded(host.records, {
       at: new Date().toISOString(),
@@ -320,10 +338,13 @@ export function pruneIntervals(
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    try {
-      session.append('compaction/end', { ...lifecycle, error: message })
-    } catch {
-      // 关闭失败保留未配对 start，可被 inspectCompactionEntryState 检出
+    // ended 为真 ⇒ 成功 end 已落地，此处**不可**再补 end（否则双 end，重启必炸）。
+    if (!ended) {
+      try {
+        session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField, error: message })
+      } catch {
+        // 关闭失败保留未配对 start，可被 inspectCompactionEntryState 检出
+      }
     }
     throw error
   }
