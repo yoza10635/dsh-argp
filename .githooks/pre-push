@@ -1,7 +1,11 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # pre-push: 本地质量门禁——推送前挡坏提交。
 # 安装: git config core.hooksPath .githooks
-# 职责: 1) npm run check（typecheck + smoke + test） 2) 提交信息规范检查
+# 职责: 1) npm run check（typecheck + typecheck:spike + smoke + test + build） 2) 提交信息规范检查
+#
+# ⚠️ shebang 必须是 bash：下面用 `${PIPESTATUS[0]}` 取管道首命令退出码，这是 bash 专有变量；
+# 早期写成 `#!/bin/sh` 时在 dash（Debian/Ubuntu 的 /bin/sh）下 PIPESTATUS 不存在 ⇒ CHECK_EXIT
+# 为空 ⇒ `[ "" -ne 0 ]` 报错并**放行**，门禁 fail-open（形同没有）。
 
 echo "[pre-push] npm run check ..."
 npm run check 2>&1 | tail -30

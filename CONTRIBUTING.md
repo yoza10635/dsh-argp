@@ -26,7 +26,7 @@ dsh-argp 是个人维护的开源项目。本项目遵循 **trunk-based 直推 `
 |---|---|
 | `feat` | 引擎功能、新能力 |
 | `fix` | 缺陷修复 |
-| `docs` | 文档（README、docs/、注释） |
+| `docs` | 文档（README、注释、CHANGELOG 说明） |
 | `refactor` | 不改变行为的重构 |
 | `test` | 测试用例 |
 | `build` | 构建/产物/发布配置（package.json、lib/、.npmrc） |
@@ -80,7 +80,7 @@ npm publish               # 发布 npm registry（prepublishOnly 自动跑 typec
 ## 实验纪律（ARGP 特有）
 
 - 实验脚本放 `spike/`，产物放 `spike/out/`（已在 .gitignore）。
-- 实验提交用 `experiment:` 类型；实验结论沉淀到 `docs/` 用 `docs:` 提交。
+- 实验提交用 `experiment:` 类型；实验结论沉淀到 `CHANGELOG.md`，或写入本地 `docs/`——**`docs/` 整个目录不进仓库**（见 `.gitignore`），需要对外可见的结论必须落在 `CHANGELOG.md` / `ARCHITECTURE.md` / README 这类仓库内文档里。
 - 实验数据必须带产物位置（`spike/out/...`）才能进对外文档；受控对照不中途调参。
 
 ## 反馈渠道

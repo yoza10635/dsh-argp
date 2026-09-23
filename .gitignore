@@ -13,18 +13,13 @@ spike/out/
 .tmp/
 *.tmpdir/
 
-# 内部开发文档（开源排除）
-docs/handoff-*.md
-docs/publication-plan.md
+# 内部开发文档：`docs/` 整个目录为**本地文档区**，一律不进公开仓库。
+# 内含设计基准 / 审计报告 / 受控跑批规格与任务书 / 内部发布稿 / 对外示例（dsh-llm-adapter、
+# dsh-argp-mount-example）/ token-ontology 提案等；保留在本地磁盘供开发使用。
+# （原逐文件列出的 docs/*.md 排除规则已被这一条整体覆盖。）
+docs/
 blocker-log.md
 run-baseline.bat
-# 本地工具评测记录（仅本机参考，不进仓库）
-docs/fuck-u-code-report-*.md
-# 审查报告与排期（本地工作文档，开源排除）
-docs/audit-full-2026-09-21.md
-docs/audit-compare-2026-09-21.md
-docs/audit-engineering-2026-09-21.md
-docs/audit-roadmap-2026-09-21.md
 
 # AI 工作台账（本机会话记忆，不进公开仓库）
 .workbuddy/

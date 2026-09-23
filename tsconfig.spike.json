@@ -4,11 +4,15 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "spike/lib/**/*.ts",
+    "spike/dev-smoke.ts",
     "spike/38-*.ts",
     "spike/39-*.ts",
     "spike/40-*.ts",
     "spike/41-*.ts",
     "spike/42-*.ts",
-    "spike/43-*.ts"
+    "spike/43-*.ts",
+    "spike/44-*.ts",
+    "spike/45-*.ts",
+    "spike/46-*.ts"
   ]
 }

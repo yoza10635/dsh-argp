@@ -1,7 +1,9 @@
 name: Release
 
 # tag 驱动发布：push v* 标签 → 校验 → 自动生成 GitHub Release
-# Release 正文优先取仓库内的 release-notes-<tag>.md（手工撰写），缺失时回退 GitHub 自动摘要。
+# Release 正文取自 CHANGELOG.md 里 `## [<tag 去 v 前缀>]` 的整段（awk 精确子串匹配；
+# 注意 `## [1.7.0]` 不是 `## [1.7.0-beta.3]` 的子串，故 beta tag 抽自己那段、正式 tag 抽正式段）；
+# 抽不到对应段才回退 GitHub 自动摘要。早期用过的 release-notes-<tag>.md 手工正文机制**已废弃**。
 # npm 侧（`npm publish`）由维护者手动执行——不发在 CI 里，避免 NPM_TOKEN 成为自动化的攻击面。
 on:
   push:
