@@ -44,10 +44,32 @@ export interface ArgpUserMeta {
 
 /**
  * 类型守卫：事件 data 是否携带 U-info 标记。
- * 分类陷阱防线（plan P0）：必须在 plugin-source → X 判定**之前**调用——插件 append 的
- * 聚合副本若先走 `source.kind === 'plugin'` 判定会被分类成 X（全局不可剪），U-info 永远进不了候选集。
+ * 分类陷阱防线（plan P0）：必须在「非 user 源 → X」判定**之前**调用——插件 append 的
+ * 聚合副本若先走 `source.kind !== 'user'` 判定会被分类成 X（全局不可剪），U-info 永远进不了候选集。
  */
 export function isArgpUserInfo(data: unknown): boolean {
   const meta = (data as Record<string, unknown> | undefined)?.[ARG_NS] as ArgpUserMeta | undefined
   return meta?.info === true
+}
+
+/**
+ * 本引擎/压缩器**自己写入**的 user-role 消息的 `source.kind` 清单（来源轴排除清单）。
+ *
+ * 宿主 0.1.7 去 `plugin` 化后，本引擎的注入分两种 kind：
+ *  - `'argp'`：U-info 聚合副本（peratom 压缩写回）+ auto-continue 续写提示（steer notice）；
+ *  - `'compact-checkpoint'`：压缩 checkpoint 标记（`dsh-compaction` 的 `compactCheckpointSource`）。
+ * `'plugin'` 是 0.1.6 及更早的遗留 kind（V3 会话存档里仍会出现），保留以向后兼容读取。
+ *
+ * ⚠️ **刻意不采用「非 `user` 即排除」的反向判据**：dsh-agent 的 merge 扩展 kind
+ * （`agent-message` / `goal` / `subagent-settled` 等）也**不是 `'user'`**，但它们不属于
+ * 本引擎写入——它们由**正交的性质轴**（`source.form` ∈ relay/notice，见
+ * `DEFAULT_SKIP_CONTEXT_FORMS`）按"是否已浓缩产物"单独裁决。反向判据会把这两类
+ * 一并误伤（既挡出 Stage-1 候选，又让 Stage-2 把可剪的 U 归成不可剪的 X）。
+ * 故来源轴只认**本引擎自己的** kind 白名单，其余非-user kind 一律按普通材料/可剪 U 对待。
+ */
+export const OWN_SOURCE_KINDS: readonly string[] = ['plugin', 'argp', 'compact-checkpoint']
+
+/** {@link OWN_SOURCE_KINDS} 的成员判定（kind 缺省 = 非本引擎写入 = false）。 */
+export function isOwnSourceKind(kind: string | undefined): boolean {
+  return kind !== undefined && OWN_SOURCE_KINDS.includes(kind)
 }

@@ -4,6 +4,55 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.7.0] - 2026-09-23（宿主 0.1.7 结构性变更全吸收 + U-info 附件保留）
+
+> **发布状态**：当前以 **`1.7.0-beta.0`** 先行发布（`npm publish --tag beta`）；**`latest` 保持 1.6.0**（不 promote 1.6.1-beta.0，按用户拍板）。待用户实战 session 核查效果后再决定 1.7.0 正式版。
+
+**问题**：宿主 `0.1.6-alpha.1 → 0.1.7-alpha.2` 引入三处**结构性**变更，dsh-argp 若不吸收，在 0.1.7 宿主上会**类型编译失败 + 运行时准入被拒**：
+1. **V3→V4**：tool/result 从 `role:'user'` 内嵌 `tool-result` 包装块，变成**一等 `role:'tool'` 消息**（content 直接数组、`toolCallId`/`isError` 升顶层）；日志文件 `session.v3.jsonl.zstd` → `session.v4.jsonl.zstd`。
+2. **source.kind 去 `'plugin'` 化**：0.1.7 的 `MessageSourceMap` 是 merge-extensible 联合，**没有共享 `plugin` 兜底 kind**（源码注释："each producer declares its own `kind` in its own module; there is no shared catch-all `plugin` kind"）⇒ `{kind:'plugin'}` 字面量在 0.1.7 是**类型错误**，且原生 V4 准入**拒绝裸 `'plugin'`**。
+3. **compaction/prune 成为原生事件**：`known-event-types` 新增 `'compaction/prune'`，准入规则变化（span 命名精确 surface 节点 + 排除受保护头，不要求 owner 字段）。
+
+本版一次性吸收全部三处 + 两个前瞻修复（U-info 附件保留、语料读取器 v4）。
+
+### Added
+
+- **U-info 副本保留附件块**（`decision.attachmentBlocksOf` + `userCopyPayload` 第三参）：peratom 压缩一条**带图片/文件附件**的 user 消息时，U-info 副本 = 压缩文本 + **原样 image/file 块**（不再静默丢弃）。
+  - **为什么**：宿主附件模型里，用户上传的文件/图片在会话流是**引用块**（`{type:'image'|'file', attachment:{attachmentId,...}}`，指向持久存储，内容不在消息里）；LLM 侧 `flattenWireText` 把它们渲染成 `[image omitted]`/`[file omitted]` 占位 ⇒ peratom 的 LLM 提取 pass 对附件**零贡献**（只压伴随文本）。旧 `userCopyPayload` 产出**纯文本** `content:[{type:'text'}]` ⇒ 压缩带附件的 user 消息会把附件块**从模型实时上下文静默丢掉**（原文留 append-only 日志可 recall，但 surface 没了）。
+  - **宿主合法性**：worker.cjs `planSurfaceEvent` 对 user/message 的 surface replace **只校验 range + provenance，无 content 级约束**（`assertToolResultRewrite` 只约束 tool/result、`assertSystemHeadRewrite` 只护 node 0）⇒ 带附件块的副本合法。
+  - **零回归**：无附件场景 `userCopyPayload` 产出与 v1.6 逐字节一致（`attachments` 缺省 / 空数组 ⇒ 纯文本 content）。
+  - **前瞻**：受控语料 18 session / 251 条 user 消息 **0 条带附件**（spike 46 扫描）⇒ 非已发生回归，是前瞻防御。
+- **`OWN_SOURCE_KINDS` 正向白名单**（`peratom/types.ts`）：`['plugin','argp','compact-checkpoint']` + `isOwnSourceKind(kind)`——读侧"是否本引擎注入"的**版本无关**判据，替代散落的 `kind === 'plugin'` 字面比较。
+- **`llm-source-augment.d.ts`**（module augmentation）：向宿主 `MessageSourceMap` 声明 `argp` kind（`{kind:'argp'} & ContextFormed`），使 `{kind:'argp'}` 字面量通过 0.1.7 的 `createUserMessage` 类型检查（宿主自家包 acp / session-query / compaction-basic 测试同款先例）。纯 `.d.ts`，不参与 `lib/` 发射、运行时无影响。
+- **compaction/prune 0.1.7 协议核验测试**（`test/compaction-prune-017.test.ts`）：0.1.7 宿主**接受** dsh-argp 的 `compaction/prune` 发射（无 `ignorable` 也过准入）+ **shadow-price 协议**在 0.1.7 成立（resume 重放无 "no adjacent shadow price"）。
+
+### Changed
+
+- **依赖 bump `0.1.6-alpha.1 → 0.1.7-alpha.2`**：`peerDependencies`（dsh-agent / commands / compaction / llm / session / tools）+ `devDependencies`（含 dsh-agent-loop / compaction-basic / invariants / llm-deepseek / llm-pi-ai / session / system-prompt / token-meter / tool-bash / tools）全对齐 0.1.7-alpha.2（`cordis ^4.0.2` / `schemastery ^3.18.1` 不动）。
+- **V4 tool/result 双形状（写侧）**：
+  - `decision.toolCopyPayload`：`role === 'tool'`（V4）⇒ content 换单 text block，顶层 `role`/`source`/`toolCallId`/`isError` 经对象展开原样保留（满足 `assertToolResultRewrite`"只改 content"）；`role === 'user'` 内嵌 `tool-result`（V3）⇒ 只改该 block 的 inner text。
+  - `prune-tx` tool 占位墓碑：同双形状（V4 换 content 为单 text block / V3 改 tool-result block inner text）。
+  - `prune-tx.canCloneTool`：类型注解放宽为"content 数组存在且非空即可"（V3/V4 都成立，功能不变）。
+  - **读侧零改动**：`eventTextOf`/`rawEventText` 对 tool/result 读 `data.message.content`，V4 直接数组走既有 `block.type === 'text'` 分支；callId 全走 `source.callId`（V4 保留）。
+- **source.kind 去 `'plugin'` 化**：
+  - **写点**：steer 通知（`argp-graph-engine`）`{kind:'plugin', plugin:'dsh-argp', form:'notice'}` → **`{kind:'argp', form:'notice'}`**（唯一裸 plugin 持久化写点）；`userCopyPayload` `{kind:'plugin'}` → **`{kind:'argp'}`**（瞬时，flush 统一覆盖成 `compact-checkpoint`）。
+  - **读点**（统一 U-info 先判 + `isOwnSourceKind` 正向白名单）：`graph-build.classifyUserMessage` / `log-access.logRowType` / `collect.isMaterial` / `cite-declarer` 全改走 `isArgpUserInfo(data)`（U-info 恒 U，先判）+ `isOwnSourceKind(kind) ? 'X' : 'U'`。
+  - **兼容性**：三场景（新建 V4 / 迁移 V3→V4 / 纯 V3）读侧判据全部正确——U-info 走 `data[argp].info`（版本无关）、真实用户恒 `kind:'user'`、注入（`plugin`/`argp`/`compact-checkpoint`）走白名单 ⇒ X。
+  - ⚠️ **与设计方案 §2.3 的偏差**：设计方案建议**反转逻辑**（`kind === 'user' ? 'U' : 'X'`，"更面向未来"），实现改用**正向白名单**（`OWN_SOURCE_KINDS`）。取舍：反转逻辑的失败模式是"新的真实用户 kind（≠'user'）被误判 X ⇒ **丢召回**（数据丢失）"；正向白名单的失败模式是"新的注入 kind（不在白名单）被当 U ⇒ 轻微噪声"（**无数据丢失**）。**白名单失败模式更安全**，且 1.6.1 的 form 轴门控（`skipContextForms=['relay','notice']`）已在 `isMaterial` 单独处理子代理 relay/settled ⇒ 白名单只需枚举三个已知注入 kind。
+- **中断轮并入下一轮**（`collect` / `flush` / `cite-declarer`）：中断轮 N 的**完整**原子（U-long + R）不在 N 自己的 pass 压（轮刚被中断，racy），而是**并入下一轮 N+1 的 pass**（settled，无 race）。
+  - `collect.collectFromWindow`：保留 early return（中断轮**自己**的 pass 跳过、不压）。
+  - `collect.collectCurrentTurn`：找到 last closed turn（N+1）后，若 `prevTurn = N` 被中断，事件扫描从"只收 `open === closed`"扩展为"收 `open === closed` **或** `open === prevTurn`"；prevTurn 段水位用 `waterMarkOf(session, prevTurn)`（-1 = 未处理）；成功落地后**同时推进** `closed` 与 `prevTurn` 两个水位。
+  - `cite-declarer.toAtoms`：过滤从"排除一切中断轮"改为"排除中断轮，**但保留 `closed - 1`**（若它中断）"。
+  - **边界**：连续多轮中断时只并入"紧邻上一轮"；更早的中断轮可能漏（罕见，注明限制，后续可扩为"全部未处理中断轮"）。
+- **语料读取器 v3+v4**（`spike/lib/session-corpus.ts`）：从硬编码 `session.v3.jsonl.zstd` 改为 glob `['session.v3.jsonl.zstd','session.v4.jsonl.zstd']` 取存在者。
+  - ⚠️ **隐藏坑**：不改则 0.1.7 起的所有 v4 session 被**静默漏读**，语料审计/回归系统性偏少。
+
+### Tests
+
+- 新增 5 个专项文件 **17 例**：`tool-result-v4`（V4 tool/result 双形状 × V3/V4）、`compaction-prune-017`（0.1.7 准入 + shadow-price resume）、`interrupted-merge`（N 中断 + N+1 闭合，水位双推进）、`session-corpus-v3v4`（混合 v3/v4 目录都载入）、`uinfo-attachment`（U-info 副本保留附件块，9 例）。
+- 既有全量 **351 全绿**（原 334 + 新 17）。
+- 供应链核验：0.1.7-alpha.2 沿用既有核验法（`npm pack` → 解包 → 与 node_modules 逐文件 sha256 diff + registry `time`/`maintainers`/`dist.integrity` 溯源）。
+
 ## [1.6.1] - 2026-09-23（tool/result 压缩副本头部标记）
 
 **问题**：逐原子压缩用压缩文本替换 tool/result，但副本在 LLM 侧与真实工具输出**不可辨**。dsh-session 硬约束使副本不能挂 `data[ARG_NS]` 元数据（`decision.toolCopyPayload`）、也不能换 source（`flush.flushEntry` ⇒ UI 同样看不出），且副本 `source.kind` 仍是 `'tool'`——宿主约束下**没有任何** model-visible 信号。extract 档尤甚：prompt 契约要求 text 是原文**逐字**片段，与完整工具输出同形。图剪路径早有标记体系（`[elided seq=N..M]` 墓碑 + `argp-contract` 告知），逐原子路径是唯一缺口。

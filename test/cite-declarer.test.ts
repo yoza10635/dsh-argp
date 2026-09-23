@@ -154,7 +154,7 @@ function buildCompactFixture(session: Session): void {
 // collectDeclAtoms：窗口组成（from=当轮 U/A，to=近轮 U/R）
 // ---------------------------------------------------------------------------
 
-test('collectDeclAtoms: 窗口组成与中断轮过滤', () => {
+test('collectDeclAtoms: 窗口组成与中断轮（紧邻轮）并入', () => {
   const session = Session.create(SessionId('cd-collect'))
   // 轮 1：长 user + 大 tool result
   appendTurnStart(session, 1)
@@ -168,9 +168,9 @@ test('collectDeclAtoms: 窗口组成与中断轮过滤', () => {
   appendAssistantWithToolCall(session, 2, 'c2', 'ls', '{}')
   const r2 = appendToolResult(session, 2, 'c2', 'short')
   appendTurnEnd(session, 2)
-  // 轮 3：中断轮（aborted），含大 tool result —— 不应出现在 to 集合
+  // 轮 3：中断轮（aborted），含大 tool result —— 紧邻轮（closed-1）⇒ 并入轮 4 的 pass，保留为 to 端点
   appendTurnStart(session, 3)
-  appendUser(session, LONG_USER)
+  const u3 = appendUser(session, LONG_USER)
   appendAssistantWithToolCall(session, 3, 'c3', 'read_file', '{"path":"b"}')
   const r3 = appendToolResult(session, 3, 'c3', BIG_RESULT)
   appendTurnEnd(session, 3, 'aborted')
@@ -188,13 +188,14 @@ test('collectDeclAtoms: 窗口组成与中断轮过滤', () => {
   const fromSeqs = collect.fromAtoms.map(a => a.seq).sort((a, b) => a - b)
   assert.deepEqual(fromSeqs, [u4, a4].sort((a, b) => a - b))
   assert.equal(collect.fromAtoms.every(a => a.isFrom && a.role === 'current'), true)
-  // to = 近轮 U/R（含轮 1、轮 2；轮 3 中断轮剔除；当轮排除）
+  // to = 近轮 U/R（含轮 1、轮 2；轮 3 中断轮为紧邻轮 ⇒ 并入保留；当轮排除）
   const toSeqs = collect.toAtoms.map(a => a.seq).sort((a, b) => a - b)
   assert.ok(toSeqs.includes(u1), '轮 1 U 在窗口')
   assert.ok(toSeqs.includes(r1), '轮 1 R 在窗口')
   assert.ok(toSeqs.includes(u2), '轮 2 短 U 也在窗口（数据原子不设长门槛）')
   assert.ok(toSeqs.includes(r2), '轮 2 小 R 也在窗口')
-  assert.ok(!toSeqs.includes(r3), '中断轮 3 的 R 被剔除')
+  assert.ok(toSeqs.includes(r3), '中断轮 3 为紧邻轮（closed-1）⇒ 并入轮 4 的 pass，R 保留')
+  assert.ok(toSeqs.includes(u3), '中断轮 3 的 U 也保留（并入）')
   assert.ok(!toSeqs.includes(u4) && !toSeqs.includes(a4), '当轮原子不作 to 端点')
   assert.equal(collect.toAtoms.every(a => a.isTo && a.role === 'prior'), true)
   // 门控原子：当轮 user-long（长 U）+ tool-result（当轮无 R → 仅 U）

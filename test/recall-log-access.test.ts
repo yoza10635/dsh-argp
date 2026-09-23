@@ -50,7 +50,7 @@ function buildSession(): Session {
   session.append('compaction/prune', { shadowedRange: { start: asSeq(a1), end: asSeq(a1) }, shadowedSeqs: asSeqs([a1]), shadowedTokenCount: 10 })
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=2: pruned by ARGP; recall_pruned(seq) to retrieve]' }],
-    source: { kind: 'plugin', plugin: 'argp-test' },
+    source: { kind: 'argp' },
   }), { surfaceOp: { op: 'replace', startSeq: asSeq(a1), endSeq: asSeq(a1) }, sourceEventSeqs: asSeqs([a1]) })
   session.append('turn/start', { turn: 2 })
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'and the milk?' }], source: { kind: 'user' } }), { surfaceOp: 'append' })

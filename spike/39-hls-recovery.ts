@@ -401,7 +401,7 @@ async function runLiveCase(c: Case, arm: 'trailer' | 'off'): Promise<LiveRow> {
       const ev = events[i]
       if (ev?.type === 'compaction/start') break
       if (ev?.type === 'tool/result') {
-        copyText = ((ev.data as { message?: { content?: { content?: { text?: string }[] }[] } }).message?.content?.[0]?.content?.[0]?.text) ?? ''
+        copyText = ((ev.data as unknown as { message?: { content?: { content?: { text?: string }[] }[] } }).message?.content?.[0]?.content?.[0]?.text) ?? ''
         break
       }
     }

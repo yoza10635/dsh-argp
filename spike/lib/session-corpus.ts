@@ -255,9 +255,19 @@ export interface RealSession {
   atoms: OntologyAtom[]
 }
 
+/** 从 `session.v<N>.jsonl.zstd` 文件名提取格式版本 N（不匹配返回 -1）。 */
+function versionOf(fileName: string): number {
+  const m = /^session\.v(\d+)\.jsonl\.zstd$/.exec(fileName)
+  return m === null ? -1 : parseInt(m[1], 10)
+}
+
 /**
  * 载入根目录下全部真实 session。`root` 不存在时返回 `[]`（调用方据此优雅跳过，
  * 让依赖真实语料的用例在 CI 上不失败）。
+ *
+ * 0.1.7 起 session 日志格式 v4（文件 `session.v4.jsonl.zstd`）；0.1.6 及以前为 v3。
+ * 此处 glob 全部版本（`session.v<N>.jsonl.zstd`）：同一 session 目录至多一个真实日志，
+ * 若并存（迁移期）取最高版本。`loadSessionEvents` 对 v3/v4 格式无关（多帧 zstd JSONL）。
  */
 export function loadRealCorpus(root: string = defaultSessionRoot()): RealSession[] {
   if (!fs.existsSync(root)) return []
@@ -265,8 +275,17 @@ export function loadRealCorpus(root: string = defaultSessionRoot()): RealSession
   for (const slug of fs.readdirSync(root, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name)) {
     const slugDir = path.join(root, slug)
     for (const id of fs.readdirSync(slugDir)) {
-      const file = path.join(slugDir, id, 'session.v3.jsonl.zstd')
-      if (!fs.existsSync(file)) continue
+      const idDir = path.join(slugDir, id)
+      let entries: string[]
+      try {
+        entries = fs.readdirSync(idDir)
+      } catch {
+        continue // id 非目录（或不可读）→ 跳过
+      }
+      const files = entries.filter(f => versionOf(f) >= 0)
+      if (files.length === 0) continue
+      files.sort((a, b) => versionOf(b) - versionOf(a)) // 降序：最高版本在前
+      const file = path.join(idDir, files[0])
       const { events, heads, stats } = loadSessionEvents(file)
       const header = heads.find(e => e.type === 'session')?.data
       out.push({ id, cwdSlug: slug, file, stats, header, atoms: atomsFromEvents(events) })

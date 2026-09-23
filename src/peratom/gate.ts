@@ -114,7 +114,7 @@ export function buildToolNameIndex(events: readonly SessionEvent[]): Map<string,
   const nameByCall = new Map<string, string>()
   for (const event of events) {
     if (event.type !== 'assistant/message') continue
-    const content = (event.data as { message?: { content?: unknown[] } } | undefined)?.message?.content
+    const content = (event.data as unknown as ({ message?: { content?: unknown[] } } | undefined))?.message?.content
     if (!Array.isArray(content)) continue
     for (const block of content as Array<{ type?: string; id?: string; name?: string }>) {
       if (block?.type !== 'tool-call' || typeof block.id !== 'string') continue
@@ -129,7 +129,7 @@ export function buildVersionChainIndex(events: readonly SessionEvent[]): Version
   const issuerKeyByCall = new Map<string, string>()
   for (const event of events) {
     if (event.type !== 'assistant/message') continue
-    const content = (event.data as { message?: { content?: unknown[] } } | undefined)?.message?.content
+    const content = (event.data as unknown as ({ message?: { content?: unknown[] } } | undefined))?.message?.content
     if (!Array.isArray(content)) continue
     for (const block of content as Array<{ type?: string; id?: string; name?: string; arguments?: unknown }>) {
       if (block?.type !== 'tool-call' || typeof block.id !== 'string') continue

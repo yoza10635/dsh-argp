@@ -236,7 +236,10 @@ export async function prepareCurrentTurn(host: FlushHost, session: Session): Pro
     return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路；不推进水位
   }
   const entry = await callAndStash(host, session, collect)
-  if (entry.error === undefined && !entry.parseFailed) host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+  if (entry.error === undefined && !entry.parseFailed) {
+    host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+    if (collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, collect.turn - 1, collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
+  }
   return entry
 }
 
@@ -290,7 +293,10 @@ export async function compressCollect(host: FlushHost, session: Session, collect
     return record // 不推进水位（原实现在此之前 done.add ⇒ 一次 no-candidate 永久作废该轮）
   }
   const entry = await callAndStash(host, session, collect)
-  if (entry.error === undefined && !entry.parseFailed) host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+  if (entry.error === undefined && !entry.parseFailed) {
+    host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
+    if (collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, collect.turn - 1, collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
+  }
   flushStashed(host, session)
   return entry
 }

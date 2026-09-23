@@ -1,3 +1,20 @@
+/**
+ * PeratomCompressor 引擎侧确定性规划模块（P5 结构重构 Wave 3 第 5 步，C 报告 §4 B 表）。
+ *
+ * 从 1,520 行 `compressor.ts`（God Class）拆出的**纯函数**侧：
+ *  - 防御性 JSON 提取（extractJson，spike 32 同款）；
+ *  - 模型输出信任边界（normalizeDecision：seq/quotes/level/text 全字段校验，异形丢弃）；
+ *  - 引擎侧规划（planReplacements：模型输出 → 落盘动作，全部策略裁决在引擎侧）
+ *    + 副本载荷构造（userCopyPayload / toolCopyPayload）。
+ *
+ * 全部为纯函数（只依赖入参 + 少量 config），无需宿主接口。依赖方向：
+ *   compressor-types（叶）← decision ← flush ← compressor（组合根）。
+ * 本模块不 import 任何 peratom 运行时类，仅依赖叶子/纯函数模块（split/gate/
+ * token-ontology/types）与 dsh-llm 的 createUserMessage。
+ *
+ * 行为逐字节不变：函数体逻辑逐字保留，仅搬家。
+ */
+import { type ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import type { CompressDecision, CurrentTurnCollect, PlanOptions } from './compressor-types.js';
 /**
@@ -40,6 +57,25 @@ interface PlanResult {
     hlsRoiSkipped: number;
     anomalies: number;
 }
+/**
+ * 从 user/message 事件提取 image/file 附件块（U-info 副本保留用；含 offloaded 标记）。
+ * 非 user 事件 / 无 content / seq 不匹配 → 空数组（安全回退 = 现状纯文本副本）。
+ */
+export declare function attachmentBlocksOf(event: SessionEvent | undefined, expectedSeq?: number): ContentBlock[];
+/**
+ * user/message 副本载荷：argp 署名（宿主 0.1.7 去 `plugin` 化，见 llm-source-augment.d.ts）；
+ * meta 存在时挂 data[ARG_NS]（U-info 标记 + summary）。
+ *
+ * 附件保留（1.7.0）：`attachments` 为原消息的 image/file 块。原消息带附件时，
+ * U-info 副本 = 压缩文本 + 原样附件块——LLM 提取只作用于文本（附件在 wire 侧是
+ * `[image omitted]` 占位，LLM 提取不了），附件原样留在副本里，避免被纯文本副本
+ * 从模型上下文静默丢掉。宿主对 user/message 的 surface replace 无 content 级约束
+ * （worker.cjs `planSurfaceEvent` 只校验 range+provenance），带附件块的副本合法。
+ */
+export declare function userCopyPayload(text: string, meta?: {
+    sourceSeq: number;
+    summary: string;
+}, attachments?: readonly ContentBlock[]): unknown;
 /**
  * tool/result replace 副本载荷。dsh-session 硬约束："tool/result surface replacement
  * may change only content"——替换数据与原文除 message.content[0].content 外必须逐键

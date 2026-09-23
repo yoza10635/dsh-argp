@@ -32,10 +32,11 @@ export declare const DEFAULT_LLM_TIMEOUT_MS = 180000;
  *  二次损失。它们更适合交给 Stage-2 图剪：全留或全删 + 墓碑 + `recall_pruned(seq)`
  *  可召回，而不是中间态的有损摘要。
  *
- * 注意两条正交轴别混用：`source.kind === 'plugin'` 是「谁生产的」（插件注入 → 排除），
- * `form` 是「这是什么性质的东西」（本门控只按性质排除）。`kind='plugin'` 的消息
- * 已被上一道判据排除，故本门控实际只作用于 dsh-agent 的 merge 扩展 kind
- * （`agent-message` / `subagent-settled`）——它们不等于 'plugin'，原本会被放行。
+ * 注意两条正交轴别混用：`source.kind` 非 `'user'` 是「谁生产的」（注入 → 排除），
+ * `form` 是「这是什么性质的东西」（本门控只按性质排除）。非-user-kind 的消息
+ * 已被上一道判据排除，故本门控实际只作用于 dsh-agent 的 merge 扩展
+ * （`agent-message` / `subagent-settled`）——它们仍是 user-role（`kind==='user'`），
+ * 过 kind 门，原本会被放行。
  *
  * 传空数组 = 关闭本门控，退回 v1.6.0 行为（这些消息照旧进候选）。
  */

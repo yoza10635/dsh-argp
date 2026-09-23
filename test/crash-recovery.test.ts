@@ -50,7 +50,7 @@ function pushTransaction(session: Session, id: string): { startSeq: number; prun
   const tombstoneSeq = session.snapshotEvents().length
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=' + u1 + '..' + a1 + ']' }],
-    source: { kind: 'plugin', plugin: 'argp-graph' },
+    source: { kind: 'argp' },
   }), {
     surfaceOp: { op: 'replace', startSeq: asSeq(u1), endSeq: asSeq(a1) },
     sourceEventSeqs: asSeqs([startSeq, pruneSeq, ...shadowedSeqs]),
@@ -172,7 +172,7 @@ test('resume flow: new engine binding an old session auto-rebuilds ledger via bi
     session.append('compaction/prune', { shadowedRange: { start: asSeq(u1), end: asSeq(a1) }, shadowedSeqs: asSeqs(shadowedSeqs), shadowedTokenCount: 10 })
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[elided seq=' + u1 + '..' + a1 + ']' }],
-      source: { kind: 'plugin', plugin: 'argp-graph' },
+      source: { kind: 'argp' },
     }), { surfaceOp: { op: 'replace', startSeq: asSeq(u1), endSeq: asSeq(a1) }, sourceEventSeqs: asSeqs([startSeq, ...shadowedSeqs]) })
     session.append('compaction/end', { compactionId: CompactionId('tx-resume'), turn: 1 })
     // writer 已通过 setSession 绑定该 session（此时 setSession 时日志为空，无重建）

@@ -40,11 +40,11 @@ function appendUser(session: Session, turn: number, text: string): number {
   return session.snapshotEvents().length - 1
 }
 
-/** U-info 聚合副本（source: plugin + data[ARG_NS]；atomize → U 且 sourceSeq 有值 → R 待遇参剪）。 */
+/** U-info 聚合副本（source: argp + data[ARG_NS]；atomize → U 且 sourceSeq 有值 → R 待遇参剪）。 */
 function appendUInfo(session: Session, turn: number, text: string, sourceSeq: number, summary: string): number {
   session.append('user/message', {
     turn,
-    ...createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-argp-peratom' } }),
+    ...createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'argp' } }),
     [ARG_NS]: { info: true, sourceSeq, summary },
   } as never, { surfaceOp: 'append' })
   return session.snapshotEvents().length - 1

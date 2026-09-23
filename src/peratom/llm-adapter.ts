@@ -172,7 +172,7 @@ export function hostHasLlm(ctx: Context): boolean {
 //   assistant | { role:'assistant', content:string|null,
 //               reasoning?:string, tool_calls?:[{id,type:'function',
 //               function:{name,arguments:string}}] }
-//   tool      | { role:'tool', content:string, tool_call_id:string }    ← user 角色 tool-result
+//   tool      | { role:'tool', content:string, tool_call_id:string }    ← V4 一等 tool 消息
 // tools       | ToolSchema[] 原样透传（{type:'function', function:{...}}）
 // ---------------------------------------------------------------------------
 
@@ -182,7 +182,6 @@ function flattenWireText(blocks: readonly ContentBlock[]): string {
   for (const block of blocks) {
     if (block.type === 'text') parts.push(block.text)
     else if (block.type === 'reasoning') continue // reasoning 走独立字段
-    else if (block.type === 'tool-result') continue // tool-result 展开为独立 wire 消息
     else if (block.type === 'tool-call') continue // tool-call 走独立字段
     else parts.push(`[${block.type} omitted]`)
   }
@@ -227,15 +226,15 @@ export function serializeWireMessages(messages: readonly Message[], logger?: Wir
       wire.push(msg)
       continue
     }
-    // user 角色：内嵌 tool-result 先展开为独立 tool 消息，文本单独成条（pi-ai 同款顺序）
-    const toolResults = message.content.filter(b => b.type === 'tool-result')
+    if (message.role === 'tool') {
+      // V4：tool-result 是一等 role:'tool' 消息（不再内嵌 user 消息的 content 块），
+      // 直接映射为 OpenAI tool wire 消息。
+      wire.push({ role: 'tool', tool_call_id: message.toolCallId, content: flattenWireText(message.content) || '(no output)' })
+      continue
+    }
+    // user / developer 角色：纯文本成条（V4 无内嵌 tool-result）。
     const text = flattenWireText(message.content)
-    if (text.length > 0 || toolResults.length === 0) {
-      wire.push({ role: 'user', content: text })
-    }
-    for (const result of toolResults) {
-      wire.push({ role: 'tool', tool_call_id: result.toolCallId, content: flattenWireText(result.content) || '(no output)' })
-    }
+    if (text.length > 0) wire.push({ role: 'user', content: text })
   }
   // A 形态观测（2026-09-18 落地期）：序列化前后消息数差异 = tool-result 展开量；
   // reasoning 总量 = 前缀复用的承重变量（模板只在该字段非空时渲染 <think> 块）。

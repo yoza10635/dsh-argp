@@ -14,7 +14,7 @@
  *
  * 行为逐字节不变：函数体逻辑逐字保留，仅搬家。
  */
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { ARG_NS } from './types.js'
 import { buildDialogText, buildInfoText, resolveSplit } from './split.js'
@@ -22,9 +22,6 @@ import type { SplitResolution } from './split.js'
 import { fidelityGuard } from './gate.js'
 import { DEFAULT_HLS_ROI_THRESHOLD, hlsRepairEconomics, repairWithTrailer } from '../token-ontology.js'
 import type { CompressDecision, CurrentTurnCollect, PlanOptions, ToolAction, UserSplit } from './compressor-types.js'
-
-/** 插件署名（dialog replace / U-info append 副本的 message.source.plugin）。 */
-const PLUGIN_NAME = 'dsh-argp'
 
 // ---------------------------------------------------------------------------
 // 结构化输出契约（JSON Schema 强制 + 防御性提取双保险）
@@ -125,11 +122,33 @@ interface PlanResult {
   anomalies: number
 }
 
-/** user/message 副本载荷：plugin 署名；meta 存在时挂 data[ARG_NS]（U-info 标记 + summary）。 */
-function userCopyPayload(text: string, meta?: { sourceSeq: number; summary: string }): unknown {
+/**
+ * 从 user/message 事件提取 image/file 附件块（U-info 副本保留用；含 offloaded 标记）。
+ * 非 user 事件 / 无 content / seq 不匹配 → 空数组（安全回退 = 现状纯文本副本）。
+ */
+export function attachmentBlocksOf(event: SessionEvent | undefined, expectedSeq?: number): ContentBlock[] {
+  if (event === undefined || event.type !== 'user/message') return []
+  if (expectedSeq !== undefined && (event as { seq?: unknown }).seq !== expectedSeq) return []
+  const content = (event.data as { message?: { content?: ContentBlock[] } })?.message?.content
+  if (!Array.isArray(content)) return []
+  return content.filter(b => b.type === 'image' || b.type === 'file')
+}
+
+/**
+ * user/message 副本载荷：argp 署名（宿主 0.1.7 去 `plugin` 化，见 llm-source-augment.d.ts）；
+ * meta 存在时挂 data[ARG_NS]（U-info 标记 + summary）。
+ *
+ * 附件保留（1.7.0）：`attachments` 为原消息的 image/file 块。原消息带附件时，
+ * U-info 副本 = 压缩文本 + 原样附件块——LLM 提取只作用于文本（附件在 wire 侧是
+ * `[image omitted]` 占位，LLM 提取不了），附件原样留在副本里，避免被纯文本副本
+ * 从模型上下文静默丢掉。宿主对 user/message 的 surface replace 无 content 级约束
+ * （worker.cjs `planSurfaceEvent` 只校验 range+provenance），带附件块的副本合法。
+ */
+export function userCopyPayload(text: string, meta?: { sourceSeq: number; summary: string }, attachments?: readonly ContentBlock[]): unknown {
+  const content: ContentBlock[] = [{ type: 'text', text }, ...(attachments ?? [])]
   const msg = createUserMessage({
-    content: [{ type: 'text', text }],
-    source: { kind: 'plugin', plugin: PLUGIN_NAME },
+    content,
+    source: { kind: 'argp' },
   })
   if (meta === undefined) return msg
   return { ...msg, [ARG_NS]: { info: true, sourceSeq: meta.sourceSeq, summary: meta.summary } }
@@ -173,16 +192,38 @@ export function toolCopyMarkerText(level: 'extract' | 'summary', seq: number): s
 /** 剥离副本头部标记的正则（语料侧审计 / 测试共用；只匹配行首单行标记）。 */
 export const TOOL_COPY_MARKER_RE = /^\[已压缩-(?:摘取|摘要) seq=\d+\]\n/
 
+/**
+ * tool/result 副本载荷（双形状，宿主 0.1.7 去 plugin 化 + tool 一等消息）：
+ *  - **V4**（0.1.7）：`message.role === 'tool'`，`toolCallId`/`isError` 在**顶层**，
+ *    `content` 是 `ContentBlock[]`（text block）⇒ 只把 `content` 换成单 text block，
+ *    顶层 `role`/`source`/`toolCallId`/`isError` 经对象展开原样保留（宿主
+ *    `assertToolResultRewrite` 只许改 inner text，顶层身份字段不可动）。
+ *  - **V3**（≤0.1.6）：`message.role === 'user'`，`content[0]` 是内嵌 `tool-result`
+ *    block（`toolCallId`/`isError` 在 block 内）⇒ 只改该 block 的 inner text。
+ * 两形态都保留原 `data` 其余字段（turn/step 等）与 message 其余字段（id 等）。
+ */
 function toolCopyPayload(origData: unknown, text: string): unknown {
-  const d = origData as { message?: { content?: Array<Record<string, unknown>> } } | undefined
-  const block = d?.message?.content?.[0]
+  const d = origData as { message?: Record<string, unknown> } | undefined
+  const msg = d?.message
+  if (msg === undefined || typeof msg !== 'object') {
+    throw new Error('peratom-compressor: cannot rewrite tool/result without a message')
+  }
+  // V4（0.1.7）：role:'tool' 一等消息 ⇒ content 换单 text block，顶层身份字段经展开保留。
+  if (msg.role === 'tool') {
+    return {
+      ...(d as object),
+      message: { ...msg, content: [{ type: 'text', text }] },
+    }
+  }
+  // V3（≤0.1.6）：role:'user' 内嵌 tool-result block ⇒ 只改该 block 的 inner text。
+  const block = (msg.content as Array<Record<string, unknown>> | undefined)?.[0]
   if (block === undefined || typeof block !== 'object') {
     throw new Error('peratom-compressor: cannot rewrite tool/result without a content block')
   }
   return {
     ...(d as object),
     message: {
-      ...(d?.message as object),
+      ...msg,
       content: [{ ...block, content: [{ type: 'text', text }] }],
     },
   }
@@ -276,7 +317,7 @@ export function planReplacements(
         kind: 'replace',
         type: 'user/message',
         at: atom.seq,
-        data: userCopyPayload(dialogText),
+        data: userCopyPayload(dialogText, undefined, attachmentBlocksOf(events[atom.seq], atom.seq)),
         sourceEventSeqs: [atom.seq],
       })
       replaces += 1
@@ -287,7 +328,7 @@ export function planReplacements(
         kind: 'append',
         type: 'user/message',
         at: atom.seq,
-        data: userCopyPayload(infoText, { sourceSeq: atom.seq, summary: infoText }),
+        data: userCopyPayload(infoText, { sourceSeq: atom.seq, summary: infoText }, attachmentBlocksOf(events[atom.seq], atom.seq)),
         sourceEventSeqs: [atom.seq],
       })
     } else if (res.kind === 'info-only') {
@@ -296,7 +337,7 @@ export function planReplacements(
         kind: 'replace',
         type: 'user/message',
         at: atom.seq,
-        data: userCopyPayload(atom.text, { sourceSeq: atom.seq, summary: atom.text }),
+        data: userCopyPayload(atom.text, { sourceSeq: atom.seq, summary: atom.text }, attachmentBlocksOf(events[atom.seq], atom.seq)),
         sourceEventSeqs: [atom.seq],
       })
       replaces += 1
@@ -308,6 +349,7 @@ export function planReplacements(
 
   const origDataBySeq = new Map<number, unknown>()
   for (const event of events) {
+    if (event === undefined) continue // 稀疏数组空洞防御（真实 sessionEvents 稠密；seq 索引数组理论上可有空洞）
     if (event.type === 'tool/result') origDataBySeq.set(event.seq, event.data)
   }
   const seenToolSeqs = new Set<number>()

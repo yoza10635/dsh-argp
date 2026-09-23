@@ -78,8 +78,8 @@ export interface PruneTxHost {
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
  *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
- *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id
- *  ——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。
+ *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
+ *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。
  *
  * 原 class 私有方法；this.x → host.x。
  */

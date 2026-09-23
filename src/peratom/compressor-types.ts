@@ -202,6 +202,12 @@ export interface CurrentTurnCollect {
   interrupted: boolean
   userLong: GateUserLong[]
   toolResults: GateToolResult[]
+  /**
+   * 并入的上一中断轮（`turn - 1`）原子 max seq；`undefined` = 未并入。
+   * 1.7.0「中断轮并入下一轮」：中断轮 N 的完整原子不在 N 自己的 pass 压（racy），
+   * 而是并入 N+1 的 settled pass；成功落地后 N+1 与 N 两个水位各取本段 max seq 双推进。
+   */
+  mergedPrevTurnMaxSeq?: number
 }
 
 /** 一次压缩尝试的观测记录（测试断言直接读这里）。 */

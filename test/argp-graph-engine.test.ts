@@ -702,7 +702,7 @@ test('regression: per-atom in-place compression is NOT counted as pruned (no fal
     // **不**发 compaction/prune（peratom/compressor.ts 的写回路径无剪枝事务）。
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[compressed copy]' }],
-      source: { kind: 'plugin', plugin: 'dsh-argp' },
+      source: { kind: 'argp' },
     }), { surfaceOp: { op: 'replace', startSeq: asSeq(uSeq), endSeq: asSeq(uSeq) }, sourceEventSeqs: asSeqs([uSeq]) })
     engine.setSession(session)
 
@@ -731,7 +731,7 @@ test('regression: real prune transaction (compaction/prune) IS counted as pruned
     session.append('compaction/prune', { shadowedRange: { start: asSeq(aSeq), end: asSeq(aSeq) }, shadowedSeqs: asSeqs([aSeq]), shadowedTokenCount: 50 })
     session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: '[elided seq=' + aSeq + ': pruned by ARGP]' }],
-      source: { kind: 'plugin', plugin: 'argp-test' },
+      source: { kind: 'argp' },
     }), { surfaceOp: { op: 'replace', startSeq: asSeq(aSeq), endSeq: asSeq(aSeq) }, sourceEventSeqs: asSeqs([aSeq]) })
     engine.setSession(session)
 
@@ -937,7 +937,7 @@ test('system prompt at surface node 0 is never selected for pruning (host-protec
     session.append('system/message', {
       turn: 0,
       step: 0,
-      message: createSystemMessage('you are a deterministic compaction test agent', 'argp-test'),
+      message: createSystemMessage('you are a deterministic compaction test agent'),
     }, { surfaceOp: 'append' })
     const headSeq = session.snapshotEvents()[0]!.seq
     assert.equal(session.surface.nodes[0], headSeq, 'system/message must occupy surface node 0')

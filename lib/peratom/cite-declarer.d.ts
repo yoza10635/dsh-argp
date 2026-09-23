@@ -135,7 +135,7 @@ export interface DeclCollect {
     gateAtoms: GateAtom[];
     /** 当轮行为原子（U 任意长度 / A 回复）：只作 from 端点。 */
     fromAtoms: DeclAtom[];
-    /** 近轮窗口数据原子（U / R）：只作 to 端点（已剔除中断轮残留）。 */
+    /** 近轮窗口数据原子（U / R）：只作 to 端点（已剔除中断轮残留；紧邻上一轮 closed-1 例外——若被中断则并入当轮 pass 而保留）。 */
     toAtoms: DeclAtom[];
 }
 /**

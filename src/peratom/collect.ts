@@ -30,6 +30,7 @@ import {
 } from './gate.js'
 import type { GateOptions, GateToolResult, GateUserLong, VersionChainIndex } from './gate.js'
 import type { CurrentTurnCollect } from './compressor-types.js'
+import { isOwnSourceKind } from './types.js'
 
 /**
  * 收集侧窄宿主接口（C 报告关键设计决策 1）：只含本模块所需成员。
@@ -51,16 +52,18 @@ export interface CollectHost {
  *    它是上一次 pass 的结果；水位语义下同一轮会被多次 collect，放进去会让
  *    窗口恒非空（每次 pass 都以 no-candidate 重复记账），且副本的
  *    `message.source.kind` 仍是 `'tool'`，plugin-source 判据拦不住 ⇒ 有二次摘要风险。
- *  - **插件注入**：`user/message` 且 `source.kind === 'plugin'`（A 形态前缀指令、
- *    U-info 聚合副本、checkpoint）。这类事件由引擎/本压缩器自己写入，不是会话材料；
- *    边界若把它们算进去，纯注入窗口会返回"空候选的非 null 收集"（同上噪声问题）。
+ *  - **注入**：`user/message` 且 `source.kind` 命中自有来源白名单（版本无关：V3 `plugin` /
+ *    V4 `argp` / `compact-checkpoint`；含 A 形态前缀指令、U-info 聚合副本、checkpoint）。
+ *    这类事件由引擎/本压缩器自己写入，不是会话材料；边界若把它们算进去，
+ *    纯注入窗口会返回"空候选的非 null 收集"（同上噪声问题）。
+ *    其余非-user kind（dsh-agent merge 扩展）在此**不**排除——由正交的性质轴（form）裁决。
  *
  * 判据口径与 `argp-t1-engine.shadowedSeqs` 的 replace 判定一致。
  *
  * 第三道（v1.6.1）：`skipForms` —— user-role 消息的 `source.form` 命中清单即排除。
- * 这是**性质**轴（"这是什么"），与上一道的**来源**轴（"谁生产的"）正交：插件注入
- * 未必是浓缩产物，而 dsh-agent 的 merge 扩展 kind（`agent-message` /
- * `subagent-settled`）不等于 `'plugin'` 却正是浓缩产物。详见
+ * 这是**性质**轴（"这是什么"），与上一道的**来源**轴（"谁生产的"）正交：注入
+ * 未必是浓缩产物，而 dsh-agent 的 merge 扩展（`agent-message` /
+ * `subagent-settled`）仍是 user-role（`kind==='user'`）却正是浓缩产物。详见
  * `DEFAULT_SKIP_CONTEXT_FORMS` 注释（含实战语料的密度实证）。
  */
 function isMaterial(event: SessionEvent, skipForms: readonly string[]): boolean {
@@ -71,7 +74,9 @@ function isMaterial(event: SessionEvent, skipForms: readonly string[]): boolean 
   if (surfaceOp !== undefined && surfaceOp !== 'append') return false
   if (event.type !== 'user/message') return true
   const src = (event.data as { source?: { kind?: string; form?: string } } | undefined)?.source
-  if (src?.kind === 'plugin') return false
+  // 来源轴：只排除本引擎自己写入的 kind（V3 'plugin' / V4 'argp' / checkpoint）。
+  // 其余非-user kind（dsh-agent merge 扩展）由正交的性质轴（form）裁决，见下。
+  if (isOwnSourceKind(src?.kind)) return false
   // 性质轴：子代理汇报 / 一次性通知 = 已浓缩产物，不进逐原子压缩（交给 Stage-2 图剪）。
   if (src?.form !== undefined && skipForms.includes(src.form)) return false
   return true
@@ -166,8 +171,15 @@ export function collectCurrentTurn(host: CollectHost, session: Session, afterSeq
     if (event?.type === 'turn/end') { closed = turnOf(event) ?? null; break }
   }
   if (closed === null) return null
+  // 中断轮并入下一轮（1.7.0）：closed = N+1（settled）；若 prevTurn = N 被中断，
+  // 其完整原子并入 N+1 的 settled pass（N 自己的 pass 跳过——轮刚被中断，racy）。
+  const interruptedTurns = collectInterruptedTurns(events)
+  const prevTurn = closed - 1
+  const mergePrev = interruptedTurns.has(prevTurn)
   // 水位（2026-09-21）：缺省取该轮「已规划边界」，只收其后新增事件 ⇒ 同轮可增量再压。
-  const since = afterSeq ?? waterMarkOf(host, session, closed)
+  // 并入的 prevTurn 段用其自身水位（-1 = 从未处理）。
+  const sinceClosed = afterSeq ?? waterMarkOf(host, session, closed)
+  const sincePrev = waterMarkOf(host, session, prevTurn)
   // 归轮按位置：user/message 事件不携带 turn 字段（rc.2 类型），其归属 =
   // 当前开放的 turn（turn/start..end 之间的日志区间）。assistant/tool 事件自带
   // turn 字段做二次校验。替换副本（dialog/U-info/tool copy）落在本窗口内的，
@@ -175,22 +187,31 @@ export function collectCurrentTurn(host: CollectHost, session: Session, afterSeq
   const turnEvents: SessionEvent[] = []
   let startSeq = Number.MAX_SAFE_INTEGER
   let endSeq = -1
+  let prevMaxSeq = -1
   let open: number | null = null
   for (const event of events) {
     if (event.type === 'turn/start') { open = turnOf(event) ?? null; continue }
     if (event.type === 'turn/end') { open = null; continue }
-    if (open !== closed) continue
-    if (event.seq <= since) continue // 水位过滤：只收上次规划边界之后的新增事件
+    const isClosed = open === closed
+    const isPrev = mergePrev && open === prevTurn
+    if (!isClosed && !isPrev) continue
+    // 水位过滤：按所属轮次取各自水位（closed 用 sinceClosed；并入的 prevTurn 用 sincePrev）。
+    const since = isClosed ? sinceClosed : sincePrev
+    if (event.seq <= since) continue // 只收上次规划边界之后的新增事件
     if (!isMaterial(event, skipForms)) continue // 压缩产物 / 插件注入不算窗口（见 isMaterial）
     if (event.type !== 'user/message') {
       const turn = turnOf(event)
-      if (turn !== undefined && turn !== closed) continue
+      const expected = isClosed ? closed : prevTurn
+      if (turn !== undefined && turn !== expected) continue
     }
     turnEvents.push(event)
     if (event.seq < startSeq) startSeq = event.seq
     if (event.seq > endSeq) endSeq = event.seq
+    if (isPrev && event.seq > prevMaxSeq) prevMaxSeq = event.seq
   }
-  return collectFromWindow(host, session, closed, turnEvents, startSeq, endSeq)
+  const collect = collectFromWindow(host, session, closed, turnEvents, startSeq, endSeq)
+  if (collect !== null && mergePrev && prevMaxSeq >= 0) collect.mergedPrevTurnMaxSeq = prevMaxSeq
+  return collect
 }
 
 /**

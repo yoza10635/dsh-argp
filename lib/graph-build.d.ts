@@ -64,9 +64,13 @@ export declare function looksAskText(text: string): boolean;
  * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
  *
  * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
- * 插件 append，但必须按 U 待遇参与剪枝候选），再落 `source.kind === 'plugin'` → X
- * （墓碑/checkpoint）判定。若先判 plugin-source，U-info 会被分类成 X 而**全局不可剪**，
+ * 插件 append，但必须按 U 待遇参与剪枝候选），再落「非 `user` 源 → X」（注入/checkpoint）
+ * 判定。若先判非-user-source，U-info 会被分类成 X 而**全局不可剪**，
  * P4 的候选放行将永远失效。
+ *
+ * 判据**版本无关**：真实用户消息恒带 `source.kind === 'user'`（宿主 createUserMessage
+ * 约定）；注入（V3 `plugin` / V4 `argp` / `compact-checkpoint`）命中自有来源白名单 ⇒ X。
+ * 其余非-user kind（dsh-agent merge 扩展）不是 X——由正交的性质轴（form）裁决。
  *
  * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
  * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。

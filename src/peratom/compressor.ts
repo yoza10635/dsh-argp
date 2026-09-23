@@ -77,7 +77,7 @@ export type {
 } from './compressor-types.js'
 export { defaultEndpoint } from './compressor-types.js'
 // 引擎侧确定性规划（纯函数）：normalizeDecision / planReplacements 供测试与独立调用方。
-export { normalizeDecision, planReplacements, toolCopyMarkerText, TOOL_COPY_MARKER_RE } from './decision.js'
+export { normalizeDecision, planReplacements, toolCopyMarkerText, TOOL_COPY_MARKER_RE, userCopyPayload, attachmentBlocksOf } from './decision.js'
 // 收集侧（窄宿主接口 CollectHost）：水位 + 窗口→候选 + closed/open 两口径。
 import {
   waterMarkOf,

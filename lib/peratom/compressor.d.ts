@@ -54,7 +54,7 @@ import type { NeedCompress } from './gate.js';
 import type { PeratomCompressorConfig, CurrentTurnCollect, CompressRecord } from './compressor-types.js';
 export type { PeratomCompressorConfig, UserSplit, ToolAction, CompressDecision, CurrentTurnCollect, CompressRecord, PlanOptions, } from './compressor-types.js';
 export { defaultEndpoint } from './compressor-types.js';
-export { normalizeDecision, planReplacements, toolCopyMarkerText, TOOL_COPY_MARKER_RE } from './decision.js';
+export { normalizeDecision, planReplacements, toolCopyMarkerText, TOOL_COPY_MARKER_RE, userCopyPayload, attachmentBlocksOf } from './decision.js';
 export declare class PeratomCompressor {
     static inject: readonly [];
     readonly splitThresholdChars: number;

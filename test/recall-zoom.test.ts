@@ -157,7 +157,7 @@ test('recall_summary 档1（stored）：U-info 副本 data[ARG_NS].summary 直�
   appendTurnStart(session, 1)
   const origU = appendUser(session, '原始长资料：' + '数据粘贴 '.repeat(30))
   // U-info 副本（replace 原文，携带 ARG_NS.summary）
-  const copyMsg = createUserMessage({ content: [{ type: 'text', text: '（U-info 副本）' }], source: { kind: 'plugin', plugin: 'peratom-compressor' } })
+  const copyMsg = createUserMessage({ content: [{ type: 'text', text: '（U-info 副本）' }], source: { kind: 'argp' } })
   session.append('user/message', { ...copyMsg, [ARG_NS]: { info: true, sourceSeq: origU, summary: 'INFO-SUMMARY-ABC：用户粘贴了配置资料' } } as never,
     { surfaceOp: { op: 'replace', startSeq: asSeq(origU), endSeq: asSeq(origU) }, sourceEventSeqs: asSeqs([origU]) })
   appendTurnEnd(session, 1)

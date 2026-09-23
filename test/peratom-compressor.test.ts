@@ -258,9 +258,10 @@ test('可压轮单次调用：dialog replace + U-info append 双事件、tool re
   // P3.6：按 (type, surfaceOp) 查找替代固定偏移 endIdx-4
   const dialogEvent = txEvent(session.snapshotEvents(), startIdx, endIdx, 'user/message', 'replace')
   assert.equal(dialogEvent?.type, 'user/message')
-  const dData = dialogEvent?.data as unknown as { source?: { plugin?: string; compactionId?: string }; content?: { text: string }[]; [k: string]: unknown }
-  // 2026-08-28：user 替换副本 source = compact checkpoint（宿主 CompactionNodeView 关联）
-  assert.equal(dData.source?.plugin, 'compact')
+  const dData = dialogEvent?.data as unknown as { source?: { kind?: string; compactionId?: string }; content?: { text: string }[]; [k: string]: unknown }
+  // 2026-08-28：user 替换副本 source = compact checkpoint（宿主 CompactionNodeView 关联）；
+  // 0.1.7 去 plugin 化后 checkpoint 形态为 {kind:'compact-checkpoint', compactionId}（无 .plugin 字段）
+  assert.equal(dData.source?.kind, 'compact-checkpoint')
   assert.ok(dData.source?.compactionId?.startsWith('argp-peratom-'), 'checkpoint carries per-atom compactionId')
   assert.equal(isArgpUserInfo(dData), false, 'dialog 副本不带 info 标记（永不剪）')
   assert.deepEqual((dialogEvent as unknown as { surfaceOp: { op: string; startSeq: number; endSeq: number } }).surfaceOp, { op: 'replace', startSeq: asSeq(uSeq), endSeq: asSeq(uSeq) })
@@ -486,7 +487,7 @@ test('无再压缩路径：U-info 副本 / checkpoint 不进候选（决策⑦�
   const session = Session.create(SessionId('pc-no-recompress'))
   // 当轮含一条已压缩的 U-info 副本与一条 checkpoint
   session.append('turn/start', { turn: 1 })
-  const base = createUserMessage({ content: [{ type: 'text', text: '很长的资料聚合副本'.repeat(30) }], source: { kind: 'plugin', plugin: 'dsh-argp' } })
+  const base = createUserMessage({ content: [{ type: 'text', text: '很长的资料聚合副本'.repeat(30) }], source: { kind: 'argp' } })
   session.append('user/message', { ...base, [ARG_NS]: { info: true, sourceSeq: 1, summary: 's' } } as never, { surfaceOp: 'append' })
   session.append('assistant/message', { stream: [], 
     turn: 1,

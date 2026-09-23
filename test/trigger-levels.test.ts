@@ -405,7 +405,7 @@ test('L3① 被钳后本轮要收 ⇒ 就近强制剪 + steer 续写消息（同
 
     const message = steers[0] as { role?: string; source?: { kind?: string; form?: string }; content?: { text?: string }[] }
     assert.equal(message.role, 'user', 'steer 载荷是 user-role 消息（宿主 inbox 只收 UserMessage）')
-    assert.equal(message.source?.kind, 'plugin', '源标 plugin ⇒ 引擎归类 X（可见、不参剪），UI 按 notice 渲染')
+    assert.equal(message.source?.kind, 'argp', '源标 argp ⇒ 引擎归类 X（可见、不参剪），UI 按 notice 渲染')
     assert.equal(message.source?.form, 'notice')
     assert.match(String(message.content?.[0]?.text), /截断/, '续写提示点明"被截断"，避免模型以为自己写错了')
   } finally {

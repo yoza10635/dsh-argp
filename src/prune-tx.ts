@@ -91,8 +91,8 @@ export interface PruneTxHost {
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
  *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
- *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id
- *  ——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。
+ *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
+ *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。
  *
  * 原 class 私有方法；this.x → host.x。
  */
@@ -115,7 +115,9 @@ export function pruneIntervals(
   const canCloneTool = (seq: number): boolean => {
     const ev = sessionEvents(session)[seq] as { data?: Record<string, unknown> } | undefined
     const data = ev?.data
-    const msg = data?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
+    // 双形状：V4（role:'tool'，content 是 ContentBlock[]）与 V3（role:'user'，content[0] 是
+    // tool-result block）都有非空 content ⇒ 可克隆；data/message/content 缺失即损坏事件。
+    const msg = data?.message as { role?: string; content?: unknown[] } | undefined
     return data !== undefined && msg !== undefined && msg.content?.[0] !== undefined
   }
   type TombstoneSpec = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string }
@@ -190,22 +192,28 @@ export function pruneIntervals(
       if (firstPruneSeq === undefined) firstPruneSeq = intervalPrune.seq
       const ts = resolvedTombstones[i]
       if (ts !== undefined && ts.type === 'tool' && iv.seqs.length === 1) {
-        // tool 占位墓碑：克隆原 R data，只改 tool-result block 的 inner text
+        // tool 占位墓碑：克隆原 R data，只改 inner text（V4 换 content 为单 text block；V3 改 tool-result block）
         const origEvent = sessionEvents(session)[ts.seq] as { data?: Record<string, unknown> } | undefined
         const origData = origEvent?.data
-        const origMsg = origData?.message as { content?: { type?: string; toolCallId?: string; isError?: boolean }[] } | undefined
-        const origBlock = origMsg?.content?.[0]
+        const origMsg = origData?.message as Record<string, unknown> | undefined
+        const origBlock = (origMsg?.content as Array<Record<string, unknown>> | undefined)?.[0]
         if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
+          const elidedText = '[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]'
+          // V4（0.1.7）：role:'tool' 顶层 toolCallId/isError 经展开保留，content 换单 text block；
+          // V3（≤0.1.6）：role:'user' 内嵌 tool-result block，只改其 inner text。
+          const newContent = origMsg.role === 'tool'
+            ? [{ type: 'text', text: elidedText }]
+            : [{
+                type: 'tool-result',
+                toolCallId: (origBlock.toolCallId as string | undefined) ?? ts.callId,
+                isError: (origBlock.isError as boolean | undefined) ?? false,
+                content: [{ type: 'text', text: elidedText }],
+              }]
           const tombstone = session.append('tool/result', {
             ...origData,
             message: {
               ...(origMsg as object),
-              content: [{
-                type: 'tool-result',
-                toolCallId: origBlock.toolCallId ?? ts.callId,
-                isError: origBlock.isError ?? false,
-                content: [{ type: 'text', text: '[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]' }],
-              }],
+              content: newContent,
             },
           } as never, {
             surfaceOp: { op: 'replace', startSeq: asSeq(ts.seq), endSeq: asSeq(ts.seq) },
