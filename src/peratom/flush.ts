@@ -331,6 +331,73 @@ export function flushEntry(host: FlushHost, session: Session, collect: CurrentTu
 
     session.append('compaction/start', lifecycle)
     try {
+      // ---- compaction/summary 先于 replace 发出（宿主 span() 契约，Issue #2 修复）----
+      // 宿主加载期校验（v3-to-v4 `Relationships.span()` / dsh-compaction
+      // `validateShadowedSeqs`）要求 summary 的 `shadowedSeqs` 在**发出时刻**逐字等于
+      // `[shadowedRange.start, shadowedRange.end]` 对应的**当前 surface 连续切片**。
+      // 旧实现有两处独立违约 + 一处结构隐患：
+      //   ①【fatal】replace 循环先于 summary——被替换原子一旦落地即离开 surface，
+      //     summary 再声明 shadow 它们时无论 range 怎么填都命不中 current surface span；
+      //   ②【fatal】shadowedRange 取整轮收集窗口（collect.startSeq..endSeq），而
+      //     shadowedSeqs 只平铺真正被替换的原子——二者恒不相等；
+      //   ③【latent】peratom 替换的是**离散**原子（assistant 消息夹在中间、从不被
+      //     替换），其集合在 surface 上**不连续**，而宿主每事务只许一条 summary、且
+      //     只接受一段连续切片——单条 summary 结构上无法恰好 shadow 该离散集合。
+      // 修法（对齐官方 commitCompactionBody 的 summary-before-replace 与 prune-tx 纪律）：
+      //   · summary 移到 replace 循环**之前**（发出时刻窗口仍完整）；
+      //   · shadowedSeqs 改为**整轮收集窗口**（collect.startSeq..endSeq 的连续 surface
+      //     切片，surface 顺序），逐原子 replace 随后落在窗口内部——离散性被"整窗"吸收；
+      //   · 防御自检：窗口不是当前 surface 的有效连续 span（或覆盖受保护 system head）
+      //     时直接 throw——catch 落一条带 error 的 end（不发 summary），宁可本轮不压，
+      //     也不写"落盘静默成功、重启才炸"的坏记录（写入侧不校验 compaction/*，见 Issue #2）。
+      const nodes = session.surface.nodes
+      const startIdx = nodes.indexOf(asSeq(collect.startSeq))
+      const endIdx = nodes.indexOf(asSeq(collect.endSeq))
+      if (startIdx < 0 || endIdx < startIdx) {
+        throw new Error(
+          `peratom flush: turn window [${collect.startSeq}, ${collect.endSeq}] is not a valid current surface span (startIdx=${startIdx}, endIdx=${endIdx}); refusing to emit a corrupt compaction/summary`,
+        )
+      }
+      if (startIdx === 0) {
+        const headEvent = sessionEvents(session)[nodes[0]]
+        if (headEvent !== undefined && headEvent.type === 'system/message') {
+          throw new Error('peratom flush: turn window covers the protected system head; refusing to emit a corrupt compaction/summary')
+        }
+      }
+      const windowSeqs = nodes.slice(startIdx, endIdx + 1)
+      // 人类可读压缩摘要（2026-08-28 UI 联调）：compaction/summary 是 off-surface 日志
+      // 事件（模型不可见），WebUI 的 compaction 节点用它作为展示文本——不发则节点显示
+      // "压缩摘要不可用"（宿主 CompactionNodeView 的 summary 缺省文案）。payload 按
+      // 宿主 CompactionSummary 词典填诚实值；类型收窄走 as never（代码库既有惯例）。
+      const extractCount = decision.tools.filter(t => t.level === 'extract').length
+      const summaryCount = decision.tools.filter(t => t.level === 'summary').length
+      const falseCount = decision.tools.filter(t => t.level === 'false').length
+      const shadowedChars = [...collect.userLong, ...collect.toolResults]
+        .reduce((sum, atom) => sum + atom.text.length, 0)
+      // 后端标签反映**实际选路**（§11.13.1）：显式/自动 dsh-llm 报宿主路由，
+      // fetch 报端点 URL，三者皆无报 disabled。审计脚本按此判"Stage-1 是否真的跑过"。
+      const summaryBackend = host.backend()
+      session.append('compaction/summary', {
+        ...lifecycle,
+        summary: [{
+          type: 'text',
+          text: `ARGP 逐原子压缩（turn ${collect.turn}）：${decision.splits.length} 拆分 / ${extractCount} 提取 / ${summaryCount} 摘要 / ${falseCount} 保原文；原文保留在 append-only 日志，recall_detail(seq) 可取回`,
+        }],
+        shadowedRange: { start: collect.startSeq, end: collect.endSeq },
+        shadowedSeqs: windowSeqs,
+        shadowedTokenCount: Math.ceil(shadowedChars / 3.5),
+        provider: summaryBackend?.kind === 'dsh-llm' ? summaryBackend.spec.provider : 'fetch',
+        // ⚠️ fetch 分支要取 `endpoint.endpoint`（URL 字符串）：`endpoint` 本身是
+        // ResolvedEndpoint 对象 {endpoint, model, apiKey}，`String(对象)` 序列化成
+        // "[object Object]"（2026-09-18 ab4 跑批实测审计字段坏掉）——既丢 URL，也丢模型名，
+        // 审计脚本无法判断 Stage-1 实际跑在哪个模型上。现在 model 段同时带模型名与端点 URL。
+        model: summaryBackend === null
+          ? 'disabled'
+          : (summaryBackend.kind === 'dsh-llm'
+            ? summaryBackend.spec.model
+            : `${summaryBackend.endpoint.model} @ ${summaryBackend.endpoint.endpoint}`),
+      } as never)
+
       let replaceCount = 0
       // dsh 0.1.5 起 `Session.append` 的 opts 是条件元组（`assistant/message` 禁带
       // sourceEventSeqs、其余 surface 事件允许），而 `step.type` 是
@@ -350,66 +417,34 @@ export function flushEntry(host: FlushHost, session: Session, collect: CurrentTu
         if (step.type === 'user/message') {
           step.data = { ...(step.data as Record<string, unknown>), source: compactCheckpointSource(compactionId) }
         }
-      // 断言 1：sourceEventSeqs ⊆ 当轮区间（越界即 bug，plan P1 硬性要求）。
-      for (const seq of step.sourceEventSeqs) {
-        if (seq < collect.startSeq || seq > collect.endSeq) {
-          throw new Error(
-            `sourceEventSeq ${seq} outside current turn range [${collect.startSeq}, ${collect.endSeq}] (turn ${collect.turn})`,
-          )
+        // 断言 1：sourceEventSeqs ⊆ 当轮区间（越界即 bug，plan P1 硬性要求）。
+        for (const seq of step.sourceEventSeqs) {
+          if (seq < collect.startSeq || seq > collect.endSeq) {
+            throw new Error(
+              `sourceEventSeq ${seq} outside current turn range [${collect.startSeq}, ${collect.endSeq}] (turn ${collect.turn})`,
+            )
+          }
+        }
+        if (step.kind === 'replace') {
+          const g0 = session.surface.replaceGeneration
+          appendSurface(step.type, step.data, {
+            surfaceOp: { op: 'replace', startSeq: asSeq(step.at), endSeq: asSeq(step.at) },
+            sourceEventSeqs: asSeqs(step.sourceEventSeqs),
+          })
+          const g1 = session.surface.replaceGeneration
+          // 断言 2：每次 replace 必须推进 replaceGeneration（替换真实落地）。
+          if (g1 <= g0) {
+            throw new Error(`replaceGeneration did not advance after replacing seq ${step.at} (${g0} -> ${g1})`)
+          }
+          replaceCount += 1
+        } else {
+          appendSurface(step.type, step.data, {
+            surfaceOp: 'append',
+            sourceEventSeqs: asSeqs(step.sourceEventSeqs),
+          })
         }
       }
-      if (step.kind === 'replace') {
-        const g0 = session.surface.replaceGeneration
-        appendSurface(step.type, step.data, {
-          surfaceOp: { op: 'replace', startSeq: asSeq(step.at), endSeq: asSeq(step.at) },
-          sourceEventSeqs: asSeqs(step.sourceEventSeqs),
-        })
-        const g1 = session.surface.replaceGeneration
-        // 断言 2：每次 replace 必须推进 replaceGeneration（替换真实落地）。
-        if (g1 <= g0) {
-          throw new Error(`replaceGeneration did not advance after replacing seq ${step.at} (${g0} -> ${g1})`)
-        }
-        replaceCount += 1
-      } else {
-        appendSurface(step.type, step.data, {
-          surfaceOp: 'append',
-          sourceEventSeqs: asSeqs(step.sourceEventSeqs),
-        })
-      }
-    }
-    // 人类可读压缩摘要（2026-08-28 UI 联调）：compaction/summary 是 off-surface 日志
-    // 事件（模型不可见），WebUI 的 compaction 节点用它作为展示文本——不发则节点显示
-    // "压缩摘要不可用"（宿主 CompactionNodeView 的 summary 缺省文案）。payload 按
-    // 宿主 CompactionSummary 词典填诚实值；类型收窄走 as never（代码库既有惯例）。
-    const extractCount = decision.tools.filter(t => t.level === 'extract').length
-    const summaryCount = decision.tools.filter(t => t.level === 'summary').length
-    const falseCount = decision.tools.filter(t => t.level === 'false').length
-    const shadowedChars = [...collect.userLong, ...collect.toolResults]
-      .reduce((sum, atom) => sum + atom.text.length, 0)
-    // 后端标签反映**实际选路**（§11.13.1）：显式/自动 dsh-llm 报宿主路由，
-    // fetch 报端点 URL，三者皆无报 disabled。审计脚本按此判"Stage-1 是否真的跑过"。
-    const summaryBackend = host.backend()
-    session.append('compaction/summary', {
-      ...lifecycle,
-      summary: [{
-        type: 'text',
-        text: `ARGP 逐原子压缩（turn ${collect.turn}）：${decision.splits.length} 拆分 / ${extractCount} 提取 / ${summaryCount} 摘要 / ${falseCount} 保原文；原文保留在 append-only 日志，recall_detail(seq) 可取回`,
-      }],
-      shadowedRange: { start: collect.startSeq, end: collect.endSeq },
-      shadowedSeqs: plan.steps.flatMap(step => step.sourceEventSeqs),
-      shadowedTokenCount: Math.ceil(shadowedChars / 3.5),
-      provider: summaryBackend?.kind === 'dsh-llm' ? summaryBackend.spec.provider : 'fetch',
-      // ⚠️ fetch 分支要取 `endpoint.endpoint`（URL 字符串）：`endpoint` 本身是
-      // ResolvedEndpoint 对象 {endpoint, model, apiKey}，`String(对象)` 序列化成
-      // "[object Object]"（2026-09-18 ab4 跑批实测审计字段坏掉）——既丢 URL，也丢模型名，
-      // 审计脚本无法判断 Stage-1 实际跑在哪个模型上。现在 model 段同时带模型名与端点 URL。
-      model: summaryBackend === null
-        ? 'disabled'
-        : (summaryBackend.kind === 'dsh-llm'
-          ? summaryBackend.spec.model
-          : `${summaryBackend.endpoint.model} @ ${summaryBackend.endpoint.endpoint}`),
-    } as never)
-    session.append('compaction/end', lifecycle)
+      session.append('compaction/end', lifecycle)
     // 断言 2b：整事务代数增量 === replace 步数（append 步不推进代数）。
     const delta = session.surface.replaceGeneration - genBefore
     if (delta !== replaceCount) {

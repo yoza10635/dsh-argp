@@ -4,6 +4,34 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。
 
+## [1.7.0-beta.2] - 2026-09-23（Issue #2 修复：peratom / prune-tx 的 compaction/summary 加载期契约）
+
+> **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.1（preset-cleaner override-only 自净化），本版修复 **Issue #2**——peratom flush 与 prune-tx 的 `compaction/summary` 在**会话重启加载期**违约（`shadowedSeqs` 非"发出时刻当前 surface 连续切片"）导致**会话打不开**。是 1.7.0 正式版前最后一个正确性修复。
+
+**问题（Issue #2 根因）**：旧 `flushEntry`（peratom）与 `prune-tx` 的 `compaction/summary` **发射顺序错误**——先发 replace 循环（原原子离开 surface）、**后**发 summary，且 `shadowedSeqs` 只平铺真正被替换的**离散**原子（`plan.steps` 的 user-then-tool 序，非 surface 连续切片）。宿主加载期校验（`dsh-compaction` invariant 的 `validateShadowedSeqs` / v3-to-v4 `Relationships.span()`）要求 summary 的 `shadowedSeqs` 在**发出时刻**逐字等于 `[shadowedRange.start, shadowedRange.end]` 对应的**当前 surface 连续切片**（顺序敏感）。写入侧 `Session.append` **不校验** `compaction/*` ⇒ 落盘静默成功；**重启加载**（`session/created` 重放）才炸 ⇒ 会话打不开（Issue #2 报告的现象）。
+
+**修法**：把 `compaction/summary` 移到 replace 循环**之前**（发出时刻整轮窗口仍完整），`shadowedSeqs` 取整轮收集窗口的**连续 surface 切片**（`surface.slice(startIdx, endIdx+1)`，surface 顺序）——离散性被"整窗"吸收。加**防御自检**：窗口非有效当前 surface span / 覆盖受保护 system head ⇒ throw，catch 落带 `error` 的 `compaction/end`，**不发坏 summary**。peratom 与 prune-tx 同失败类，一并修复。
+
+### Changed
+
+- **`src/peratom/flush.ts`**：`flushEntry` 重排——`compaction/summary` 先于 replace 循环；`shadowedSeqs` = 整轮窗口连续 surface 切片；防御自检（非有效 span / 覆盖 system head ⇒ throw + errored `compaction/end`）。
+- **`src/prune-tx.ts`**：同失败类修复——`compaction/summary` 先于 prune/replace 循环；`shadowedSeqs` = 整窗连续 surface 切片；防御自检（`surfaceNodes` 局部变量避免与既有 `nodes` 冲突）。
+
+### Tests
+
+- 新增 `test/peratom-flush-reload.test.ts`（**5 例**，Issue #2 要求的两层，不可互替）：
+  - **① 单测**：stub host + 真 Session，**直接调 `flushEntry`**，断言发射顺序 `compaction/start → compaction/summary → replace → compaction/end`，且 `summary.shadowedSeqs` = 发出时刻整轮窗口连续切片、`shadowedRange.start/end` = `seqs[0]/seqs.at(-1)`。
+  - **①b 单测（负）**：`collect.startSeq` 指向非 surface 事件（turn/start）⇒ `flushEntry` throw（非有效 span），不发 summary，`compaction/end` 带 `error`。
+  - **② 回归（e2e）**：真 `PeratomCompressor.compressCurrentTurn` 端到端 flush → 全事件流经**加载期契约重放**（`validateShadowedSeqs` 逐字复刻）+ 宿主 `foldSurface`，必须通过（= 重启加载不炸）。
+  - **②-负控**：手工构造旧 bug 形态（replace 先于 summary + 离散 user-then-tool seqs）⇒ 加载期契约**必拒**（证明校验器非平凡通过）。
+  - **②c 回归（e2e 多步）**：user split + 两互异 tool 同事务 → 重放 + `foldSurface` 通过。
+- 全量 **359 全绿**（typecheck + typecheck:spike + test + build 全过）。
+
+### 发布后核验（用户侧）
+
+- 重启宿主后，之前因 peratom flush 损坏而**打不开**的会话应能正常加载（`session/created` 重放不 throw）。
+- profile 的 Stage-1 peratom（`cordis.patch.yml` 的 `peratom` 块）实战：压缩后**重启会话不炸**。
+
 ## [1.7.0-beta.1] - 2026-09-23（0.1.7 preset-cleaner：override-only 自净化）
 
 > **发布状态**：`npm publish --tag beta`；**`latest` 保持 1.6.0**。承接 1.7.0-beta.0（宿主 0.1.7 三处结构性变更全吸收 + U-info 附件保留），本版补上 0.1.7 下 **preset 对 ARGP 的遮蔽**这一遗漏——是 1.7.0 正式版的最后一块。
