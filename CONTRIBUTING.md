@@ -77,10 +77,46 @@ npm publish               # 发布 npm registry（prepublishOnly 自动跑 typec
 > 2. 本网络环境下 **HTTPS git push 到 github.com 被干扰**（timeout / Connection reset），但 **SSH 22 端口通**（`ssh -T git@github.com` 验证）。仓库 origin 已切为 `git@github.com:yoza10635/dsh-argp.git`，公钥在 GitHub Settings→SSH keys 注册即可；`ssh.github.com:443` 是同场景的备用端口。
 > 3. 旧设备重装系统后其 SSH key 不可恢复（私钥不在），记得把 GitHub 上的 dead key 条目删掉；npm token 同理，换新后 revoke 旧 token。
 
+## CHANGELOG 写作规范（2026-09-24 起）
+
+参考 [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) 与 [WorkBuddy 更新日志](https://www.workbuddy.cn/docs/workbuddy/Changelog)：**一行一条、分三大类，不写长文**。
+
+```markdown
+## [1.8.0] - 2026-09-25
+
+### 新功能
+- corpus: 新增 v4 会话格式读取，0.1.8 起的会话不再漏读
+
+### 优化
+- preset: 优化 override 生成，跳过已净化的 preset
+- deps: 升级宿主到 0.1.8-alpha.1
+
+### 修复
+- peratom: 修复压缩后会话重启打不开（`shadowedSeqs` 与当前 surface 不匹配，#2）
+
+### 提示
+- 注意：需宿主 ≥ 0.1.8；仍在 0.1.7 的部署请勿升级
+- 测试：全量 372 例通过
+```
+
+- **三个固定类目，按此顺序**：`### 新功能` / `### 优化` / `### 修复`。**空类目整段省略**（不写「无」）。
+  - 新功能 ← `feat`；优化 ← 使用者可感知的 `perf` / `refactor` / `build` / 依赖升级 / 行为调整；修复 ← `fix`。
+  - 纯内部改动（`ci` / `test` / `chore` / 无行为变化的 `refactor`）**不进 CHANGELOG**。
+- **尾部 `### 提示`（视情况追加）**：放升级前置条件、破坏性变更、已知限制、测试基线。**没有就不写这一段**。破坏性变更写成 `注意：…` 开头的一行——直接回答使用者「能不能升、要不要动手」。
+- **一条一行**：格式 `<scope>: <一句话>（#issue）`，**直接由该版 commit subject 收敛**——去掉 `type` 前缀、保留 scope、附上 issue 号。scope 沿用提交规范里的那套（`peratom` / `prune-tx` / `client` / `preset` / `corpus` / `deps` / `docs` / `ci`）。
+- **长度**：一句话，尽量 ≤ 60 字；一条只讲一件事——写不下就说明该拆成两条。
+- **动词开头**：新增 / 优化 / 修复 / 移除 / 调整（英文条目用 Add / Improve / Fix / Remove）。
+- **类目内排序**：影响面大的在前（会话打不开 / 数据损坏 > 功能缺失 > 体验问题）。
+- **不写**：修法、根因推导、字段取值、实测数字、设计取舍——这些留在 **commit body**（本仓习惯已足够详细）与本地 `docs/`。想深挖的读者去看提交。
+- **不用**：表格、代码块、加粗。只允许行内代码标注配置名 / 函数名（如 `shadowedSeqs`、`/compact`）。
+- **每版一条测试基线**：`测试：全量 N 例通过`（放在 `### 提示` 段末）。
+- ⚠️ **标题格式锁死**：必须是 `## [X.Y.Z] - YYYY-MM-DD`。`release.yml` 的 awk 用精确子串 `## [X.Y.Z]` 抽段作为 GitHub Release 正文，改标题格式会**静默回退**成自动摘要。
+- ⚠️ **类目一律用 `###`（三级）**：抽段以「下一个 `## [` 行」为段界（正则 `/^## \[/` 要求 `##` 后紧跟空格与 `[`），`###` 不触发截断（已实测）。
+
 ## 实验纪律（ARGP 特有）
 
 - 实验脚本放 `spike/`，产物放 `spike/out/`（已在 .gitignore）。
-- 实验提交用 `experiment:` 类型；实验结论沉淀到 `CHANGELOG.md`，或写入本地 `docs/`——**`docs/` 整个目录不进仓库**（见 `.gitignore`），需要对外可见的结论必须落在 `CHANGELOG.md` / `ARCHITECTURE.md` / README 这类仓库内文档里。
+- 实验提交用 `experiment:` 类型；实验结论写入本地 `docs/`（**整个目录不进仓库**，见 `.gitignore`）或 commit message——**CHANGELOG 只放一行式条目**（见上「CHANGELOG 写作规范」），长推导与数据不进 CHANGELOG。需要长期对外可见的结论落在 `ARCHITECTURE.md` / README 这类仓库内文档里。
 - 实验数据必须带产物位置（`spike/out/...`）才能进对外文档；受控对照不中途调参。
 
 ## 反馈渠道
