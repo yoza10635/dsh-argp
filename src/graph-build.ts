@@ -107,14 +107,23 @@ const NGRAM_N = 3
 /**
  * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
  *
+ * switch 认四类 surface 事件：`user/message` / `assistant/message` / `tool/result` /
+ * `developer/message`；唯一不产出原子的 surface 类型是 `system/message`——
+ *
  * node 0 保护（2026-09-10，dsh 0.1.5 起）：宿主把 system prompt 表示为 surface node 0 的
  * `system/message`，并在 surface.ts `assertSystemHeadRewrite` 里硬性保护——任何覆盖 node 0 的
  * replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
- * 本函数的 switch 只认 `user/message` / `assistant/message` / `tool/result`，其余类型（含
- * `system/message`）**静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
+ * `system/message` **静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
  * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
  * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
  * 「system prompt at surface node 0 is never selected for pruning」。
+ *
+ * `developer/message`（V4 保留类型：tool-addition / tool-removal 块；宿主 ContentBlockMap
+ * 注释"providers and UI reject them until their producers and consumers are implemented
+ * together"）不像 system head 那样被宿主硬保护，故**显式归类 X**（与 checkpoint 同档）：
+ * 进原子台账（手动剪枝段在它处作为**有意边界**断开，见 selectManualRanges），但永不进
+ * Stage-1 候选（isMaterial）、永不被剪。宿主若日后激活该类型，边界已在此定义，
+ * 而不是一个意外的非原子漏点。
  *
  * 原 class 方法；this.citeStats → host.citeStats（同一对象引用，累计语义不变）。
  */
@@ -181,6 +190,14 @@ export function atomize(host: GraphBuildHost, session: Session): Atom[] {
       const d = data as { message?: { source?: { callId?: string } } }
       const callId = d?.message?.source?.callId
       atoms.push({ id: atoms.length, seq, type: 'R', turn, text: eventText(session, seq), toolCallIds: callId === undefined ? [] : [callId], cites: [], citesFailed: false })
+      continue
+    }
+    if (event.type === 'developer/message') {
+      // V4 保留类型（tool-addition / tool-removal；宿主尚未激活生产者/消费者）。
+      // 显式 X：与 checkpoint 同档——进台账、作手动剪枝的有意边界、永不压缩、永不被剪。
+      // 详见函数头注释；守护用例见 test/argp-graph-engine.test.ts「developer/message is
+      // classified as X」。
+      atoms.push({ id: atoms.length, seq, type: 'X', turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false })
       continue
     }
   }

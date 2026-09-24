@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { createAssistantMessage, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createDeveloperMessage, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
-import { asSeq, asSeqs } from '../src/log-access.ts'
+import { asSeq, asSeqs, logRowType } from '../src/log-access.ts'
 import { ArgpGraphEngine, EDGE_WEIGHTS, buildTombstones, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
@@ -962,6 +962,80 @@ test('system prompt at surface node 0 is never selected for pruning (host-protec
     for (const so of replaces) {
       assert.notEqual(so.startSeq, headSeq, 'replace must never start at the system prompt node')
       assert.notEqual(so.endSeq, headSeq, 'replace must never end at the system prompt node')
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// developer/message 显式归类（2026-09-24，宿主 0.1.7 核查）：宿主的 SurfaceEventType 共 5 种，
+// 其中 developer/message（V4 保留类型：tool-addition / tool-removal 块，宿主 ContentBlockMap
+// 注释"providers and UI reject them until their producers and consumers are implemented
+// together"）此前是 atomize 的**附带**漏点（switch 无 case → 静默跳过、非原子）。
+// 与 system head 不同，宿主对 developer 节点**没有**改写硬保护（assertDeveloperHeader 只校验
+// 事件自身），故本守护把"跳过"升级为"显式 X"：
+//   ① atomize 产出 X 原子（进台账、可被 list 展示，而非意外漏点）；
+//   ② 其 text 为空（tool-change 块不被 eventText 抽取）→ 预算中性；
+//   ③ 手动剪枝段在它处作为**有意边界**断开（selectManualRanges），且任何 replace 不覆盖它；
+//   ④ 永不进 Stage-1 候选（isMaterial 类型门）、永不被自动剪（isAtomCandidate 结构性排除 X）。
+// 宿主若日后激活该类型（tool 动态增删上线），边界已在此定义。
+test('developer/message is classified as X: ledger atom, intentional manual boundary, never pruned', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('dev-msg-x-test'))
+    session.append('system/message', {
+      turn: 0,
+      step: 0,
+      message: createSystemMessage('you are a deterministic compaction test agent'),
+    }, { surfaceOp: 'append' })
+    appendUser(session, 'user anchor')
+    // 合法最简 developer 事件：tool-removal 块无需 headerSeq（仅 tool-addition 需要）。
+    const devEvent = session.append('developer/message', {
+      turn: 1,
+      step: 1,
+      message: createDeveloperMessage({
+        content: [{ type: 'tool-removal', toolName: 'probe-tool' }],
+        source: { kind: 'user' },
+      }),
+    }, { surfaceOp: 'append' })
+    const devSeq = devEvent.seq
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+
+    // ① atomize：developer 节点产出 X 原子（不再是"无原子"漏点）
+    const atoms = engine.atomize(session)
+    const devAtom = atoms.find(a => a.seq === devSeq)
+    assert.ok(devAtom !== undefined, 'developer/message must produce an atom (explicit X, not a silent skip)')
+    assert.equal(devAtom!.type, 'X')
+    // ② 预算中性：该事件无 text 块 → eventTextOf 投影为空（它对非 user 事件读
+    //    data.message.content 抽 text/tool-call/tool-result 块；tool-addition/tool-removal
+    //    不在抽取集内）。注意：若将来 developer 消息带 text 块，eventText 会抽出文本、
+    //    计入预算——本断言锁定的是"当前 tool-change-only 形态无 text 块"这一事实。
+    assert.equal(devAtom!.text, '', 'a tool-change-only developer event has no text blocks, so it projects to empty text (budget-neutral)')
+    // ③ logRowType：区间/list 展示为 X（而非 'other' 漏点）
+    assert.equal(logRowType('developer/message', devEvent.data as Record<string, unknown>), 'X')
+
+    // ④ 手动剪枝：developer 节点是有意边界——段在它处断开，且段不覆盖它
+    const ranges = (engine as unknown as { selectManualRanges(session: Session): { start: number; end: number }[] })
+      .selectManualRanges(session)
+    const a1Seq = atoms.find(a => a.text.startsWith('A1:'))!.seq
+    const a2Seq = atoms.find(a => a.text.startsWith('A2:'))!.seq
+    assert.deepEqual(ranges, [{ start: a1Seq, end: a2Seq }],
+      'manual ranges must stop at the developer node (intentional boundary) and exclude the turnGuard-protected tail')
+    for (const r of ranges) {
+      assert.ok(r.start > devSeq || r.end < devSeq, 'no manual range may cover the developer node')
+    }
+
+    // ⑤ 自动剪枝落地后，任何 replace 都不覆盖 developer 节点
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const replaces = [...session.snapshotEvents()]
+      .map(e => (e as { surfaceOp?: { op?: string; startSeq?: number; endSeq?: number } }).surfaceOp)
+      .filter((so): so is { op: string; startSeq: number; endSeq: number } =>
+        so !== undefined && so.op === 'replace')
+    for (const so of replaces) {
+      assert.ok(so.startSeq > devSeq || so.endSeq < devSeq, 'replace must never cover the developer node')
     }
   } finally {
     await ctx.fiber.dispose()

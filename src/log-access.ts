@@ -343,6 +343,7 @@ export function logRowType(eventType: string, data: Record<string, unknown> | un
   if (eventType === 'assistant/message') return 'A'
   if (eventType === 'tool/result') return 'R'
   if (eventType === 'tool/call') return 'T'
+  if (eventType === 'developer/message') return 'X' // V4 保留类型，与 atomize 同档（有意边界，非漏点）
   return 'other'
 }
 

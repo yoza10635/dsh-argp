@@ -373,6 +373,8 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
     if (event.type === 'user/message') return classifyUserMessage(event.data)
     if (event.type === 'assistant/message') return 'A'
     if (event.type === 'tool/result') return 'R'
+    // developer/message（V4 保留类型）与 atomize 同档显式归 X（有意边界，非漏点）。
+    if (event.type === 'developer/message') return 'X'
     return 'X'
   }
   const turnOfSeq = (seq: number): number => {

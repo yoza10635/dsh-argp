@@ -69,6 +69,8 @@ export interface CollectHost {
 function isMaterial(event: SessionEvent, skipForms: readonly string[]): boolean {
   // 只有对话载体（U/A/R）才构成压缩窗口；turn/start·end、compaction/*、
   // request/header 等旁路事件既不是候选、也不该把窗口撑成"非空"。
+  // `developer/message`（V4 保留类型：tool-addition / tool-removal）同样不是
+  // 压缩材料——与 atomize 的 X 归类同档，此处由类型门一并排除。
   if (event.type !== 'user/message' && event.type !== 'assistant/message' && event.type !== 'tool/result') return false
   const surfaceOp = (event as { surfaceOp?: unknown }).surfaceOp
   if (surfaceOp !== undefined && surfaceOp !== 'append') return false
