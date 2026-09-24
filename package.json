@@ -42,6 +42,7 @@
     "typecheck:spike": "tsc -p tsconfig.spike.json --noEmit",
     "prepublishOnly": "npm run typecheck && npm run typecheck:spike && npm test && npm run build",
     "prerelease:check": "node scripts/prerelease-check.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "release": "npm run prerelease:check && node scripts/prerelease-check.mjs --tag && npm publish && git push origin main --tags",
     "spike2": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/02-surfaceop.ts",
     "spike4a": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/04a-adapter-smoke.ts",
