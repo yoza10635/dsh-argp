@@ -144,7 +144,7 @@ tool/result 替换无结构化元数据通道（B-1）、compaction/prune 游离
 - **B-6 窗口截断盲区**：未被 ARGP 替换的 live 节点在逼近 contextWindow 时被请求组装层截掉最旧部分、不留痕迹——`recall_pruned` 取不回它们。缓解：比例预算前移触发点；根治在 dsh 侧（B-6 立案中）。
 - **模型依赖（如实版，见上）**：守卫保证安全，收益依赖服从率；lite 档多模型分工的服从率未实测（台账 D21）。
 - **per-atom 输出税**：Stage-1 每轮的压缩调用是 side-channel 成本（30 轮实测 completion 7.2K tokens，不进上下文但计入总成本）；dsh-llm 后端的 usage 已入 record，spike 汇总口径接入中。
-- **tombstone 两跳召回**：占位文本经多轮演化后原 seq 可能丢失，`recall_pruned(seq)` 需正确编号（B-6 落地后一并消除）。
+- **tombstone 召回链路**：1.8.0 起每块墓碑自带原节点 `seq`（`[elided seq=N; recall_pruned(N) for detail]`），`recall_pruned(seq)` 一跳可取回，不再需要 `list_pruned --keyword` 反查；且"墓碑再立碑"已按终止态排除（G1），原 `seq` 不再被链式替换稀释。仍受 B-6 窗口截断盲区限制（未替换的 live 节点取不回）。
 
 ## 问题反馈
 

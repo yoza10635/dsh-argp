@@ -12,18 +12,21 @@
  *    display only, never touching the log, the model surface, or the stored
  *    message.
  *
- * 2. Contributes a dedicated ARGP card to Settings → Plugins → Plugin
- *    configuration, editing the nine `dsh-argp` engine knobs live. The card is
- *    registered into the `settings.plugin.item` slot keyed by the `dsh-argp`
- *    namespace — the same namespace the server registers through
- *    `ctx.inject(['settings'])` + `settings.register(...)`. The
- *    configurable-plugins tab renders the intersection of two ledgers: the
- *    namespaces the host serves and the cards registered into the slot,
- *    matched by the entry's `key`. Both halves must agree on the name.
+ * 2. Contributes a dedicated ARGP card to the Plugins settings page, editing
+ *    the nine `dsh-argp` engine knobs live.
+ *
+ *    dsh 0.1.7+ 的接线方式：服务端在插件上声明 `static Config`（schema 里九个旋钮
+ *    标 `.volatile()`），宿主 Settings 扫描该 schema 生成表单并把读写句柄暴露为
+ *    `ctx.configForms.get('dsh-argp')`；客户端把该句柄适配成卡片模型所需的 scope 接口，
+ *    注册进 `settings.plugins.tab`。
+ *
+ *    0.1.7 之前的旧机制（`settingsScope.bind({ namespace })` + `settings.plugin.item`
+ *    slot，配合服务端 `settings.register(ns, schema, { base })`）已随 #4587
+ *    `profile-owned-live-configuration` 整体移除；两端 namespace 仍须一致。
  *
  * Graceful degradation: the cites filter probes `assistantDisplay` through
  * `ctx.get()` (returns undefined for absent services, no throw). The card
- * instead uses a NESTED `ctx.inject(['settingsScope'], ...)` on purpose — the
+ * instead uses a NESTED `ctx.inject([...], ...)` on purpose — the
  * same reason dsh-market documents for its own card. `ctx.get` is an immediate
  * read: a service not yet composed at that instant reads as absent, and the
  * card would silently never register depending on nothing but plugin load
@@ -50,6 +53,7 @@ import {
   zh,
   type ArgpUserSettings,
   type SettingsScopeLike,
+  type SettingsScopeSnapshot,
 } from './argp-config-controller.js'
 import { ArgpConfigCard } from './argp-config-card.js'
 
@@ -75,13 +79,78 @@ interface SettingsScopeService {
   bind(namespace: { namespace: string }): SettingsScopeLike<ArgpUserSettings>
 }
 
+/**
+ * dsh 0.1.7+ 的配置表单（取代已移除的 `settingsScope`）。
+ *
+ * 宿主 0.1.7（#4587）删掉了客户端 `settingsScope` 服务和 `settings.plugin.item` slot；
+ * 设置页改由 `static Config` schema 驱动，客户端经 `ctx.configForms.get(ns)` 拿到
+ * namespace 的读写句柄。本接口就是那个句柄的形状（见宿主
+ * `packages/client/ui-settings/src/client/config-form-types.ts`）。
+ */
+interface ConfigFormLike<T> {
+  getSnapshot(): {
+    status: 'loading' | 'ready' | 'unavailable'
+    value: T | undefined
+    base: unknown
+    user: unknown
+    revision: number | undefined
+    writable: boolean
+  }
+  subscribe(listener: () => void): () => void
+  set(field: string, value: unknown): Promise<boolean>
+  unset(field: string): Promise<boolean>
+}
+
+/**
+ * 把 0.1.7 的 `ConfigForm` 适配成 ARGP 卡片模型所需的 `SettingsScopeLike`。
+ *
+ * 卡片控制器（`ArgpConfigController`）与读写后端是解耦的：它只依赖
+ * `subscribe/getSnapshot/set/unset` 四个方法。宿主换掉了后端但语义一一对应，
+ * 故这里做一层薄适配即可，字段校验、staged 编辑、reset 等 UI 逻辑全部保留。
+ */
+function asSettingsScope<T>(form: ConfigFormLike<T>): SettingsScopeLike<T> {
+  return {
+    subscribe(listener: () => void): void {
+      // 适配器在插件 fiber 生命周期内常驻，故不需要退订；宿主在 reload 时
+      // 会整体重新 apply 本 bundle，届时本对象一并丢弃。
+      form.subscribe(listener)
+    },
+    getSnapshot(): SettingsScopeSnapshot {
+      const snapshot = form.getSnapshot()
+      return {
+        status: snapshot.status === 'loading' ? 'loading'
+          : snapshot.status === 'unavailable' ? 'unavailable' : 'ready',
+        writable: snapshot.writable,
+        value: (snapshot.value ?? {}) as Record<string, unknown>,
+        base: (snapshot.base ?? {}) as Record<string, unknown>,
+        user: snapshot.user as Record<string, unknown> | undefined,
+      }
+    },
+    async set(field: string, value: unknown): Promise<void> {
+      await form.set(field, value)
+    },
+    async unset(field: string): Promise<void> {
+      await form.unset(field)
+    },
+  }
+}
+
+/** Structural face of the client configuration forms service (cordis). */
+interface ConfigFormsService {
+  get<T>(namespace: string): ConfigFormLike<T>
+}
+
 /** Structural face of the slots service (cordis). */
 interface SlotsService {
   inject(name: string, factory: () => unknown): void
   register(
     options: {
       readonly name: string
-      readonly key: string
+      /** Tab key（0.1.7 的 `settings.plugins.tab` 用 `id`；旧 `settings.plugin.item` 用 `key`）。 */
+      readonly id: string
+      readonly order?: number
+      /** Registrant-localized tab text. */
+      readonly label?: () => string
       readonly locale: string
       readonly inject: () => unknown
     },
@@ -173,13 +242,18 @@ function registerDisposable(ctx: ArgpClientContext, execute: () => unknown, labe
 export const inject = ['locale', 'slots']
 
 /**
- * Register the ARGP settings card once the host's settings scope is composed.
+ * Register the ARGP settings card once the host's configuration forms are composed.
  *
- * Nesting the `settingsScope` dependency rather than reading it is deliberate
- * (see the file header, and dsh-market's own comment on its card): the wait is
- * what makes registration independent of plugin activation order, and the
- * fallback on a host without the settings page is to register nothing and
- * leave the rest of this bundle intact.
+ * Nesting the dependency rather than reading it is deliberate (see the file
+ * header, and dsh-market's own comment on its card): the wait is what makes
+ * registration independent of plugin activation order, and the fallback on a
+ * host without the settings page is to register nothing and leave the rest of
+ * this bundle intact.
+ *
+ * dsh 0.1.7+：`settingsScope` 服务与 `settings.plugin.item` slot 都已移除，改为
+ * `configForms` + `settings.plugins.tab`（插件设置页的 tab 座位，选项用 `id`/`label`
+ * 而非旧 slot 的 `key`）。namespace 仍是 `dsh-argp`——服务端 `static Config` 所在的
+ * profile entry id，两端必须一致。
  *
  * @param ctx - the browser plugin context.
  */
@@ -199,18 +273,22 @@ function registerArgpSettingsCard(ctx: ArgpClientContext): void {
 
   const injectable = ctx as unknown as InjectableContext
   if (typeof injectable.inject !== 'function') return
-  injectable.inject(['settingsScope'], (scoped) => {
+  injectable.inject(['configForms', 'locale', 'slots'], (scoped) => {
     try {
-      const settingsScope = scoped.get<SettingsScopeService>('settingsScope')
+      const configForms = scoped.get<ConfigFormsService>('configForms')
       const slots = scoped.get<SlotsService>('slots')
-      if (settingsScope?.bind === undefined || slots?.inject === undefined) return
+      if (configForms?.get === undefined || slots?.inject === undefined) return
 
-      const bound = settingsScope.bind({ namespace: ARG_SETTINGS_KEY })
-      const controller = new ArgpConfigController(bound)
-      slots.inject('settings.plugin.item', () => slots.register(
+      const form = configForms.get<ArgpUserSettings>(ARG_SETTINGS_KEY)
+      const controller = new ArgpConfigController(asSettingsScope(form))
+      slots.inject('settings.plugins.tab', () => slots.register(
         {
-          name: 'settings.plugin.item',
-          key: ARG_SETTINGS_KEY,
+          name: 'settings.plugins.tab',
+          id: ARG_SETTINGS_KEY,
+          order: 20,
+          // Tab 文案用中性缩写：ARGP 是专有名词，各语言同形，且切换语言时宿主
+          // 会重新求值本函数，无需在这层做 locale 绑定。
+          label: () => 'ARGP',
           locale: ARG_SETTINGS_KEY,
           inject: () => controller.inject(),
         },

@@ -32,3 +32,13 @@ release-post-draft.md
 
 # session 分析工具（隐私铁律：session 派生数据不进仓库；脚本本身只读不落数据）
 .sess-tools/
+
+# 本地会话取证 / 跑批工具（只读取证与端到端验收脚本；结论进本地 docs/，脚本不进公开面）
+scripts/__pycache__/
+*.pyc
+scripts/scan-*.py
+scripts/probe-session.py
+scripts/verify-e2e-171.py
+scripts/step-audit.mjs
+scripts/tomb-audit.mjs
+.argp-e2e-task.txt

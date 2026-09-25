@@ -1,5 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -11,6 +14,7 @@ import {
   collectDeclAtoms,
   normalizeCites,
 } from '../src/peratom/cite-declarer.ts'
+import { buildTombstoneRedirect } from '../src/prune-tx.ts'
 
 // ---------------------------------------------------------------------------
 // 测试会话构建器（与 peratom-compressor.test.ts 同口径）
@@ -473,6 +477,94 @@ test('缓存淘汰：超过 MAX_CACHED_EDGES(512) 按插入序淘汰最旧', asy
 })
 
 // ---------------------------------------------------------------------------
+// F3（1.7.1）：端点已墓碑化 ⇒ 沿墓碑链重定向到当前替身
+// 病灶：写入侧词表走原始日志（离场 seq 仍合法）、消费侧 idBySeq 走当前投影 ⇒ 边必丢。
+// ---------------------------------------------------------------------------
+
+test('F3: buildTombstoneRedirect 展开区间、排除自映射、同名后者胜', () => {
+  const m = buildTombstoneRedirect([
+    { intervals: [{ start: 18, end: 18, tombstoneSeq: 53 }, { start: 20, end: 22, tombstoneSeq: 60 }] },
+    { intervals: [{ start: 53, end: 53, tombstoneSeq: 99 }, { start: 7, end: 7, tombstoneSeq: 7 }] },
+  ])
+  assert.equal(m.get(18), 53, '单点区间')
+  assert.equal(m.get(20), 60, '多节点区间起点')
+  assert.equal(m.get(21), 60, '多节点区间中段')
+  assert.equal(m.get(22), 60, '多节点区间终点')
+  assert.equal(m.get(53), 99, '同名 seq 后者胜（取最新替身）')
+  assert.equal(m.has(7), false, 'start === tombstoneSeq ⇒ 不建自映射')
+  assert.equal(m.has(19), false, '未覆盖的 seq 不入表')
+})
+
+test('F3 (1.7.1): 端点已墓碑化 ⇒ 缺省仍丢、传 redirect 命中墓碑，多跳可达且防环', async t => {
+  const h = await makeDeclarer()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('cd-f3-redirect'))
+  const { rSeq: r1 } = buildCompressibleTurn(session, 1, 'c1')
+  const { uSeq: u2 } = buildCompressibleTurn(session, 2, 'c2')
+  h.respond({ cites: [{ fromSeq: u2, toSeq: r1, level: 'critical' }] })
+  assert.equal((await h.declarer.declareCurrentTurn(session))?.accepted, 1, 'prerequisite: 本轮 1 条边被采纳')
+
+  // 投影里 r1 已被墓碑（tombSeq）替换，r1 本身离场
+  const tombSeq = r1 + 100
+  const atoms: Atom[] = [
+    { id: 0, seq: tombSeq, type: 'R', turn: 1, text: '[elided: seq=' + r1 + '; recall_pruned(' + r1 + ') for detail]', toolCallIds: ['c1'], cites: [], citesFailed: false },
+    { id: 1, seq: u2, type: 'U', turn: 2, text: 'long user message body', toolCallIds: [], cites: [], citesFailed: false },
+  ]
+  assert.deepEqual(h.declarer.buildInjectEdges(atoms), [], '缺省不传 redirect ⇒ 保持 1.7.0 行为（端点离场即丢）')
+  assert.deepEqual(
+    h.declarer.buildInjectEdges(atoms, seq => (seq === r1 ? tombSeq : undefined)),
+    [{ from: 1, to: 0, level: 'critical' }],
+    '一跳重定向 ⇒ to 命中墓碑节点的 id',
+  )
+
+  const finalSeq = r1 + 200
+  const deepAtoms: Atom[] = [
+    { id: 0, seq: finalSeq, type: 'R', turn: 1, text: 'tomb', toolCallIds: ['c1'], cites: [], citesFailed: false },
+    { id: 1, seq: u2, type: 'U', turn: 2, text: 'u', toolCallIds: [], cites: [], citesFailed: false },
+  ]
+  const chain = new Map<number, number>([[r1, tombSeq], [tombSeq, finalSeq]])
+  assert.deepEqual(h.declarer.buildInjectEdges(deepAtoms, s => chain.get(s)),
+    [{ from: 1, to: 0, level: 'critical' }], '两跳墓碑链可达（墓碑再被墓碑替换）')
+  const cyc = new Map<number, number>([[r1, tombSeq], [tombSeq, r1]])
+  assert.deepEqual(h.declarer.buildInjectEdges(deepAtoms, s => cyc.get(s)), [], '环 ⇒ 丢弃且不挂死')
+})
+
+test('F3 (1.7.1): inject 摘要新增 redirectedEdges（靠重定向才命中的边数）', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'argp-cites-f3-'))
+  const dumpFile = path.join(dir, 'cites.jsonl')
+  const prev = process.env['ARGP_CITES_DUMP']
+  t.after(() => {
+    if (prev === undefined) delete process.env['ARGP_CITES_DUMP']
+    else process.env['ARGP_CITES_DUMP'] = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  process.env['ARGP_CITES_DUMP'] = dumpFile
+
+  const h = await makeDeclarer()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('cd-f3-dump'))
+  const { rSeq: r1 } = buildCompressibleTurn(session, 1, 'c1')
+  const { uSeq: u2 } = buildCompressibleTurn(session, 2, 'c2')
+  h.respond({ cites: [{ fromSeq: u2, toSeq: r1, level: 'supporting' }] })
+  await h.declarer.declareCurrentTurn(session)
+
+  const tombSeq = r1 + 100
+  const atoms: Atom[] = [
+    { id: 0, seq: tombSeq, type: 'R', turn: 1, text: 'tomb', toolCallIds: ['c1'], cites: [], citesFailed: false },
+    { id: 1, seq: u2, type: 'U', turn: 2, text: 'u', toolCallIds: [], cites: [], citesFailed: false },
+  ]
+  h.declarer.buildInjectEdges(atoms, seq => (seq === r1 ? tombSeq : undefined))
+
+  const inj = readDump(dumpFile).filter(r => r['kind'] === 'inject').pop() as Record<string, number>
+  assert.equal(inj['cacheSize'], 1)
+  assert.equal(inj['emitted'], 1)
+  assert.equal(inj['droppedByMissingEndpoint'], 0, '重定向后不再计入丢弃')
+  assert.equal(inj['redirectedEdges'], 1, '该边靠重定向才命中')
+  assert.equal((inj['emitted'] ?? 0) + (inj['droppedByMissingEndpoint'] ?? 0) + (inj['droppedBySelfLoop'] ?? 0), inj['cacheSize'],
+    'redirectedEdges 是 emitted 子集，不参与该求和式')
+})
+
+// ---------------------------------------------------------------------------
 // 验收判据 ②：两插件故障注入——declarer 失败不影响同轮熵降
 // ---------------------------------------------------------------------------
 
@@ -580,3 +672,126 @@ test('验收③：挂载 disabled declarer（injectEdges 通道）的剪枝结�
     await baseline.ctx.fiber.dispose()
   }
 })
+
+// ---------------------------------------------------------------------------
+// F1（1.7.1）：声明边落盘（env 门控 JSONL）
+// ---------------------------------------------------------------------------
+
+/** 读 dump 文件为行对象（不存在时返回 []）。 */
+function readDump(file: string): Record<string, unknown>[] {
+  if (!fs.existsSync(file)) return []
+  return fs.readFileSync(file, 'utf8').split('\n').filter(l => l.trim() !== '').map(l => JSON.parse(l) as Record<string, unknown>)
+}
+
+test('F1 (1.7.1): 未设 ARGP_CITES_DUMP ⇒ 零落盘（生产零开销契约）', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'argp-cites-off-'))
+  const dumpFile = path.join(dir, 'cites.jsonl')
+  const prev = process.env['ARGP_CITES_DUMP']
+  t.after(() => {
+    if (prev === undefined) delete process.env['ARGP_CITES_DUMP']
+    else process.env['ARGP_CITES_DUMP'] = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  delete process.env['ARGP_CITES_DUMP']
+
+  const h = await makeDeclarer()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('cd-dump-off'))
+  const { rSeq: r1 } = buildCompressibleTurn(session, 1, 'c1')
+  const { uSeq: u2 } = buildCompressibleTurn(session, 2, 'c2')
+  h.respond({ cites: [{ fromSeq: u2, toSeq: r1, level: 'supporting' }] })
+
+  const record = await h.declarer.declareCurrentTurn(session)
+  assert.equal(record?.accepted, 1, 'prerequisite: 本轮确实声明了 1 条边')
+  // 建图侧也要跑一次（它是最容易漏掉门控的落盘点）
+  h.declarer.buildInjectEdges([
+    { id: 0, seq: r1, type: 'R', turn: 1, text: 'big result text', toolCallIds: ['c1'], cites: [], citesFailed: false },
+  ])
+
+  assert.equal(fs.existsSync(dumpFile), false, '未设 env ⇒ 不创建文件')
+  assert.equal(fs.readdirSync(dir).length, 0, '未设 env ⇒ 目录内零新增文件')
+})
+
+test('F1 (1.7.1): 设 ARGP_CITES_DUMP ⇒ 边行数 = record.cites.length，inject 摘要可对账', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'argp-cites-on-'))
+  const dumpFile = path.join(dir, 'cites.jsonl')
+  const prev = process.env['ARGP_CITES_DUMP']
+  t.after(() => {
+    if (prev === undefined) delete process.env['ARGP_CITES_DUMP']
+    else process.env['ARGP_CITES_DUMP'] = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  process.env['ARGP_CITES_DUMP'] = dumpFile
+
+  const h = await makeDeclarer()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('cd-dump-on'))
+  const { rSeq: r1 } = buildCompressibleTurn(session, 1, 'c1')
+  const { uSeq: u2 } = buildCompressibleTurn(session, 2, 'c2')
+  // 一条合法边 + 一条越界边（toSeq 不在白名单 ⇒ invalid，不入 record.cites）
+  h.respond({ cites: [
+    { fromSeq: u2, toSeq: r1, level: 'critical' },
+    { fromSeq: u2, toSeq: 999999, level: 'supporting' },
+  ] })
+
+  const record = await h.declarer.declareCurrentTurn(session)
+  assert.equal(record?.accepted, 1, 'prerequisite: 1 条被采纳')
+  assert.equal(record?.invalid, 1, 'prerequisite: 1 条越界')
+
+  const atoms: Atom[] = [
+    { id: 0, seq: r1, type: 'R', turn: 1, text: 'big result text', toolCallIds: ['c1'], cites: [], citesFailed: false },
+    { id: 1, seq: u2, type: 'U', turn: 2, text: 'long user message body', toolCallIds: [], cites: [], citesFailed: false },
+  ]
+  const edges = h.declarer.buildInjectEdges(atoms)
+
+  const rows = readDump(dumpFile)
+  const citeRows = rows.filter(r => r['kind'] === 'cite')
+  const injectRows = rows.filter(r => r['kind'] === 'inject')
+
+  // ① 边行数 = record.cites.length（逐条一行）
+  assert.equal(citeRows.length, record?.cites?.length, '边行数 = record.cites.length')
+  assert.equal(citeRows[0]?.['turn'], record?.turn)
+  assert.equal(citeRows[0]?.['fromSeq'], u2)
+  assert.equal(citeRows[0]?.['toSeq'], r1)
+  assert.equal(citeRows[0]?.['level'], 'critical')
+  // 轮级 accepted/invalid 冗余在每条边行上（方案 §5.2：逐条带，便于单行自证）
+  assert.equal(citeRows[0]?.['accepted'], record?.accepted)
+  assert.equal(citeRows[0]?.['invalid'], record?.invalid)
+
+  // ② inject 摘要：一次建图一条，且这三个数能对账"LRU 淘汰 vs 端点离场"
+  assert.equal(injectRows.length, 1, '一次 buildInjectEdges 一条摘要')
+  const inj = injectRows[0] as Record<string, number>
+  assert.equal(inj['cacheSize'], edges.length, 'cacheSize = 缓存边数')
+  assert.equal(inj['emitted'], edges.length, 'emitted = 实际产出边数')
+  assert.equal((inj['emitted'] ?? 0) + (inj['droppedByMissingEndpoint'] ?? 0) + (inj['droppedBySelfLoop'] ?? 0), inj['cacheSize'],
+    'emitted + dropped* 必须等于 cacheSize（无缺口）')
+})
+
+test('F1 (1.7.1): 零边轮写归因行（区分"没产边"与"产了边被丢弃"）', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'argp-cites-none-'))
+  const dumpFile = path.join(dir, 'cites.jsonl')
+  const prev = process.env['ARGP_CITES_DUMP']
+  t.after(() => {
+    if (prev === undefined) delete process.env['ARGP_CITES_DUMP']
+    else process.env['ARGP_CITES_DUMP'] = prev
+    fs.rmSync(dir, { recursive: true, force: true })
+  })
+  process.env['ARGP_CITES_DUMP'] = dumpFile
+
+  const h = await makeDeclarer()
+  t.after(() => h.ctx.fiber.dispose())
+  const session = Session.create(SessionId('cd-dump-none'))
+  buildCompressibleTurn(session, 1, 'c1')
+  buildCompressibleTurn(session, 2, 'c2')
+  h.respond('抱歉，我无法输出 JSON。', true) // 解析失败 ⇒ 零边
+
+  const record = await h.declarer.declareCurrentTurn(session)
+  assert.equal(record?.error, 'parse-failed')
+
+  const rows = readDump(dumpFile)
+  const noneRows = rows.filter(r => r['kind'] === 'cite-none')
+  assert.equal(noneRows.length, 1, '零边轮留一条归因行')
+  assert.equal(noneRows[0]?.['error'], 'parse-failed', 'error 字段是"没产边"的分类依据')
+  assert.equal(rows.filter(r => r['kind'] === 'cite').length, 0, '零边时不应有 cite 行')
+})
+

@@ -1,6 +1,6 @@
 {
   "name": "dsh-argp",
-  "version": "1.7.0",
+  "version": "1.8.0-beta.0",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -68,6 +68,7 @@
     "spike42": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/42-edge-labels.ts",
     "spike43": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/43-corpus-audit.ts",
     "spike44": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/44-subagent-adapt.ts",
+    "gate-replay": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/47-gate-replay.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "peerDependencies": {

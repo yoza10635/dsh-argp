@@ -60,8 +60,6 @@ export interface LifecycleHost {
     tokenMeter: TokenMeter | undefined;
     degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     turnBasis: 'semantic' | 'all';
-    argpSettings: ArgpUserSettings;
-    settingsSource: () => ArgpUserSettings;
     maxOverflowRetries: number;
     midTurnPruneEnabled: boolean;
     midTurnLegacyGuard: boolean;
@@ -114,13 +112,18 @@ export interface LifecycleHost {
  */
 export declare function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
 /**
- * UI 设置页注册（Settings → Plugins → Configurable → ARGP）。
- * 构造期基线 = cordis 配置（windowRatio 等顶层旋钮）；ctx.inject(['settings']) 在 settings 服务
- * 存在时注册 namespace=`dsh-argp`（base=基线），并把源 thunk 指向 scope.get()；用户经 UI 写入
- * 后 onChange 实时刷新 this.argpSettings，getter 透出即时生效（无需重启）。settings 服务缺失时
- * 优雅回退到 cordis 基线（settingsSource 保持 () => this.argpSettings）。
+ * 设置页可见性声明（dsh 0.1.7+）。
+ *
+ * 宿主 0.1.7（#4587，`profile-owned-live-configuration`）移除了
+ * `settings.register(ns, schema, { base })`：Settings 改为扫描插件的 `static Config`
+ * 生成表单，表单值写回 profile 的 `cordis.patch.yml`。因此本函数不再注册任何东西，
+ * 只做一件事——声明本插件实例允许设置页自动生成表单（auto: true，因为没有自定义
+ * settings 页面）。引擎的旋钮值由 `ArgpGraphEngine.Config` 的 volatile 引用提供。
+ *
+ * ⚠️ 旧实现的构造期快照（`host.argpSettings` / `host.settingsSource`）已删除：
+ * 那套"注册后把基线与 scope.get() 二选一"的回退逻辑是为被移除的 register API 服务的。
  */
-export declare function registerSettings(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
+export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpGraphConfig): void;
 /**
  * P0 双引擎自挂载：peratom 配置块存在时，Stage-1 三管线在构造期挂载并接线
  * （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为

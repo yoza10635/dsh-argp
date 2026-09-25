@@ -20,6 +20,7 @@
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Atom, AtomType, SemanticEdge, DeterministicEdge } from './argp-types.js'
 import { LEVEL_ORDER } from './argp-types.js'
+import { TOMBSTONE_MAX_CHARS, closureTombstone, isTombstoneText, seqRangeTombstone } from './tombstone-text.js'
 
 /** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
 export interface PruneInterval {
@@ -66,6 +67,9 @@ export interface PruneState {
  * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
  * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走
  * recencyGuard/turnGuard/citesFailed/A10 结构保护/入度门槛。
+ *
+ * C（B3）起：A10 结构保护多一条**前置放行**——组内 R 全部已立碑 ⇒ 该组已收割完毕，
+ * 保护失去对象，A 照常参剪（详见下方 A10 块注释）。
  */
 export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneState): boolean {
   if (a.type === 'U' && a.sourceSeq === undefined) {
@@ -85,6 +89,22 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
   // 文本、永远拿不到覆盖），走下方与 A/R 相同的 recencyGuard/turnGuard/
   // citesFailed/入度门槛。dialog 不受影响（仍走上方 ask-exempt 分支）。
   if (a.type !== 'A' && a.type !== 'R' && a.type !== 'U') return false
+  // G1（1.7.1）：已立碑 = 终止态。
+  //
+  // 病灶：1.7.0 的 isAtomCandidate 没有任何"已是墓碑"判定，只看位置/年龄/citesFailed/
+  // A10/入度 ⇒ 42 字符的 tool 占位墓碑（type 仍是 'R'，与普通 R 原子无区别）满足全部
+  // 条件 ⇒ **每轮重新入候选**，每轮产出一条同等长度的新墓碑。实测 session-16188a24：
+  // replace 事件 2,047 中 **1,560（76.2%）**是"墓碑换墓碑"，收益恒为 0；链式证据
+  // `seq 17 (115c) → 708 → 1578 → 3136 → 3926 → 4729 → 5496 → 6274`，链长分布
+  // `{5:109, 6:105, 9:78}`，每一步收益为 0；30 个 compaction/start 却产生 2,045 个
+  // compaction/prune。逻辑上是 2026-08-23 半拆组的回归（解绑前 R 受 A10 连带保护，
+  // 解绑后墓碑成了独立候选）。
+  //
+  // 长度安全阀（TOMBSTONE_MAX_CHARS）：极长墓碑仍允许参剪，避免地板卡死。
+  // 归并（consolidateTombstones / isMergeableTombstoneText）走**事件层**，不经本函数，
+  // 故"地板靠归并压下去"的机制不受影响。user 墓碑（X 类）在上一行已被排除——本行
+  // 显式化的是同一件事，语义更清楚且覆盖 R 墓碑（真正的空转来源）。
+  if (isTombstoneText(a.text) && a.text.length <= TOMBSTONE_MAX_CHARS) return false
   const pos = state.position.get(a.seq)
   if (pos === undefined || pos >= state.recencyCut) return false
   if (a.turn > state.latestTurn - state.turnGuard) return false
@@ -104,12 +124,37 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
     const groupRs = state.atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
     for (const r of groupRs) groupIds.add(r.id)
     if (groupRs.length > 0) {
-      const aCitesR = state.edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
-      // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
-      const anyRExternalIncoming = groupRs.some(r =>
-        (state.curInDegreeDecl.get(r.id) ?? 0) > 0 || // 语义**声明**入度（cites/inject）——排除 inferred（见上方实验注释）
-        state.deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
-      if (!aCitesR && !anyRExternalIncoming) return false
+      // C（B3）：组内 R **全部已立碑** ⇒ 该组已被收割完毕 ⇒ A10 失去保护对象，放行。
+      //
+      // 病灶：本处的 groupRs 用 `toolCallIds` 匹配，而 stub **完整继承原 callId**
+      // （实测 1,971/1,971）⇒ **R 被立碑后 groupRs 仍非空** ⇒ "收割过的组"在 A10 眼里
+      // 与"没收割过的组"完全一样 ⇒ A 被永久结构保护。A0 闸级重放实测（session-16188a24，
+      // `npm run gate-replay`）：末态活体 A 388 条里 **371 条（95.6%）的首个拦截闸就是本处**；
+      // 其中 **312 条的 R 组早已全部是墓碑** —— 此时保护已无意义：R 的内容早已不在 surface
+      // 上，A10 保住的只是 A 自己的 tool-call 参数，却让整组永久占位
+      // （实测 268,086 字符 ≈ 103.2K tok，见 docs/plan-compaction-fixes §7.6）。
+      //
+      // 判据 = `isTombstoneText`（全四族、**不设长度上限**）：与量出那 312 个靶子的口径
+      // 逐字一致（`spike/47-gate-replay.ts` ⑤ 段 / `scripts/step-audit.mjs`）。
+      // ⚠️ 两点不要"顺手改"：
+      //  - **不用 `isToolTombstoneText`**（窄口径）：R 的墓碑也可能是区间/闭包族，按 tool 族
+      //    过滤会与靶子口径漂移（A10 放过一部分、另一部分仍锁）；
+      //  - **不套 `TOMBSTONE_MAX_CHARS` 安全阀**：该阀服务于 G1 的"地板卡死"（长墓碑说明
+      //    还有东西可丢），与"内容是否已不在 surface"是两件不同的事。
+      //
+      // 放行后 A 并不"随便剪"：仍要过下方第 5 道闸（`curInDegree`）与位置/年龄守卫；
+      // 且必须**整组退场**（A 被剪 ⇒ 其全部 R 同批进 pruned），由 `argp-graph-engine.ts`
+      // pass 循环的 drag 分支 + 剪前回退保护负责 —— 否则留下的 `tool/result` 失去配对
+      // A ⇒ 孤儿 `role:'tool'` 消息 ⇒ provider 400。
+      const allStubbed = groupRs.every(r => isTombstoneText(r.text))
+      if (!allStubbed) {
+        const aCitesR = state.edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
+        // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
+        const anyRExternalIncoming = groupRs.some(r =>
+          (state.curInDegreeDecl.get(r.id) ?? 0) > 0 || // 语义**声明**入度（cites/inject）——排除 inferred（见上方实验注释）
+          state.deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
+        if (!aCitesR && !anyRExternalIncoming) return false
+      }
     }
   }
   if (!allowInDegree && (state.curInDegree.get(a.id) ?? 0) > 0) return false
@@ -230,10 +275,16 @@ export function mergeIntervals(
 }
 
 /**
- * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留）。
+ * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留；1.7.1 文案收敛）。
  * 区间原子全部来自同一闭包 → 闭包 tombstone（带 root/计数，recall 消歧）；
  * 单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的 tool_calls）；
- * 否则默认 user 文本墓碑（forced 时标注）。
+ * 否则默认 user 文本墓碑。
+ *
+ * 1.7.1（G2/G3）：文案不再在本函数内拼接，统一走 `tombstone-text.ts` 生成器
+ * （此前区间文案在本函数、`prune-tx` 的两处 fallback 里各存一份，共 3 份拷贝）。
+ * `forced` 保留入参但**不再影响文案**：新文案把"被剪的是什么 / 怎么取回"交给 system
+ * 契约说一次，强制降级的标记随之取消（原 `, forced` 后缀）——它只对诊断有意义，而
+ * `GraphPruneRecord.forced` 已记录该事实。
  */
 export function buildTombstones(
   kept: PruneInterval[],
@@ -242,17 +293,16 @@ export function buildTombstones(
   pruned: Map<number, Atom>,
   forced: boolean,
 ): PruneTombstone[] {
+  void forced
   return kept.map(iv => {
+    const start = iv.seqs[0] as number
+    const end = iv.seqs[iv.seqs.length - 1] as number
     const metas = iv.atoms
       .map(a => closureSeqMeta.get(a.seq))
       .filter((m): m is { closureId: string; rootPreview: string; closureTotal: number } => m !== undefined)
     const first = metas[0]
     if (first !== undefined && metas.every(m => m.closureId === first.closureId)) {
-      return { type: 'user' as const, text: '[elided closure ' + first.closureId
-        + ' seqs=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-        + ': ' + iv.seqs.length + ' of ' + first.closureTotal + ' surface nodes in this closure'
-        + ' pruned by ARGP closure lifecycle; root=' + first.rootPreview
-        + '; recall_pruned(seq) retrieves original]' }
+      return { type: 'user' as const, text: closureTombstone(first.closureId, start, end, first.rootPreview) }
     }
     const r0 = iv.atoms[0]
     if (iv.atoms.length === 1 && r0.type === 'R' && r0.toolCallIds[0] !== undefined) {
@@ -261,9 +311,7 @@ export function buildTombstones(
         return { type: 'tool', seq: r0.seq, callId: r0.toolCallIds[0] }
       }
     }
-    return { type: 'user' as const, text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-      + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-      + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]' }
+    return { type: 'user' as const, text: seqRangeTombstone(start, end) }
   })
 }
 

@@ -12,18 +12,21 @@
  *    display only, never touching the log, the model surface, or the stored
  *    message.
  *
- * 2. Contributes a dedicated ARGP card to Settings → Plugins → Plugin
- *    configuration, editing the nine `dsh-argp` engine knobs live. The card is
- *    registered into the `settings.plugin.item` slot keyed by the `dsh-argp`
- *    namespace — the same namespace the server registers through
- *    `ctx.inject(['settings'])` + `settings.register(...)`. The
- *    configurable-plugins tab renders the intersection of two ledgers: the
- *    namespaces the host serves and the cards registered into the slot,
- *    matched by the entry's `key`. Both halves must agree on the name.
+ * 2. Contributes a dedicated ARGP card to the Plugins settings page, editing
+ *    the nine `dsh-argp` engine knobs live.
+ *
+ *    dsh 0.1.7+ 的接线方式：服务端在插件上声明 `static Config`（schema 里九个旋钮
+ *    标 `.volatile()`），宿主 Settings 扫描该 schema 生成表单并把读写句柄暴露为
+ *    `ctx.configForms.get('dsh-argp')`；客户端把该句柄适配成卡片模型所需的 scope 接口，
+ *    注册进 `settings.plugins.tab`。
+ *
+ *    0.1.7 之前的旧机制（`settingsScope.bind({ namespace })` + `settings.plugin.item`
+ *    slot，配合服务端 `settings.register(ns, schema, { base })`）已随 #4587
+ *    `profile-owned-live-configuration` 整体移除；两端 namespace 仍须一致。
  *
  * Graceful degradation: the cites filter probes `assistantDisplay` through
  * `ctx.get()` (returns undefined for absent services, no throw). The card
- * instead uses a NESTED `ctx.inject(['settingsScope'], ...)` on purpose — the
+ * instead uses a NESTED `ctx.inject([...], ...)` on purpose — the
  * same reason dsh-market documents for its own card. `ctx.get` is an immediate
  * read: a service not yet composed at that instant reads as absent, and the
  * card would silently never register depending on nothing but plugin load

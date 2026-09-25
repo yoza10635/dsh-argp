@@ -9,7 +9,8 @@
  *  - cites 义务开启：正为回答母表待决项（本地新 SOTA 模型的 cites 服从率）
  *  - 触发/目标同一可见字符估算基准（不变式 2）；reasoning 块不计入预算（spike 4a 判决 C）
  */
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import type {
   CompactionAgentContext,
@@ -32,6 +33,7 @@ import { EDGE_WEIGHTS } from './argp-types.js'
 export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
 export { EDGE_WEIGHTS } from './argp-types.js'
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_PASSES, DEFAULT_RETAIN_RATIO, DEFAULT_WINDOW_RATIO } from './constants.js'
 import { pushBounded } from './telemetry.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
 import type { InferredEdgeOptions } from './token-ontology.js'
@@ -77,6 +79,23 @@ import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
 // 经上方 import 本地可用、经 re-export 维持公共 API。
 
 // isMergeableTombstone 已迁 prune-tx（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
+
+/**
+ * 解析后的设置页旋钮（dsh 0.1.7+ 的 `Config` 形状）。与下面 `static Config` schema
+ * 一一对应：schema 负责校验 + 表单生成，本 interface 负责引擎侧的读取类型。
+ * 每个字段标 `Volatile<T>` = "无需重新挂载即可变化"，引擎经 `.get()` 读实时值。
+ */
+export interface ArgpLiveConfig {
+  windowRatio: Volatile<number>
+  retainRatio: Volatile<number>
+  maxPasses: Volatile<number>
+  recencyGuard: Volatile<number>
+  turnGuard: Volatile<number>
+  minSpanChars: Volatile<number>
+  enableSummarize: Volatile<boolean>
+  sortMode: Volatile<string>
+  charsPerToken: Volatile<number>
+}
 
 export interface ArgpGraphConfig {
   /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
@@ -314,7 +333,28 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
 // （P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 export class ArgpGraphEngine extends CompactionEngine {
+  /**
+   * UI 设置页可调旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
+   * 表单，不再接受 `settings.register(ns, schema, { base })` —— 该 API 在宿主
+   * 0.1.7（#4587，`profile-owned-live-configuration`）已移除。字段标 `.volatile()`
+   * 表示"无需重新挂载即可变化"，引擎侧每次经 `config.x.get()` 读当前值。
+   */
+  static Config = z.object({
+    windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO).volatile(),
+    retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO).volatile(),
+    maxPasses: z.number().step(1).min(1).default(DEFAULT_MAX_PASSES).volatile(),
+    recencyGuard: z.number().step(1).min(0).default(4).volatile(),
+    turnGuard: z.number().step(1).min(0).default(1).volatile(),
+    minSpanChars: z.number().step(1).min(0).default(0).volatile(),
+    enableSummarize: z.boolean().default(false).volatile(),
+    sortMode: z.string().default('density').volatile(),
+    charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
+  })
+
   static inject = ['tools', 'systemPrompt']
+
+  /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
+  private readonly args!: ArgpLiveConfig
 
   readonly windowTokens!: number
   readonly retainTokens!: number
@@ -329,26 +369,24 @@ export class ArgpGraphEngine extends CompactionEngine {
   readonly degradationStrategy!: 'lifecycle' | 'summarize' | 'force' | 'fail'
   readonly turnBasis!: 'semantic' | 'all'
   /**
-   * UI 设置页可调旋钮的实时解析值（Settings → Plugins → Configurable → ARGP）。
-   * 构造期为 cordis 配置基线；ctx.inject(['settings']) 注册后随用户写入实时更新。
+   * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
+   * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
+   * 读取其引用"）。构造期快照字段 `argpSettings` 随旧 `settings.register` 一并移除。
    */
-  private argpSettings!: ArgpUserSettings
-  /** settings 源 thunk：ctx.inject(['settings']) 注册后置为 scope.get()，否则回退 cordis 基线。 */
-  private settingsSource: () => ArgpUserSettings = () => this.argpSettings
-  get windowRatio(): number { return this.argpSettings.windowRatio }
-  get retainRatio(): number { return this.argpSettings.retainRatio }
+  get windowRatio(): number { return this.args.windowRatio.get() }
+  get retainRatio(): number { return this.args.retainRatio.get() }
   /**
    * 守卫读取点统一走 getter：反应式补救（L2）在第 2 次尝试时用 `guardOverride` 临时
-   * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于 settings 值。
+   * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于设置页值。
    */
   private guardOverride: { recencyGuard: number; turnGuard: number } | null = null
-  get recencyGuard(): number { return this.guardOverride?.recencyGuard ?? this.argpSettings.recencyGuard }
-  get turnGuard(): number { return this.guardOverride?.turnGuard ?? this.argpSettings.turnGuard }
-  get minSpanChars(): number { return this.argpSettings.minSpanChars }
-  get charsPerToken(): number { return this.argpSettings.charsPerToken }
-  get maxPasses(): number { return this.argpSettings.maxPasses }
-  get enableSummarize(): boolean { return this.argpSettings.enableSummarize }
-  get sortMode(): 'legacy' | 'density' | 'density-chain' { return this.argpSettings.sortMode }
+  get recencyGuard(): number { return this.guardOverride?.recencyGuard ?? this.args.recencyGuard.get() }
+  get turnGuard(): number { return this.guardOverride?.turnGuard ?? this.args.turnGuard.get() }
+  get minSpanChars(): number { return this.args.minSpanChars.get() }
+  get charsPerToken(): number { return this.args.charsPerToken.get() }
+  get maxPasses(): number { return this.args.maxPasses.get() }
+  get enableSummarize(): boolean { return this.args.enableSummarize.get() }
+  get sortMode(): 'legacy' | 'density' | 'density-chain' { return this.args.sortMode.get() as 'legacy' | 'density' | 'density-chain' }
   readonly maxOverflowRetries!: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
   readonly onOverflowCompress?: (session: Session) => Promise<void>
@@ -464,6 +502,9 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   constructor(ctx: Context, config: ArgpGraphConfig = {}) {
     super(ctx)
+    // 设置页旋钮引用：Cordis 已按 `static Config` 校验并把 volatile 字段解析为引用，
+    // 引擎全程经 `this.args.X.get()` 读（构造期不快照），故 UI 写入即时生效。
+    this.args = config as unknown as ArgpLiveConfig
     // 结构化日志门面（2026-08-29 review 轻微项）：替换裸 console 直调，日志进宿主
     // 统一管道（ctx.logger 门面；warn/error/info 三级均被 cordis logger 支持）。
     this.log = ctx.logger
@@ -487,9 +528,9 @@ export class ArgpGraphEngine extends CompactionEngine {
       name: 'argp-contract',
       order: 150,
       text: () => 'Context compression (ARGP):\n'
-        + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders like [elided seq=N..M ...], or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
+        + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders of the form [elided seq=N..M; recall_pruned(N) for detail] (the placeholder carries its own recall instruction), or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
         + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-        + '- When your answer depends on content that is no longer in visible context, use list_pruned to find the right seq, then call recall_pruned(seq) or recall(query) to recover the full text before answering. Never reconstruct missing facts from memory.\n'
+        + '- When your answer depends on content that is no longer in visible context, recover it before answering — never reconstruct missing facts from memory. Start with recall(query) (a few distinctive keywords are enough); if a placeholder names a seq, call recall_pruned(seq) directly; use list_pruned when you neither remember keywords nor have a seq.\n'
         + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.\n'
         // v1.6.1：逐原子压缩副本的标记契约。召回指引**只在此处一次性声明**，不写进每条
         // 副本（每原子重复一段指引纯属浪费上下文）；标记本身只需带 seq——模型在
@@ -755,8 +796,8 @@ export class ArgpGraphEngine extends CompactionEngine {
           if (!turnStart) {
             // 轮中剪：只放宽 turnGuard；recencyGuard 照旧保护最新节点（刚收到的 tool result 不动）。
             this.guardOverride = {
-              recencyGuard: this.argpSettings.recencyGuard,
-              turnGuard: this.midTurnLegacyGuard ? this.argpSettings.turnGuard : this.midTurnTurnGuard,
+              recencyGuard: this.args.recencyGuard.get(),
+              turnGuard: this.midTurnLegacyGuard ? this.args.turnGuard.get() : this.midTurnTurnGuard,
             }
           }
           try {
@@ -1148,7 +1189,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
    * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
    * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
-   * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（不含 pruned by ARGP）
+   * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（non-mergeable 文本）
    * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
    */
   private consolidateTombstones(session: Session): number {
@@ -1489,6 +1530,26 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (candidateGroups.length === 0) break
         forced = true
       }
+      // C（B3）剪前回退保护：**无法整组退场**的候选组一律先剔除，宁可不剪，不破配对。
+      //
+      // 语义：剪一个带 tool-call 的 A，必须连带其**全部**应答 R（下方 drag）。若某个 callId
+      // 在 surface 上取不到对应 R（`rByCallForPrune` 缺项），就无法保证"同批剪"，故整组作废。
+      // 之所以放在**候选阶段**而不是 drag 处再撤销：sortKey 是确定性的，若只在 drag 处回退，
+      // 这个组会每 pass 重新占住队首 ⇒ 整条降级链（闭包 / force_prune）被一个原子卡死。
+      //
+      // 触发面：`scripts/step-audit.mjs` 实测为 0（属纵深防御）。但它是"孤儿 `role:'tool'`
+      // 消息（无匹配 assistant.tool_calls）→ provider 400"这条硬约束的最后一道闸——C 把 A10
+      // 的结构保护换成"整组退场"，配对不变式从此由本处与下方 drag 共同承担。
+      {
+        const pairableBefore = candidateGroups.length
+        candidateGroups = candidateGroups.filter(g => g.every(a =>
+          !(a.type === 'A' && a.toolCallIds.some(cid => rByCallForPrune.get(cid) === undefined))))
+        if (candidateGroups.length < pairableBefore && process.env['ARGP_DEBUG_PASS'] === '1') {
+          process.stdout.write('[dbg]   unpairable groups dropped = '
+            + (pairableBefore - candidateGroups.length) + '\n')
+        }
+        if (candidateGroups.length === 0) break
+      }
       const groupKey = (g: Atom[]): string => g.map(a => sortKey(a, pruneState)).sort()[0] as string
       // 1.5.1：数值比较（localeCompare 对负数 token 键方向反了，见 compareSortKeys 注释）
       candidateGroups.sort((x, y) => compareSortKeys(groupKey(x), groupKey(y)))
@@ -1498,6 +1559,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 2026-08-23 半拆组连带：剪 A（含 tool-call）必须连带其全部应答 R——
         // 否则提交 messages 里出现孤儿 tool 消息（role:"tool" 无匹配 assistant.tool_calls）→ provider 400。
         // R 独立剪时由 tool 占位墓碑配对（A 保留），此处只处理"A 剪 → R 跟剪"方向。
+        // C（B3）：入口已按 pairable 过滤 ⇒ 此处 `rByCallForPrune` 必有项（见上方注释）。
         if (a.type === 'A' && a.toolCallIds.length > 0) {
           for (const cid of a.toolCallIds) {
             const r = rByCallForPrune.get(cid)
@@ -1517,7 +1579,34 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 实测 26-local-full-verify2：23 个孤儿全部是此形态（seq 与混剪区间逐一对应）。
     // P5 Wave 3 第 2 步：区间归并段提升为模块级纯函数 mergeIntervals（逐字保留）。
     // droppedIntervals 原方法内计算但未被读取，现由 mergeIntervals 内部计算（供未来诊断/单测）。
-    const kept = mergeIntervals(pruned, position, issuerByCall, this.minSpanChars).kept
+    let kept = mergeIntervals(pruned, position, issuerByCall, this.minSpanChars).kept
+    // C（B3）事后整组校验：A 进了 kept ⇒ 其**全部**应答 R 也必须进 kept。
+    //
+    // 为什么 drag 阶段不够：drag 保证 R 进入 `pruned`，但 `mergeIntervals` 之后还有两道筛
+    // —— ① `chars >= minSpanChars` 的整段放回；② 双向守卫的拆出。当 A 与其 R 在 surface
+    // 上**不相邻**时，二者落入**不同区间**，不含 A 的那个可能被整段放回 ⇒ A 走了、R 留下
+    // = 孤儿 `role:'tool'` ⇒ provider 400。默认 `minSpanChars=0` 下恒不触发（所有区间都
+    // 达标），但它是**合法配置**且被测试使用，故此处不能只靠默认值成立。
+    // 处置：撤销违例 A（从 `pruned` 删除）后重算 —— A 存活 ⇒ 该 R 变 solo 区间
+    // （`isSoloR` 为真，恰 1 节点，满足 dsh `assertToolResultRewrite`）。
+    // `pruned` 单调递减 ⇒ 至多迭代"kept 内 A 的个数"次，8 次上限为纵深保险。
+    for (let groupGuard = 0; groupGuard < 8; groupGuard += 1) {
+      const keptSeqs = new Set<number>()
+      for (const iv of kept) for (const s of iv.seqs) keptSeqs.add(s)
+      const violators: Atom[] = []
+      for (const iv of kept) {
+        for (const a of iv.atoms) {
+          if (a.type !== 'A' || a.toolCallIds.length === 0) continue
+          for (const cid of a.toolCallIds) {
+            const r = rByCallForPrune.get(cid)
+            if (r !== undefined && !keptSeqs.has(r.seq)) { violators.push(a); break }
+          }
+        }
+      }
+      if (violators.length === 0) break
+      for (const a of violators) pruned.delete(a.id)
+      kept = mergeIntervals(pruned, position, issuerByCall, this.minSpanChars).kept
+    }
     if (kept.length === 0) return null
     for (const iv of kept) {
       for (const a of iv.atoms) {

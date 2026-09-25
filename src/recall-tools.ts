@@ -41,13 +41,28 @@ export interface RecallToolsHost {
 }
 
 /**
+ * 每轮召回**调用次数**上限（1.7.1：由硬闸门 `3` 提升为宽松安全阀 `20`）。
+ *
+ * 1.7.0 用 `>= 3` 作主闸门：每轮第三次之后的召回直接被拒。实测（session-16188a24，
+ * 15 轮）该闸门**从未触顶**——全会话 6 次召回调用分散在 2 轮（后 11 轮归零），
+ * 跨会话基线 0.76%，配额白设；它唯一的实际作用是"模型真需要第四次召回时拿不到东西"，
+ * 与"墓碑只给指针、把取回决定交给模型"的方向相反（负优化）。
+ *
+ * 1.7.1 把主闸门改为**字符预算**（`budgetRecallText` 的 `recallCharsUsed` 窗口，
+ * 压缩换代时归零、耗尽时显式说明剩余额度），本计数退化为**防循环安全阀**：
+ * 只拦"模型陷入召回循环"这种病态行为，不参与"要不要多取几次"的正常决策。
+ * 取值参考：本档 493 次工具调用 / 15 轮 ≈ 33 次/轮 ⇒ 20 次/轮 仍是合理上限。
+ */
+const RECALL_CALLS_PER_TURN_LIMIT = 20
+
+/**
  * 注册三个召回工具到 ctx.tools。构造器在原先内联定义工具的位置调用本函数，
  * 保持 register 调用顺序逐字不变。
  */
 export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
   const recallTool = defineTool({
     name: 'recall_pruned',
-    description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context (text blocks verbatim; tool-call arguments are a JSON semantic-equivalent reconstruction when the host stores them as an object — the reply says so). Call it when your answer depends on content behind an [elided seq=N..M ...] placeholder, or when an earlier value is absent from the visible context. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use list_pruned (including its fromSeq/toSeq range mode) when you do not know the seq.',
+    description: 'Retrieve the original text of any conversation node by its log seq, whether or not it is still in your visible context (text blocks verbatim; tool-call arguments are a JSON semantic-equivalent reconstruction when the host stores them as an object — the reply says so). Call it when an [elided ...] placeholder names the seq you need: every placeholder prints the seq(s) it replaced and its own recall_pruned(...) instruction. Pass one seq per call. The reply is prefixed with [recall seq=N state=shadowed|live|off-surface] so you know whether that content is currently visible. Everything ever said stays in the append-only log; never guess it. Use recall(query) when you remember keywords but not the seq, and list_pruned when you have neither.',
     parameters: { seq: { type: 'integer', description: 'log seq of the node to recover; placeholders show the seqs they replaced' } },
     output: {
       schema: { type: 'string' },
@@ -56,7 +71,11 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
     execute: async (args): Promise<string> => {
       const seq = (args as { seq?: number }).seq
       if (seq === undefined || host.session === null) return 'recall_pruned: no session bound'
-      if (host.recallCallsThisTurn >= 3) return 'recall_pruned: per-turn budget exceeded (3 calls)'
+      if (host.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
+        return 'recall_pruned: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
+          + ' calls). This is a loop guard, not a content limit — retrieved text is capped by a separate '
+          + 'character budget. Prefer recall(query) with keywords when you need several nodes at once, or retry next turn.'
+      }
       host.recallCallsThisTurn += 1
       // P1 修复 (b)：不再用 shadowedSeqsOf 门控。数据路径本来就是全日志级的
       // （eventText 直接索引 sessionEvents(session)[seq]），只有越界才算失败；返回值带状态标签，
@@ -189,7 +208,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
 
   const recallQueryTool = defineTool({
     name: 'recall',
-    description: 'Search nodes that are no longer in your visible context by content query and return matching original text. Use when you know roughly what was said but not the exact seq. Prefer list_pruned when you can identify by turn/type or by seq range, and recall_pruned(seq) when you already know the seq.',
+    description: 'Search nodes that are no longer in your visible context by content query and return matching original text. Make this your first recall attempt when you do not know the exact seq: pass a few distinctive keywords from the content you need (matching is a plain substring test over node text, so any word that literally appeared works). It returns several matches in one call. Use recall_pruned(seq) instead when a placeholder already names the seq.',
     parameters: {
       query: { type: 'string', description: 'keywords or substring to search in content that left the visible context' },
       maxResults: { type: 'integer', description: 'optional maximum number of matches to return (default 5)' },
@@ -200,7 +219,10 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
     },
     execute: async (args): Promise<string> => {
       if (host.session === null) return 'recall: no session bound'
-      if (host.recallCallsThisTurn >= 3) return 'recall: per-turn budget exceeded (3 calls)'
+      if (host.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
+        return 'recall: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
+          + ' calls). This is a loop guard, not a content limit — narrow the query or retry next turn.'
+      }
       host.recallCallsThisTurn += 1
       const query = (args as { query?: string }).query ?? ''
       const maxResults = (args as { maxResults?: number }).maxResults ?? 5

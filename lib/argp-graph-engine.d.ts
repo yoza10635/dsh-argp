@@ -9,7 +9,8 @@
  *  - cites 义务开启：正为回答母表待决项（本地新 SOTA 模型的 cites 服从率）
  *  - 触发/目标同一可见字符估算基准（不变式 2）；reasoning 块不计入预算（spike 4a 判决 C）
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
+import z from '@deepseek-ai/schemastery';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
@@ -36,6 +37,22 @@ export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js';
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js';
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js';
+/**
+ * 解析后的设置页旋钮（dsh 0.1.7+ 的 `Config` 形状）。与下面 `static Config` schema
+ * 一一对应：schema 负责校验 + 表单生成，本 interface 负责引擎侧的读取类型。
+ * 每个字段标 `Volatile<T>` = "无需重新挂载即可变化"，引擎经 `.get()` 读实时值。
+ */
+export interface ArgpLiveConfig {
+    windowRatio: Volatile<number>;
+    retainRatio: Volatile<number>;
+    maxPasses: Volatile<number>;
+    recencyGuard: Volatile<number>;
+    turnGuard: Volatile<number>;
+    minSpanChars: Volatile<number>;
+    enableSummarize: Volatile<boolean>;
+    sortMode: Volatile<string>;
+    charsPerToken: Volatile<number>;
+}
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
     windowTokens?: number;
@@ -236,7 +253,36 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     data?: Record<string, unknown>;
 }): void;
 export declare class ArgpGraphEngine extends CompactionEngine {
+    /**
+     * UI 设置页可调旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
+     * 表单，不再接受 `settings.register(ns, schema, { base })` —— 该 API 在宿主
+     * 0.1.7（#4587，`profile-owned-live-configuration`）已移除。字段标 `.volatile()`
+     * 表示"无需重新挂载即可变化"，引擎侧每次经 `config.x.get()` 读当前值。
+     */
+    static Config: z<Schemastery.ObjectS<NoInfer<{
+        windowRatio: z<number, number, "volatile-defined">;
+        retainRatio: z<number, number, "volatile-defined">;
+        maxPasses: z<number, number, "volatile-defined">;
+        recencyGuard: z<number, number, "volatile-defined">;
+        turnGuard: z<number, number, "volatile-defined">;
+        minSpanChars: z<number, number, "volatile-defined">;
+        enableSummarize: z<boolean, boolean, "volatile-defined">;
+        sortMode: z<string, string, "volatile-defined">;
+        charsPerToken: z<number, number, "volatile-defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        windowRatio: z<number, number, "volatile-defined">;
+        retainRatio: z<number, number, "volatile-defined">;
+        maxPasses: z<number, number, "volatile-defined">;
+        recencyGuard: z<number, number, "volatile-defined">;
+        turnGuard: z<number, number, "volatile-defined">;
+        minSpanChars: z<number, number, "volatile-defined">;
+        enableSummarize: z<boolean, boolean, "volatile-defined">;
+        sortMode: z<string, string, "volatile-defined">;
+        charsPerToken: z<number, number, "volatile-defined">;
+    }>>, "plain">;
     static inject: string[];
+    /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
+    private readonly args;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
@@ -253,17 +299,15 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     readonly turnBasis: 'semantic' | 'all';
     /**
-     * UI 设置页可调旋钮的实时解析值（Settings → Plugins → Configurable → ARGP）。
-     * 构造期为 cordis 配置基线；ctx.inject(['settings']) 注册后随用户写入实时更新。
+     * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
+     * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
+     * 读取其引用"）。构造期快照字段 `argpSettings` 随旧 `settings.register` 一并移除。
      */
-    private argpSettings;
-    /** settings 源 thunk：ctx.inject(['settings']) 注册后置为 scope.get()，否则回退 cordis 基线。 */
-    private settingsSource;
     get windowRatio(): number;
     get retainRatio(): number;
     /**
      * 守卫读取点统一走 getter：反应式补救（L2）在第 2 次尝试时用 `guardOverride` 临时
-     * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于 settings 值。
+     * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于设置页值。
      */
     private guardOverride;
     get recencyGuard(): number;
@@ -575,7 +619,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
      * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
      * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
-     * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（不含 pruned by ARGP）
+     * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（non-mergeable 文本）
      * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
      */
     private consolidateTombstones;

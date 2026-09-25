@@ -1211,10 +1211,16 @@ function appendTombstone(session: Session, text: string): void {
 }
 
 test('isMergeableTombstone: only ARGP elided tombstones qualify', () => {
+  // 1.7.1 换判别轴：`[elided `（空格）族可合并 / `[elided:`（冒号）族 = tool 占位不可合并。
+  // 1.7.0 用的自然语言子串 `pruned by ARGP` 随文案统一消失，故判据改为语法级前缀
+  // （实现下沉 src/tombstone-text.ts，与文案生成同文件——两者不再可能各自漂移）。
+  assert.equal(isMergeableTombstone('[elided seq=8..9; recall_pruned(8) for detail]'), true)
+  assert.equal(isMergeableTombstone('[elided closure closure-2 seqs=1..9; root=task one; recall_pruned(1) for detail]'), true)
+  assert.equal(isMergeableTombstone('[elided consolidated ×12 seqs=8..30; recall_pruned(8) for detail]'), true)
+  // 1.7.0 遗留区间墓碑（历史会话：地板压不下去就糟了）仍必须可合并
   assert.equal(isMergeableTombstone('[elided seq=8..9: 2 surface nodes pruned by ARGP (graph order, cites-aware); recall_pruned(seq) retrieves original]'), true)
-  assert.equal(isMergeableTombstone('[elided closure closure-2 seqs=1..9: 5 of 10 surface nodes in this closure pruned by ARGP closure lifecycle; recall_pruned(seq) retrieves original]'), true)
-  assert.equal(isMergeableTombstone('[elided consolidated ×12 seqs=8..30: these placeholder nodes were themselves pruned by ARGP (tombstone-merge, §11.8); originals remain recallable via recall_pruned(seq) / list_pruned]'), true)
-  // tool 占位墓碑（缺 pruned by ARGP）与宿主注入 / 官方 checkpoint 均不合并
+  // tool 占位墓碑（冒号前缀，防孤儿 tool_calls）与宿主注入 / 官方 checkpoint 均不合并
+  assert.equal(isMergeableTombstone('[elided: seq=1049; recall_pruned(1049) for detail]'), false)
   assert.equal(isMergeableTombstone('[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]'), false)
   assert.equal(isMergeableTombstone('<system-reminder>keep me</system-reminder>'), false)
   assert.equal(isMergeableTombstone('user instruction that happens to mention recall_pruned(seq)'), false)

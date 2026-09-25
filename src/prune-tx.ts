@@ -28,18 +28,24 @@ import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn } from './log-a
 import { classifyUserMessage } from './graph-build.js'
 import { visibleChars } from './budget.js'
 import { pushBounded } from './telemetry.js'
+import { consolidatedTombstone, isMergeableTombstoneText, seqRangeTombstone, toolTombstone, toolTombstoneSummary } from './tombstone-text.js'
 
 /**
- * tombstone 可合并判据（v1.2.x §11.8① 修复）。X 原子中仅「本引擎剪枝墓碑」可安全合并：
- * 文本以 `[elided` 开头、含 pruned by ARGP 与 recall_pruned 取回提示（覆盖默认区间
- * 墓碑与 closure 墓碑两种形态；tool 占位墓碑 `[elided: ...` 缺 pruned by ARGP → 不合并，
- * 且 consolidateTombstoneRuns 只认 user/message 事件，双保险防孤儿 tool_calls）。
- * 其余 X（宿主 system-reminder、官方摘要 checkpoint、注入型 checkpoint）不可动。
+ * tombstone 可合并判据（v1.2.x §11.8① 修复；1.7.1 换判别轴）。
+ *
+ * 1.7.0 判据 = `startsWith('[elided') && includes('pruned by ARGP') && includes('recall_pruned')`
+ * —— `pruned by ARGP` 是一段**自然语言**，且被故意作为 tool 占位墓碑的"缺项"来区分两族
+ * （见下方 consolidateTombstones 注释）。1.7.1 文案统一后该子串消失，判据随之失效，
+ * 故换轴为**语法级前缀**（`[elided ` 空格族 = 可合并 / `[elided:` 冒号族 = tool 占位）。
+ * 实现下沉到 `tombstone-text.ts`，与文案生成同处一文件——两者不再可能各自漂移。
+ *
+ * 语义不变：X 原子中仅「本引擎剪枝墓碑」可安全合并。其余 X（宿主 system-reminder、
+ * 官方摘要 checkpoint、注入型 checkpoint）不可动；`consolidateTombstones` 另有一道
+ * **事件类型**过滤（只认 user/message），与文本判据构成双保险，防孤儿 tool_calls。
  * 导出供测试锁定行为。
  */
 export function isMergeableTombstone(text: string): boolean {
-  const t = text.trimStart()
-  return t.startsWith('[elided') && t.includes('pruned by ARGP') && t.includes('recall_pruned')
+  return isMergeableTombstoneText(text)
 }
 
 export interface GraphPruneRecord {
@@ -58,6 +64,38 @@ export interface GraphPruneRecord {
   charsBefore: number
   charsAfter: number
   forced: boolean
+}
+
+/**
+ * F3（1.7.1）：旧 seq → 当前替身 seq（墓碑）的重定向表。
+ *
+ * **病灶**：declarer 写入侧 `collectDeclAtoms` 走 `sessionEvents`（**原始 append-only 日志**），
+ * 已被 replace 离场的旧 seq 仍在 `toBySeq` 校验白名单内（模型引用它**合法**，
+ * `accepted=N, invalid=0`）；而消费侧 `buildInjectEdges` 的 `idBySeq` 建自**当前投影**，
+ * 查表必然 miss ⇒ 边被 `droppedByMissingEndpoint` 丢弃。实测 `session-fceb1ccc`：
+ * 4 条声明边中 2 条 critical（`toSeq=18`）因 18 已墓碑化为 seq=53 而全丢。
+ *
+ * **映射源** = `GraphPruneRecord.intervals`（`prune-tx.ts:282/:300` 写 replace 时逐区间记录
+ * `{start,end,tombstoneSeq}`；`rebuildLedgerFromLog` 亦从 `compaction/end` 重建）。
+ * 同一 seq 多次替换时**后者胜**（取最新替身）；多跳链（墓碑再被墓碑替换）由调用侧迭代解析，
+ * 本函数只给一跳。`start === tombstoneSeq` 的区间跳过（防自映射/自环）。
+ *
+ * ⚠️ **已知限制**：`rebuildLedgerFromLog` 重建的 `intervals` 把一次压缩的所有 seq 压成
+ * **单条** `[first..last] → compaction/end seq`，而 end 是 **off-surface** 事件 ⇒
+ * **resume（跨进程重载）后本表对多区间压缩无效**；同进程内为精确值。
+ */
+export function buildTombstoneRedirect(
+  records: readonly { intervals: readonly { start: number; end: number; tombstoneSeq: number }[] }[],
+): Map<number, number> {
+  const map = new Map<number, number>()
+  for (const rec of records) {
+    for (const iv of rec.intervals) {
+      for (let s = iv.start; s <= iv.end; s += 1) {
+        if (s !== iv.tombstoneSeq) map.set(s, iv.tombstoneSeq)
+      }
+    }
+  }
+  return map
 }
 
 /**
@@ -221,9 +259,7 @@ export function pruneIntervals(
       ? useTombstones
       : useIntervals.map(iv => ({
           type: 'user' as const,
-          text: '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-            + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-            + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]',
+          text: seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number),
         }))
     const intervalRecords: { start: number; end: number; tombstoneSeq: number }[] = []
     let firstPruneSeq: number | undefined
@@ -252,7 +288,9 @@ export function pruneIntervals(
         const origMsg = origData?.message as Record<string, unknown> | undefined
         const origBlock = (origMsg?.content as Array<Record<string, unknown>> | undefined)?.[0]
         if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
-          const elidedText = '[elided: 旧版本结果已压缩；recall_pruned(seq) 找回原值]'
+          // G2（1.7.1）：文案自带**原始 R 的 log seq**（ts.seq 已在手，零额外查询）——
+          // 1.7.0 写着 `recall_pruned(seq)` 却不给 seq，逼模型绕一步 list_pruned 反查。
+          const elidedText = toolTombstone(ts.seq)
           // V4（0.1.7）：role:'tool' 顶层 toolCallId/isError 经展开保留，content 换单 text block；
           // V3（≤0.1.6）：role:'user' 内嵌 tool-result block，只改其 inner text。
           const newContent = origMsg.role === 'tool'
@@ -280,9 +318,7 @@ export function pruneIntervals(
       }
       const text = ts !== undefined && ts.type === 'user'
         ? ts.text
-        : '[elided seq=' + iv.seqs[0] + '..' + iv.seqs[iv.seqs.length - 1]
-          + ': ' + iv.seqs.length + ' surface nodes pruned by ARGP (graph order, cites-aware'
-          + (forced ? ', forced' : '') + '); recall_pruned(seq) retrieves original]'
+        : seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number)
       const tombstone = session.append('user/message', createUserMessage({
         content: [{ type: 'text', text }],
         // checkpoint 的 source.sourceCommandId 必须与 start 一致（宿主 invariant
@@ -331,7 +367,7 @@ export function pruneIntervals(
       summarySeq: asSeq(firstPruneSeq ?? startEvent.seq),
       endSeq: asSeq(endEvent.seq),
       summary: resolvedTombstones.map(ts => ({ type: 'text', text: ts.type === 'tool'
-        ? '[elided tool result; recall_pruned(seq) retrieves original]' : ts.text })),
+        ? toolTombstoneSummary() : ts.text })),
       shadowedRange: { start: asSeq(first), end: asSeq(last) },
       shadowedSeqs: asSeqs(allSeqs),
       shadowedTokenCount,
@@ -356,7 +392,7 @@ export function pruneIntervals(
  * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
  * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
  * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
- * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（不含 pruned by ARGP）
+ * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（non-mergeable 文本）
  * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
  *
  * 原 class 私有方法；this.x → host.x。
@@ -398,10 +434,9 @@ export function consolidateTombstones(host: PruneTxHost, session: Session): numb
   }))
   const chars = tombAtoms.reduce((s, a) => s + a.text.length, 0)
   const interval = { seqs: tombSeqs, chars, atoms: tombAtoms }
-  // 聚合墓碑文本：保持「[elided … pruned by ARGP … recall_pruned」形态（自身可再归并，
-  // 地板随压缩次数收敛到常数；seq 跨度显式保留，被吞聚合的内部 seq 可递归 recall）。
-  const aggText = '[elided consolidated ×' + tombSeqs.length + ' seqs=' + tombSeqs[0] + '..' + tombSeqs[tombSeqs.length - 1]
-    + ': these placeholder nodes were themselves pruned by ARGP (tombstone-merge, §11.8); originals remain recallable via recall_pruned(seq) / list_pruned]'
+  // 聚合墓碑文本：保持「[elided … recall_pruned」形态（自身可再归并，地板随压缩次数
+  // 收敛到常数；seq 跨度显式保留，被吞聚合的内部 seq 可递归 recall）。
+  const aggText = consolidatedTombstone(tombSeqs.length, tombSeqs[0] as number, tombSeqs[tombSeqs.length - 1] as number)
   try {
     pruneIntervals(host, session, [interval], 0, 0, true, [{ type: 'user', text: aggText }], 'tombstone-merge')
   } catch (error: unknown) {

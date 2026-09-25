@@ -68,6 +68,9 @@ export interface PruneState {
  * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
  * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走
  * recencyGuard/turnGuard/citesFailed/A10 结构保护/入度门槛。
+ *
+ * C（B3）起：A10 结构保护多一条**前置放行**——组内 R 全部已立碑 ⇒ 该组已收割完毕，
+ * 保护失去对象，A 照常参剪（详见下方 A10 块注释）。
  */
 export declare function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneState): boolean;
 /** 组候选判定（原 isGroupCandidate 闭包）：组内全部原子均候选。 */
@@ -106,10 +109,16 @@ export declare function mergeIntervals(pruned: Map<number, Atom>, position: Map<
     droppedIntervals: number;
 };
 /**
- * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留）。
+ * 区间 tombstone 生成（原 compactIfNeeded 内 tombstone 段，逐字保留；1.7.1 文案收敛）。
  * 区间原子全部来自同一闭包 → 闭包 tombstone（带 root/计数，recall 消歧）；
  * 单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的 tool_calls）；
- * 否则默认 user 文本墓碑（forced 时标注）。
+ * 否则默认 user 文本墓碑。
+ *
+ * 1.7.1（G2/G3）：文案不再在本函数内拼接，统一走 `tombstone-text.ts` 生成器
+ * （此前区间文案在本函数、`prune-tx` 的两处 fallback 里各存一份，共 3 份拷贝）。
+ * `forced` 保留入参但**不再影响文案**：新文案把"被剪的是什么 / 怎么取回"交给 system
+ * 契约说一次，强制降级的标记随之取消（原 `, forced` 后缀）——它只对诊断有意义，而
+ * `GraphPruneRecord.forced` 已记录该事实。
  */
 export declare function buildTombstones(kept: PruneInterval[], closureSeqMeta: Map<number, {
     closureId: string;

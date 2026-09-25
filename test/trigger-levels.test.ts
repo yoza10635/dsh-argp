@@ -125,6 +125,37 @@ function buildMidSession(id: string): Session {
   return session
 }
 
+/**
+ * L3⑤ 专用：**两级可剪面**会话（turn 1-3 闭合 + turn 4 open）。
+ *
+ * 与 `buildMidSession` 的差别只有一处：tool result 由 19 字符抬到 25 字符（≥ `minSpanChars`
+ * = 20），于是单个 R 也能独立成区间被剪掉。
+ *
+ * 为什么必须这样（1.7.1 文案变更导致的**夹具**失效，不是行为回归）：
+ *  - 1.7.0 的区间墓碑文案长 115 字符（`[elided seq=A..B: N surface nodes pruned by ARGP
+ *    (graph order, cites-aware); recall_pruned(seq) retrieves original]`）。第一次强制剪
+ *    之后，这条长墓碑把**残存可见量重新抬回 retain 目标之上**（`retainTokens` 50 ×
+ *    charsPerToken 3.5 = 175 字符），于是第二次机会"看起来"还有活干。
+ *  - 1.7.1 起区间墓碑缩到 46 字符（G3），第一次强制剪后残存可见量落到 171 字符 < 175 ⇒
+ *    第二次机会**真的无物可剪**，L3③ 的"剪不动就不续写"正确生效 ⇒ 本用例将测不到
+ *    "阶梯按 turn 重置"。
+ *  - 即 1.7.0 能过靠的是长墓碑制造的假压力 —— 正是 G1/G3 要消掉的空转副产物。
+ *  ⇒ 夹具必须留出**真实**的可剪面：抬 tool result 长度，让单个 R 自己就是合法区间。
+ */
+function buildRescueSession(id: string): Session {
+  const session = Session.create(SessionId(id))
+  for (let turn = 1; turn <= 3; turn += 1) {
+    session.append('turn/start', { turn })
+    appendUser(session, turn, 'r' + turn + ': ' + String(turn).repeat(16))
+    appendAssistant(session, turn, 'rc' + turn)
+    appendToolResult(session, turn, 'rc' + turn, 'res' + turn + ' ' + 'z'.repeat(20))
+    appendTurnEnd(session, turn)
+  }
+  session.append('turn/start', { turn: 4 })
+  appendUser(session, 4, 'open4: ' + 'w'.repeat(12))
+  return session
+}
+
 /** 压力**明显达标**的会话（turn 1-2 闭合 + turn 3 open），用于"轮内默认不剪"对照。 */
 function buildPressuredSession(id: string): Session {
   const session = Session.create(SessionId(id))
@@ -481,7 +512,7 @@ test('L3⑤ 阶梯按 turn 重置：新一轮拿到完整续写额度', async ()
   const steers: unknown[] = []
   const { ctx, engine } = await makeForcedEngine({ reactiveRetries: 1 })
   try {
-    const session = buildMidSession('tl-l3-reset')
+    const session = buildRescueSession('tl-l3-reset')
     engine.setSession(session)
     const agent = stubAgent(session, message => steers.push(message))
 

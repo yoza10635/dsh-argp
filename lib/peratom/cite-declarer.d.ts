@@ -198,12 +198,59 @@ export declare class CiteDeclarer {
     /** 边入缓存：同 (from,to) 覆盖（后轮声明刷新 level）；超限按插入序淘汰最旧。 */
     private cacheCites;
     /**
+     * F1（1.7.1）：声明边落盘（**默认关**，env 门控的 JSONL 诊断通道）。
+     *
+     * ## 为什么需要它
+     *
+     * 声明边的唯一出口是进程内存：`edgeCache`（消费端）与 `records`（观测端），而
+     * `records` 只经 `ctx.logger.info('[argp-peratom] …')` 打印，`~/.dsh/logs/*` 只保留
+     * startup 段 ⇒ **声明边事后完全不可取证**。实测后果：本会话"376 条 A 的 R 组全是
+     * 墓碑、A 却剪不掉"只能归因到"A10 判定"这一步，无法区分
+     *   (a) declarer 根本没产边；
+     *   (b) 产了边但 `buildInjectEdges` 因端点离 surface 丢弃；
+     *   (c) 产了边但 `MAX_CACHED_EDGES=512` 的插入序淘汰把老边挤掉。
+     *
+     * 而且 F1 **不只是可观测性**：声明入度（`curInDegreeDecl`）就是 A10 的解锁输入，
+     * 所以"声明边到底存不存在"直接决定 A 能不能被剪。
+     *
+     * ## 契约
+     *
+     * - 门控 `process.env['ARGP_CITES_DUMP']` = 目标文件路径；**未设 ⇒ 立即 return**
+     *   （生产零开销、零落盘）。每次调用读 env（不缓存），运行期可开关、测试无需关心构造时序。
+     * - `appendFileSync` 写单行 JSON，全程 `try/catch` 吞异常——declarer 故障绝不阻断
+     *   建图或会话（与 `buildInjectEdges` 恒返回 `[]` 同一条失败隔离原则）。
+     * - 两种行形态（`kind` 区分）：
+     *   - `cite`：单条声明边（`fromSeq/toSeq/level` + 轮级 `accepted/invalid`）；
+     *   - `cite-none`：该轮**零边**的归因行（`error`/`invalid`/`accepted=0`）——
+     *     区分"门控跳过/中断/解析失败"与"真产了边"的关键证据；
+     *   - `inject`：`buildInjectEdges` 每次建图的摘要（`cacheSize/emitted/dropped*`），
+     *     这是区分"LRU 淘汰"与"端点离 surface 丢弃"的唯一判据。
+     */
+    private dump;
+    /**
+     * F1 落盘：一轮声明的全部边，或在零边时写一条**归因行**。
+     * 零边归因行必须含 `error`（`gate-skipped` / `interrupted-turn` / `parse-failed` /
+     * 网络错误文本）——它是"declarer 没产边"与"产了边但被丢弃"的分界线。
+     */
+    private dumpCites;
+    /**
      * Stage-2 接线点（ArgpGraphEngineConfig.injectEdges 回调）：seq→id 映射。
      * 吞一切异常恒返回 `[]`——declarer 故障绝不阻断建图（plan P2 失败隔离）。
      * 端点已离 surface 的边：buildGraph 的 validIds 校验（atom.id 集合）天然丢弃（优雅降级）。
      * 注意：buildGraph 校验空间是**本次投影内的 atom.id**（局部索引），不是 seq——
      * 故缓存保持 seq 空间，本方法每次建图现映射。
+     *
+     * F1（1.7.1）：每次建图落一条摘要（env 门控，默认关）。字段
+     * `droppedByMissingEndpoint` = **重定向后仍**不在本次投影 atom 集合内而被丢弃的边数
+     * （方案初稿命名为 `droppedByValidIds`，实为 idBySeq 映射阶段丢弃，与 buildGraph 的
+     * validIds 是两回事 ⇒ 改名以免误读）；`cacheSize` 与 `emitted + dropped*` 不等时说明
+     * 存在**插入序淘汰**（判定 LRU 挤老边 vs 端点离场，只能靠这三个数对账）。
+     *
+     * F3（1.7.1）：`redirect` 提供「旧 seq → 当前替身 seq」映射（调用侧由
+     * `buildTombstoneRedirect(records)` 构造，见 `prune-tx.ts`）。**缺省不传 = 保持 1.7.0
+     * 行为**（端点离场即丢）。摘要新增 `redirectedEdges` = **至少一个端点经重定向**才命中的
+     * 边数，它是 `emitted` 的**子集**，**不计入** `emitted + dropped* = cacheSize` 求和式。
      */
-    buildInjectEdges(atoms: Atom[]): SemanticEdge[];
+    buildInjectEdges(atoms: Atom[], redirect?: (seq: number) => number | undefined): SemanticEdge[];
 }
 export {};
