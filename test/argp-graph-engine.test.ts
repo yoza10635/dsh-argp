@@ -1042,6 +1042,70 @@ test('developer/message is classified as X: ledger atom, intentional manual boun
   }
 })
 
+// rc.2 ToolHistoryProjection 守卫（docs/host-rc2-review-2026-09-25.md §2）：
+// 闭包生命周期（selectClosureToMerge）是本引擎**唯一**按 seq 范围整体扫 X 原子的剪枝路径
+// （isAtomCandidate 已排除 X、手动入口显式拒 U/X、per-atom isMaterial 排除 developer/message、
+// consolidateTombstones 只认 user/message）。developer/message（V4 保留类型：tool-addition /
+// tool-removal）若被闭包墓碑化，宿主 projectToolUpdates 的 messageId 匹配失败 ⇒ 整条历史
+// 工具定义投影回退到"当前工具集"（会话中途新增、当前未激活的工具从请求丢失）。
+// 守卫：developer/message 永不进闭包。对照：checkpoint 同为 X，但随闭包退场是有意设计——
+// 本用例同时断言它**仍**在闭包内，证明守卫按**事件类型**精确区分、不过度排除。
+test('closure lifecycle: developer/message excluded from the closure (ToolHistoryProjection guard); checkpoint still retired with it', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('closure-dev-msg-guard-test'))
+    session.append('system/message', {
+      turn: 0,
+      step: 0,
+      message: createSystemMessage('you are a deterministic compaction test agent'),
+    }, { surfaceOp: 'append' })
+    appendUser(session, 'task one')
+    const u1Seq = session.snapshotEvents().length - 1
+    appendAssistant(session, 'A1:' + 'x'.repeat(50), 1)
+    const a1Seq = session.snapshotEvents().length - 1
+    // developer/message（tool-removal 块无需 headerSeq）——须被守卫保护
+    session.append('developer/message', {
+      turn: 1,
+      step: 1,
+      message: createDeveloperMessage({
+        content: [{ type: 'tool-removal', toolName: 'probe-tool' }],
+        source: { kind: 'user' },
+      }),
+    }, { surfaceOp: 'append' })
+    const devSeq = session.snapshotEvents().length - 1
+    // checkpoint（X 类）——对照：仍应随闭包退场
+    appendTombstone(session, 'checkpoint marker')
+    const checkpointSeq = session.snapshotEvents().length - 1
+    appendAssistant(session, 'A2:' + 'y'.repeat(50), 2)
+    const a2Seq = session.snapshotEvents().length - 1
+    appendUser(session, 'task two')
+    const u2Seq = session.snapshotEvents().length - 1
+    appendAssistant(session, 'A3:' + 'z'.repeat(50), 2)
+    engine.setSession(session)
+    const atoms = engine.atomize(session)
+    const { edges, inDegree } = engine.buildGraph(atoms)
+    const closure = (engine as unknown as ClosureSelector).selectClosureToMerge(session, atoms, edges, inDegree, new Map(), 2, new Set<number>())
+    assert.ok(closure !== null, 'a completed PRUNABLE closure must still be selectable')
+    assert.equal(closure.root.seq, u1Seq, 'closure root is the first U (task one)')
+    // 守卫：developer/message 不在闭包 seq 内（不被墓碑化）
+    assert.ok(!closure.seqs.includes(devSeq), 'developer/message must be excluded from the closure (ToolHistoryProjection guard)')
+    // 对照：checkpoint（同为 X）仍在闭包内（随闭包退场是有意设计，守卫不过度排除）
+    assert.ok(closure.seqs.includes(checkpointSeq), 'checkpoint (also X) is still retired with its closure (guard is type-precise, not over-broad)')
+    // 其余原子（A1/A2）仍在闭包内
+    assert.ok(closure.seqs.includes(a1Seq) && closure.seqs.includes(a2Seq), 'A1/A2 remain in the closure')
+    // 闭包在下一个 root U2 前停止
+    assert.ok(!closure.seqs.includes(u2Seq), 'closure stops before the next root U2')
+    // 区间不覆盖 developer/message；developer 节点断开连续段（两侧各成一段）
+    const intervals = closure.intervals as { seqs: number[] }[]
+    for (const iv of intervals) {
+      assert.ok(!iv.seqs.includes(devSeq), 'no interval may cover the developer node')
+    }
+    assert.ok(intervals.some(iv => iv.seqs.includes(checkpointSeq)), 'checkpoint is covered by an interval (retired with the closure)')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
 test('recallQuery: searches pruned content by keywords and records stats', async () => {
   const { ctx, engine } = await makeEngine()
   try {

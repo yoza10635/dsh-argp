@@ -17,7 +17,7 @@
  */
 import type { ParsedCite } from './cites-strip.js'
 
-export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
+export type AtomType = 'U' | 'A' | 'R' | 'X' // X = compact tombstone/checkpoint/developer-message（V4 保留类型：tool-addition/tool-removal）；dsh surface 无 tool/call 节点（call 块内嵌在 A 里，SURFACE_EVENT_TYPES 实测）
 
 export interface Atom {
   id: number            // 本次投影内局部递增

@@ -21,6 +21,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { Atom, AtomType, SemanticEdge, DeterministicEdge } from './argp-types.js'
 import { LEVEL_ORDER } from './argp-types.js'
 import { TOMBSTONE_MAX_CHARS, closureTombstone, isTombstoneText, seqRangeTombstone } from './tombstone-text.js'
+import { sessionEvents } from './log-access.js'
 
 /** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
 export interface PruneInterval {
@@ -375,6 +376,27 @@ export function selectClosureToMerge(
     // dialog/A/R 拖进闭包退休（语义错误）。普通 U（dialog）仍为合法根。
     .sort((a, b) => a.seq - b.seq)
   if (roots.length === 0) return null
+  // rc.2 ToolHistoryProjection 守卫（docs/host-rc2-review-2026-09-25.md §2）：
+  // developer/message（V4 保留类型：tool-addition / tool-removal 块）**永不**被墓碑化。
+  // 病灶：闭包生命周期是本引擎**唯一**按 seq 范围整体扫 X 原子的剪枝路径
+  // （isAtomCandidate 第 91 行已排除 X、手动入口 compactRegion/compactRegions/
+  // selectManualRanges 显式拒 U/X、per-atom isMaterial 排除 developer/message、
+  // consolidateTombstones 只认 user/message）——而本函数把闭包 seq 范围内的**所有**
+  // 原子（含 X）纳入 prunableSeqs，pruneIntervals 的 surfaceOp replace [start..end]
+  // 会连 developer/message 一起替换成墓碑。后果（宿主 projectToolUpdates，
+  // toolUpdate 有值时）：该节点离 surface ⇒ history.updates[].messageId 在投影
+  // messages 里匹配不上 ⇒ 走回退分支剥离**全部** developer 消息、退回当前工具集
+  // ⇒ 会话中途新增、当前未激活的工具从请求丢失 ⇒ 模型可能调用不可用工具。
+  // 修法：developer/message 永不分配进任何闭包（区间构建按 prunableSeqs 走
+  // surfaceSeqs，未入选的 seq 天然断开连续段 ⇒ 它留在 surface、两侧各成一段）。
+  // ⚠️ 按**事件类型**而非 AtomType 区分：checkpoint 同为 X，但它随闭包退场是
+  // 有意设计（prune-tx compactRegion 注释），不可一并排除。
+  const events = sessionEvents(session)
+  const devMessageSeqs = new Set<number>()
+  for (const a of atoms) {
+    const ev = events[a.seq]
+    if (a.type === 'X' && ev !== undefined && ev.type === 'developer/message') devMessageSeqs.add(a.seq)
+  }
   const closureOf = new Map<number, string>()
   const rootByClosure = new Map<string, Atom>()
   for (let i = 0; i < roots.length; i += 1) {
@@ -384,6 +406,7 @@ export function selectClosureToMerge(
     rootByClosure.set(id, root)
     for (const a of atoms) {
       if (a.type === 'U' && a.id !== root.id) continue
+      if (devMessageSeqs.has(a.seq)) continue
       if (a.seq >= root.seq && (nextRoot === undefined || a.seq < nextRoot.seq)) {
         closureOf.set(a.id, id)
       }
