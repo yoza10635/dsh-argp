@@ -4,6 +4,30 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.9.0] - 2026-09-29（极简 preset 保留原生态：skipPresets）
+
+> **发行说明**：本版新增 `skipPresets` 配置——在列出的 agent preset 下 ARGP **不生效**（不剪枝/不压缩），会话历史保持原生态。默认 `['minimal']`：极简 preset 本身无 compaction 组，本插件在其下不介入，与「未安装 dsh-argp」的原生行为一致。
+
+### 背景
+
+dsh-argp 的 `ArgpGraphEngine` 注册为宿主的 `compaction` 服务，对**所有**会话生效——包括「极简（minimal）」preset。但 minimal preset 的设计意图是**最简、原生态**（无 compaction 组、无 ARGP 介入）。此前 ARGP 会在 minimal 会话上照常剪枝/压缩，与该 preset 的原生态意图相悖。本版让 ARGP 在 minimal 下退场，把压缩决策完全交回宿主原生行为。
+
+### Added
+
+- **`skipPresets` 配置（默认 `['minimal']`）**：在这些 agent preset 下 ARGP 不生效——`compactIfNeeded`（轮初压力 / 上下文溢出 / 反应式三条自动路径）与手动 `/compact` 的 `compactNow` 均直接返回 `null`：不剪枝、不压缩、不产生事务。判定按**会话实际运行的 preset**（session projection `agentPreset`，可被 `agent-preset/selected` 事件切换）；无 preset 信息的会话（headless/CLI profile 无 preset registry）不受影响。设为 `[]` 关闭该行为（所有 preset 下都生效）。
+- **`test/argp-graph-engine.test.ts`：+4 例回归**——minimal 不剪 / standard 照常剪 / `skipPresets:[]` 时 minimal 也剪 / 无 preset 信息照常剪。摘掉任一闸门必变红（mutation 验证）。
+
+### 实现要点
+
+- 读取 `agentPreset` 经 `ctx.get('sessionProjections')`（reflect 层「无需 inject」的读法）——直接属性访问 `ctx.sessionProjections` 会抛 `cannot get property … without inject`（本插件 `static inject` 只声明 `tools`/`systemPrompt`）。`sessionProjections` 是 dsh-base 核心服务（恒在）；`agentPreset` projection key 由 web-app 的 `agent-preset-registry` 注册，dsh-argp **不依赖**该包，故经结构类型窄接口读取，服务缺失时安全降级为「不跳过」。
+- **零新增 peer/dep**：宿主 peer 契约（`^0.2.0-rc.1` 等）不变，准入预检行为与 1.8.0 完全一致。
+
+### 提示
+
+- **测试**：全量 **405 例**通过（含新增 4 例）。
+- **宿主**：仍要求 `0.2.0-rc.1`+（peer 不变）。
+- **生效方式**：需发布并重装 dsh-argp（`dsh plugin --profile <name> add dsh-argp@1.9.0`）；已装 1.8.0 的 profile 升级到 1.9.0 后，minimal 会话即恢复原生态。
+
 ## [1.8.0] - 2026-09-29（宿主 0.2.0-rc.1 对齐 + shadow-price 口径统一 + 剪枝选择索引化）
 
 > **发行说明（汇总版）**：本版汇总两批改动——已发布但未 promote 的 **1.8.0-beta.0**（A10 结构保护放行 + 组内 R 全立碑整组退场，解除压缩率上限）与**本轮 0.2.0-rc.1 对齐批**。**代码适配量为 0 行**（0.2.0-rc.1 对 argp 的全部运行时增量只有 `dsh-session` 的 repair 重构；`compaction`/`llm`/`agent`/`tools` 四包 lib 零差异），但**宿主基线上移本身是破坏性的**：`1.7.0` 用户在 `0.1.7` 宿主上会被准入预检静默跳过。

@@ -71,6 +71,20 @@ per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫�
 dsh plugin --profile <name> add dsh-argp
 ```
 
+> **⚠️ 新版发布后 24 小时内安装，请显式指定版本。** pnpm 11 起 `minimumReleaseAge` 默认为 **1440 分钟（24h）**：刚发布的版本会被跳过，pnpm **静默回落到上一个已过冷却期的旧版本**——不报错，只是装错版本。dsh-argp 每次发新版后，旧版本的 peerDeps 往往已不匹配当前宿主，于是宿主抛 `Plugin dsh-argp@<旧版本> is incompatible with dsh <宿主版本>`。**报错里的版本号比 npm `latest` 旧，就是撞上了这个冷却期**（与本仓库/镜像无关：npmmirror 与 npmjs 的 `dist-tags` 一致）。
+>
+> 两种解法（推荐前者，粒度最小）：
+>
+> ```bash
+> dsh plugin --profile <name> add dsh-argp@<最新版本>   # ① 显式钉版本，绕过冷却期
+> ```
+>
+> ```yaml
+> # ② 在 profile 的 pnpm-workspace.yaml 里豁免本包（长期有效，其余包仍受冷却期保护）
+> minimumReleaseAgeExclude:
+>   - dsh-argp
+> ```
+
 profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 
 ```yaml
@@ -79,6 +93,8 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 ```
 
 > 挂载由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
+
+> **极简（minimal）preset 下不生效（1.9.0 起）**：ARGP 在 `skipPresets` 列出的 preset 下退场——默认 `['minimal']`，即极简 preset 的会话**不剪枝、不压缩**，历史保持原生态（与未安装本插件一致）。判定按会话实际运行的 preset（可被 preset 切换事件改变）；无 preset 信息的会话（headless/CLI）不受影响。要让 ARGP 在 minimal 下也生效，在 profile 层 modify 加 `config: { skipPresets: [] }`。
 
 ### 启用 Stage-1（双引擎）
 

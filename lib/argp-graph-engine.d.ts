@@ -140,6 +140,15 @@ export interface ArgpGraphConfig {
      * exceed_context_size → 恢复步 → retry」消耗 1 次；超限后保留原始请求错误。
      */
     maxOverflowRetries?: number;
+    /**
+     * 在这些 agent preset 下**不生效**（不剪枝/不压缩，会话历史保持原生态）的 preset id 列表。
+     * 默认 `['minimal']`：极简 preset 本身无 compaction 组，本插件在其下不介入，
+     * 与"未安装 dsh-argp"的原生行为一致。判定按**会话实际运行的 preset**
+     * （session projection `agentPreset`，可被 `agent-preset/selected` 事件切换）；
+     * 无 preset 信息的会话（如 headless/CLI profile 无 preset registry）不受影响。
+     * 设为 `[]` 关闭该行为（所有 preset 下都生效）。
+     */
+    skipPresets?: string[];
     /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
     closureWindowK?: number;
     /** cites 前缀最小长度守卫（A2，默认 2）：前缀字符数低于该值直接判失败，避免"的/a"等噪音伪引用。 */
@@ -298,6 +307,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     };
     readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
     readonly turnBasis: 'semantic' | 'all';
+    /** 在这些 preset 下不生效的 preset id 列表（构造期定，默认 ['minimal']）。 */
+    private readonly skipPresets;
+    /** 已就"跳过"记过日志的会话（每会话只记一次，避免 pre-step 每步刷屏）。 */
+    private readonly skipLogged;
     /**
      * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
      * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
@@ -666,6 +679,25 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 两者共用同一个 episode 计数器（`reactiveRescues`），故连续被钳会逐级放宽守卫而不是各自从头开始。
      */
     private runReactivePrune;
+    /**
+     * 会话当前运行的 agent preset id（从 session projection 读取）。
+     *
+     * 返回：
+     *  - `undefined`：本 profile 无 agent-preset-registry（无 preset 概念，如 headless/CLI）
+     *    → 不跳过（按现状工作）。
+     *  - `null`：registry 在，但会话头未记录 preset（非 preset 流程创建）→ 不跳过。
+     *  - 字符串：会话实际运行的 preset id（可被 `agent-preset/selected` 事件切换）。
+     *
+     * `sessionProjections` 是 dsh-base 的核心服务（恒在），但 `agentPreset` 这个
+     * projection key 由 web-app 的 agent-preset-registry 注册——dsh-argp 不依赖该包，
+     * 故经结构类型窄接口读取（避免新增 peer/dep），服务缺失时安全降级为 undefined。
+     */
+    private activePresetOf;
+    /**
+     * 会话是否运行在 skipPresets 列出的 preset 下（= ARGP 不生效，保留原生态）。
+     * 无 preset 信息（undefined/null）时不跳过。命中时记一次日志（每会话一次）。
+     */
+    private skipIfPreset;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;

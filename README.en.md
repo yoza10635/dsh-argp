@@ -72,6 +72,20 @@ Install from npm. **npm default = 0-LLM graph eviction (Stage-2 only)**: the pac
 dsh plugin --profile <name> add dsh-argp
 ```
 
+> **⚠️ Installing within 24 hours of a release: pin the version explicitly.** Since pnpm 11, `minimumReleaseAge` defaults to **1440 minutes (24h)**: a just-published version is skipped and pnpm **silently falls back to the newest version past the cooldown** — no error, just the wrong version installed. After each dsh-argp release the older version's peerDeps usually no longer match the current host, so the host reports `Plugin dsh-argp@<older version> is incompatible with dsh <host version>`. **A version number in that error older than npm `latest` means you hit this cooldown** (unrelated to this repo or any mirror: npmmirror and npmjs agree on `dist-tags`).
+>
+> Two remedies (the first is narrowest):
+>
+> ```bash
+> dsh plugin --profile <name> add dsh-argp@<latest version>   # ① pin the version, bypassing the cooldown
+> ```
+>
+> ```yaml
+> # ② exempt this package in the profile's pnpm-workspace.yaml (durable; other packages stay protected)
+> minimumReleaseAgeExclude:
+>   - dsh-argp
+> ```
+
 Disable the stock summarizer in the profile's `cordis.patch.yml`:
 
 ```yaml
@@ -80,6 +94,8 @@ Disable the stock summarizer in the profile's `cordis.patch.yml`:
 ```
 
 > Mounting is handled by the package's own bundle patch (`cordis.patch.yml`) (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
+
+> **Inert under the minimal preset (since 1.9.0)**: ARGP stands down under the presets listed in `skipPresets` — by default `['minimal']`, so sessions running the minimal preset are **not pruned or compacted** and their history stays pristine (as if this plugin were not installed). The decision follows the preset a session actually runs under (changeable via the preset-switch event); sessions with no preset info (headless/CLI) are unaffected. To make ARGP active under minimal too, add `config: { skipPresets: [] }` via `modify` in the profile layer.
 
 ### Enabling Stage-1 (two-engine)
 

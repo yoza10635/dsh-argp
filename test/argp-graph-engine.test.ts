@@ -5,6 +5,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createDeveloperMessage, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
+import z from '@deepseek-ai/schemastery'
 import { asSeq, asSeqs, logRowType } from '../src/log-access.ts'
 import { ArgpGraphEngine, EDGE_WEIGHTS, buildTombstones, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
@@ -200,6 +201,108 @@ test('compactIfNeeded: prunes old A nodes, never U, and records one transaction'
     for (const a of record.prunedAtoms) {
       assert.equal(engine.recall(a.seq) !== null, true)
     }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+/**
+ * skipPresets（极简 preset 保留原生态）回归测试。
+ *
+ * 提供最小 `sessionProjections` 桩（dsh-base 的核心服务；`agentPreset` projection
+ * key 由 web-app 的 agent-preset-registry 注册，dsh-argp 不依赖它，故经结构类型读取）。
+ * `stateOf(session, 'agentPreset')` 返回 presetId：
+ *  - 'minimal'（在默认 skipPresets 内）→ compactIfNeeded 不剪枝（null，无事务记录）；
+ *  - 'standard'（不在内）→ 正常剪枝（records 1 条）；
+ *  - skipPresets: [] 时 'minimal' 也剪枝（配置覆盖生效）。
+ * 桩缺失（无 preset 信息）→ 剪枝照常（headless/CLI 不受影响）。
+ */
+async function makeEngineWithPreset(
+  presetId: string | null,
+  config: Record<string, unknown> = {},
+): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
+  const ctx = new Context()
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp 0-llm test persona' } })
+  if (presetId !== null) {
+    // 在 testkit 已挂载的真实 SessionProjectionRegistry 上注册一个最小 agentPreset
+    // projection：init 恒返回 presetId（忽略 header），使 stateOf(session,'agentPreset')
+    // 返回它。stateOf 路径不校验 stateSchema（仅 client view 路径校验），故用最小
+    // z.string() 占位即可。
+    const def = {
+      key: 'agentPreset',
+      stateSchema: z.string(),
+      init: () => presetId,
+      apply: (state: string | null) => state,
+      wire: { viewSchema: z.string(), view: (s: string | null) => s },
+      stateVersion: 1,
+    }
+    // 结构类型窄接口：session-projection 包的 Context 增强不在本测试程序内，
+    // 根 ctx 上属性访问可用（"without inject" 限制只作用于插件的 scoped ctx）。
+    const projections = (ctx as unknown as {
+      sessionProjections: { register: (def: unknown) => () => void }
+    }).sessionProjections
+    projections.register(def as never)
+  }
+  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
+  return { ctx, engine: ctx.compaction as ArgpGraphEngine }
+}
+
+function overThresholdSession(id: string): Session {
+  const session = Session.create(SessionId(id))
+  appendUser(session, 'user anchor')
+  appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+  appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+  appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+  return session
+}
+
+test('skipPresets: minimal preset keeps stock behavior (no compaction)', async () => {
+  const { ctx, engine } = await makeEngineWithPreset('minimal')
+  try {
+    const session = overThresholdSession('skip-minimal')
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.equal(result, null)
+    assert.equal(engine.records.length, 0)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('skipPresets: standard preset still compacts', async () => {
+  const { ctx, engine } = await makeEngineWithPreset('standard')
+  try {
+    const session = overThresholdSession('skip-standard')
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('skipPresets: empty list compacts even under minimal', async () => {
+  const { ctx, engine } = await makeEngineWithPreset('minimal', { skipPresets: [] })
+  try {
+    const session = overThresholdSession('skip-empty')
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('skipPresets: no preset info (no sessionProjections) compacts as before', async () => {
+  const { ctx, engine } = await makeEngineWithPreset(null)
+  try {
+    const session = overThresholdSession('skip-none')
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null)
+    assert.equal(engine.records.length, 1)
   } finally {
     await ctx.fiber.dispose()
   }
