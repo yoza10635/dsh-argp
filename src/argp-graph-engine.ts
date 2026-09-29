@@ -51,8 +51,8 @@ export { scaleBudgets } from './budget.js'
 import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
 // 剪枝选择模块（P5 Wave 3 第 4 步）：isAtomCandidate/isGroupCandidate/sortKey/
 // mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
-import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
-export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones } from './prune-selection.js'
+import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, buildPruneIndexes, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
+export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, buildPruneIndexes } from './prune-selection.js'
 export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
 // 剪枝事务模块（P5 Wave 3 第 4 步）：pruneIntervals/consolidateTombstones/
 // compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
@@ -1447,6 +1447,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       lastRef,
       charsPerToken: this.charsPerToken,
       aGroupChars,
+      // 1.8.0 审计 P2-2：边/原子索引每次 compactIfNeeded 建一次（O(A+E)），pass 循环内 O(1) 查。
+      ...buildPruneIndexes(edges, deterministicEdges, atoms),
     }
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false, pruneState)).length
     const pruned = new Map<number, Atom>()
@@ -1610,8 +1612,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (kept.length === 0) return null
     for (const iv of kept) {
       for (const a of iv.atoms) {
-        const citedBySeq = edges
-          .filter(e => e.to === a.id)
+        // 1.8.0 审计 P2-2：复用 pruneState 入边索引（per-atom O(E) → O(1)）；
+        // 索引按原数组顺序构建，命中边集与原 `edges.filter(e => e.to === a.id)` 完全一致。
+        const citedBySeq = (pruneState.incomingEdges.get(a.id) ?? [])
           .map(e => atoms[e.from]?.seq)
           .filter((x): x is number => x !== undefined)
         const firstLine = a.text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''

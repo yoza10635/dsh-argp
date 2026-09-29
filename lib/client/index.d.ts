@@ -61,12 +61,12 @@ interface ArgpClientContext {
  * they are composed before `apply` runs — the card's copy registers correctly
  * and `ctx.get('locale')` returns the service instead of undefined.
  *
- * `settingsScope` is deliberately NOT named here: a host without the plugin
- * configuration page would otherwise refuse to mount the whole bundle, which
- * would also drop the assistant-display marker filter below. The card instead
- * nests `ctx.inject(['settingsScope'], ...)` (see dsh-market's own card), so on
- * such a host the card simply never appears and the rest of this bundle keeps
- * working.
+ * `configForms` is deliberately NOT named here (it replaced the `settingsScope`
+ * service removed in 0.1.7 #4587): a host without the plugin configuration
+ * page would otherwise refuse to mount the whole bundle, which would also drop
+ * the assistant-display marker filter below. The card instead nests
+ * `ctx.inject(['configForms', 'locale', 'slots'], ...)`, so on such a host the
+ * card simply never appears and the rest of this bundle keeps working.
  */
 export declare const inject: string[];
 export declare function apply(ctx: ArgpClientContext): void;

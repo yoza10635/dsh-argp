@@ -4,6 +4,47 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.8.0] - 2026-09-29（宿主 0.2.0-rc.1 对齐 + shadow-price 口径统一 + 剪枝选择索引化）
+
+> **发行说明（汇总版）**：本版汇总两批改动——已发布但未 promote 的 **1.8.0-beta.0**（A10 结构保护放行 + 组内 R 全立碑整组退场，解除压缩率上限）与**本轮 0.2.0-rc.1 对齐批**。**代码适配量为 0 行**（0.2.0-rc.1 对 argp 的全部运行时增量只有 `dsh-session` 的 repair 重构；`compaction`/`llm`/`agent`/`tools` 四包 lib 零差异），但**宿主基线上移本身是破坏性的**：`1.7.0` 用户在 `0.1.7` 宿主上会被准入预检静默跳过。
+
+### 升级指引
+
+- **npm `latest` 由 `1.7.0` 进入 `1.8.0`**——`1.8.0-beta.0` 的内容并入本版，beta 号不再单独存在。
+- **本版要求宿主 `0.2.0-rc.1`**：peer 范围 `^0.2.0-rc.1` 按 semver 预发布规则**含** `0.2.0` 正式版及全部 `0.2.x`、**不含** `0.1.7-*` 全套。**仍在 `0.1.7` 宿主上的部署不要升到 1.8.0**：宿主自 **0.1.7-rc.1** 起有 boot 期 bundle 准入预检（`packages/boot/app-boot/src/plugin-compatibility.ts` 的 `evaluatePluginCompatibility`），peer 不满足且未豁免时该 profile bundle 在 **patch 层被静默跳过**（仅在 stderr 打一行 `skipping profile bundle`）⇒ **压缩无声失效**（无报错、无告警、无 UI 提示）。`npm run doctor` 可独立探测该判定。
+- **需留在 `0.1.7` 宿主**请用 `dsh-argp@1.7.0`。
+- **会话格式零变化**：`session-format*` 六个包在本区间**只有版本号变动**，**无 v4→v5**；`Session.append` 对 `compaction/*` 的**写入侧校验仍未加**（三条宿主契约照旧由 argp 侧自守，见 1.7.0 节的 Fixed ①②③）。
+- **无需重建会话**：本版不改变墓碑文案的**可识别性**（1.7.0 的旧文案仍可识别与归并），老会话继续压缩即可。
+
+### Changed
+
+- **依赖 bump `0.1.7-alpha.2 → 0.2.0-rc.1`**：6 个 `peerDependencies`（agent / commands / compaction / llm / session / tools）+ 21 个 `devDependencies` 全对齐；`cordis ^4.0.2` / `schemastery ^3.18.1` 不动。**类型层零迁移**——实测 `npm run typecheck` 0 错误（对照 0.1.6→0.1.7 那次的 18 处）。
+- **文档基线修正**：`ARCHITECTURE.md` §6.1 与 `SECURITY.md` 的宿主支持基线由 `0.1.6-alpha.1` 修正为 `0.1.7-alpha.2`（补 1.7.0 批的文档欠账）。
+
+### 优化
+
+- **constants: 新增 `HOST_CHARS_PER_TOKEN = 4` 与 `shadowedTokensOf(chars)`**，作为 `shadowedTokenCount`（宿主契约字段）的**唯一定价点**；全部发射点禁止各自裸写除数。
+- **prune-selection: 新增 `buildPruneIndexes()`**——每次 `compactIfNeeded` 建一次边/原子索引（`incomingEdges` / `outgoingEdges` / `incomingDetEdges` / `rsByCallId`，O(A+E)），把 `isAtomCandidate` 的 per-atom `edges.filter`（O(E)）、A10 块的两个 `.some`（O(E)/O(DE)）与组内找 R 的 `atoms.filter`（O(R)）全部降为 O(1)。索引按原数组顺序 push ⇒ 命中集合与原线性扫描**逐字等价**。
+- **prune-selection: `mergeIntervals` 的 O(n²) → O(n)**——`seq→atom` 索引提到循环外建一次（旧实现每轮迭代全表 `find`）。实测 8000 原子单次压缩 **126ms → ~1ms**。
+- **argp-graph-engine / spike47: 同步复用入边索引**——`citedBySeq` 由 `edges.filter` 改查 `pruneState.incomingEdges`；两处 `pruneState` 构造点（引擎 + gate-replay）与测试 `makeState` 统一走 `buildPruneIndexes`（单一事实源）。
+
+### 修复
+
+- **shadow-price 口径统一（P0，账目一致性）**：1.8.0 前**三处发射器三种口径**在同一条 shadow-price fold 流上记两本账——peratom 整窗 `summary` 用硬编码 `/3.5`、peratom per-atom `prune` 用 `/4`、`prune-tx` 的 summary/prune 用**旋钮** `host.charsPerToken`（可被用户改成任意值）。三处现统一经 `shadowedTokensOf`（`/4` = 宿主 `dsh-token-meter` 的 `CHARS_PER_TOKEN`）。漂移后果是宿主 running total 与 WebUI 每笔剪枝显示**系统性偏移**（非协议违约——invariant 只查非负整数，故此前长期未被发现）。`prune-tx` summary 文案里的「约 N tok」显示同源修正。
+- **tombstone-text: 文案长度注释与实测对齐**——区间 115 → 46、单节点 43、tool 占位 42 → 44（均 **1 位 seq 基准**，随位数增长）；补「2 位 seq 区间 = 49、4 位 tool 占位 = 50」对照，替代 1.8.0 前「42 → 50」的单值口径。
+
+### Added
+
+- **`test/tool-call-recovery.test.ts`（宿主契约回归锁）**：0.2.0-rc.1 把 `tool/result` 的消账条件从「按 callId 无条件消账」收紧为「必须 `surfaceOp === 'append'` 且 turn/step 相等」（宿主写死为 `repair.spec.ts` 的 `does NOT synthesize a result for a tool-call that already has one`），而 argp 的 per-atom 压缩副本正是 **replace** 形态 ⇒ 显式锁住。两例均跑宿主**真实** `interruptedTurnClosers`：① argp 真实产物形态（原始 append 应答在日志 + replace 压缩副本）⇒ 补结果数 = **0**；② 判别力对照（同一条日志，**唯一变量**＝把该 tool/result 的 `surfaceOp` 由 `append` 改成 `replace`）⇒ 立刻补 **1** 条。
+- **`test/compaction-prune-017.test.ts` 口径锁定测试（+64 行）**：对 `shadowedTokensOf` 与真实发射路径双重验锁——摘掉任一发射点的该函数调用**必须变红**。
+
+### 提示
+
+- **测试**：全量 **401 例**通过。
+- **准入判据**：`npm run doctor --dsh-version 0.2.0-rc.1` → **exit 0**（1.8.0-beta.0 时为 exit 1、6 个 peer 全 FAIL）。
+- **本版含 beta.0 的剪枝语义变更**（A10 结构保护放行 + 组内 R 全立碑整组退场）：老会话可直接受益，无需重建；如需回退旧行为请用 `1.7.0`。
+- **宿主侧语义变更（已判定不伤 argp）**：`dsh-session/repair.ts` 重构 + 新增 `ToolCallRecovery`；同时新增**失败步恢复**——宿主自行给未应答的 tool-call 补 `TOOL_OUTCOME_UNKNOWN` / `TOOL_NOT_STARTED` 结果。若你在 argp 侧或部署脚本里有针对「步抛异常 ⇒ 悬空 tool-call ⇒ provider 400」的**自建兜底，可以删**。
+
 ## [1.8.0-beta.0] - 2026-09-25
 
 > **发行说明（汇总版）**：本版汇总两批改动——未发布的 **1.7.1** 批与 **C 批（A10 结构保护放行 + 整组退场）**。C 是本版唯一改变剪枝语义的机制改动：带 tool-call 的 A 类原子，在其应答组 R 全部立碑后不再永久受保护。
@@ -17,7 +58,7 @@
 
 - prune-selection: A10 结构保护加前置放行——组内 R 已全部立碑时该组失去保护对象，A 恢复可剪，解除压缩率上限
 - prune-selection: 组内 R 全立碑的候选组整组退场，区块边界回退避免把 A 与其 R 拆开
-- prune-tx: 墓碑文案去冗，区间墓碑 115 → 46 字符，tool 占位墓碑 42 → 50 字符
+- prune-tx: 墓碑文案去冗，区间墓碑 115 → 46 字符，tool 占位墓碑 42 → 44 字符（均 1 位 seq 基准、随位数增长；4 位 tool 占位 = 50）
 - prune-tx: 墓碑文案与识别判据合并到新叶模块 `tombstone-text.ts`，不再手工同步 9 处
 - settings: 设置页旋钮迁移到宿主 live config，改动不再需要重挂插件
 - docs: README 的 tombstone 召回限制改写为当前现状

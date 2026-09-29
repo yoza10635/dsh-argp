@@ -63,7 +63,29 @@ export interface PruneState {
     charsPerToken: number;
     /** 1.5.1：A 原子有效体积（字符）= 自身文本 + 其应答 R 之和（drag 集合）。仅带 tool-call 的 A 有值。 */
     aGroupChars: Map<number, number>;
+    /** 每次调用索引：atom id → 入向语义边（替代 isAtomCandidate 的 per-atom `edges.filter`，O(E)→O(1)）。 */
+    incomingEdges: Map<number, SemanticEdge[]>;
+    /** 每次调用索引：atom id → 出向语义边（A10 的 aCitesR 判定用）。 */
+    outgoingEdges: Map<number, SemanticEdge[]>;
+    /** 每次调用索引：atom id → 入向确定性边（A10 的 R 外部入边判定用）。 */
+    incomingDetEdges: Map<number, DeterministicEdge[]>;
+    /** 每次调用索引：R 的首个 toolCallId（undefined → ''）→ R 原子（替代 per-A 的 `atoms.filter` O(R) 扫描）。 */
+    rsByCallId: Map<string, Atom[]>;
 }
+/**
+ * 每次 compactIfNeeded 调用构建一次的边/原子索引（O(A+E) 建一次，pass 循环内 O(1) 查）。
+ *
+ * 病灶（1.8.0 审计 P2-2）：isAtomCandidate 每原子每 pass 做 `edges.filter(e => e.to === a.id)`
+ * （O(E)）+ A10 块两个 `.some`（O(E)/O(DE)）+ `atoms.filter` 找组内 R（O(R)）⇒ pass 循环
+ * 整体 O(A×E)，万原子会话单次压缩进秒级（mergeIntervals 的 O(n²) 之外更大的头）。
+ * edges / deterministicEdges / atoms 在一次 compactIfNeeded 内**静态**（仅 curInDegree 每 pass
+ * 重推），故索引在 pruneState 构造点建一次即全程有效。
+ *
+ * 语义逐字等价：索引按原数组顺序 push（filter/some 的判定与顺序无关），命中集合与
+ * 原线性扫描完全一致。构造点：`argp-graph-engine.ts` pruneState 字面量 + 测试 makeState +
+ * spike/47-gate-replay（三处均调本函数，单一事实源）。
+ */
+export declare function buildPruneIndexes(edges: SemanticEdge[], deterministicEdges: DeterministicEdge[], atoms: Atom[]): Pick<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId'>;
 /**
  * 单原子剪枝候选判定（原 compactIfNeeded 内 isAtomCandidate 闭包，逐字保留 this.x→state.x）。
  * ask-exempt U（dialog）须被首个 A 的 supporting 边覆盖才参剪；A/R/U-info 走

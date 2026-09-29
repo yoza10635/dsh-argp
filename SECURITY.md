@@ -26,7 +26,7 @@ dsh-argp 是个人维护的开源项目（上下文压缩插件，运行在 [Dee
 
 - 压缩引擎（`src/argp-graph-engine.ts`、`src/peratom/*`）：闭包生命周期、反向拓扑摘除、cites 引用边
 - recall 子系统（`src/recall.ts`、`src/recall-tools.ts`、`src/peratom/recall-zoom.ts`）：pruned/shadowed 节点召回
-- session 事件读取（`src/log-access.ts` 的 `sessionEvents()`）：宿主基线 0.1.6-alpha.1
+- session 事件读取（`src/log-access.ts` 的 `sessionEvents()`）：宿主基线 0.1.7-alpha.2
 - 声明式挂载（`client.js`、profile 注入）
 
 ## 范围外（Out of scope）

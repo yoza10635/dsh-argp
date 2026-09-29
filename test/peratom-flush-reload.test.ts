@@ -43,6 +43,7 @@ import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 // foldSurface）都不覆盖 shadow-price，故 peratom 路径此前对 P0-A 全盲。
 import { foldSurfaceProjection as _foldSurfaceProjection } from '../node_modules/@deepseek-ai/dsh-token-meter/lib/types/surface-projection.js'
 import { PeratomCompressor } from '../src/peratom/compressor.ts'
+import { shadowedTokensOf } from '../src/constants.ts'
 import { flushEntry } from '../src/peratom/flush.ts'
 import type { FlushHost } from '../src/peratom/flush.ts'
 import type { CompressDecision, CompressRecord, CurrentTurnCollect } from '../src/peratom/compressor-types.ts'
@@ -248,6 +249,22 @@ test('① 单测：flushEntry 先 summary 后 replace，shadowedSeqs = 发出时
   // 断言 E：shadowedRange 首尾 = shadowedSeqs 首尾（validateShadowedSeqs 判据 2）。
   assert.equal(summary.data.shadowedRange.start, summary.data.shadowedSeqs[0], 'shadowedRange.start === shadowedSeqs[0]')
   assert.equal(summary.data.shadowedRange.end, summary.data.shadowedSeqs[summary.data.shadowedSeqs.length - 1], 'shadowedRange.end === shadowedSeqs.at(-1)')
+  // 断言 F（1.8.0 审计 P2-1 口径锁）：shadowedTokenCount 一律宿主 CHARS_PER_TOKEN=4 口径。
+  // 1.8.0 前：整窗 summary 硬编码 /3.5（注释自己写着 "/4=宿主口径"，注释与代码打架）、
+  // per-atom prune /4——同一条 fold 流上两本账。摘掉任一发射点的 shadowedTokensOf 必须变红。
+  const summaryData = summary.data as unknown as { shadowedTokenCount: number }
+  assert.equal(summaryData.shadowedTokenCount, shadowedTokensOf(LONG_USER.length + TOOL_TEXT.length),
+    'summary shadowedTokenCount = ceil(整窗材料原子原文字符和 / 4)')
+  const pruneEvents = events.slice(startIdx + 1, endIdx).filter(e => e.type === 'compaction/prune')
+  assert.equal(pruneEvents.length, 2, 'user-long + tool-result 各发一条 per-atom prune')
+  for (const pe of pruneEvents) {
+    const pd = pe.data as { shadowedSeqs: number[]; shadowedTokenCount: number }
+    const seq = pd.shadowedSeqs[0]
+    const expectedChars = seq === uSeq ? LONG_USER.length : seq === rSeq ? TOOL_TEXT.length : 0
+    assert.ok(expectedChars > 0, 'per-atom prune 必须针对当轮材料原子')
+    assert.equal(pd.shadowedTokenCount, shadowedTokensOf(expectedChars),
+      `per-atom prune (seq ${seq}) shadowedTokenCount = ceil(原文 ${expectedChars} 字符 / 4)`)
+  }
 })
 
 test('①b 单测：窗口非当前 surface 有效 span ⇒ flushEntry throw 且落带 error 的 end（不发坏 summary）', () => {

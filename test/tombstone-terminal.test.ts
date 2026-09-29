@@ -22,7 +22,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpGraphEngine, eventText, isMergeableTombstone } from '../src/argp-graph-engine.ts'
-import { isAtomCandidate, type PruneState } from '../src/prune-selection.ts'
+import { isAtomCandidate, buildPruneIndexes, type PruneState } from '../src/prune-selection.ts'
 import {
   CLOSURE_ROOT_PREVIEW_MAX_CHARS,
   TOMBSTONE_MAX_CHARS,
@@ -93,7 +93,10 @@ function makeAtom(over: Partial<Atom> & Pick<Atom, 'seq' | 'type' | 'text'>): At
 
 /** 最小 PruneState：默认所有守卫都放行，只让被测的那道闸起作用。 */
 function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
-  return {
+  // 1.8.0 审计 P2-2：索引字段从 over 拆出——Partial 会把必需的 4 个索引字段放宽成 | undefined，
+  // 使 base 无法标注为 PruneState；索引在 return 处从**合并后**的 edges/deterministicEdges/atoms 重建。
+  const { incomingEdges: _ie, outgoingEdges: _oe, incomingDetEdges: _ide, rsByCallId: _rbc, ...rest } = over
+  const base: Omit<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId'> = {
     turnGuard: 1,
     askCoverage: new Map(),
     position: new Map(atoms.map((a, i) => [a.seq, i])),
@@ -104,15 +107,17 @@ function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
     curInDegree: new Map(),
     curInDegreeDecl: new Map(),
     deterministicEdges: [],
-    touchesSemantic: new Set(),
+    touchesSemantic: new Set<number>(),
     eff: new Map(),
     sortMode: 'legacy',
     chainLen: new Map(),
     lastRef: new Map(),
     charsPerToken: 3.5,
     aGroupChars: new Map(),
-    ...over,
+    ...rest,
   }
+  // 索引从**合并后**的 edges/deterministicEdges/atoms 构建（over 可能覆盖）。
+  return { ...base, ...buildPruneIndexes(base.edges, base.deterministicEdges, base.atoms) }
 }
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {

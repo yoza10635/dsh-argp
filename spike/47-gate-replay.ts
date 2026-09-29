@@ -56,7 +56,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { EDGE_WEIGHTS } from '../src/argp-types.ts'
 import type { Atom } from '../src/argp-types.ts'
 import { atomize, buildGraph, findVersionDuplicates, looksAskText, type GraphBuildHost } from '../src/graph-build.ts'
-import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, type PruneState } from '../src/prune-selection.ts'
+import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, buildPruneIndexes, type PruneState } from '../src/prune-selection.ts'
 import { TOMBSTONE_MAX_CHARS, isTombstoneText } from '../src/tombstone-text.ts'
 import { DEFAULT_MAX_PASSES } from '../src/constants.ts'
 import { loadSessionEvents, type RawSessionEvent } from './lib/session-corpus.ts'
@@ -316,6 +316,8 @@ const pruneState: PruneState = {
   lastRef,
   charsPerToken: CHARS_PER_TOKEN,
   aGroupChars,
+  // 1.8.0 审计 P2-2：与引擎 pruneState 构造点同构（buildPruneIndexes 单一事实源）。
+  ...buildPruneIndexes(edges, deterministicEdges, atoms),
 }
 console.log('\n--- ③ 参数 ---')
 console.log('recencyGuard=' + recencyGuard + ' turnGuard=' + turnGuard + ' minSpanChars=' + MIN_SPAN_CHARS

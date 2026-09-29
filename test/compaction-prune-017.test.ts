@@ -21,10 +21,14 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 // 0.1.7 宿主 shadow-price fold：内部函数（主入口仅导出 TokenMeter），经相对路径直引构建产物。
 import { foldSurfaceProjection as _foldSurfaceProjection } from '../node_modules/@deepseek-ai/dsh-token-meter/lib/types/surface-projection.js'
+// 口径锁定（1.8.0 审计 P2-1）：shadowedTokenCount 唯一定价点 + 宿主口径常量 + 原文复算工具。
+import { HOST_CHARS_PER_TOKEN, shadowedTokensOf } from '../src/constants.ts'
+import { eventTextOf } from '../src/log-access.ts'
+import { extractCites } from '../src/graph-build.ts'
 
 /** 宽松 claim 类型：规避宿主 branded SessionSeq（运行时即 number）。 */
 type LooseClaim = { start: number; end: number; tokens: number } | undefined
@@ -121,6 +125,64 @@ test('0.1.7 shadow-price resume：全事件流经 foldSurfaceProjection 无 "no 
       assert.equal(nextOp.startSeq, range.start, 'replace.startSeq === prune.shadowedRange.start')
       assert.equal(nextOp.endSeq, range.end, 'replace.endSeq === prune.shadowedRange.end')
     }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 口径锁定（1.8.0 审计 P2-1）：shadowedTokenCount 一律宿主 CHARS_PER_TOKEN 口径
+//
+// 病灶（1.8.0 前）：三处发射器三种口径——peratom 整窗 summary 硬编码 /3.5（注释
+// 自己写着 "/4=宿主口径"，注释与代码打架）、peratom per-atom prune /4、prune-tx
+// 用 host.charsPerToken 旋钮（默认 3.5）。宿主 fold 直接信任 claim（不重估），
+// 同一条 fold 流上两本账 ⇒ 宿主 running total / WebUI 显示系统性偏移。
+// 摘掉任一发射点的 shadowedTokensOf 调用（改回裸除数）⇒ 下面两条必须变红。
+// ---------------------------------------------------------------------------
+
+test('口径锁：shadowedTokensOf = 宿主 CHARS_PER_TOKEN=4（与 3.5 旋钮可区分）', () => {
+  // 8 字符：/4 = 2；/3.5 = ceil(2.286) = 3
+  assert.equal(shadowedTokensOf(8), 2)
+  // 15 字符：/4 = 4；/3.5 = ceil(4.286) = 5
+  assert.equal(shadowedTokensOf(15), 4)
+  // 40 字符：/4 = 10；/3.5 = ceil(11.429) = 12
+  assert.equal(shadowedTokensOf(40), 10)
+  // 常量本身钉死（宿主 estimate.js 当前 = 4；宿主升级时手动同步，见 constants.ts 注释）
+  assert.equal(HOST_CHARS_PER_TOKEN, 4)
+})
+
+/** 原始原子文本长度（与 atomize 同口径：A = cites 剥离后的 body，U/R = eventText）。 */
+function originalAtomTextLen(bySeq: Map<number, SessionEvent>, seq: number): number {
+  const event = bySeq.get(seq)
+  if (event === undefined) return 0
+  const text = eventTextOf(event)
+  if (event.type === 'assistant/message') return extractCites(text).body.length
+  return text.length
+}
+
+test('口径锁：真实引擎发射的每条 prune/summary 的 shadowedTokenCount = 宿主 /4 口径（prune-tx 发射路径）', async () => {
+  const { ctx, session } = await buildPrunedSession('prune-017-caliber')
+  try {
+    const events = [...session.snapshotEvents()]
+    const bySeq = new Map<number, SessionEvent>(events.map(e => [e.seq, e]))
+    const prunes = events.filter(e => e.type === 'compaction/prune')
+    assert.ok(prunes.length > 0, 'prune must emit at least one compaction/prune')
+    // 逐区间 prune：shadowedSeqs = 该区间原子（精确）⇒ claim = ceil(区间原文字符和 / 4)
+    let prunedCharSum = 0
+    for (const prune of prunes) {
+      const data = prune.data as { shadowedSeqs: number[]; shadowedTokenCount: number }
+      const chars = data.shadowedSeqs.reduce((s, seq) => s + originalAtomTextLen(bySeq, seq), 0)
+      prunedCharSum += chars
+      assert.equal(data.shadowedTokenCount, shadowedTokensOf(chars),
+        `prune (log seq ${prune.seq}): shadowedTokenCount 必须 = ceil(原文 ${chars} 字符 / 宿主 CHARS_PER_TOKEN=${HOST_CHARS_PER_TOKEN})`)
+    }
+    // 整事务 summary：shadowedSeqs = surface 连续切片（可能含未剪间隙），
+    // claim = ceil(**被剪原子**字符和 / 4)（prune-tx 的 charsBefore0 口径）
+    const summaries = events.filter(e => e.type === 'compaction/summary')
+    assert.equal(summaries.length, 1, '一次 compactIfNeeded = 一个事务 = 一条 summary')
+    const sdata = (summaries[0] as { data: { shadowedTokenCount: number } }).data
+    assert.equal(sdata.shadowedTokenCount, shadowedTokensOf(prunedCharSum),
+      'summary shadowedTokenCount = ceil(被剪原子原文字符和 / 4)（非 surface 切片口径）')
   } finally {
     await ctx.fiber.dispose()
   }

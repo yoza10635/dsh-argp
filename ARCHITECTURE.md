@@ -102,11 +102,11 @@ ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking �
 |---|---|
 | rc.2（0.1.1） | `session.events`（getter，返回全日志数组） |
 | alpha.4（0.1.2+）～0.1.3 | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
-| **0.1.5+（当前支持基线 0.1.6-alpha.1）** | `snapshotEvents()`；`events` 已彻底不存在 |
+| **0.1.5+（当前支持基线 0.1.7-alpha.2）** | `snapshotEvents()`；`events` 已彻底不存在 |
 
 `log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**：运行时探测 `snapshotEvents`（modern）/ 回退 `events`（legacy），两者皆无则 throw。所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
 
-**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。**当前支持基线为 0.1.6-alpha.1**（`package.json` peerDependencies）。
+**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。**当前支持基线为 0.1.7-alpha.2**（`package.json` peerDependencies，1.7.0 起上移；1.7.0 前为 0.1.6-alpha.1）。
 
 ### 6.2 V3 `SurfaceOp` 键名（`startSeq`/`endSeq`）
 

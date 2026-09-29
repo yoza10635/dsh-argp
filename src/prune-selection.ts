@@ -23,6 +23,10 @@ import { LEVEL_ORDER } from './argp-types.js'
 import { TOMBSTONE_MAX_CHARS, closureTombstone, isTombstoneText, seqRangeTombstone } from './tombstone-text.js'
 import { sessionEvents } from './log-access.js'
 
+/** 空边列表常量（索引未命中时返回，避免 per-atom 分配新数组）。 */
+const EMPTY_SEMANTIC: readonly SemanticEdge[] = []
+const EMPTY_DET: readonly DeterministicEdge[] = []
+
 /** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
 export interface PruneInterval {
   seqs: number[]
@@ -62,6 +66,59 @@ export interface PruneState {
   charsPerToken: number
   /** 1.5.1：A 原子有效体积（字符）= 自身文本 + 其应答 R 之和（drag 集合）。仅带 tool-call 的 A 有值。 */
   aGroupChars: Map<number, number>
+  /** 每次调用索引：atom id → 入向语义边（替代 isAtomCandidate 的 per-atom `edges.filter`，O(E)→O(1)）。 */
+  incomingEdges: Map<number, SemanticEdge[]>
+  /** 每次调用索引：atom id → 出向语义边（A10 的 aCitesR 判定用）。 */
+  outgoingEdges: Map<number, SemanticEdge[]>
+  /** 每次调用索引：atom id → 入向确定性边（A10 的 R 外部入边判定用）。 */
+  incomingDetEdges: Map<number, DeterministicEdge[]>
+  /** 每次调用索引：R 的首个 toolCallId（undefined → ''）→ R 原子（替代 per-A 的 `atoms.filter` O(R) 扫描）。 */
+  rsByCallId: Map<string, Atom[]>
+}
+
+/**
+ * 每次 compactIfNeeded 调用构建一次的边/原子索引（O(A+E) 建一次，pass 循环内 O(1) 查）。
+ *
+ * 病灶（1.8.0 审计 P2-2）：isAtomCandidate 每原子每 pass 做 `edges.filter(e => e.to === a.id)`
+ * （O(E)）+ A10 块两个 `.some`（O(E)/O(DE)）+ `atoms.filter` 找组内 R（O(R)）⇒ pass 循环
+ * 整体 O(A×E)，万原子会话单次压缩进秒级（mergeIntervals 的 O(n²) 之外更大的头）。
+ * edges / deterministicEdges / atoms 在一次 compactIfNeeded 内**静态**（仅 curInDegree 每 pass
+ * 重推），故索引在 pruneState 构造点建一次即全程有效。
+ *
+ * 语义逐字等价：索引按原数组顺序 push（filter/some 的判定与顺序无关），命中集合与
+ * 原线性扫描完全一致。构造点：`argp-graph-engine.ts` pruneState 字面量 + 测试 makeState +
+ * spike/47-gate-replay（三处均调本函数，单一事实源）。
+ */
+export function buildPruneIndexes(
+  edges: SemanticEdge[],
+  deterministicEdges: DeterministicEdge[],
+  atoms: Atom[],
+): Pick<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId'> {
+  const incomingEdges = new Map<number, SemanticEdge[]>()
+  const outgoingEdges = new Map<number, SemanticEdge[]>()
+  for (const e of edges) {
+    const inc = incomingEdges.get(e.to)
+    if (inc === undefined) incomingEdges.set(e.to, [e])
+    else inc.push(e)
+    const out = outgoingEdges.get(e.from)
+    if (out === undefined) outgoingEdges.set(e.from, [e])
+    else out.push(e)
+  }
+  const incomingDetEdges = new Map<number, DeterministicEdge[]>()
+  for (const e of deterministicEdges) {
+    const inc = incomingDetEdges.get(e.to)
+    if (inc === undefined) incomingDetEdges.set(e.to, [e])
+    else inc.push(e)
+  }
+  const rsByCallId = new Map<string, Atom[]>()
+  for (const a of atoms) {
+    if (a.type !== 'R') continue
+    const key = a.toolCallIds[0] ?? ''
+    const arr = rsByCallId.get(key)
+    if (arr === undefined) rsByCallId.set(key, [a])
+    else arr.push(a)
+  }
+  return { incomingEdges, outgoingEdges, incomingDetEdges, rsByCallId }
 }
 
 /**
@@ -81,8 +138,8 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
     const pos = state.position.get(a.seq)
     if (pos === undefined || pos >= state.recencyCut) return false
     if (a.turn > state.latestTurn - state.turnGuard) return false
-    // 动态复核：所有保留入边都必须来自覆盖者，否则豁免失效
-    const incoming = state.edges.filter(e => e.to === a.id)
+    // 动态复核：所有保留入边都必须来自覆盖者，否则豁免失效（索引查，O(1)）
+    const incoming = state.incomingEdges.get(a.id) ?? EMPTY_SEMANTIC
     if (incoming.length === 0 || incoming.some(e => e.from !== coverer)) return false
     return true
   }
@@ -122,7 +179,17 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
   // force_prune（allowInDegree=true）路径同样走此判定——结构性保护优先于强制降级。
   if (a.type === 'A' && a.toolCallIds.length > 0) {
     const groupIds = new Set<number>([a.id])
-    const groupRs = state.atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
+    // 索引查（rsByCallId）：A 的每个 callId 取应答 R 原子。去重防 callId 重复（与原
+    // `atoms.filter` O(R) 扫描语义等价：原 filter 按 R 逐个判 includes，天然每 R 至多一次）。
+    const groupRs: Atom[] = []
+    const seenR = new Set<number>()
+    for (const cid of a.toolCallIds) {
+      const rs = state.rsByCallId.get(cid)
+      if (rs === undefined) continue
+      for (const r of rs) {
+        if (!seenR.has(r.id)) { seenR.add(r.id); groupRs.push(r) }
+      }
+    }
     for (const r of groupRs) groupIds.add(r.id)
     if (groupRs.length > 0) {
       // C（B3）：组内 R **全部已立碑** ⇒ 该组已被收割完毕 ⇒ A10 失去保护对象，放行。
@@ -149,11 +216,12 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
       // A ⇒ 孤儿 `role:'tool'` 消息 ⇒ provider 400。
       const allStubbed = groupRs.every(r => isTombstoneText(r.text))
       if (!allStubbed) {
-        const aCitesR = state.edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
+        const groupSet = new Set<number>(groupRs.map(r => r.id))
+        const aCitesR = (state.outgoingEdges.get(a.id) ?? EMPTY_SEMANTIC).some(e => groupSet.has(e.to))
         // R 的外部入边：语义边来自组外原子，或确定性边来自组外原子（其他 A 调用了同一 callId 链）
         const anyRExternalIncoming = groupRs.some(r =>
           (state.curInDegreeDecl.get(r.id) ?? 0) > 0 || // 语义**声明**入度（cites/inject）——排除 inferred（见上方实验注释）
-          state.deterministicEdges.some(e => e.to === r.id && !groupIds.has(e.from))) // 确定性：组外 A→R
+          (state.incomingDetEdges.get(r.id) ?? EMPTY_DET).some(e => !groupIds.has(e.from))) // 确定性：组外 A→R
         if (!aCitesR && !anyRExternalIncoming) return false
       }
     }
@@ -228,9 +296,12 @@ export function mergeIntervals(
   minSpanChars: number,
 ): { kept: PruneInterval[]; droppedIntervals: number } {
   const prunedSeqs = [...pruned.values()].map(a => a.seq).sort((x, y) => x - y)
+  // O(n²)→O(n)：循环外建 seq→atom 索引一次（旧实现每轮迭代全表 find）。groupGuard 至多重放
+  // 8 次，万原子会话单次压缩进秒级（1.8.0 审计 P2-2，实测 8000 原子 126ms/次 → 索引后 ~1ms）。
+  const atomBySeq = new Map<number, Atom>([...pruned.values()].map(a => [a.seq, a]))
   const intervals: PruneInterval[] = []
   for (const seq of prunedSeqs) {
-    const a = [...pruned.values()].find(x => x.seq === seq)
+    const a = atomBySeq.get(seq)
     if (a === undefined) continue
     const isSoloR = a.type === 'R' && a.toolCallIds[0] !== undefined
       && (() => {

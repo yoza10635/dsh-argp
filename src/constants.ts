@@ -14,6 +14,34 @@ export const DEFAULT_RETAIN_TOKENS = 8_192
 /** chars/token 估算系数（无 tokenMeter 时的降级度量基准）。 */
 export const DEFAULT_CHARS_PER_TOKEN = 3.5
 
+/**
+ * 宿主 token-meter 的 `CHARS_PER_TOKEN`（`dsh-token-meter/lib/types/estimate.js`，当前 = 4）。
+ *
+ * **仅用于 `shadowedTokenCount` 字段**（宿主契约：shadow-price fold 按此口径算净释放）。
+ * 宿主**不导出**该常量（`index.js` 只 export `TokenMeter`），故插件侧以常量对齐。
+ *
+ * ⚠️ **手动同步责任**：宿主升级时须核对宿主 `estimate.js` 的 `CHARS_PER_TOKEN` 仍等于本值
+ * （当前对 `0.1.7-alpha.2` 验证）。漂移的后果是宿主 running total / WebUI 显示每笔剪枝
+ * 系统性偏移（账目一致性，非协议违约——invariant 只查非负整数）。
+ *
+ * 与 `DEFAULT_CHARS_PER_TOKEN`（3.5，引擎**内部**预算旋钮：window/retain 阈值、sortKey、
+ * recall 预算）是两回事——后者是插件自己的估算，无需对齐宿主，用户仍可经 WebUI 调整。
+ */
+export const HOST_CHARS_PER_TOKEN = 4
+
+/**
+ * `shadowedTokenCount` 的**唯一定价点**（宿主契约字段）。
+ *
+ * 全部发射点（peratom flush 的整窗 summary / per-atom prune、prune-tx 的 summary /
+ * 逐区间 prune）一律经本函数，禁止各点裸写 `/ 3.5` 或 `/ host.charsPerToken`——
+ * 1.8.0 前的病灶正是三处发射器三种口径（/3.5 硬编码、/4、旋钮 3.5）在同一条 fold 流上
+ * 记两本账。口径锁定测试（`test/compaction-prune-017.test.ts`）对本函数与真实发射路径
+ * 双重验锁：摘掉任一发射点的本函数调用必须变红。
+ */
+export function shadowedTokensOf(chars: number): number {
+  return Math.ceil(chars / HOST_CHARS_PER_TOKEN)
+}
+
 /** A 形态前缀预算（token）。peratom compressor/declarer prefixBudgetTokens 缺省锚。 */
 export const DEFAULT_PREFIX_BUDGET_TOKENS = 132_000
 

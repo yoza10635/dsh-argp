@@ -30,6 +30,7 @@ import type { AgentRouteHint, DshLlmSpec } from './llm-adapter.js'
 import { buildVersionChainIndex, turnCompressible } from './gate.js'
 import type { GateOptions } from './gate.js'
 import { pushBounded } from '../telemetry.js'
+import { shadowedTokensOf } from '../constants.js'
 import type { CompressDecision, CompressRecord, CurrentTurnCollect } from './compressor-types.js'
 import { extractJson, normalizeDecision, planReplacements } from './decision.js'
 import { buildPrompt, postChat, type LlmBackend } from './prompt.js'
@@ -381,8 +382,9 @@ export function flushEntry(host: FlushHost, session: Session, collect: CurrentTu
       const shadowedChars = [...collect.userLong, ...collect.toolResults]
         .reduce((sum, atom) => sum + atom.text.length, 0)
       // 原原子 seq → 字符数：per-atom prune 的 shadowedTokenCount 估算用。shadow-price fold
-      // 用「新副本 token − shadowedTokenCount」算净释放，故 shadowedTokenCount 须≈原文 token
-      // （/4 = 宿主 token-meter CHARS_PER_TOKEN 口径）。
+      // 用「新副本 token − shadowedTokenCount」算净释放，故 shadowedTokenCount 须≈原文 token。
+      // 口径统一走 shadowedTokensOf（宿主 CHARS_PER_TOKEN=4，见 constants.ts）——本处与下方
+      // 整窗 summary 同口径，禁止各自裸写除数（1.8.0 前此处 /4 而 summary /3.5，注释与代码打架）。
       const textLenBySeq = new Map<number, number>()
       for (const atom of [...collect.userLong, ...collect.toolResults]) textLenBySeq.set(atom.seq, atom.text.length)
       // 后端标签反映**实际选路**（§11.13.1）：显式/自动 dsh-llm 报宿主路由，
@@ -396,7 +398,7 @@ export function flushEntry(host: FlushHost, session: Session, collect: CurrentTu
         }],
         shadowedRange: { start: collect.startSeq, end: collect.endSeq },
         shadowedSeqs: windowSeqs,
-        shadowedTokenCount: Math.ceil(shadowedChars / 3.5),
+        shadowedTokenCount: shadowedTokensOf(shadowedChars),
         provider: summaryBackend?.kind === 'dsh-llm' ? summaryBackend.spec.provider : 'fetch',
         // ⚠️ fetch 分支要取 `endpoint.endpoint`（URL 字符串）：`endpoint` 本身是
         // ResolvedEndpoint 对象 {endpoint, model, apiKey}，`String(对象)` 序列化成
@@ -447,7 +449,7 @@ export function flushEntry(host: FlushHost, session: Session, collect: CurrentTu
           session.append('compaction/prune', {
             shadowedRange: { start: asSeq(step.at), end: asSeq(step.at) },
             shadowedSeqs: asSeqs([step.at]),
-            shadowedTokenCount: Math.ceil((textLenBySeq.get(step.at) ?? 0) / 4),
+            shadowedTokenCount: shadowedTokensOf(textLenBySeq.get(step.at) ?? 0),
           })
           const g0 = session.surface.replaceGeneration
           appendSurface(step.type, step.data, {
