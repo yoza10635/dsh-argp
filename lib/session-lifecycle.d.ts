@@ -125,12 +125,20 @@ export declare function normalizeConfig(ctx: Context, host: LifecycleHost, confi
  */
 export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpGraphConfig): void;
 /**
- * P0 双引擎自挂载：peratom 配置块存在时，Stage-1 三管线在构造期挂载并接线
+ * P0 双引擎自挂载：**缺省即挂**（opt-out）——Stage-1 三管线在构造期挂载并接线
  * （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
  * ctx.compaction 接收 injectEdges / onOverflowCompress）。
- * ⚠️ 显式判 object（而非只判 `!== undefined`）：YAML 里"关掉 Stage-1"最自然的写法是
- * `peratom: false`，而布尔装箱后 `.compressor` 取到 undefined → `?? {}` → 三管线全挂，
- * 与写配置的人意图**完全相反**。false / null 一律按"不挂"处理（与缺省同语义）。
+ *
+ * ⚠️ 默认值语义（2026-09-30 由 opt-in 反转为 opt-out）：`peratom` 缺省 = **挂**；
+ * 只有显式 `peratom: false` / `peratom: null` 才不挂。反转理由是宿主的 patch 层语义：
+ * 各层 config 是**整块替换**而非深合并（dsh-app-boot："A patch config replaces the whole
+ * config"，层序 bundle → profile → home → CLI）。默认值若只写在 bundle patch 的 insert 行里，
+ * 用户在设置页动任一旋钮（表单值写回 profile 的 cordis.patch.yml）就会整块冲掉 peratom，
+ * 双引擎静默退回纯 Stage-2（0-LLM）——正是 §11.13.1 那个缺口复发的形态。
+ * 判据落在代码里，则任何层只要不显式关停都保持挂载 ⇒ 安装即双引擎，无需手工挂载。
+ *
+ * ⚠️ 显式归一成对象：`peratom: true` 或缺省 ⇒ 按 `{}` 处理（三管线全开），
+ * `false` / `null` ⇒ 不挂（YAML 关停写法，语义与反转前一致）。
  *
  * 含两个构造期派生赋值：maxOverflowRetries 缺省提升（挂 compressor 时 1→3）与
  * citesObligation auto 解析（declarer 已武装即关）——两者都依赖本函数先完成 peratomStack

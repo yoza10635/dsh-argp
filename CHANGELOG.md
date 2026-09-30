@@ -4,6 +4,52 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.9.1] - 2026-09-30（修复：双引擎缺省即挂——安装即用，不再依赖 profile 层手工挂载）
+
+> **发行说明**：收口 §11.13.1 的**结构性缺陷**——Stage-1（双引擎）此前**没有生产挂载路径**，用户必须按文档在 profile 层手写 `peratom` 块才可能挂上；而那条「开启配方」本身还是脆的（见下）。现在判据落在代码里：`peratom` **缺省即挂**，市场安装后即为双引擎，零手工配置。显式 `peratom: false` / `null` 仍是关停，语义不变。
+
+> **节奏破例（P0）**：本版与 v1.9.0（09-29）同周，按「最小间隔」条属破例，理由记此备查——该缺陷使**本插件的核心卖点（双引擎）对所有用户结构性不可达**，且文档给出的唯一开启方式会被外层 config 静默冲掉，属「功能等于不存在」，故不等下个窗口。
+
+### 提示
+
+注意：升级后 **Stage-1 默认开启**，compressor / declarer 会按宿主路由发起 LLM 调用（`purpose='compaction'`）。只想保留 0-LLM 图剪枝的部署，请在 profile 层显式写 `peratom: false`（片段见文末「升级注意」）。
+
+### 背景：为什么默认值必须落在代码里
+
+dsh 各层 patch 的 `config` 是**整块替换**而非深合并（`dsh-app-boot`：*"A patch config replaces the whole config"*，层序 bundle → profile → home → CLI）。因此把默认值写在包的 bundle patch（`cordis.patch.yml` 的 `insert` 行）里并**不可靠**：用户在设置页动任一旋钮（表单值写回 profile 的 `cordis.patch.yml`）就会整块冲掉 `peratom`，双引擎**静默**退回纯 Stage-2（0-LLM）——正是 §11.13.1「Stage-1 无生产挂载路径」缺口复发的形态。判据落在代码里，则任何层只要不显式关停都保持挂载。
+
+### Fixed
+
+- **Stage-1 无生产挂载路径（§11.13.1 收口，主修复）**：`mountPeratomStack` 闸门由 opt-in 反转为 opt-out——`peratom` 缺省 / `true` / 对象 ⇒ **挂**；`false` / `null` ⇒ 不挂（YAML 关停写法，两种等价）。安装即双引擎。
+- **`src/peratom/mount.ts` 工厂重复挂载**：工厂自行构造三管线并显式接线，必须传 `peratom: false` 关停引擎的构造期自挂载——否则闸门反转后引擎会再挂一套 Stage-1，并把工厂注入的接线判为「显式传入」而忽略，工厂返回的句柄与实际生效的管线脱钩。
+- **`ArgpGraphConfig.peratom` 类型补齐 `boolean | null`**：此前类型只允许对象，而运行时与文档一直支持 `peratom: false` 关停写法（typecheck 报 TS2559 / TS2367）。类型与运行时语义自此一致。
+
+### Added（兼容规则）
+
+- `peratom` **缺省**且调用方自带 `injectEdges` / `onOverflowCompress` / `onPrePressureCompress` 时**不自动挂载**（尊重调用方自装配，避免把调用方的注入判成「显式传入」而忽略）。显式给了 `peratom` 时仍按 peratom 优先，沿用原「显式接线被忽略并告警」语义。
+- 缺省挂载后 Stage-1 的 LLM 后端解析不变：`peratom` 内未配 `llm` 时自动跟随宿主路由（`autoDshLlmSpec`）；三路都解不出时组件 disabled（零网络）。
+
+### Docs
+
+- README / README.en：「npm 默认 = 0-LLM 图剪枝，即仅 Stage-2」→「默认 = 双引擎全开，安装即挂」；「启用 Stage-1（双引擎）」小节重写为「Stage-1（双引擎）：缺省即挂 / 如何关停」，补上关停写法、后端配置与「默认值为何在代码里」的说明。
+- `docs/`（`.gitignore` 排除，不进 git、也不进 npm 包）：`dsh-argp-mount-example.md` 同步口径（bundle patch 不再被描述为「只挂 0-LLM 图引擎」）。
+
+### Tests
+
+- 新增 4 例：缺省即挂（三管线 + `injectEdges`/`onOverflowCompress`/`onPrePressureCompress` 自动接线 + 重试上限 1→3）、`peratom: null` 关停、缺省但调用方自带接线时不抢占、overflow retries 新默认（3）。
+- 按新默认修正 6 处夹具：`test/peratom-p4.test.ts`（`makeEngine`）、`test/auto-continue-e2e.test.ts`（`makeHarness`）、`test/peratom-mount.test.ts`（纯基线臂）、`test/argp-graph-engine.test.ts`（overflow retries 用例）显式写 `peratom: false`。
+- 全量 **408/408 通过**；`typecheck` + `typecheck:spike` 0 错误。
+
+### 升级注意
+
+老部署升级后 **Stage-1 默认开启**：compressor / declarer 会按宿主路由发起 LLM 调用（`purpose='compaction'`）。只想保留 0-LLM 图剪枝的部署，请在 profile 层显式写：
+
+```yaml
+- id: dsh-argp
+  config:
+    peratom: false
+```
+
 ## [1.9.0] - 2026-09-29（极简 preset 保留原生态：skipPresets）
 
 > **发行说明**：本版新增 `skipPresets` 配置——在列出的 agent preset 下 ARGP **不生效**（不剪枝/不压缩），会话历史保持原生态。默认 `['minimal']`：极简 preset 本身无 compaction 组，本插件在其下不介入，与「未安装 dsh-argp」的原生行为一致。
