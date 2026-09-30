@@ -242,14 +242,24 @@ export interface ArgpGraphConfig {
    * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
    * （生产形态，purpose='compaction'）；不传按各组件 fetch 环境变量口径解析（本地实验
    * 形态，环境缺失时组件自然 disabled，零网络）。`false` = 关闭该管线。
+   *
+   * 默认值（2026-09-30 由 opt-in 反转为 opt-out）：**缺省即挂**。只有显式 `false` / `null`
+   * 才不挂；显式给对象 / `true` 时按其内容挂载（`true` 等价于 `{}`）。缺省且调用方自带
+   * injectEdges / onOverflowCompress / onPrePressureCompress 时不自动挂载，尊重调用方自装配。
+   * 反转原因见 session-lifecycle.mountPeratomStack（宿主各层 patch 的 config 是整块替换，
+   * 默认值写在 bundle patch 里会被设置页写回覆盖 ⇒ 双引擎静默退回纯 Stage-2）。
+   *
    * 与 mountPeratomStack（测试/三臂工厂）同拓扑；本块存在的意义是真宿主 bundle patch
    * 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）。
    */
-  peratom?: {
-    compressor?: PeratomCompressorConfig | false
-    declarer?: CiteDeclarerConfig | false
-    zoom?: RecallZoomConfig | false
-  }
+  peratom?:
+    | {
+        compressor?: PeratomCompressorConfig | false
+        declarer?: CiteDeclarerConfig | false
+        zoom?: RecallZoomConfig | false
+      }
+    | boolean
+    | null
   /**
    * 回复级 cites 义务开关（argp-cites system section，order 151）。
    * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——

@@ -1746,10 +1746,20 @@ test('A8 narrowed ask detection: CJK ask U exempted and prunable via coverage (Q
 })
 
 
-test('overflow retries default: 3 when peratom compressor wired, 1 otherwise, explicit wins', async () => {
-  // 无 peratom：维持官方 compaction-basic 口径 1
+test('overflow retries: 缺省自挂 compressor ⇒ 3；显式 peratom:false ⇒ 1；显式配置优先', async () => {
+  // 缺省（不写 peratom）：Stage-1 构造期自挂 ⇒ compressor 第②步存在 ⇒ 自动提到 3。
+  // 语义于 2026-09-30 反转为 opt-out（缺省即挂），本用例锁新默认。
   {
     const { ctx, engine } = await makeEngine()
+    try {
+      assert.equal(engine.maxOverflowRetries, 3, 'default now self-mounts the peratom stack')
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  }
+  // 显式关停 Stage-1：没有第②步 ⇒ 维持官方 compaction-basic 口径 1
+  {
+    const { ctx, engine } = await makeEngine({ peratom: false })
     try {
       assert.equal(engine.maxOverflowRetries, 1)
     } finally {

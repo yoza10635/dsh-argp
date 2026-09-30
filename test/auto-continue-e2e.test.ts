@@ -107,6 +107,11 @@ async function makeHarness(script: StreamChunk[][], engineConfig: Record<string,
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp auto-continue e2e' } })
   await ctx.plugin(ArgpGraphEngine, {
     windowTokens: 10_000_000, retainTokens: 50, minSpanChars: 20, recencyGuard: 0, maxPasses: 16,
+    // 本 E2E 只测 Stage-2 的剪枝/续写路径 ⇒ 显式关停 Stage-1 自挂载（peratom 缺省即挂，
+    // opt-out 语义起于 2026-09-30）。不关停时 declarer/compressor 会经 agent.options
+    // （provider: 'mock'）解析到 ScriptAdapter 并真实发起 LLM 调用，吃掉脚本队列、
+    // 请求计数整体移位（实测 2 → 4）。
+    peratom: false,
     ...engineConfig,
   })
   const harness = await mountAgentLoopTestHarness(ctx)

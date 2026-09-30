@@ -6,7 +6,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（双引擎形态；**npm 默认 = 0-LLM 图剪枝，即仅 Stage-2**，Stage-1 经 `peratom` 配置块启用，见"安装与挂载"）：
+dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（双引擎形态；**npm 默认 = 双引擎全开（Stage-1 + Stage-2），安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝，见"安装与挂载"）：
 
 - **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
 - **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
@@ -96,9 +96,21 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 
 > **极简（minimal）preset 下不生效（1.9.0 起）**：ARGP 在 `skipPresets` 列出的 preset 下退场——默认 `['minimal']`，即极简 preset 的会话**不剪枝、不压缩**，历史保持原生态（与未安装本插件一致）。判定按会话实际运行的 preset（可被 preset 切换事件改变）；无 preset 信息的会话（headless/CLI）不受影响。要让 ARGP 在 minimal 下也生效，在 profile 层 modify 加 `config: { skipPresets: [] }`。
 
-### 启用 Stage-1（双引擎）
+### Stage-1（双引擎）：缺省即挂
 
-生产挂载路径是**引擎构造期经 `config.peratom` 自挂**：`peratom` 块为对象时，Stage-1 三管线（compressor / declarer / zoom）在构造期挂载并内部接线；`peratom: false` / `null` = 不挂（与缺省同语义）。在 profile 层 modify 加 `peratom` 嵌套块（改后须开新会话生效）：
+生产挂载路径是**引擎构造期经 `config.peratom` 自挂**：`peratom` **缺省 = 挂**——Stage-1 三管线（compressor / declarer / zoom）在构造期挂载并内部接线，**安装后即为双引擎，不需要任何手工配置**。
+
+要退回纯 Stage-2（0-LLM 图剪枝），显式关停：
+
+```yaml
+- id: dsh-argp
+  config:
+    peratom: false      # 或 null；二者等价：只要 Stage-2，不挂 Stage-1
+```
+
+> **为什么默认值在代码里、而不是包的 bundle patch 里**：dsh 各层 patch 的 `config` 是**整块替换**而非深合并（层序 bundle → profile → home → CLI）。默认值若只写在 bundle patch 的 `insert` 行，用户在设置页动任一旋钮（表单值写回 profile 的 `cordis.patch.yml`）就会整块冲掉 `peratom`，双引擎**静默**退回纯 Stage-2 —— 即 §11.13.1 那个缺口复发的形态。
+
+可选：为 Stage-1 指定独立 LLM 后端（不配则自动跟随宿主路由）：
 
 ```yaml
 - id: dsh-argp
@@ -110,6 +122,9 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
         llm: { provider: deepseek-official, model: deepseek-v4-flash }   # 可指向独立 lite 档
       # zoom: {}   # 两级 recall；块内缺省即挂载
 ```
+
+⚠️ 在 profile / home / CLI 层写 `- id: dsh-argp` 的 `config` 会**整块替换**上一层：想让 Stage-1 保持开启**不必重述 `peratom`**（缺省即挂）；只有在确实要关停时才写 `peratom: false`。
+⚠️ 缺省且调用方自带 `injectEdges` / `onOverflowCompress` / `onPrePressureCompress` 时不自动挂载——尊重调用方的自装配（高级 API 向后兼容）。
 
 `llm` 子块可省：`llm` 与 `endpoint`/`apiKey` 两路皆缺时**自动跟随宿主路由**（1.3.0 的 `autoDshLlmSpec`：真会话里现取 `agent.options.{provider,model}` + 宿主 `ctx.llm` 服务，宿主换模型自动跟随）；三路都解不出时组件自然 disabled（零网络）。配了 `llm` 走宿主 dsh-llm（生产形态）；否则按 `endpoint`/`apiKey` config 或环境变量走 OpenAI 兼容直连（本地 llama.cpp 实验形态）。Stage-2 预算默认比例驱动（window=ctx×0.8 / retain=window×0.2），无须硬编码。
 

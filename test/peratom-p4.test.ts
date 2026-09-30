@@ -76,10 +76,15 @@ function appendToolResult(session: Session, turn: number, callId: string, text: 
   return session.snapshotEvents().length - 1
 }
 
+/**
+ * 纯 Stage-2 夹具：显式 `peratom: false` 关停构造期自挂载。
+ * 自 2026-09-30 起 peratom 缺省即挂（opt-out）；不关停时引擎会自挂 RecallZoom 并注册
+ * recall_pruned / list_pruned / recall 三个工具，与本文件自建的 RecallZoom 重复注册冲突。
+ */
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp p4 test' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, ...config })
+  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, peratom: false, ...config })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine }
 }
 

@@ -6,7 +6,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its two-engine form (**npm default = 0-LLM graph eviction, i.e. Stage-2 only**; Stage-1 is enabled via the `peratom` config block — see "Install & mount"):
+dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its two-engine form (**npm default = both engines on (Stage-1 + Stage-2), mounted on install with no manual configuration**; set `peratom: false` explicitly to fall back to 0-LLM graph eviction only — see "Install & mount"):
 
 - **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
 - **Stage-2 reference-graph eviction (lazy, three-tier trigger)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly; triggering is a three-tier ladder: turn-start proactive / mid-turn pressure prune / post-clamp auto-continue (see "Three-tier trigger").
@@ -66,7 +66,7 @@ The quality of per-atom split/shrink decisions depends on the model's instructio
 
 ## Install & mount
 
-Install from npm. **npm default = 0-LLM graph eviction (Stage-2 only)**: the package's bundle patch (`cordis.patch.yml`) mounts only the graph engine (config is just `maxPasses: 256` / `recencyGuard: 10`, no `peratom` block) — the three Stage-1 pipelines are not mounted by default:
+Install from npm. **npm default = both engines on**: the package's bundle patch (`cordis.patch.yml`) declares `maxPasses: 256` / `recencyGuard: 10`, and Stage-1's three pipelines are mounted by the engine at construction because `peratom` defaults to mounted (see below):
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
@@ -97,9 +97,21 @@ Disable the stock summarizer in the profile's `cordis.patch.yml`:
 
 > **Inert under the minimal preset (since 1.9.0)**: ARGP stands down under the presets listed in `skipPresets` — by default `['minimal']`, so sessions running the minimal preset are **not pruned or compacted** and their history stays pristine (as if this plugin were not installed). The decision follows the preset a session actually runs under (changeable via the preset-switch event); sessions with no preset info (headless/CLI) are unaffected. To make ARGP active under minimal too, add `config: { skipPresets: [] }` via `modify` in the profile layer.
 
-### Enabling Stage-1 (two-engine)
+### Stage-1 (two-engine): mounted by default
 
-The production mount path is **the engine self-mounting from `config.peratom` at construction**: when the `peratom` block is an object, the three Stage-1 pipelines (compressor / declarer / zoom) are mounted and wired internally at construction; `peratom: false` / `null` = not mounted (same semantics as the default). Add the nested `peratom` block via `modify` in the profile layer (a new session is required for it to take effect):
+The production mount path is **the engine self-mounting from `config.peratom` at construction**: `peratom` **defaults to mounted** — the three Stage-1 pipelines (compressor / declarer / zoom) are mounted and wired internally at construction, so **a fresh install is already the two-engine form with no manual configuration**.
+
+To fall back to pure Stage-2 (0-LLM graph eviction), disable it explicitly:
+
+```yaml
+- id: dsh-argp
+  config:
+    peratom: false      # or null; both mean "Stage-2 only"
+```
+
+> **Why the default lives in code rather than in the package's bundle patch**: patch-layer `config` is **replaced wholesale**, not deep-merged (layer order bundle → profile → home → CLI). If the default were written only in the bundle patch's `insert` row, any settings-page tweak (form values written back to the profile's `cordis.patch.yml`) would wipe `peratom` whole and the two-engine form would **silently** fall back to Stage-2 only — the §11.13.1 gap reasserting itself.
+
+Optionally pin a dedicated LLM backend for Stage-1 (otherwise it follows the host's routing):
 
 ```yaml
 - id: dsh-argp

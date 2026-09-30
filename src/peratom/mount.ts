@@ -66,7 +66,10 @@ export async function mountPeratomStack(ctx: Context, config: PeratomStackConfig
   const declarer = config.declarer === false ? null : new CiteDeclarer(ctx, config.declarer ?? {})
   const zoom = config.zoom === false ? null : new RecallZoom(ctx, config.zoom ?? {})
 
-  const graphConfig: ArgpGraphConfig = { ...config.graph }
+  // 本工厂自行构造三管线并**显式接线**（injectEdges / onOverflowCompress / onPrePressureCompress）。
+  // 必须显式关停引擎的构造期自挂载（`peratom: false`）：否则引擎会再挂一套 Stage-1 管线，
+  // 并把本工厂的接线判为"显式传入"而忽略（自挂载优先），工厂返回的句柄与实际生效的管线脱钩。
+  const graphConfig: ArgpGraphConfig = { ...config.graph, peratom: false }
   // P2 接线：声明边经 injectEdges 通道进 buildGraph（seq→id 映射与离 surface
   // 丢弃在 declarer.buildInjectEdges 内完成，端点校验在 buildGraph 的 validIds 检查）。
   if (declarer !== null) {

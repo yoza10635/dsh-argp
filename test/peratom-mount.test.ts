@@ -160,9 +160,10 @@ test('P5 臂 B/C 分叉：compressor:false → onOverflowCompress 不接线（�
   }
 })
 
-test('P5 臂 C 等价：不读工厂直接 ctx.plugin(ArgpGraphEngine) = 纯基线（零 per-atom 接线）', async () => {
+test('P5 臂 C 等价：显式 peratom:false + 直接 ctx.plugin(ArgpGraphEngine) = 纯基线（零 per-atom 接线）', async () => {
   const ctx = await makeCtx()
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16 })
+  // peratom 缺省即挂（opt-out，2026-09-30 起）⇒ 纯基线必须显式关停。
+  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16, peratom: false })
   try {
     const engine = ctx.compaction as ArgpGraphEngine
     assert.ok(engine instanceof ArgpGraphEngine)
@@ -193,9 +194,74 @@ test('P0 自挂载：`peratom: false`（YAML 关停写法）必须真的不挂�
   })
   const engine = ctx.compaction as ArgpGraphEngine
   try {
-    assert.equal(engine.peratomStack, null, 'peratom:false → 不挂 Stage-1（与缺省同语义）')
+    assert.equal(engine.peratomStack, null, 'peratom:false → 不挂 Stage-1')
     assert.equal(engine.injectEdges, undefined, 'declarer 未挂 → injectEdges 不接线')
     assert.equal(engine.onOverflowCompress, undefined, 'compressor 未挂 → 溢出第②步不接线')
+  } finally {
+    await ctx.fiber.dispose()
+    restoreEnv()
+  }
+})
+
+test('P0 自挂载：`peratom: null` 同样按关停处理（YAML 另一种关停写法）', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, recencyGuard: 0, maxPasses: 16,
+    peratom: null as never,
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.equal(engine.peratomStack, null, 'peratom:null → 不挂 Stage-1')
+    assert.equal(engine.injectEdges, undefined, 'declarer 未挂 → injectEdges 不接线')
+    assert.equal(engine.onOverflowCompress, undefined, 'compressor 未挂 → 溢出第②步不接线')
+  } finally {
+    await ctx.fiber.dispose()
+    restoreEnv()
+  }
+})
+
+test('P0 安装即挂（opt-out 默认）：缺省不写 peratom → Stage-1 三管线自动挂载并内部接线', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  // 2026-09-30 语义反转：peratom 由 opt-in 改为 opt-out。宿主 profile/home/CLI 各层的 patch
+  // config 是**整块替换**（dsh-app-boot），默认值若只写在 bundle patch 的 insert 行里，用户
+  // 在设置页动任一旋钮（表单值写回 cordis.patch.yml）就会整块冲掉 peratom、双引擎静默退回
+  // 纯 Stage-2。判据落在代码里 ⇒ 安装即双引擎，无需任何 profile 层手工声明。
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, minSpanChars: 20, recencyGuard: 0, maxPasses: 16,
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.ok(engine.peratomStack !== null, '缺省必须自挂 Stage-1（安装即可用）')
+    assert.ok(engine.peratomStack!.compressor instanceof PeratomCompressor)
+    assert.ok(engine.peratomStack!.declarer instanceof CiteDeclarer)
+    assert.ok(engine.peratomStack!.zoom instanceof RecallZoom)
+    assert.ok(engine.injectEdges !== undefined, 'declarer 已挂 → injectEdges 自动接线')
+    assert.ok(engine.onOverflowCompress !== undefined, 'compressor 已挂 → 溢出第②步自动接线')
+    assert.ok(engine.onPrePressureCompress !== undefined, 'compressor 已挂 → 轮内压力压缩自动接线')
+    assert.equal(engine.maxOverflowRetries, 3, '第②步可达：缺省重试上限 1 → 3')
+  } finally {
+    await ctx.fiber.dispose()
+    restoreEnv()
+  }
+})
+
+test('P0 缺省但调用方自带接线：不自动挂载，尊重调用方自装配（高级 API 向后兼容）', async () => {
+  const restoreEnv = isolateLlmEnv()
+  const ctx = await makeCtx()
+  const sentinel = (): never[] => []
+  await ctx.plugin(ArgpGraphEngine, {
+    windowTokens: 100, retainTokens: 20, recencyGuard: 0, maxPasses: 16,
+    injectEdges: sentinel as never,
+  })
+  const engine = ctx.compaction as ArgpGraphEngine
+  try {
+    assert.equal(engine.peratomStack, null, '显式接线 ⇒ 不抢占（否则调用方的注入会被判为"显式传入"而忽略）')
+    // 只断言可观测契约（非 undefined 即未被 declarer 接线替换）：config 经宿主传递后函数引用
+    // 不保证同一（cordis 侧对 config 的再处理），故此处不做引用比对。
+    assert.ok(typeof engine.injectEdges === 'function', '调用方注入的 injectEdges 必须保留，不被替换')
+    assert.equal(engine.maxOverflowRetries, 1, '未自挂 compressor ⇒ 重试上限维持 1')
   } finally {
     await ctx.fiber.dispose()
     restoreEnv()
