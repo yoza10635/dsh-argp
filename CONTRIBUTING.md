@@ -60,15 +60,41 @@ git config core.hooksPath .githooks
 
 ## 发布流程
 
-发布节奏为**手动 tag 驱动**（tag 推送自动触发 CI 中的 Release job，生成 GitHub Release），同步发布 npm：
+### 发布节奏（cadence）
+
+> **批量，不逐提交发版。** trunk-based 下 `main` 持续累积变更、CI 持续把关；发版是**攒够一批再切**的决策，不是每提交一次的反射。
+
+- **最小间隔**：同一自然周**至多一次正式（non-prerelease）发版**；P0/P1 hotfix 可破例，但要在 commit / CHANGELOG 写明理由。
+- **发版门槛**：只有**使用者可感知的变更**（新功能 / 修复 / 行为调整 / 依赖升级）才值得一个版本号；纯内部改动（`ci` / `test` / `chore` / 无行为变化的 `refactor`）**攒着**，随下一次正式版一起走。
+- **beta 与正式分离**：beta 用于验证、可多发；**正式 promote 只在 beta 稳定后**，且不与上一个正式版同日连发（1.8.0 → 1.9.0 同日是反面教材）。
+- **发版前自问**：「这一版对使用者意味着什么？」答不出可感知差异 ⇒ 不发，攒到下一批。
+
+### 版本号语义（semver）
+
+版本号按**变更的性质**分三档——设计变动 / 破坏性变更 / 微小变动：
+
+| 档位 | 触发条件 | 典型例子 |
+|---|---|---|
+| **major** `X.0.0` | **设计层面的大变动** | 架构或引擎形态重构；配置平面 / 数据契约重新设计；不再向后兼容的接口换代 |
+| **minor** `X.Y.0` | **破坏性变更**：现有配置/行为不再按原样工作 | 重命名/删除配置键；改现有键的语义或类型；默认值翻转致结果变化 |
+| **patch** `X.Y.Z` | **bugfix / 性能优化等微小变动** | 缺陷修复；性能优化；无行为变化的内部调整 |
+
+- **拿不准就升一档**：分不清 minor/patch ⇒ 按 minor；分不清 major/minor ⇒ 按 major（宁可让使用者多留意，不可让破坏性变更藏进 patch）。
+- **minor 必配「注意」行**：CHANGELOG 的 `### 提示` 段用 `注意：…` 开头一行，直接回答「能不能升、要不要动手」（见「CHANGELOG 写作规范」）。minor 是破坏性档位，这行是使用者判断「要不要动手」的唯一入口。
+- **宿主版本不直接定档**：宿主 peer 升级本身只是依赖变更（dsh-argp 侧按 **minor**，如 1.7.0→1.8.0 对齐宿主 0.2.0-rc.1）；只有当宿主变更**迫使** dsh-argp 改自己的配置/行为契约时，才按那个契约变更的档位定（可能 major）。
+
+### 操作（手动 tag 驱动）
+
+tag 推送自动触发 CI 中的 Release job（生成 GitHub Release），同步发布 npm。实际入口：
 
 ```bash
-npm version patch   # 或 minor / major；自动 bump package.json 并打 tag vX.Y.Z
-npm run build       # lib/ 必须与 src/ 一致（Release job 会校验）
-git push origin main
-git push origin vX.Y.Z    # 触发 GitHub Release（自动跑 check + build + lib 一致性校验）
-npm publish               # 发布 npm registry（prepublishOnly 自动跑 typecheck + test + build）
+npm version X.Y.Z --no-git-tag-version   # bump package.json + lock（不打 tag）
+npm run build                            # 刷新 lib/（提交进 git，市场扫描直接 clone 使用）
+git add -A && git commit -m "chore(release): vX.Y.Z — …"
+npm run release                          # prerelease:check → --tag 建 annotated tag → npm publish → git push origin main --tags
 ```
+
+> 把**不可逆**的 `npm publish` 排在**可逆**的 tag 之后：publish 之后唯一可能失败的是 push，可原样重跑，不再产生「npm 已发布但 tag/push 未完成」的死局（`scripts/prerelease-check.mjs` 的脏树 / 残留 tag 闸门在此把关）。
 
 > npm 账号 `yoza10635`（与 GitHub 同名）。认证 token（Granular Access Token：All packages + Bypass 2FA）保存在**用户级 `~/.npmrc`**，不进 git（项目级 `.npmrc` 只含 registry 行）。tag 已存在的版本直接 `npm publish` 即可，无需重新打 tag。
 
