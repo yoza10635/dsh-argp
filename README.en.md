@@ -128,6 +128,35 @@ The `llm` sub-block is optional: when both `llm` and `endpoint`/`apiKey` are abs
 
 `presetClean` is **on by default**: at mount time it generates a cleaned copy `<id>-argp` for each shipped preset that still carries the stock summarizer (removing `compaction-basic`/`tool-result-pruner`, keeping `command-compact` — `/compact` then routes to ARGP graph eviction); idempotent and fail-soft; set `presetClean: false` to disable it.
 
+### Checking status: `/argp`
+
+Once installed, type `/argp` in a session to see ARGP's live status (read-only; it never triggers compaction):
+
+```text
+ARGP 1.10.0 · engine: graph+peratom · preset: standard
+budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
+prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
+recall: 12 calls · 9 hits (75%)
+cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
+```
+
+Line by line: `engine` — `graph` = Stage-2 only (0-LLM), `graph+peratom` = both engines; a `preset` suffix of `ARGP inactive` means the current preset is in `skipPresets` (this plugin does nothing for that session). `budget` — trigger line / retain target / current usage, where `source` is how usage was estimated (`anchored` = pinned to real provider-reported usage, the most accurate). `prunes` — compaction count and the shape of the last one; `forced` = pruned after candidates were exhausted. The `cites` line only appears when the Stage-1 declarer is mounted.
+
+Manual compaction stays on the host's native `/compact` (provided by `command-compact`, mounted at the preset layer, which lands on this engine's `compactNow`) — this plugin adds no second compaction entry point.
+
+### Third-party marketplace verification (dsh.so)
+
+dsh itself has **no official plugin marketplace** (`plugin-manager` installs straight from npm); [dsh.so](https://dsh.so) is a community-run index and verification site. Its badge has two very different layers:
+
+| Layer | What it checks | Site-wide pass rate |
+|---|---|---|
+| **L4** | npm install inside a sandbox (can deps/peers actually resolve) | **100%** |
+| **L5** | web boot in the same sandbox + smoke actions + manifest marked active | **74.5%** |
+
+In other words: **installing is never the common problem; booting is** (L4 is all green while roughly a quarter of L5 runs fail). A badge shows the **most recent result for that dsh version**, not a permanent state — red/green across different dsh versions is not directly comparable.
+
+> Current status of this plugin on dsh.so: **L4 passes, L5.2 (web boot) fails** (1.9.0 / 1.9.1 @ dsh 0.2.0-rc.2; last green was 1.7.0 @ rc.1). Reproduced locally against the sandbox signature (win32 x64 / Node 24 / dsh 0.2.0-rc.2 / web profile) across the full matrix — with and without this plugin, checkout and published builds, full and minimal profiles — all green; the failure does not reproduce. The host also exposes no `/ping` or `/health` endpoints, so that smoke action is a site-private protocol that cannot be simulated locally. Verdict: **not attributable to this plugin**; root cause pending data from the site operator. Production deploys use a local tgz plus a hand-mounted profile and never go through the marketplace path, so they are unaffected.
+
 ## Validation results
 
 ### Four-arm comparison (30-turn synthetic multi-turn coding, local Qwen3.6-35B-A3B, spike 37)

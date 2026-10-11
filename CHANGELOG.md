@@ -4,6 +4,41 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.10.0] - 2026-10-12（`/argp` 状态命令：压缩状态第一次有了人类可见出口 + 声明 Node 引擎约束）
+
+> **发行说明**：此前 ARGP 的全部状态——预算、剪枝台账、召回命中、cites 统计、双引擎到底挂没挂——**只存在于日志里**，判断「压缩生效了没有」只能去翻 log。本版新增 `/argp` 命令，把这套内观测面搬到一行命令上：只读、零模型交互、零副作用。同时补上 `engines.node` 声明（与宿主 dsh 自身要求对齐），并补齐 npm `keywords`。
+
+### 提示
+
+注意：本版新增 `engines.node = "^22.19.0 || >=24.0.0"`（与宿主 dsh 根 `package.json` 同口径）。**Node 20 / 21 的环境安装会被 npm 拦下**（`EBADENGINE`）——这类环境本来也跑不了宿主，但此前不会在**安装 argp 时**报错。仍在旧 Node 上的部署请先升 Node 再升级本插件。`/argp` 是纯新增命令，不改动任何既有配置键与行为，无迁移项。
+
+### Added
+
+- **`/argp` 只读状态命令**（分段详单，5~6 行）：
+  - `ARGP <版本> · engine: graph|graph+peratom · preset: <id>`（preset 命中 `skipPresets` 时附 `ARGP inactive`，一眼看出「为什么没压缩」）
+  - `budget: trigger X / retain Y · now Z (source=anchored|tokenMeter|config|chars)`——触发线 / 保留目标 / 当前占用及估算来源
+  - `prunes: N · last R ranges / I items / A→B (forced) · pruned index P`——剪枝次数与末次形状
+  - `recall: N calls · H hits (P%)`
+  - `cites: …`（仅双引擎 declarer 在位时输出；纯 Stage-2 下整段省略，不输出恒零噪声）
+- **`engines.node`**：`^22.19.0 || >=24.0.0`（宿主同口径；随包 patch 含 `process.getBuiltinModule`，需 Node ≥ 22.3）。
+- **`keywords`**：补 13 个 npm 关键词（`dsh-plugin` / `context-compression` / `token-optimization` 等），进 npm 与 dsh 生态发现工具的抓取面。
+
+### 设计边界（为什么要记下来）
+
+- **只读，不做 `/argp compact`**：手动压缩已有宿主官方 `/compact`（`@deepseek-ai/dsh-command-compact`，由各 preset 层挂载），它调 `ctx.compaction.compactNow(agent, signal, commandId)` —— 落到的就是本引擎。再开一个入口是重复命令，还多背一条 `sourceCommandId` 契约面（铁律 1③）。
+- **不新增 boot 期失败面**：命令服务经嵌套 `ctx.inject(['commands'], ...)` 获取（与 `registerSettings` 同款），宿主无 commands 服务时回调不执行 ⇒ 静默不注册，引擎其余装配完全不受影响。这一点在 dsh.so L5.2 web boot 失败排查未结案的当下是硬要求——任何「缺服务即抛」的写法都会污染那边归因。
+- **生命周期由宿主负责**：`command/run` ↔ `command/done` 配对事件由宿主 `CommandRuntime` 写入（log-only，不进 model surface），本模块只提供 `{name, description, input, recordInput, handler}`。`recordInput: false`——无参数命令不往日志里堆空 `args`。
+- **版本号不漂移**：`ARGP_STATUS_VERSION` 常量由 `scripts/prerelease-check.mjs` 断言与 `package.json` 的 `version` 一致（忘了改直接卡发布）。
+
+### Docs
+
+- README / README.en：补 dsh.so 检测口径说明——**L4（沙盒安装层）全站通过率 100%、L5（web 启动层）74.5%**，徽章显示的是「该 dsh 版本下**最近一次**检测结果」，不是永久状态。
+
+### Tests
+
+- 新增 `test/argp-command.test.ts`（7 例，全绿）：注册进宿主命令发现列表（descriptor 形态）、输出分段详单、双引擎/纯 Stage-2 下 cites 段自适应、宿主 `CommandRuntime` 写出的 `command/run` ↔ `command/done` 配对（`commandId` 一致、`args` 缺席）、只读性（surface 不变、除两条生命周期事件外无新增事件）、无 commands 服务时静默降级、压缩一次后 `prunes: 1` 与台账一致。
+- 测试跑**宿主真实 `CommandRuntime`**（`ctx.plugin(CommandRuntime)` + `runtime.execute()`），不自己复刻宿主契约（铁律 3）。
+
 ## [1.9.1] - 2026-09-30（修复：双引擎缺省即挂——安装即用，不再依赖 profile 层手工挂载）
 
 > **发行说明**：收口 §11.13.1 的**结构性缺陷**——Stage-1（双引擎）此前**没有生产挂载路径**，用户必须按文档在 profile 层手写 `peratom` 块才可能挂上；而那条「开启配方」本身还是脆的（见下）。现在判据落在代码里：`peratom` **缺省即挂**，市场安装后即为双引擎，零手工配置。显式 `peratom: false` / `null` 仍是关停，语义不变。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-argp",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -14,6 +14,9 @@
     "SECURITY.md"
   ],
   "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "description": "Guarded context compaction for DeepSeek Harness (dsh): the LLM proposes, deterministic guards dispose — eager per-atom shrink (extract/summary/false under verbatim guards) + lazy reference-graph eviction (0-LLM) + byte-exact recall from an append-only log. 压缩率精确兑现，历史永不销毁。",
   "keywords": [
     "dsh",

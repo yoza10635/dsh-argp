@@ -67,6 +67,22 @@ try {
 if (typeof version !== 'string' || !/^\d+\.\d+\.\d+/.test(version)) {
   fail(`package.json 的 version 非法: ${String(version)}`)
 }
+// ── 2.5) /argp 状态命令展示的版本号必须跟随 package.json ──
+// 1.10.0 起 `/argp` 会把 ARGP_STATUS_VERSION 打在状态首行；忘记同步 ⇒ 用户
+// 看到的是上一个版本号，而这个漂移在任何测试里都不会红（测试断言用的是常量本身）。
+const commandSrc = readFileSync(join(root, 'src/argp-command.ts'), 'utf8')
+const versionConst = /export const ARGP_STATUS_VERSION = '([^']+)'/.exec(commandSrc)
+if (versionConst === null) fail('src/argp-command.ts 未声明 ARGP_STATUS_VERSION')
+if (versionConst[1] !== version) {
+  fail(`版本号漂移: src/argp-command.ts 的 ARGP_STATUS_VERSION=${versionConst[1]} ≠ package.json 的 ${version}（/argp 会展示错误版本号，请同步该常量）`)
+}
+
+// ── 2.6) CHANGELOG 必须有本版本段 ──
+const changelog = readFileSync(join(root, 'CHANGELOG.md'), 'utf8')
+if (!changelog.includes(`## [${version}]`) && !changelog.includes(`## ${version}`)) {
+  fail(`CHANGELOG.md 缺少 ${version} 版本段（发版即文档，先补 CHANGELOG 再发布）`)
+}
+
 const tag = `v${version}`
 
 // ── 3) 目标 tag 状态 ──

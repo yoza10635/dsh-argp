@@ -130,6 +130,35 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 
 `presetClean` **默认开启**：挂载期对仍挂 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp`（摘除 `compaction-basic`/`tool-result-pruner`、保留 `command-compact`——`/compact` 自动指向 ARGP 图剪），幂等、fail-soft；`presetClean: false` 关闭。
 
+### 查看状态：`/argp`
+
+装好后，在会话里输入 `/argp` 即可看到 ARGP 的实时状态（只读，不触发压缩）：
+
+```text
+ARGP 1.10.0 · engine: graph+peratom · preset: standard
+budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
+prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
+recall: 12 calls · 9 hits (75%)
+cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
+```
+
+各段含义：`engine`——`graph` = 纯 Stage-2（0-LLM），`graph+peratom` = 双引擎；`preset` 后附 `ARGP inactive` 表示当前 preset 命中 `skipPresets`（本插件在此会话不生效）。`budget`——触发线 / 保留目标 / 当前占用，`source` 是占用量的估算来源（`anchored` = 锚定在 provider 回报的真实 usage，最准）。`prunes`——剪枝次数与末次形状，`forced` = 候选耗尽后强制剪。`cites` 段仅在双引擎 declarer 在位时输出。
+
+手动压缩走宿主原生的 `/compact`（由 preset 层挂载的 `command-compact` 提供，落到本引擎的 `compactNow`）——本插件不另开压缩入口。
+
+### 第三方市场检测（dsh.so）
+
+宿主 dsh **本身没有官方插件市场**（`plugin-manager` 直装 npm），[dsh.so](https://dsh.so) 是社区自建的第三方收录站兼检测站。它的徽章分两层，两层含义差别很大：
+
+| 层 | 检测内容 | 全站通过率 |
+|---|---|---|
+| **L4** | 沙盒内 npm 安装（依赖/peer 能否真的装起来） | **100%** |
+| **L5** | 同沙盒内 web 启动 + 冒烟动作 + 清单标记为 active | **74.5%** |
+
+也就是说：**装不上从来不是普遍问题，起得来才是**（L4 全绿而 L5 有约四分之一失败）。徽章显示的是**该 dsh 版本下最近一次检测的结果**，不是永久状态，跨 dsh 版本的红/绿不可直接比较。
+
+> 本插件当前在 dsh.so 上：**L4 通过、L5.2（web 启动层）检测失败**（1.9.0 / 1.9.1 @ dsh 0.2.0-rc.2；最后一次绿是 1.7.0 @ rc.1）。本地已按沙盒签名（win32 x64 / Node 24 / dsh 0.2.0-rc.2 / web profile）穷举复现——含/不含本插件、checkout 与发布态、完整与精简 profile 全绿，未能复现该失败；宿主侧也不存在检测所用的 `/ping`、`/health` 端点，该冒烟动作属站点私有协议，本地无法模拟。结论是**不可归因于本插件**，根因待站点方数据。生产部署走本地 tgz + 手工 profile 挂载，不经市场路径，不受此项影响。
+
 ## 验证结果
 
 ### 四臂对照（30 轮合成多轮编码，本地 Qwen3.6-35B-A3B，spike 37）

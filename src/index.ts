@@ -57,3 +57,12 @@ export {
   stripPresetRows,
 } from './preset-cleaner.js'
 export type { PurifyOptions, PurifyResult } from './preset-cleaner.js'
+// /argp 只读状态命令（1.10.0）：注册器 + 状态渲染纯函数 + 版本号常量。
+export {
+  ARGP_COMMAND_DESCRIPTION,
+  ARGP_COMMAND_NAME,
+  ARGP_STATUS_VERSION,
+  registerArgpCommand,
+  renderArgpStatus,
+} from './argp-command.js'
+export type { ArgpStatusHost } from './argp-command.js'

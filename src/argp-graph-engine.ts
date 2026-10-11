@@ -61,6 +61,8 @@ import { pruneIntervals, consolidateTombstones, compactRegions, selectManualRang
 export { isMergeableTombstone } from './prune-tx.js'
 export type { GraphPruneRecord } from './prune-tx.js'
 import { registerRecallTools, type RecallToolsHost } from './recall-tools.js'
+// /argp 只读状态命令（1.10.0）：经嵌套 ctx.inject(['commands']) 注册，宿主无命令服务时静默不注册。
+import { registerArgpCommand, type ArgpStatusHost } from './argp-command.js'
 // 会话生命周期 + 构造期装配模块（P5 Wave 3 第 4 步）：normalizeConfig/registerSettings/
 // mountPeratomStack + bindSession/rebuildLedgerFromLog/rearmReactive/compactNow。
 // 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）随 registerSettings 迁入，此处转发维持公共 API。
@@ -548,6 +550,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     // P5 Wave 3 第 4 步：三个召回工具闭包迁 recall-tools.registerRecallTools（闭包体逐字保留，this → host 窄接口）。
     // 三个 ctx.tools.register 调用次序不变（recall_pruned → list_pruned → recall）。
     registerRecallTools(ctx, this as unknown as RecallToolsHost)
+    // /argp 状态命令：只读出口，放在工具注册之后（与 settings/peratom 同批的 ctx 副作用，
+    // 但它依赖 commands 服务，缺失时 inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
+    registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
 
     // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
     // 本 section 的 text 必须是纯静态（不引用引擎运行时状态）——否则每轮变化会破坏
