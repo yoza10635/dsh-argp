@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-argp",
+    "description": "The ARGP engine itself: the mount point for guarded context compaction — 0-LLM reference-graph eviction plus byte-exact recall; automatic triggers and /compact both land here."
+  }
+}

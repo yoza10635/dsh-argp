@@ -10,11 +10,21 @@
 # DUPLICATE HAZARD (v0.2.6): if the profile's own cordis.patch.yml ALSO
 # inserts id=dsh-argp, the loader crashes with "duplicate loader entry id".
 # Profile layer must only tune config (modify), never insert again.
+#
+# WHY `dsh-argp/engine` instead of the bare package name (1.10.1): the Host
+# labels a plugin twice — the bundle card reads metadata for the *package*
+# (`dsh-argp`), and each row under "包含的组件" reads it for the *row module*
+# (`readPluginMeta(row.name, …)` in plugin-manager/src/index.ts). Both pointed
+# at `dsh-argp`, so the two panels rendered byte-identical text. The row now
+# mounts through an exports subpath: same entry module, its own display
+# metadata in `locale-engine/`. The entry **id** stays `dsh-argp` — profile
+# modify layers, the duplicate-entry guard and the `bundle-in-use` check all
+# match on id, so nothing but the displayed text changes.
 - id: compaction-basic
   disabled: true
 - insert:
     - id: dsh-argp
-      name: dsh-argp
+      name: dsh-argp/engine
       config:
         maxPasses: 256
         recencyGuard: 10

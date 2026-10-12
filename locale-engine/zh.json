@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-argp",
+    "description": "ARGP 压缩引擎本体：守护式上下文压缩的挂载入口 —— 0-LLM 引用图剪枝 + 逐字节精确召回；自动触发与 /compact 都落到这里。"
+  }
+}

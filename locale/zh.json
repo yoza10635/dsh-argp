@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-argp",
+    "description": "面向 DeepSeek Harness（dsh）的守护式上下文压缩：LLM 只提方案，确定性守卫负责处置 —— 逐原子即时收缩（在逐字守卫下做 extract/summary/false）+ 引用图惰性驱逐（0-LLM）+ 从只追加日志做逐字节精确召回。压缩率精确兑现，历史永不销毁。"
+  }
+}
