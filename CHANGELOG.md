@@ -4,6 +4,36 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.10.1] - 2026-10-12（显示层与模型口径：插件页两层文案分离 + 退役模型名迁移 + README 可读性重构）
+
+> **发行说明**：三件互相独立的小事打包——① 插件管理页此前把同一个包显示两次、内外两层文案一字不差（都出自宿主 `readPluginMeta` 对同一 specifier 的读取）；组件改走 exports 子路径后，两层各自有了专属文案。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。
+
+### 提示
+
+- **直连后端模型名迁移**：未显式配置 Stage-1 的 `llm` 且走 `endpoint`/`apiKey` 直连（或 `DEEPSEEK_MODEL` 未设）时，默认模型从 `deepseek-v4-flash` 改为 **`deepseek-flash`**（2026-09 起官方 GA 名；`deepseek-v4-flash` 已退役、旧名仅作兼容路由至 V4.1-Flash）。自动跟随宿主路由的部署不受影响；**显式钉过 `model: deepseek-v4-flash` 的部署建议手动换到 `deepseek-flash`**——旧名虽仍可路由，但实际已由 V4.1-Flash 承接，钉旧名会掩盖这层迁移。
+- 本版无安装约束变化、无迁移动作（`engines` 与 `keywords` 在 1.10.0 已生效）。
+
+### Changed
+
+- **插件管理页两层文案分离**（组件行不再与包卡片一字不差）：
+  - `cordis.patch.yml`：insert 的 entry `name` 改为 `dsh-argp/engine`（**entry id 保持 `dsh-argp`**——profile 层 modify、`duplicate loader entry id` 守卫、`bundle-in-use` 判定全按 id 匹配，除显示文案外无行为变化）；
+  - `package.json`：exports 增 `./engine`（同一入口模块）、`./engine/package.json`、`./engine/locale/{en,zh}.json`、`./locale/{en,zh}.json`；`files` 白名单带上 `locale`、`locale-engine`、`engine.package.json`；
+  - 新增 `locale/{en,zh}.json`（包卡片文案）、`locale-engine/{en,zh}.json`（组件行文案，title 仍显示 `dsh-argp`）与 `engine.package.json`（子路径兜底 manifest）；
+  - ⚠️ 两个 locale 目录必须物理分离：宿主 `readPluginMeta` 会枚举同目录全部 `.json` 并要求文件名为语言 id，混放非语言名文件直接抛错。
+- **Stage-1 直连默认模型**：`deepseek-v4-flash` → `deepseek-flash`（`peratom/compressor.ts`、`peratom/cite-declarer.ts`、`peratom/compressor-types.ts` 共 6 处 fallback）。
+- **`spike/deepseek.ts` 共享挂载随迁**：`DEEPSEEK_MODEL` 改为 `env['DEEPSEEK_MODEL'] ?? 'deepseek-flash'`（新增 env 覆盖能力）；历史产物不可在新 API 原样复现，已在 README 复现节披露口径（其余 spike 单点硬编码属历史台账，保留原样）。
+
+### Docs
+
+- README(.en) 首屏重构：一句话定位 + 概览图（`.github/assets/argp-overview.svg`，GitHub/npm 双端可见）+ 30 秒上手命令 + npm version / downloads 徽章；中英同步。
+- README(.en) 口径修正：安装节「npm 默认 = 纯 Stage-2」旧文案（1.5.x 遗留）改为「安装即挂、双引擎全开」；「在 profile 层禁用 compaction-basic」改为「已随包完成、无需手工步骤」。
+- README(.en) 复现节补**历史 DeepSeek 臂模型口径**（退役说明 + 不可原样复现 + 重跑方式）；测试计数更正为 415/415。英文版同步了 Stage-2 retain 公式（1.5.1 起 = 可压缩内容 × 0.2）与 tombstone 召回链路两处历史失实。
+
+### Tests
+
+- `test/peratom-llm-adapter.test.ts` 的模型名 fixture 随迁（mock 后端，零真实网络）。
+- 全量 415/415、typecheck 0 错。
+
 ## [1.10.0] - 2026-10-12（`/argp` 状态命令：压缩状态第一次有了人类可见出口 + 声明 Node 引擎约束）
 
 > **发行说明**：此前 ARGP 的全部状态——预算、剪枝台账、召回命中、cites 统计、双引擎到底挂没挂——**只存在于日志里**，判断「压缩生效了没有」只能去翻 log。本版新增 `/argp` 命令，把这套内观测面搬到一行命令上：只读、零模型交互、零副作用。同时补上 `engines.node` 声明（与宿主 dsh 自身要求对齐），并补齐 npm `keywords`。

@@ -4,9 +4,19 @@
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
+[![npm version](https://img.shields.io/npm/v/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) in its two-engine form (**npm default = both engines on (Stage-1 + Stage-2), mounted on install with no manual configuration**; set `peratom: false` explicitly to fall back to 0-LLM graph eviction only — see "Install & mount"):
+**dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: it replaces summarizer-style compaction ("let the model rewrite history") — **the LLM only proposes, deterministic guards dispose**; nothing shrunk or evicted is ever destroyed (append-only log + verbatim recall), and the compression ratio is honored exactly (0-LLM graph rules). Two-engine form, **mounted on install with no manual configuration**; set `peratom: false` explicitly to fall back to 0-LLM graph eviction only (see [Install & mount](#install--mount)).
+
+![dsh-argp overview: guarded two-stage context compaction](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
+
+```bash
+dsh plugin --profile <name> add dsh-argp    # mounted on install; type /argp in a session to see live status
+```
+
+Three core mechanisms:
 
 - **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
 - **Stage-2 reference-graph eviction (lazy, three-tier trigger)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly; triggering is a three-tier ladder: turn-start proactive / mid-turn pressure prune / post-clamp auto-continue (see "Three-tier trigger").
@@ -39,7 +49,7 @@ Measured (30-turn synthetic multi-turn coding task, four-arm comparison, spike 3
 
 1. **Atomization + graph building**: deterministic edges (assistant → its tool results, via `toolCallId`) + semantic edges (the model outputs `{"cites":[{"t":"prefix","l":"c|s|x"}]}` per contract, four levels: critical/supporting/contextual/isolated).
 2. **Topological eviction**: repeatedly evict in-degree-0 atoms (ordered by edge level → effective importance → last-reference turn); evicted atoms' outgoing edges vanish and downstream atoms unlock pass by pass; the closure lifecycle (ACTIVE→COMPLETED→PRUNABLE→PRUNED) retires finished task closures whole.
-3. **Budget honored exactly**: trigger line window = contextWindow×0.8 (default), retain target = window×0.2; the trigger timing is the three-tier ladder (see "Three-tier trigger" below); the degradation chain is lifecycle→force→fail (the summarize tier is a stub that always returns null — conservative option a of A6, not implemented; `enableSummarize` defaults to false), converging to budget or failing explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
+3. **Budget honored exactly**: trigger line window = contextWindow×0.8 (default), retain target = **compressible content × 0.2** (since 1.5.1: compressible = full request − fixed system/tools/MCP overhead = the visible prune target, a constant 80% ratio; the old retain = window×0.2 = 0.16W counted fixed overhead into the base, asymmetric with the overhead-free target). The trigger timing is the three-tier ladder (see "Three-tier trigger" below); the degradation chain is lifecycle→force→fail (the summarize tier is a stub that always returns null — conservative option a of A6, not implemented; `enableSummarize` defaults to false), converging to budget or failing explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
 
 ### Three-tier trigger (the Stage-2 trigger ladder)
 
@@ -86,14 +96,7 @@ dsh plugin --profile <name> add dsh-argp
 >   - dsh-argp
 > ```
 
-Disable the stock summarizer in the profile's `cordis.patch.yml`:
-
-```yaml
-- id: compaction-basic
-  disabled: true
-```
-
-> Mounting is handled by the package's own bundle patch (`cordis.patch.yml`) (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
+> **Disabling the stock summarizer already ships with the package**: the bundle patch carries `- id: compaction-basic / disabled: true`, so there is normally nothing to do at the profile layer (this block used to be a manual step; it is kept here only to document who turns it off). Mounting is likewise handled by the package's own bundle patch (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
 
 > **Inert under the minimal preset (since 1.9.0)**: ARGP stands down under the presets listed in `skipPresets` — by default `['minimal']`, so sessions running the minimal preset are **not pruned or compacted** and their history stays pristine (as if this plugin were not installed). The decision follows the preset a session actually runs under (changeable via the preset-switch event); sessions with no preset info (headless/CLI) are unaffected. To make ARGP active under minimal too, add `config: { skipPresets: [] }` via `modify` in the profile layer.
 
@@ -118,9 +121,9 @@ Optionally pin a dedicated LLM backend for Stage-1 (otherwise it follows the hos
   config:
     peratom:
       compressor:
-        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm backend
+        llm: { provider: deepseek-official, model: deepseek-flash }   # dsh-llm backend
       declarer:
-        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # may point at a separate lite tier
+        llm: { provider: deepseek-official, model: deepseek-flash }   # may point at a separate lite tier
       # zoom: {}   # two-tier recall; mounted by default when the block is present
 ```
 
@@ -133,7 +136,7 @@ The `llm` sub-block is optional: when both `llm` and `endpoint`/`apiKey` are abs
 Once installed, type `/argp` in a session to see ARGP's live status (read-only; it never triggers compaction):
 
 ```text
-ARGP 1.10.0 · engine: graph+peratom · preset: standard
+ARGP 1.10.1 · engine: graph+peratom · preset: standard
 budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
@@ -191,7 +194,9 @@ Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 
 | Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
 | Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
 
-`npm run check` = typecheck + smoke + unit tests (318/318 green as of 2026-09-21). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
+`npm run check` = typecheck + smoke + unit tests (415/415 green as of 2026-10-12). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
+
+> **Model caliber for the historical DeepSeek arms**: the v0.3.x DeepSeek arms were measured with `deepseek-v4-flash` — that model was retired in 2026-09; the official API now serves `deepseek-flash` (DeepSeek-V4.1-Flash), with the old name kept only as a compatibility route (the host `llm-deepseek` catalog is now `deepseek-flash` / `deepseek-v4-pro`). The numbers above are artifacts of that model and **cannot be reproduced as-is on the new API**; re-running the DeepSeek arms uses `deepseek-flash` (the shared `spike/deepseek.ts` mount has migrated along, overridable via `DEEPSEEK_MODEL`).
 
 ## Platform gap feedback (for dsh)
 
@@ -202,7 +207,7 @@ No structured metadata channel for tool/result replacement (B-1), compaction/pru
 - **B-6 window-truncation blind spot**: live nodes not replaced by ARGP get their oldest part silently truncated by the request-assembly layer as the context nears contextWindow — `recall_pruned` cannot recover them. Mitigation: ratio budgets trigger earlier; the root fix is on the dsh side (B-6 filed upstream).
 - **Model dependence (honest version, above)**: guards guarantee safety; benefits depend on compliance. The lite-tier multi-model split's compliance is unmeasured (ledger D21).
 - **per-atom output tax**: Stage-1's per-turn compression call is a side-channel cost (7.2K completion tokens over 30 turns, measured; it never enters the context but counts toward total cost); usage from the dsh-llm backend is recorded, and the spike aggregation caliber is being wired up.
-- **Two-hop tombstone recall**: as placeholder text drifts across turns the original seq can be lost; `recall_pruned(seq)` needs the correct numbering (eliminated together once B-6 lands).
+- **Tombstone recall path**: since 1.8.0 every tombstone carries its origin node's `seq` (`[elided seq=N; recall_pruned(N) for detail]`), so `recall_pruned(seq)` recovers it in one hop — no more `list_pruned --keyword` reverse lookup; and "re-tombstoning" is excluded as a terminal state (G1), so the original `seq` is no longer diluted by chained replacements. Still bounded by the B-6 window-truncation blind spot (unreplaced live nodes remain unrecoverable).
 
 ## Reporting issues
 

@@ -1,5 +1,11 @@
 /**
- * Shared DeepSeek v4-flash test mount for dsh-argp spikes.
+ * Shared DeepSeek test mount for dsh-argp spikes.
+ *
+ * 模型沿革：历史臂（v0.3.x–1.x）使用 `deepseek-v4-flash` 实测；该模型已于
+ * 2026-09 退役，官方 API 由 `deepseek-flash`（DeepSeek-V4.1-Flash）承接
+ * （旧名仅作兼容路由，宿主 llm-deepseek 的 catalog 现为 deepseek-flash /
+ * deepseek-v4-pro）。默认值已随迁；单点硬编码 v4-flash 的旧脚本如需重跑，
+ * 用 DEEPSEEK_MODEL 覆盖或替换字面量即可——旧产物不可在新 API 上原样复现。
  *
  * The spike harness (mountAgentLoopTestDependencies) does not mount the
  * dsh credentials service, so this helper loads DEEPSEEK_API_KEY from the
@@ -12,7 +18,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
 
 export const DEEPSEEK_PROVIDER = 'deepseek-official'
-export const DEEPSEEK_MODEL = 'deepseek-v4-flash'
+export const DEEPSEEK_MODEL = process.env['DEEPSEEK_MODEL'] ?? 'deepseek-flash'
 
 const thinking = process.env['ARGP_DEEPSEEK_THINKING'] === 'enabled' ? 'enabled' as const : 'disabled' as const
 const reasoning = process.env['ARGP_DEEPSEEK_REASONING'] ?? (thinking === 'enabled' ? 'high' as const : 'off' as const)

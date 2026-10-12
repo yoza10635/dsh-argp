@@ -68,14 +68,14 @@ function ctxWithLlm(service: unknown): Context {
 
 test('completeViaDshLlm：text-delta 拼装 + usage 记账 + purpose=compaction + 单消息 hand-built 请求', async () => {
   const { service, calls } = fakeLlm([{ text: '{"splits":[],"tools":[]}', usage: { inputTokens: 1234, outputTokens: 56 } }])
-  const res = await completeViaDshLlm(ctxWithLlm(service), { provider: 'deepseek-official', model: 'deepseek-v4-flash' }, 'PROMPT', 1000)
+  const res = await completeViaDshLlm(ctxWithLlm(service), { provider: 'deepseek-official', model: 'deepseek-flash' }, 'PROMPT', 1000)
   assert.equal(res.text, '{"splits":[],"tools":[]}')
   assert.deepEqual(res.usage, { promptTokens: 1234, completionTokens: 56 })
   assert.equal(calls.length, 1)
   const call = calls[0]
   assert.ok(call !== undefined)
   assert.equal(call.provider, 'deepseek-official')
-  assert.equal(call.model, 'deepseek-v4-flash')
+  assert.equal(call.model, 'deepseek-flash')
   assert.equal(call.purpose, 'compaction', '辅助模型调用必须带 purpose=compaction（GenerateOptions 词表）')
   assert.equal(call.messageCount, 1)
 })
@@ -151,7 +151,7 @@ test('compressor：config.llm 后端走 ctx.llm、fetch 零调用、usage 落 re
   t.after(() => ctx.fiber.dispose())
   let fetchCalled = 0
   const compressor = new PeratomCompressor(ctx, {
-    llm: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+    llm: { provider: 'deepseek-official', model: 'deepseek-flash' },
     fetchImpl: (async () => { fetchCalled += 1; throw new Error('fetch must not be used') }) as typeof fetch,
   })
   const record = await compressor.compressCurrentTurn(session)
@@ -199,7 +199,7 @@ test('declarer：config.llm 接线——跨轮声明边照常入缓存（injectE
   t.after(() => ctx.fiber.dispose())
   let fetchCalled = 0
   const declarer = new CiteDeclarer(ctx, {
-    llm: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } satisfies DshLlmSpec,
+    llm: { provider: 'deepseek-official', model: 'deepseek-flash' } satisfies DshLlmSpec,
     fetchImpl: (async () => { fetchCalled += 1; throw new Error('fetch must not be used') }) as typeof fetch,
   })
   const record = await declarer.declareCurrentTurn(session)

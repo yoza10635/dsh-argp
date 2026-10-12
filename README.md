@@ -4,9 +4,19 @@
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
+[![npm version](https://img.shields.io/npm/v/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
+[![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎（双引擎形态；**npm 默认 = 双引擎全开（Stage-1 + Stage-2），安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝，见"安装与挂载"）：
+**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎**：替换"让模型自由改写历史"的摘要式压缩——**LLM 只提方案、确定性守卫负责处置**，被压缩 / 被剪枝的原文永不销毁（append-only 日志 + 逐字召回），压缩率精确兑现（0-LLM 图规则收敛）。双引擎形态、**安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝（见[安装与挂载](#安装与挂载)）。
+
+![dsh-argp 概览：守护式两阶段上下文压缩](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
+
+```bash
+dsh plugin --profile <name> add dsh-argp    # 安装即挂；装好后在会话里输入 /argp 查看实时状态
+```
+
+三个核心机制：
 
 - **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
 - **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
@@ -65,7 +75,7 @@ per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫�
 
 ## 安装与挂载
 
-从 npm 安装。**npm 默认 = 0-LLM 图剪枝（仅 Stage-2）**：包的 bundle patch（`cordis.patch.yml`）只挂图引擎（config 仅 `maxPasses: 256` / `recencyGuard: 10`，无 `peratom` 块），Stage-1 三管线默认不挂载：
+从 npm 安装。**安装即挂、双引擎全开**：`peratom` 缺省 = 挂（默认值落在代码里、不受各层 patch 整块替换影响，见下文「Stage-1（双引擎）：缺省即挂」），Stage-1 三管线与 Stage-2 图引擎同时生效，无需任何手工配置：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
@@ -85,14 +95,7 @@ dsh plugin --profile <name> add dsh-argp
 >   - dsh-argp
 > ```
 
-profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
-
-```yaml
-- id: compaction-basic
-  disabled: true
-```
-
-> 挂载由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
+> **stock 摘要器的禁用已随包完成**：包的 bundle patch 自带 `- id: compaction-basic / disabled: true`，安装后**无需**在 profile 层再做这一步（列在这里只为说明它被谁关掉）。挂载同样由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
 
 > **极简（minimal）preset 下不生效（1.9.0 起）**：ARGP 在 `skipPresets` 列出的 preset 下退场——默认 `['minimal']`，即极简 preset 的会话**不剪枝、不压缩**，历史保持原生态（与未安装本插件一致）。判定按会话实际运行的 preset（可被 preset 切换事件改变）；无 preset 信息的会话（headless/CLI）不受影响。要让 ARGP 在 minimal 下也生效，在 profile 层 modify 加 `config: { skipPresets: [] }`。
 
@@ -117,9 +120,9 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
   config:
     peratom:
       compressor:
-        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # dsh-llm 后端
+        llm: { provider: deepseek-official, model: deepseek-flash }   # dsh-llm 后端
       declarer:
-        llm: { provider: deepseek-official, model: deepseek-v4-flash }   # 可指向独立 lite 档
+        llm: { provider: deepseek-official, model: deepseek-flash }   # 可指向独立 lite 档
       # zoom: {}   # 两级 recall；块内缺省即挂载
 ```
 
@@ -135,7 +138,7 @@ profile 的 `cordis.patch.yml` 中禁用 stock 摘要器：
 装好后，在会话里输入 `/argp` 即可看到 ARGP 的实时状态（只读，不触发压缩）：
 
 ```text
-ARGP 1.10.0 · engine: graph+peratom · preset: standard
+ARGP 1.10.1 · engine: graph+peratom · preset: standard
 budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
@@ -193,7 +196,9 @@ cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
 | 合成 0-LLM | `npm run spike8a` | 单事务零 LLM 调用 |
 | 逐原子审计 | `node spike/atom-audit.mjs <产物目录>` | 事件驱动逐原子压缩/剪枝明细 |
 
-`npm run check` = typecheck + smoke + 单测（318/318 全绿，2026-09-21）。每个数字都带产物路径（证据落点见 `CHANGELOG.md`）。
+`npm run check` = typecheck + smoke + 单测（415/415 全绿，2026-10-12）。每个数字都带产物路径（证据落点见 `CHANGELOG.md`）。
+
+> **历史 DeepSeek 臂的模型口径**：v0.3.x 时期的 DeepSeek 臂用 `deepseek-v4-flash` 实测——该模型已于 2026-09 退役，官方 API 由 `deepseek-flash`（DeepSeek-V4.1-Flash）承接，旧名仅作兼容路由（宿主 `llm-deepseek` 的现役 catalog 为 `deepseek-flash` / `deepseek-v4-pro`）。上文数字均为**当时模型产物，不可在新 API 上原样复现**；重跑 DeepSeek 臂的脚本会自动使用 `deepseek-flash`（`spike/deepseek.ts` 共享挂载已随迁，可经 `DEEPSEEK_MODEL` 覆盖）。
 
 ## 平台缺口反馈（给 dsh）
 

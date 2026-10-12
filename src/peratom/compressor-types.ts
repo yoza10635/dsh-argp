@@ -147,7 +147,7 @@ export function defaultEndpoint(env: NodeJS.ProcessEnv = process.env): ResolvedE
   if (apiKey === undefined || apiKey === '') return null
   return {
     endpoint: env['DEEPSEEK_BASE'] !== undefined ? env['DEEPSEEK_BASE'] + '/chat/completions' : 'https://api.deepseek.com/chat/completions',
-    model: env['DEEPSEEK_MODEL'] ?? 'deepseek-v4-flash',
+    model: env['DEEPSEEK_MODEL'] ?? 'deepseek-flash',
     apiKey,
   }
 }

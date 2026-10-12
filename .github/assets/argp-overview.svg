@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" width="960" height="580" role="img" aria-label="dsh-argp overview: guarded two-stage context compaction">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748B"/>
+    </marker>
+    <marker id="arrGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4D6BFE"/>
+    </marker>
+  </defs>
+
+  <!-- canvas -->
+  <rect x="0.5" y="0.5" width="959" height="579" rx="16" fill="#FFFFFF" stroke="#E2E8F0"/>
+
+  <!-- header -->
+  <text x="40" y="52" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="22" font-weight="700" fill="#0F172A">dsh-argp — guarded context compaction</text>
+  <text x="40" y="78" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="13.5" fill="#64748B">LLM proposes · deterministic guards dispose · history never destroyed</text>
+  <rect x="742" y="30" width="178" height="30" rx="15" fill="#F1F5F9" stroke="#E2E8F0"/>
+  <text x="831" y="49" text-anchor="middle" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#475569">for DeepSeek Harness (dsh)</text>
+
+  <!-- ============ left: session ============ -->
+  <rect x="40" y="160" width="172" height="192" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="60" y="192" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="15" font-weight="700" fill="#0F172A">Session</text>
+  <text x="60" y="212" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#64748B">append-only event log</text>
+  <rect x="60" y="228" width="132" height="32" rx="7" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="74" y="249" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">U · user message</text>
+  <rect x="60" y="268" width="132" height="32" rx="7" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="74" y="289" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">A · assistant reply</text>
+  <rect x="60" y="308" width="132" height="32" rx="7" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text x="74" y="329" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">R · tool result</text>
+
+  <!-- arrow: session -> compaction -->
+  <line x1="214" y1="256" x2="242" y2="256" stroke="#64748B" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- ============ middle: two-stage compaction ============ -->
+  <rect x="246" y="118" width="360" height="286" rx="12" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="266" y="146" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="15" font-weight="700" fill="#334155">Two-stage compaction</text>
+
+  <!-- stage-1 -->
+  <rect x="262" y="160" width="328" height="110" rx="10" fill="#EEF2FF" stroke="#C7D2FE"/>
+  <rect x="262" y="160" width="5" height="110" rx="2.5" fill="#4D6BFE"/>
+  <text x="282" y="188" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="13.5" font-weight="700" fill="#3730A3">Stage-1 · eager · every turn</text>
+  <text x="282" y="212" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">LLM proposes: extract / summary / false</text>
+  <text x="282" y="234" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">guards rule verbatim — reject on lost tokens</text>
+  <text x="282" y="256" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#6366F1">atom → shorter copy (extract / summary)</text>
+
+  <!-- stage-2 -->
+  <rect x="262" y="282" width="328" height="110" rx="10" fill="#ECFEFF" stroke="#A5F3FC"/>
+  <rect x="262" y="282" width="5" height="110" rx="2.5" fill="#0891B2"/>
+  <text x="282" y="310" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="13.5" font-weight="700" fill="#155E75">Stage-2 · lazy · on pressure · 0-LLM</text>
+  <text x="282" y="334" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">reference graph: cites + deterministic A→R edges</text>
+  <text x="282" y="356" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#334155">reverse-topological whole-atom eviction</text>
+  <text x="282" y="378" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#0E7490">compaction ratio is exact: 0 LLM calls here</text>
+
+  <!-- arrow: compaction -> surface -->
+  <line x1="608" y1="256" x2="636" y2="256" stroke="#64748B" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- ============ right: render surface ============ -->
+  <rect x="640" y="160" width="280" height="214" rx="12" fill="#F1F5F9" stroke="#CBD5E1"/>
+  <text x="660" y="192" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="15" font-weight="700" fill="#0F172A">Render surface</text>
+  <text x="660" y="212" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#64748B">what the model actually sees</text>
+
+  <!-- budget bar -->
+  <rect x="660" y="226" width="240" height="14" rx="4" fill="#E2E8F0"/>
+  <rect x="660" y="226" width="86" height="14" rx="4" fill="#94A3B8"/>
+  <rect x="746" y="226" width="108" height="14" fill="#818CF8"/>
+  <rect x="854" y="226" width="46" height="14" rx="4" fill="#34D399"/>
+  <text x="660" y="262" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#475569">■ fixed overhead (system / tools / MCP)</text>
+  <text x="660" y="282" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#475569">■ compressed history (placeholders, recallable)</text>
+  <text x="660" y="302" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#475569">■ recent turns (live, verbatim)</text>
+  <line x1="660" y1="318" x2="900" y2="318" stroke="#E2E8F0"/>
+  <text x="660" y="338" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#334155">trigger = contextWindow × 0.8</text>
+  <text x="660" y="356" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#334155">retain = compressible × 0.2 → 80% cut</text>
+
+  <!-- ============ bottom: append-only log ============ -->
+  <rect x="40" y="440" width="880" height="86" rx="12" fill="#ECFDF5" stroke="#6EE7B7"/>
+  <text x="64" y="472" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="14" font-weight="700" fill="#047857">Append-only log — the single source of truth</text>
+  <text x="64" y="494" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="12" fill="#065F46">verbatim originals of every compressed / evicted atom stay here, addressable by seq</text>
+  <text x="896" y="472" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#047857">recall_summary · recall_detail</text>
+  <text x="896" y="494" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#047857">recall_pruned · list_pruned</text>
+
+  <!-- down arrows: replaced/evicted originals sink into the log -->
+  <line x1="126" y1="356" x2="126" y2="436" stroke="#64748B" stroke-width="1.4" marker-end="url(#arr)" stroke-dasharray="4 4"/>
+  <line x1="418" y1="408" x2="418" y2="436" stroke="#64748B" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="428" y="430" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11" fill="#64748B">replaced / evicted originals sink — never deleted</text>
+
+  <!-- recall arrow: log -> surface -->
+  <line x1="790" y1="436" x2="790" y2="378" stroke="#059669" stroke-width="1.6" marker-end="url(#arrGreen)" stroke-dasharray="6 4"/>
+  <text x="778" y="414" text-anchor="end" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#059669">recall — verbatim, never guess</text>
+
+  <!-- footer -->
+  <text x="40" y="560" font-family="system-ui,-apple-system,'Segoe UI',Roboto,sans-serif" font-size="11.5" fill="#94A3B8">Stage-1 = one side-channel LLM call per turn (cost, not context) · Stage-2 = pure graph rules, zero LLM</text>
+</svg>

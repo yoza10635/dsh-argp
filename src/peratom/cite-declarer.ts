@@ -164,7 +164,7 @@ export function citeDeclarerDefaultEndpoint(env: NodeJS.ProcessEnv = process.env
   if (apiKey === undefined || apiKey === '') return null
   return {
     endpoint: env['DEEPSEEK_BASE'] !== undefined ? env['DEEPSEEK_BASE'] + '/chat/completions' : 'https://api.deepseek.com/chat/completions',
-    model: env['DEEPSEEK_MODEL'] ?? 'deepseek-v4-flash',
+    model: env['DEEPSEEK_MODEL'] ?? 'deepseek-flash',
     apiKey,
   }
 }
@@ -490,9 +490,9 @@ export class CiteDeclarer {
     this.ctx = ctx
     this.dshLlm = config.llm ?? null
     this.endpoint = config.endpoint !== undefined
-      ? { endpoint: config.endpoint, model: config.model ?? 'deepseek-v4-flash', apiKey: config.apiKey ?? '' }
+      ? { endpoint: config.endpoint, model: config.model ?? 'deepseek-flash', apiKey: config.apiKey ?? '' }
       : (config.apiKey !== undefined
-        ? { endpoint: config.endpoint ?? 'https://api.deepseek.com/chat/completions', model: config.model ?? 'deepseek-v4-flash', apiKey: config.apiKey }
+        ? { endpoint: config.endpoint ?? 'https://api.deepseek.com/chat/completions', model: config.model ?? 'deepseek-flash', apiKey: config.apiKey }
         : citeDeclarerDefaultEndpoint())
     this.windowTurns = config.windowTurns ?? CITATION_WINDOW_TURNS
     this.timeoutMs = config.timeoutMs ?? DEFAULT_LLM_TIMEOUT_MS
