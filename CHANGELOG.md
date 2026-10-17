@@ -6,7 +6,7 @@
 
 ## [1.10.1] - 2026-10-12（显示层与模型口径：插件页两层文案分离 + 退役模型名迁移 + README 可读性重构）
 
-> **发行说明**：三件互相独立的小事打包——① 插件管理页此前把同一个包显示两次、内外两层文案一字不差（都出自宿主 `readPluginMeta` 对同一 specifier 的读取）；组件改走 exports 子路径后，两层各自有了专属文案。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。
+> **发行说明**：三件互相独立的小事打包——① 插件管理页双层文案（包卡片与组件行）曾试验 exports 子路径分离方案，实测会截肢 client half，已回退（本版双层文案行为与 1.10.0 相同，新增 prerelease-check 回归锁防止复发）。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。
 > **10-17 追加**：补上 `engines.dsh` 兼容性声明（宿主 0.2.1 官方要求的适配，见下）。
 
 ### Added
@@ -22,11 +22,7 @@
 
 ### Changed
 
-- **插件管理页两层文案分离**（组件行不再与包卡片一字不差）：
-  - `cordis.patch.yml`：insert 的 entry `name` 改为 `dsh-argp/engine`（**entry id 保持 `dsh-argp`**——profile 层 modify、`duplicate loader entry id` 守卫、`bundle-in-use` 判定全按 id 匹配，除显示文案外无行为变化）；
-  - `package.json`：exports 增 `./engine`（同一入口模块）、`./engine/package.json`、`./engine/locale/{en,zh}.json`、`./locale/{en,zh}.json`；`files` 白名单带上 `locale`、`locale-engine`、`engine.package.json`；
-  - 新增 `locale/{en,zh}.json`（包卡片文案）、`locale-engine/{en,zh}.json`（组件行文案，title 仍显示 `dsh-argp`）与 `engine.package.json`（子路径兜底 manifest）；
-  - ⚠️ 两个 locale 目录必须物理分离：宿主 `readPluginMeta` 会枚举同目录全部 `.json` 并要求文件名为语言 id，混放非语言名文件直接抛错。
+- **插件管理页双层文案实验回退**（1.10.1 内部往返，最终行为 = 1.10.0）：曾尝试把组件行改走 `dsh-argp/engine` exports 子路径以让包卡片与组件行文案分离，实测**该方案会整体截肢 client half**（见 Fixed），已回退：`cordis.patch.yml` 组件行 `name` 恢复裸包名 `dsh-argp`；exports 移除 `./engine/package.json` 与 `./engine/locale/*`（保留 `./engine` 入口与 `./locale/*` 展示字典）；删除 `engine.package.json`、`locale-engine/`。两层文案维持同源重复（宿主显示层的既有限制，非本版回归）。
 - **Stage-1 直连默认模型**：`deepseek-v4-flash` → `deepseek-flash`（`peratom/compressor.ts`、`peratom/cite-declarer.ts`、`peratom/compressor-types.ts` 共 6 处 fallback）。
 - **`spike/deepseek.ts` 共享挂载随迁**：`DEEPSEEK_MODEL` 改为 `env['DEEPSEEK_MODEL'] ?? 'deepseek-flash'`（新增 env 覆盖能力）；历史产物不可在新 API 原样复现，已在 README 复现节披露口径（其余 spike 单点硬编码属历史台账，保留原样）。
 

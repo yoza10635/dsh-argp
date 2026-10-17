@@ -118,6 +118,28 @@ if (!changelog.includes(`## [${version}]`) && !changelog.includes(`## ${version}
   }
 }
 
+// ── 2.8) cordis.patch.yml 组件行 name 必须是裸包名（1.10.1 客户端半截肢回归锁）──
+// 浏览器 loader 的 resolveMeta→locatePkgJson 用 exactPackageSpecifier(rowName) 定位
+// 客户端半；该函数对任何含 '/' 的子路径返回 undefined（源码注释：subpath rows
+// "permanently not a client row"）。1.10.1 曾把行 name 改成 dsh-argp/engine 做双层
+// 元数据，直接导致设置页 ARGP tab + 聊天 cites 过滤器整体消失，且 readPluginMeta
+// 重验（只验显示元数据）测不出来。此处锁死：insert 行 name 必须逐字符等于包名。
+{
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const patchText = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
+  // 只匹配我们自己那行 insert（`- id: dsh-argp` 后的第一个 name:）；
+  // 补丁内 preset override 段的宿主行（含 @scope/pkg/subpath、cordis:group）不受此契约约束。
+  const rowMatch = /- id:\s*dsh-argp\s*\n\s*name:\s*(\S+)/m.exec(patchText)
+  if (rowMatch === null) {
+    fail('cordis.patch.yml 里找不到 `- id: dsh-argp` + `name:` 组件行（格式变了？回归锁需同步更新）')
+  } else if (rowMatch[1] !== pkg.name) {
+    fail(
+      `cordis.patch.yml 组件行 name="${rowMatch[1]}" 不等于裸包名 "${pkg.name}"：` +
+        '子路径行会被浏览器 loader 判为"永不是客户端行"，client half（设置卡片+cites 过滤器）静默消失',
+    )
+  }
+}
+
 const tag = `v${version}`
 
 // ── 3) 目标 tag 状态 ──

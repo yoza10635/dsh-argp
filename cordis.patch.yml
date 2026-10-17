@@ -11,20 +11,22 @@
 # inserts id=dsh-argp, the loader crashes with "duplicate loader entry id".
 # Profile layer must only tune config (modify), never insert again.
 #
-# WHY `dsh-argp/engine` instead of the bare package name (1.10.1): the Host
-# labels a plugin twice — the bundle card reads metadata for the *package*
-# (`dsh-argp`), and each row under "包含的组件" reads it for the *row module*
-# (`readPluginMeta(row.name, …)` in plugin-manager/src/index.ts). Both pointed
-# at `dsh-argp`, so the two panels rendered byte-identical text. The row now
-# mounts through an exports subpath: same entry module, its own display
-# metadata in `locale-engine/`. The entry **id** stays `dsh-argp` — profile
-# modify layers, the duplicate-entry guard and the `bundle-in-use` check all
-# match on id, so nothing but the displayed text changes.
+# WHY the row `name` MUST stay the bare package name (1.10.1 regression):
+# the double-labeling cosmetic issue (bundle card and component row both read
+# `readPluginMeta('dsh-argp')` → byte-identical text) was briefly "fixed" by
+# mounting the row through the `dsh-argp/engine` exports subpath. That broke
+# the CLIENT half entirely: the browser loader's resolveMeta → locatePkgJson
+# calls exactPackageSpecifier(rowName), which returns undefined for any
+# subpath — the source comment says subpath rows are "permanently not a
+# client row". Result: the settings-page ARGP tab and the chat cites filter
+# silently vanished on desktop (packages/client/modules/src/index.ts:850).
+# The entry id stays `dsh-argp` either way; the cosmetic duplication is the
+# lesser evil versus a dead client half. Never reintroduce a subpath here.
 - id: compaction-basic
   disabled: true
 - insert:
     - id: dsh-argp
-      name: dsh-argp/engine
+      name: dsh-argp
       config:
         maxPasses: 256
         recencyGuard: 10
