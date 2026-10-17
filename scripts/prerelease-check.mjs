@@ -140,6 +140,27 @@ if (!changelog.includes(`## [${version}]`) && !changelog.includes(`## ${version}
   }
 }
 
+// ── 2.9) cordis.patch.yml 的提示词模板变量必须在宿主注册集内 ──
+// 0.2.1 起宿主把工作目录从「提示词变量」改成 working-directory 服务注入的
+// 非插值 context（system-prompt README：custom persona templates must not
+// depend on a built-in {{cwd}} variable）；组装期只剩 model-selection 注入的
+// provider/model 两个变量，写任何其它名字会在**任何模型请求之前**抛错，
+// 表现为"本轮运行失败"。1.10.1 前我们照抄了宿主旧 preset 的
+// `suffix: Your working directory is ...` 子句，0.2.1 上每轮必炸。锁死白名单。
+{
+  const REGISTERED_PROMPT_VARIABLES = ['model', 'provider']
+  const patchText = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
+  const used = [...patchText.matchAll(/\{\{\s*([A-Za-z_][\w.]*)\s*\}\}/g)].map((m) => m[1])
+  for (const name of new Set(used)) {
+    if (!REGISTERED_PROMPT_VARIABLES.includes(name)) {
+      fail(
+        `cordis.patch.yml 引用了未注册的提示词变量 {{${name}}}（宿主只注册 ` +
+          `${REGISTERED_PROMPT_VARIABLES.join('/')}）：组装期插值会直接抛错，本轮运行失败`,
+      )
+    }
+  }
+}
+
 const tag = `v${version}`
 
 // ── 3) 目标 tag 状态 ──

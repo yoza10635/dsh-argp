@@ -7,13 +7,22 @@
 ## [1.10.1] - 2026-10-12（显示层与模型口径：插件页两层文案分离 + 退役模型名迁移 + README 可读性重构）
 
 > **发行说明**：三件互相独立的小事打包——① 插件管理页双层文案（包卡片与组件行）曾试验 exports 子路径分离方案，实测会截肢 client half，已回退（本版双层文案行为与 1.10.0 相同，新增 prerelease-check 回归锁防止复发）。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。
-> **10-17 追加**：补上 `engines.dsh` 兼容性声明（宿主 0.2.1 官方要求的适配，见下）。
+> **10-17 追加**：补上 `engines.dsh` 兼容性声明（宿主 0.2.1 官方要求的适配，见下），并修掉一个 0.2.1 上每轮必炸的提示词组装失败（preset override 携带了宿主已退役的 `{{cwd}}` 变量，见 Fixed）——后者是本版唯一会打断运行的缺陷，建议 0.2.1 用户务必升到本版。
 
 ### Added
 
 - **`engines.dsh: ">=0.2.0-rc.1 <0.3.0-0"` 兼容性声明**：宿主 **0.2.1-rc.1** 起（`plugin-compatibility.ts` 的 `unmetRequirements`），插件 manifest 自带 `engines.dsh` 时**该范围单独决定 boot 准入、`peerDependencies` 整个被忽略**；不满足 ⇒ bundle patch 层静默跳过、压缩静默失效。上界写成 `<0.3.0-0` 而非 `<0.3.0`：peer `^0.2.0-rc.1` 实际展开为 `>=0.2.0-rc.1 <0.3.0-0`（semver 的 caret 展开排除 next-major 预发布），只有逐字对齐才能让两条声明对 `0.3.0-alpha.1` 这类版本给出同一答案——新宿主上赢的是 `engines.dsh`，两条分叉时 peer 会变成误导文档。声明与 peer 线双向 `semver.subset` 等价（prerelease-check 加锁），对运行时判定零行为变化；收益是 dsh.so / Discover 类市场页能按官方契约正确渲染兼容性标签。
   - `scripts/doctor.mjs` 同步换代：按运行时版本分流两代语义（<0.2.1-rc.1 走旧 peer 判定；≥0.2.1-rc.1 且声明了 `engines.dsh` 时只按该范围判定），输出显示实际判定依据。
   - `scripts/prerelease-check.mjs` 加锁：发布前断言 `engines.dsh` 存在、且每条 dsh peer 范围是其子集（防止两条声明日后分叉——分叉时新宿主上赢的是 `engines.dsh`，peer 会变成误导文档）。
+
+### Fixed
+
+- **0.2.1 宿主上每轮必炸：`unknown prompt variable "{{cwd}}" in section "deployment:persona-suffix"`**（表现为"本轮运行失败"，任何模型请求之前即失败）：
+  - 起因是宿主 0.2.1 的破坏性变更——工作目录从"提示词变量"改为由 `working-directory` 服务注入的非插值 context（`packages/session/working-directory`，`interpolate: false`），`{{cwd}}` **不再注册**；组装期只剩 `model-selection` 注入的 `provider`/`model` 两个变量（宿主 `system-prompt` README 明文：custom persona templates must not depend on a built-in `{{cwd}}` variable）。官方同一提交（`2eb058d887`）也把自己 bundle 的三份 preset 的 `personaSuffix` 一并删了。
+  - 我们 `cordis.patch.yml` 里三份 preset override（standard / cordis / ptc）是照抄宿主旧 preset 的，于是把已退役变量又带了回来，**且 preset override 是整块替换 config，宿主自己改了不算数**——升级到 0.2.1 后只要挂载这三份 preset，提示词组装必抛错。
+  - 修法与官方一致：删掉 `suffix` 子句（工作目录信息由 working-directory context 自动提供，无需在 persona 里复述）。`prefix` 里的 `{{model}}` 仍由 model-selection 注册，保留不动。
+  - `scripts/prerelease-check.mjs` 新增 **2.9 回归锁**：补丁里出现的任何 `{{var}}` 必须在宿主注册集 `{model, provider}` 内，否则拒发布（正/负控实测捕获正确）。
+  - ⚠️ 自定义 profile 补丁里若也写过 `Working directory: {{cwd}}`（如自定义 preset / `personaSuffix`），同样会在 0.2.1 上每轮炸——按宿主 README 删掉该子句即可。
 
 ### 提示
 

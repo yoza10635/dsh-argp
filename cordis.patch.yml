@@ -43,7 +43,9 @@
       - id: persona
         name: '@deepseek-ai/dsh-persona'
         config:
-          suffix: Your working directory is {{cwd}}.
+          # No `suffix`: 0.2.1 retired the cwd prompt variable — the
+          # working-directory service injects the directory as non-interpolated
+          # context instead, and an unresolved reference fails prompt assembly.
           prefix: You are a coding agent powered by the {{model}} model.
       - id: agent-instructions
         name: '@deepseek-ai/dsh-agent-instructions'
@@ -176,7 +178,7 @@
       - id: persona
         name: '@deepseek-ai/dsh-persona'
         config:
-          suffix: Your working directory is {{cwd}}.
+          # No `suffix`: see the note on `preset-standard` — the cwd variable is retired.
           prefix: >-
             You are a coding agent powered by the {{model}} model.
       - id: agent-instructions
@@ -313,7 +315,9 @@
       - id: persona
         name: '@deepseek-ai/dsh-persona'
         config:
-          suffix: Your working directory is {{cwd}}.
+          # No `suffix`: 0.2.1 retired the cwd prompt variable — the
+          # working-directory service injects the directory as non-interpolated
+          # context instead, and an unresolved reference fails prompt assembly.
           prefix: You are a coding agent powered by the {{model}} model.
       - id: agent-instructions
         name: '@deepseek-ai/dsh-agent-instructions'
