@@ -7,6 +7,13 @@
 ## [1.10.1] - 2026-10-12（显示层与模型口径：插件页两层文案分离 + 退役模型名迁移 + README 可读性重构）
 
 > **发行说明**：三件互相独立的小事打包——① 插件管理页此前把同一个包显示两次、内外两层文案一字不差（都出自宿主 `readPluginMeta` 对同一 specifier 的读取）；组件改走 exports 子路径后，两层各自有了专属文案。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。
+> **10-17 追加**：补上 `engines.dsh` 兼容性声明（宿主 0.2.1 官方要求的适配，见下）。
+
+### Added
+
+- **`engines.dsh: ">=0.2.0-rc.1 <0.3.0-0"` 兼容性声明**：宿主 **0.2.1-rc.1** 起（`plugin-compatibility.ts` 的 `unmetRequirements`），插件 manifest 自带 `engines.dsh` 时**该范围单独决定 boot 准入、`peerDependencies` 整个被忽略**；不满足 ⇒ bundle patch 层静默跳过、压缩静默失效。上界写成 `<0.3.0-0` 而非 `<0.3.0`：peer `^0.2.0-rc.1` 实际展开为 `>=0.2.0-rc.1 <0.3.0-0`（semver 的 caret 展开排除 next-major 预发布），只有逐字对齐才能让两条声明对 `0.3.0-alpha.1` 这类版本给出同一答案——新宿主上赢的是 `engines.dsh`，两条分叉时 peer 会变成误导文档。声明与 peer 线双向 `semver.subset` 等价（prerelease-check 加锁），对运行时判定零行为变化；收益是 dsh.so / Discover 类市场页能按官方契约正确渲染兼容性标签。
+  - `scripts/doctor.mjs` 同步换代：按运行时版本分流两代语义（<0.2.1-rc.1 走旧 peer 判定；≥0.2.1-rc.1 且声明了 `engines.dsh` 时只按该范围判定），输出显示实际判定依据。
+  - `scripts/prerelease-check.mjs` 加锁：发布前断言 `engines.dsh` 存在、且每条 dsh peer 范围是其子集（防止两条声明日后分叉——分叉时新宿主上赢的是 `engines.dsh`，peer 会变成误导文档）。
 
 ### 提示
 

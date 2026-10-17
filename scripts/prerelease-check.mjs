@@ -83,6 +83,41 @@ if (!changelog.includes(`## [${version}]`) && !changelog.includes(`## ${version}
   fail(`CHANGELOG.md 缺少 ${version} 版本段（发版即文档，先补 CHANGELOG 再发布）`)
 }
 
+// ── 2.7) engines.dsh 与 dsh peer 线必须双向等价 ──
+// 宿主 ≥0.2.1-rc.1 起 engines.dsh 单独决定 boot 准入、peerDependencies 整个被忽略。
+// 两条声明一旦分叉：赢的是 engines.dsh，peer 变成误导文档（用户照 peer 判断兼容性会判错）。
+// 注意 caret 展开细节：^0.2.0-rc.1 = ">=0.2.0-rc.1 <0.3.0-0"，engines.dsh 必须写
+// <0.3.0-0 而非 <0.3.0，否则 0.3.0-alpha.1 这类 next-major 预发布两线答案不一致。
+{
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  const enginesDsh = pkg.engines?.dsh
+  if (typeof enginesDsh !== 'string' || enginesDsh.trim() === '') {
+    fail('package.json 缺 engines.dsh 声明（宿主 ≥0.2.1-rc.1 的官方兼容性契约，缺失时回落 peer 判定且市场页无法渲染兼容标签）')
+  }
+  let semver
+  try {
+    semver = (await import('semver')).default
+  } catch {
+    fail('无法加载 semver（等价锁依赖本仓 node_modules 的 semver，先 npm install）')
+  }
+  const dshPeers = Object.entries(pkg.peerDependencies ?? {}).filter(
+    (n) => n[0] === '@deepseek-ai/dsh' || n[0].startsWith('@deepseek-ai/dsh-'),
+  )
+  for (const [peerName, peerRange] of dshPeers) {
+    let equivalent = false
+    try {
+      equivalent =
+        semver.subset(peerRange, enginesDsh, { includePrerelease: true }) &&
+        semver.subset(enginesDsh, peerRange, { includePrerelease: true })
+    } catch (e) {
+      fail(`semver.subset 解析失败（${peerName}: "${peerRange}" vs engines.dsh: "${enginesDsh}"）: ${e.message}`)
+    }
+    if (!equivalent) {
+      fail(`兼容性声明分叉: ${peerName}="${peerRange}" 与 engines.dsh="${enginesDsh}" 不等价（新宿主上 engines.dsh 单独决定准入，peer 会成误导文档；改到两线互相 subset 或同步放宽）`)
+    }
+  }
+}
+
 const tag = `v${version}`
 
 // ── 3) 目标 tag 状态 ──

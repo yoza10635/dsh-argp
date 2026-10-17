@@ -26,7 +26,10 @@
  * 本脚本正是这个诊断器：它**不复用**插件运行时，而是
  *   1) 从你指定的 dsh 安装里找到宿主实际使用的 `semver`（保证与宿主判定逐字节一致，
  *      尤其是 prerelease 序 `rc > alpha` 这类微妙点）；
- *   2) 逐字复刻宿主 `evaluatePluginCompatibility` 的判定逻辑（见 plugin-compatibility.ts）；
+ *   2) 逐字复刻宿主 `evaluatePluginCompatibility` 的判定逻辑（见 plugin-compatibility.ts）。
+ *      🔴 宿主 **0.2.1-rc.1** 起语义换代：manifest 自带 `engines.dsh` 时该范围**单独决定**
+ *      准入（peerDependencies 整个被忽略，判错即拒载）；无 `engines.dsh` 才回落 peer 判定。
+ *      本脚本按 `--dsh-version` 分流两代语义，早于分界版本自动用旧 peer 判定。
  *   3) 对给定的 dsh-argp manifest 报告「准入 / 将被跳过」，跳过时给出宿主同款
  *      `dsh plugin allow-version … --accept-risk` 补救命令。
  *
@@ -147,11 +150,35 @@ function readDshVersion(dshRoot) {
 
 // ---------------------------------------------------------------------------
 // 逐字复刻宿主 evaluatePluginCompatibility 的判定（plugin-compatibility.ts）
-//   返回 { peers, name, version }：peers 为空 = 准入。
+//   返回 { peers, name, version, via }：peers 为空 = 准入。
+//
+// 🔴 宿主两代语义（分界 = 0.2.1-rc.1，引入 commit 3de3a977e0）：
+//   - <  0.2.1-rc.1：只看 peerDependencies 里的 @deepseek-ai/dsh* 项。
+//   - >= 0.2.1-rc.1：manifest 自带 engines.dsh 时**该范围单独决定准入、
+//     peerDependencies 整个被忽略**（unmetRequirements 直接 return）；
+//     没有 engines.dsh 才回落旧 peer 判定。workspace:* 占位符仅对 peer 有效，
+//     engines.dsh 用 workspace: 一律视为不满足。两代都用 includePrerelease。
+//   因此运行时版本必须参与分流，否则对 0.2.1+ 宿主会复刻错判定。
 // ---------------------------------------------------------------------------
+const ENGINES_DSH_RULE_SINCE = '0.2.1-rc.1'
+
+function satisfies(runtimeVersion, range, semver) {
+  return range.trim() !== '' && semver.satisfies(runtimeVersion, range, { includePrerelease: true })
+}
+
 function evaluatePluginCompatibility(manifest, runtimeVersion, semver) {
   if (typeof manifest !== 'object' || manifest === null) throw new Error('manifest must be an object')
-  if (!Object.hasOwn(manifest, 'peerDependencies')) return { peers: {}, name: manifest.name, version: manifest.version }
+  const engines = Object.hasOwn(manifest, 'engines') && manifest.engines !== null && typeof manifest.engines === 'object'
+    ? manifest.engines
+    : {}
+  const enginesRuleActive = !semver.lt(runtimeVersion, ENGINES_DSH_RULE_SINCE)
+  if (enginesRuleActive && Object.hasOwn(engines, 'dsh')) {
+    const range = engines.dsh
+    if (typeof range !== 'string') throw new Error('engines.dsh must be a string')
+    const peers = satisfies(runtimeVersion, range, semver) ? {} : { 'engines.dsh': range }
+    return { peers, name: manifest.name, version: manifest.version, via: 'engines.dsh' }
+  }
+  if (!Object.hasOwn(manifest, 'peerDependencies')) return { peers: {}, name: manifest.name, version: manifest.version, via: 'peerDependencies' }
   const dependencies = manifest.peerDependencies
   if (typeof dependencies !== 'object' || dependencies === null || Array.isArray(dependencies)) {
     throw new Error('peerDependencies must be an object')
@@ -162,11 +189,12 @@ function evaluatePluginCompatibility(manifest, runtimeVersion, semver) {
     // 宿主只检查 dsh 系 peer；cordis / schemastery 等不在准入范围
     if (name !== '@deepseek-ai/dsh' && !name.startsWith('@deepseek-ai/dsh-')) continue
     const requirement = ['workspace:^', 'workspace:~', 'workspace:*'].includes(range) ? runtimeVersion : range
-    if (requirement.trim() === '' || !semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })) {
+    if (!satisfies(runtimeVersion, requirement, semver)) {
       peers[name] = range
     }
   }
-  return { peers, name: manifest.name, version: manifest.version }
+  const via = enginesRuleActive ? 'peerDependencies（engines.dsh 缺失，回落 peer）' : 'peerDependencies（宿主 < 0.2.1-rc.1，无 engines.dsh 规则）'
+  return { peers, name: manifest.name, version: manifest.version, via }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,8 +273,9 @@ function main() {
     return 2
   }
 
-  const { name, version, peers } = result
+  const { name, version, peers, via } = result
   const key = `${name}@${version}`
+  const enginesDsh = typeof manifest.engines?.dsh === 'string' ? manifest.engines.dsh : undefined
   const peerCount = Object.keys(manifest.peerDependencies ?? {}).filter(
     (n) => n === '@deepseek-ai/dsh' || n.startsWith('@deepseek-ai/dsh-'),
   ).length
@@ -254,17 +283,21 @@ function main() {
   console.log(`dsh-argp boot doctor`)
   console.log(`  manifest   : ${key}  (${manifestPath})`)
   console.log(`  dsh runtime: ${runtimeVersion}  (semver ${found.version} @ ${found.path})`)
-  console.log(`  dsh peers  : ${peerCount} 个 @deepseek-ai/dsh* peer 受准入检查`)
+  if (enginesDsh !== undefined) {
+    console.log(`  engines.dsh: "${enginesDsh}"`)
+    console.log(`  判定依据   : ${via}`)
+  }
+  console.log(`  dsh peers  : ${peerCount} 个 @deepseek-ai/dsh* peer（宿主 >=0.2.1-rc.1 且声明 engines.dsh 时不参与判定）`)
   console.log('')
 
   if (Object.keys(peers).length === 0) {
-    console.log(`✅ 准入：${key} 与 dsh ${runtimeVersion} 兼容，所有 dsh peer 均满足。`)
+    console.log(`✅ 准入：${key} 与 dsh ${runtimeVersion} 兼容（依据：${via}）。`)
     console.log(`   无需豁免；bundle 的 patch 层会被正常应用，dsh-argp 会加载。`)
     return 0
   }
 
-  console.log(`❌ 将被跳过：${key} 与 dsh ${runtimeVersion} 不兼容。`)
-  console.log(`   不满足的 peer：`)
+  console.log(`❌ 将被跳过：${key} 与 dsh ${runtimeVersion} 不兼容（依据：${via}）。`)
+  console.log(`   不满足的要求：`)
   for (const [p, range] of Object.entries(peers)) {
     console.log(`     - ${p}: "${range}"  不满足运行时 ${runtimeVersion}`)
   }

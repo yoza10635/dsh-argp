@@ -24,7 +24,8 @@
   ],
   "type": "module",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
   },
   "description": "Guarded context compaction for DeepSeek Harness (dsh): the LLM proposes, deterministic guards dispose — eager per-atom shrink (extract/summary/false under verbatim guards) + lazy reference-graph eviction (0-LLM) + byte-exact recall from an append-only log. 压缩率精确兑现，历史永不销毁。",
   "keywords": [
@@ -131,6 +132,7 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "esbuild": "^0.24.2",
+    "semver": "^7.8.5",
     "typescript": "^5.7.0"
   }
 }
