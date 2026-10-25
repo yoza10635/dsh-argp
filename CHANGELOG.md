@@ -29,6 +29,7 @@
 ### 提示
 
 - 测试：全量 449 例通过（新增 `focus-drift.test.ts` 7 例反例集 + abort 反例精确化 + budget-scale ⑧ 桶化改造）；突变验证 8/8 RED（每个修复删掉即红）。
+- **Tier A 集成测试**（评审 §7 第 3 层的进程内形态，随本批补入）：新增 `test/integration-loop.test.ts` 3 例——`mountAgentLoopTestHarness` 挂**生产 AgentLoop**（真实 inbox claim / pre-step / turn-stopping / idle / maintenance 事件序）+ `ctx.llm.registerAdapter` 脚本化 `LlmAdapter`（唯一抽象方法 `stream`；peratom 的 dsh-llm 通路经 `autoDshLlmSpec` 复用同一适配器）。I1 两段式水位经真实事件序（轮末提案暂存 → 下轮 pre-step flush → turn-2 真实请求已无原文）；I2 双 agent 探测窗口交错（不破坏 + 解析窗口按会话分桶 + 锚点不串台；写桶/桶隔离两突变均红）；I3 真实 maintenance 相位空任务（括号配对、下一轮照常——2-4 已知限制的安全侧）。结构性发现：首轮 pre-step 时 open turn 尚无 surface 原子（user 消息在 pre-step 之后落盘），探测窗口的 D2 压力场景在真实回路上无可观测后果——其锁位在单元反例集（focus-drift），集成层锁端到端不变量。
 - 版本号仍为 1.11.0-beta.0（beta.1 随批次 3 一起 bump + 发布）。
 
 ## [1.11.0-beta.0] - 2026-10-25（会话所有权：per-Session 状态分桶 + exec 路由 + 提交语义）
