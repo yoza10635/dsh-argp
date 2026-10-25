@@ -266,8 +266,15 @@ test('compaction/end 事件归零预算（session/event 钩子）', async t => {
   // 经 ctx 事件总线派发 compaction/end（钩子挂在 ctx.on('session/event')；探针实证
   // session.append 不触发监听器，须 ctx.emit 手动派发，实参 (session, event)；钩子只读
   // event.type，故事件体 as never 缩窄）。
-  h.ctx.emit('session/event', session, { type: 'compaction/end', compactionId: 'x' } as never)
+  // 真实事件形状：data 承载 payload（测试旧 fixture 用扁平结构，2-6 起钩子读 data.error）。
+  h.ctx.emit('session/event', session, { type: 'compaction/end', data: { compactionId: 'x' } } as never)
   assert.equal(h.zoom.detailUsed, 0, 'compaction/end must zero the budget via the session/event hook')
+
+  // 2-6（1.11.0-beta.1）：带 error 的 end 是 partial 事务——不复位（成功才复位）。
+  await runTool(h.ctx, 'recall_detail', { seq: 2 })
+  assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'precondition: exhausted again')
+  h.ctx.emit('session/event', session, { type: 'compaction/end', data: { compactionId: 'x', error: 'partial' } } as never)
+  assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'error end must NOT reset the budget')
 })
 
 test('summary 预算独立于 detail：耗尽 detail 不影响 summary 档', async t => {

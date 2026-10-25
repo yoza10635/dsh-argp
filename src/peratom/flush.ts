@@ -213,6 +213,12 @@ export async function callAndStash(host: FlushHost, session: Session, collect: C
         ms = Date.now() - started
       } catch (schemaError) {
         signal?.throwIfAborted() // 1-5：abort 不是 schema 失败——不进兼容重试，直接向上抛
+        // 2-5（1.11.0-beta.1）错误分类：只有"端点拒绝 response_format"（HTTP 400/422）才
+        // 进裸 prompt 兼容重试；429/5xx（限流/端点故障）原样向上抛（重试只会放大压力）；
+        // 其余状态码同样不重试。网络层 TypeError（无 httpStatus）保留旧的兼容重试——
+        // spike 30/32 的原始场景是自建端点抖动，一次裸重试是合理兜底。
+        const status = (schemaError as { httpStatus?: number } | undefined)?.httpStatus
+        if (status !== undefined && status !== 400 && status !== 422) throw schemaError
         // response_format 被端点拒绝/网络抖动：spike 30/32 兼容模式重试一次（裸 prompt）。
         raw = await postChat(host.fetchImpl, backend.endpoint, prompt, host.timeoutMs, false, effectiveCtk, contextWire, contextTools, host.maxCompletionTokens, signal)
         ms = Date.now() - started

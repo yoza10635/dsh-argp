@@ -82,6 +82,7 @@ export async function completeViaDshLlm(
   contextMessages?: readonly Message[],
   contextTools?: readonly ToolSchema[],
   signal?: AbortSignal,
+  maxTokens?: number,
 ): Promise<PeratomLlmResult> {
   const llm = resolveLlmRuntime(ctx)
   if (llm === undefined) throw new Error('dsh-llm backend: host has no llm service')
@@ -94,6 +95,10 @@ export async function completeViaDshLlm(
     messages,
     ...(contextTools !== undefined && contextTools.length > 0 ? { tools: [...contextTools] } : {}),
     temperature: 0,
+    // 2-5（1.11.0-beta.1）：输出 cap（默认 16384 tok）——此前 dsh-llm 路径不传 maxTokens，
+    // 思考型模型可无限输出 reasoning 烧穿压缩调用预算（fetch 路径早有 maxCompletionTokens，
+    // 双后端不对称）。completeViaDshLlm 新增可选 maxTokens 参数，调用方传 peratom 配置值。
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
     purpose: 'compaction',
     // 1-5（1.11.0-beta.0）：外部取消与超时合并——任一触发即断流（abort 优先透传给调用方）。
     signal: signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]),

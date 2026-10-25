@@ -193,12 +193,15 @@ export class RecallZoom {
 
     // 预算滑窗重置：每笔 compaction 事务成功后归零（与 budgetRecallText 同款语义）。
     ctx.on('session/event', (session, event) => {
-      if (event.type === 'compaction/end') {
-        // 1-1：按 event 所属会话归零（此前进程级归零会清掉并发会话的预算）。
-        const b = this.budgetsOf(session)
-        b.detail = 0
-        b.summary = 0
-      }
+      // 2-6（1.11.0-beta.1）：复位条件统一为"compaction 事务**成功**"——带 error 的 end
+      // 是 partial 事务（1.10.2 0-5 定案），视图未换代，预算不该复位（否则失败事务
+      // 反而奖励一轮全额召回预算）。与 engine 侧 pruneIntervals 的"成功才复位"同口径。
+      if (event.type !== 'compaction/end') return
+      if (typeof (event.data as { error?: unknown }).error === 'string') return
+      // 1-1：按 event 所属会话归零（此前进程级归零会清掉并发会话的预算）。
+      const b = this.budgetsOf(session)
+      b.detail = 0
+      b.summary = 0
     })
 
     if (!this.enabled) return

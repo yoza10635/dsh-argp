@@ -670,6 +670,13 @@ export class ArgpGraphEngine extends CompactionEngine {
           this.reactivePending.set(session, true)
           this.log.warn('[argp-graph] output clamped by the host: finish=max-tokens with output='
             + output + ' < requested ' + budget + ' ⇒ prune + continue the same turn')
+        } else if (finish?.type === 'finish' && this.reactivePending.has(session)) {
+          // 2-3（1.11.0-beta.1）：陈旧 pending 清理——pending 置位后若下一响应**正常收尾**
+          //（自然完成/stop，非钳制），旧实现让 pending 跨响应存活，下个 pre-step 会把一次
+          // 过期信号当成"本轮被钳"误触发 reactive 剪枝 + 续写（白压 + 幻觉续写）。正常
+          // finish = 钳制事故已自然解除，pending 作废。
+          this.reactivePending.delete(session)
+          this.log.info('[argp-graph] stale reactive pending cleared: response finished normally (no clamping)')
         }
       }
       // 声明窗口缓存（真环境联调实证）：request/context 事件携带适配器声明的
@@ -1719,7 +1726,21 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 2026-08-23 半拆组：单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的
     // tool_calls，wire 序列化输出 role:"tool"，不触发 provider 400；文本提示 recall 找回）。
     const tombstoneTexts = buildTombstones(kept, closureSeqMeta, issuerByCall, pruned, forced)
-    return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced, tombstoneTexts)
+    const result = this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced, tombstoneTexts)
+    // 2-1（1.11.0-beta.1）事务后 token 复测：预算兑现的地面真值。此前"压缩率精确兑现"
+    // 只在规划侧算字符账，事务落地后从不复测——字符比例 ≠ 真实 token，压完仍超窗的
+    // 部署上引擎却报 SUCCESS（Qwen 实测 82% 失真的另一半根因）。复测不重做事务
+    // （不可逆写入已落盘），只把真实状态写进返回值语义：不达标时错误级日志 +
+    // /argp 可见的 audit 台账，供运维判定"该调 retain/reserve/窗口"。
+    if (result !== null) {
+      const afterTokens = Math.ceil(visibleChars(session) / this.charsPerToken)
+      if (afterTokens > retainTokens) {
+        const msg = 'post-transaction token recheck FAILED: visible≈' + afterTokens + ' tok > retain target ' + retainTokens + ' tok (chars/token=' + this.charsPerToken + '; guards/protected atoms kept the surface above target)'
+        this.log.error('[argp-graph] ' + msg)
+        pushBounded(this.auditWarnings, msg, this.telemetryCap)
+      }
+    }
+    return result
   }
 
   override async compactNow(

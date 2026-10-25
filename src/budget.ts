@@ -18,19 +18,40 @@ import { eventText } from './log-access.js'
 /** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
 export function scaleBudgets(
   contextWindow: number | undefined,
-  opts: { windowRatio?: number; retainRatio?: number; explicitWindow?: number; explicitRetain?: number; fallbackWindow?: number; fallbackRetain?: number },
+  opts: { windowRatio?: number; retainRatio?: number; explicitWindow?: number; explicitRetain?: number; fallbackWindow?: number; fallbackRetain?: number; reserveTokens?: number },
 ): { windowTokens: number; retainTokens: number } {
   const windowRatio = opts.windowRatio ?? DEFAULT_WINDOW_RATIO
   const retainRatio = opts.retainRatio ?? DEFAULT_RETAIN_RATIO
+  const reserve = opts.reserveTokens ?? 0
   if (opts.explicitWindow !== undefined && opts.explicitRetain !== undefined) {
-    return { windowTokens: opts.explicitWindow, retainTokens: opts.explicitRetain }
+    return { windowTokens: opts.explicitWindow, retainTokens: capRetain(opts.explicitRetain, opts.explicitWindow, reserve) }
   }
   if (contextWindow === undefined || contextWindow <= 0) {
-    return { windowTokens: opts.fallbackWindow ?? DEFAULT_WINDOW_TOKENS, retainTokens: opts.fallbackRetain ?? DEFAULT_RETAIN_TOKENS }
+    const fbW = opts.fallbackWindow ?? DEFAULT_WINDOW_TOKENS
+    return { windowTokens: fbW, retainTokens: capRetain(opts.fallbackRetain ?? DEFAULT_RETAIN_TOKENS, fbW, reserve) }
   }
   const windowTokens = opts.explicitWindow ?? Math.floor(contextWindow * windowRatio)
-  const retainTokens = opts.explicitRetain ?? Math.floor(windowTokens * retainRatio)
+  const retainTokens = opts.explicitRetain !== undefined
+    ? capRetain(opts.explicitRetain, windowTokens, reserve)
+    : Math.min(Math.floor(windowTokens * retainRatio), capRetain(windowTokens, windowTokens, reserve))
   return { windowTokens, retainTokens }
+}
+
+/**
+ * retain 绝对上界（2-1，1.11.0-beta.1）：`min(目标, windowTokens − reserve − headroom)`。
+ *
+ * 病灶：retain 一直只是**比例目标**（windowTokens × retainRatio），与"塞进真实窗口还剩
+ * 多少余量"无关——窗口小 / reserve 大 / 输出预算（maxTokens）大的部署上，按 0.2 比例
+ * 保留的量可能根本放不进窗口（Qwen 实测 82% 压缩率失真的根因之一：压完了仍然超）。
+ * headroom 固定取 windowTokens 的 10%（输出与组装误差的安全垫；宿主 compaction-basic
+ * 同式：retain ≤ context − maxTokens − reserve）。floor 0：极端小窗口时上界可为负，
+ * 调用方按 ≤0 视为"无保留空间"处理（图剪降级链会自然走 force/fail）。
+ */
+function capRetain(retainTokens: number, windowTokens: number, reserveTokens: number): number {
+  const headroom = Math.floor(windowTokens * 0.1)
+  const ceiling = windowTokens - reserveTokens - headroom
+  if (ceiling <= 0) return 0
+  return Math.max(0, Math.min(retainTokens, ceiling))
 }
 
 /** dsh token-meter 服务的最小结构（measure 返回 total/surface token）。 */
@@ -69,6 +90,7 @@ export interface BudgetHost {
   windowTokens: number
   explicitRetainTokens: boolean
   retainTokens: number
+  reserveTokens: number
   declaredContextWindows: WeakMap<Session, number>
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
   windowRatio: number
@@ -151,6 +173,7 @@ export async function resolveScaledBudgets(
     explicitWindow, explicitRetain,
     windowRatio: host.windowRatio, retainRatio: host.retainRatio,
     fallbackWindow: host.windowTokens, fallbackRetain: host.retainTokens,
+    reserveTokens: host.reserveTokens,
   })
   host.resolvedWindowTokens = scaled.windowTokens
   return { ...scaled, declaredKnown }

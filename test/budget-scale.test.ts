@@ -124,6 +124,7 @@ test('resolveScaledBudgets：resolveModelInfo 挂起被 5s 超时兜底——不
     explicitWindowTokens: false,
     windowTokens: DEFAULT_WINDOW_TOKENS,
     explicitRetainTokens: false,
+  reserveTokens: 0,
     retainTokens: DEFAULT_RETAIN_TOKENS,
     declaredContextWindows: new WeakMap(),
     log: { info() {}, warn() {}, error() {} },
