@@ -4,7 +4,7 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-## [1.11.0-beta.1] - 攒批中（本地未发布；预算真值 + 焦点漂移 + stable 前收尾批，随 beta.1 发布）
+## [1.11.0-beta.1] - 2026-10-26（beta 渠道：预算真值 + 焦点漂移 + stable 前收尾批）
 
 > **发行说明**：三段攒批。批次 2（预算真值，9a48edb）+ 评审二批（D2 焦点漂移，dede2ac）+ Tier A 集成测试（3f4c3b6）+ 批次 3（stable 前收尾「诚实面与工程」，本提交）。评审二批来源：`docs/design-review-v1.11.0-beta.1-2026-10-25.md` D2/§7 的可动项——评审确认 `this.rt` 焦点指针在 async 恢复点会被其他会话抢绑换装，且 beta.0 的 abort 反例存在恒真断言（未锁住任何行为）。
 
@@ -42,7 +42,7 @@
 
 - 测试：全量 460 例通过（批次 3 新增 9 例：排序反对称/clamp、pairing 审计、账本核验、frozenCatalog resume、/argp 报数、CardForm 迟快照、rawResponse 脱敏、模板变量闸 + 突变 4/4 RED；此前批次合计突变 15/15 RED）。
 - **Tier A 集成测试**（评审 §7 第 3 层的进程内形态，随本批补入）：新增 `test/integration-loop.test.ts` 3 例——`mountAgentLoopTestHarness` 挂**生产 AgentLoop**（真实 inbox claim / pre-step / turn-stopping / idle / maintenance 事件序）+ `ctx.llm.registerAdapter` 脚本化 `LlmAdapter`（唯一抽象方法 `stream`；peratom 的 dsh-llm 通路经 `autoDshLlmSpec` 复用同一适配器）。I1 两段式水位经真实事件序（轮末提案暂存 → 下轮 pre-step flush → turn-2 真实请求已无原文）；I2 双 agent 探测窗口交错（不破坏 + 解析窗口按会话分桶 + 锚点不串台；写桶/桶隔离两突变均红）；I3 真实 maintenance 相位空任务（括号配对、下一轮照常——2-4 已知限制的安全侧）。结构性发现：首轮 pre-step 时 open turn 尚无 surface 原子（user 消息在 pre-step 之后落盘），探测窗口的 D2 压力场景在真实回路上无可观测后果——其锁位在单元反例集（focus-drift），集成层锁端到端不变量。
-- 版本号仍为 1.11.0-beta.0（beta.1 随批次 3 一起 bump + 发布）。
+- beta 渠道发布（`latest` 不动）；真机浸泡一晚后转 1.11.0 正式版。
 
 ## [1.11.0-beta.0] - 2026-10-25（会话所有权：per-Session 状态分桶 + exec 路由 + 提交语义）
 
