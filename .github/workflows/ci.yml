@@ -62,6 +62,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # oldest 格要从 v1.11.0-beta.0 tag 取原始 lockfile——需要完整历史+tags
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -71,33 +74,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Pin DSH line to peer floor (0.2.0-rc.1)
+      # oldest 线 = peer 地板 0.2.0-rc.1 的**完整自洽树**：直接复用 v1.11.0-beta.0 tag 的
+      # package.json + package-lock（npm ci 校验二者同步；部分降级会留混合树——rc.1 包
+      # 的传递依赖 dsh-scope/dsh-attachment 断层）。peer 地板挪动时改锚点 tag。
+      - name: Install oldest DSH line (exact 0.2.0-rc.1 tree from v1.11.0-beta.0)
         if: matrix.dsh == 'oldest'
         shell: bash
-        # --legacy-peer-deps：降级集不含传递依赖（dsh-session-projection 等经 dsh-agent
-        # 仍解析到 0.2.1-rc.3，其 peer 声明钉新线 ⇒ ERESOLVE）。矩阵格是测试环境，
-        # 跳过 peer 仲裁只装不校验；真实准入语义由 engines.dsh/peer 声明与 latest 线保证。
-        run: >
-          npm install --no-save --legacy-peer-deps --no-audit --no-fund
-          @deepseek-ai/dsh-agent@0.2.0-rc.1
-          @deepseek-ai/dsh-agent-loop@0.2.0-rc.1
-          @deepseek-ai/dsh-agent-loop-testkit@0.2.0-rc.1
-          @deepseek-ai/dsh-bash-local@0.2.0-rc.1
-          @deepseek-ai/dsh-commands@0.2.0-rc.1
-          @deepseek-ai/dsh-compaction@0.2.0-rc.1
-          @deepseek-ai/dsh-compaction-basic@0.2.0-rc.1
-          @deepseek-ai/dsh-llm@0.2.0-rc.1
-          @deepseek-ai/dsh-llm-deepseek@0.2.0-rc.1
-          @deepseek-ai/dsh-llm-pi-ai@0.2.0-rc.1
-          @deepseek-ai/dsh-session@0.2.0-rc.1
-          @deepseek-ai/dsh-session-format-catalog@0.2.0-rc.1
-          @deepseek-ai/dsh-session-format-v3-to-v4@0.2.0-rc.1
-          @deepseek-ai/dsh-shell-env@0.2.0-rc.1
-          @deepseek-ai/dsh-subprocess-local@0.2.0-rc.1
-          @deepseek-ai/dsh-system-prompt@0.2.0-rc.1
-          @deepseek-ai/dsh-token-meter@0.2.0-rc.1
-          @deepseek-ai/dsh-tool-bash@0.2.0-rc.1
-          @deepseek-ai/dsh-tools@0.2.0-rc.1
+        run: |
+          git show v1.11.0-beta.0:package.json > package.json
+          git show v1.11.0-beta.0:package-lock.json > package-lock.json
+          npm ci --no-audit --no-fund
 
       - name: Unit tests (${{ matrix.dsh }} DSH line)
         run: npm test
