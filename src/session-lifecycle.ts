@@ -113,7 +113,7 @@ export interface LifecycleHost {
   citeMinPrefixLen: number
   overlapTheta: number
   enableOverlapChain: boolean
-  injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined
+  injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined
   disableCiteEdges: boolean
   disableInferredEdges: boolean
   tombstoneMergeMinRun: number
@@ -136,6 +136,7 @@ export interface LifecycleHost {
   reactivePending: WeakMap<Session, true>
   compactSourceCommandId: CommandId | undefined
   // 方法引用
+  bindRuntimeState: (session: Session) => void
   shadowedSeqsOf: (session: Session) => Set<number>
   rebuildLedgerFromLog: () => void
   restoreUsageAnchor: (session: Session) => void
@@ -314,7 +315,7 @@ export function mountPeratomStack(ctx: Context, host: LifecycleHost, config: Arg
         }
         return redirectTable.get(seq)
       }
-      host.injectEdges = (atoms) => declarer.buildInjectEdges(atoms, redirect)
+      host.injectEdges = (atoms, session) => declarer.buildInjectEdges(atoms, redirect, session)
     }
     if (compressor !== null) {
       host.onOverflowCompress = async (session: Session): Promise<void> => {
@@ -358,7 +359,8 @@ export function mountPeratomStack(ctx: Context, host: LifecycleHost, config: Arg
 export function bindSession(host: LifecycleHost, session: Session): void {
   if (host.session === session) return
   host.session = session
-  host.rebuiltCompactionIds.clear() // 跨 session 重置告警/重建去重
+  host.bindRuntimeState(session) // 1-1：焦点桶换装为该会话的 SessionRuntimeState（台账/预算/锚点全部随桶切换）
+  host.rebuiltCompactionIds.clear() // 本会话桶内的告警/重建去重清零（per-session 分桶后天然跨会话隔离）
   host.shadowedSeqsOf(session) // setSession 时初始化一次；后续仅扫描新追加事件
   try {
     host.rebuildLedgerFromLog() // 懒触发：仅当 records 空 + 日志含事务事件时真正重建

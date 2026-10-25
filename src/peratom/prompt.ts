@@ -144,6 +144,8 @@ export async function postChat(
   contextTools?: Record<string, unknown>[],
   /** 输出 cap（token）。压缩输出是 JSON plan，通常几百 token；设小 cap 给 prompt 让出 margin（防爆上限）。 */
   maxCompletionTokens?: number,
+  /** 1-5（1.11.0-beta.0）：外部取消（与 timeout 合并，任一触发即断）。 */
+  signal?: AbortSignal,
 ): Promise<string> {
   const body: Record<string, unknown> = {
     model: ep.model,
@@ -172,7 +174,8 @@ export async function postChat(
   const res = await fetchImpl(ep.endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${ep.apiKey}` },
-    signal: AbortSignal.timeout(timeoutMs),
+    // 1-5：外部取消与超时合并——任一触发即断（abort 不是网络失败，不进兼容重试）。
+    signal: signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]),
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)

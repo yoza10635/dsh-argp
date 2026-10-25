@@ -21,6 +21,7 @@ export { eventText } from './log-access.js';
 import type { Atom, SemanticEdge, DeterministicEdge } from './argp-types.js';
 export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js';
 export { EDGE_WEIGHTS } from './argp-types.js';
+import { type SessionRuntimeState } from './session-state.js';
 export type { ParsedCite, CiteLevel } from './cites-strip.js';
 import type { InferredEdgeOptions } from './token-ontology.js';
 import { type CiteStats, type InferredStats } from './graph-build.js';
@@ -161,7 +162,7 @@ export interface ArgpGraphConfig {
      * 边价值实验 A₃：注入 oracle 边（离线辅助 LLM 组图，schema 强制）。
      * buildGraph 在 cites 边之后合并这些边，用于测"理论上限"保留集（A₃−A₂ = 模型服从率吃掉的价值）。
      */
-    injectEdges?: (atoms: Atom[]) => SemanticEdge[];
+    injectEdges?: (atoms: Atom[], session?: Session) => SemanticEdge[];
     /**
      * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
      * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
@@ -329,7 +330,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 守卫读取点统一走 getter：反应式补救（L2）在第 2 次尝试时用 `guardOverride` 临时
      * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于设置页值。
      */
-    private guardOverride;
+    get guardOverride(): {
+        recencyGuard: number;
+        turnGuard: number;
+    } | null;
+    set guardOverride(v: {
+        recencyGuard: number;
+        turnGuard: number;
+    } | null);
     get recencyGuard(): number;
     get turnGuard(): number;
     get minSpanChars(): number;
@@ -354,27 +362,30 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly tokenMeter;
     /** 遥测数组容量上限（P4.5：records/recallCalls/recallQueryCalls/closurePrunes/auditWarnings 有界）。 */
     readonly telemetryCap: number;
-    readonly records: GraphPruneRecord[];
-    readonly recallCalls: {
+    get records(): GraphPruneRecord[];
+    get recallCalls(): {
         seq: number;
         hit: boolean;
         state?: NodeStateLabel;
     }[];
-    readonly recallQueryCalls: {
+    get recallQueryCalls(): {
         query: string;
         count: number;
         hits: number;
     }[];
-    readonly citeStats: CiteStats;
-    /** §3-3 recall 价值继承：最近一次 recall 的旧原子 seq 与结果 R 原子 seq（建图时用）。 */
-    private recallSourceSeq;
-    private recallResultSeq;
+    get citeStats(): CiteStats;
+    get recallSourceSeq(): number;
+    set recallSourceSeq(v: number);
+    get recallResultSeq(): number;
+    set recallResultSeq(v: number);
     /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
-    lastEdges: SemanticEdge[];
+    get lastEdges(): SemanticEdge[];
+    set lastEdges(v: SemanticEdge[]);
     /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
-    lastDeterministicEdges: DeterministicEdge[];
+    get lastDeterministicEdges(): DeterministicEdge[];
+    set lastDeterministicEdges(v: DeterministicEdge[]);
     /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
-    injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
+    injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined;
     /** 边价值实验 A₁ 离线重放：跳过 cites 边构建（同时隔离推断边，见 config 注释）。 */
     disableCiteEdges: boolean;
     /** 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认启用）。 */
@@ -384,9 +395,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 推断边派生参数（config 缺省 6/0.15/8/20；见 InferredEdgeOptions）。 */
     inferredOpts: InferredEdgeOptions;
     /** 推断边统计（最近一次 buildGraph 口径）。 */
-    readonly inferredStats: InferredStats;
+    get inferredStats(): InferredStats;
     /** 最近一次建图的推断边（诊断/测试断言用；同 lastEdges）。 */
-    lastInferredEdges: SemanticEdge[];
+    get lastInferredEdges(): SemanticEdge[];
+    set lastInferredEdges(v: SemanticEdge[]);
     /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
     readonly citesObligation: boolean;
     /** citesObligation 是否 auto 口径（config 未显式给值）。auto 下 section 恒注册、
@@ -399,26 +411,28 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         zoom: RecallZoom | null;
     } | null;
     /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
-    readonly prunedNodeIndex: Map<number, PrunedNodeInfo>;
+    get prunedNodeIndex(): Map<number, PrunedNodeInfo>;
     /** 闭包生命周期剪除记录。 */
-    readonly closurePrunes: {
+    get closurePrunes(): {
         closureId: string;
         rootSeq: number;
         prunedSeqs: number[];
         at: string;
     }[];
+    /** 闭包 id 计数器保持进程级单调（跨会话唯一无害；会话内唯一性不受影响）。 */
     private nextClosureId;
     /** 闭包最近一次被 recall 回拉的轮次；key = rootSeq（跨 pass 稳定，见 P2 修复注释）。 */
-    private closureLastRecalled;
-    private recallCallsThisTurn;
-    private recallCharsUsed;
+    get closureLastRecalled(): Map<number, number>;
+    get recallCallsThisTurn(): number;
+    get recallCharsUsed(): number;
     /**
      * 冻结的 catalog 文本快照：system 块是单条被前缀缓存的消息，块内任何字节变化都会
      * 让整块 KV 失效。故 catalog 不与每步 assemble 联动，而是"全程冻结、仅在真正落剪时刷新一次"
      * （见 bindSession 初值 + pruneIntervals 末尾刷新）。无剪枝的整段对话里 system 块逐字节一致，
      * 前缀缓存全段命中；剪枝本身已改动可见上下文，那一步的缓存失效是必然代价。
      */
-    private frozenCatalog;
+    get frozenCatalog(): string | null;
+    set frozenCatalog(v: string | null);
     /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
@@ -427,19 +441,21 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  provider 回报，与 UI ContextMeter 分子同口径）。
      *  pressure check 用它锚定 + 增量估算，替代 tokenMeter 的 chars/4 启发式（低估 30%+，
      *  导致迟触发/窗口保护失效，2026-08-23）。 */
-    private lastRealPromptTokens;
+    get lastRealPromptTokens(): number;
+    set lastRealPromptTokens(v: number);
     /** 声明窗口缓存（session → 适配器声明的 contextWindow，来自 request/context 事件）。
      *  真环境联调实证：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
      *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
     private readonly declaredContextWindows;
     /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
-    private lastRealAnchorSeq;
+    get lastRealAnchorSeq(): number;
+    set lastRealAnchorSeq(v: number);
     /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
     private compactSourceCommandId;
-    /** A7：账目重建后追加的审计警告（供测试断言/诊断）。 */
-    readonly auditWarnings: string[];
-    /** A7：已重建过的 compactionId 集合（跨 session 重置，保证幂等 + 告警不重复）。 */
-    private rebuiltCompactionIds;
+    /** A7：账本重建后追加的审计警告（供测试断言/诊断；per-session）。 */
+    get auditWarnings(): string[];
+    /** A7：已重建过的 compactionId 集合（per-session 分桶后天然跨会话隔离，幂等 + 告警不重复）。 */
+    get rebuiltCompactionIds(): Set<string>;
     /** L2/L3 反应式：观察到"输出被外部钳制"后置位，由 pre-step（turn 仍在跑）或 turn-stopping（本轮要收）消费。 */
     private readonly reactivePending;
     /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
@@ -454,9 +470,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 本 episode（连续被钳）内已用掉的"剪枝 + 续写"次数；出现一次正常输出即清零。 */
     private readonly reactiveRescues;
     private session;
-    private shadowedSession;
-    private shadowedSet;
-    private shadowedScanned;
+    /** 会话运行时状态分桶（1-1）：stateOf 懒建；rt = 当前焦点会话的桶（bindRuntimeState 换装）。 */
+    private readonly sessionStates;
+    private rt;
+    stateOf(session: Session): SessionRuntimeState;
+    /** bindSession 专用：把焦点桶换装为该会话的桶（session-lifecycle 经 LifecycleHost 调用）。 */
+    bindRuntimeState(session: Session): void;
     /** 结构化日志门面（构造期自 ctx 捕获）。 */
     private readonly log;
     constructor(ctx: Context, config?: ArgpGraphConfig);
@@ -495,7 +514,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;
     /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
      */
-    recallQuery(query: string, maxResults?: number): string;
+    recallQuery(session: Session | null, query: string, maxResults?: number): string;
     /**
      * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
      * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。

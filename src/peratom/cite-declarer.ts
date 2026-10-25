@@ -1,5 +1,17 @@
+/** 1-6：声明失败的有界重试记账——同轮 ≤ DECLARE_MAX_ATTEMPTS 次，超限 done.add 放弃。 */
+const DECLARE_MAX_ATTEMPTS = 2
+
+function noteDeclareFailure(record: { error?: string }, turn: number, done: Set<number>, attempts: Map<number, number>): void {
+  const n = (attempts.get(turn) ?? 0) + 1
+  attempts.set(turn, n)
+  if (n >= DECLARE_MAX_ATTEMPTS) {
+    done.add(turn) // 有界放弃：该轮不再重试（错误账留在 record）
+    record.error = (record.error ?? '') + ' (gave up after ' + n + ' attempts)'
+  }
+}
+
 /**
- * CiteDeclarer（Stage-1 建图侧）：轮末引用边声明管线。
+ * CiteDeclarer（Stage-1 建图侧，plan P2）：轮末引用边声明管线。
  *
  * 宿主身份：**普通 cordis 服务，非 ctx.compaction 位**——与 PeratomCompressor
  * 并列走事件钩子，Stage-2 的 ArgpGraphEngine 独占 compaction 位，零改动消费边
@@ -465,7 +477,22 @@ export class CiteDeclarer {
   private readonly prefixBudgetTokens: number
 
   /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */
-  private readonly edgeCache = new Map<string, DeclaredCite>()
+  /**
+   * 1-6（1.11.0-beta.0）：边缓存 per-session 分桶（此前进程级单例——多会话下同 seq 对
+   * 跨会话错配边：A 会话声明的 18→25 会注入 B 会话的建图）。key 语义与 MAX_CACHED_EDGES
+   * 上限随桶各自成立（每会话 512 条 LRU）。
+   */
+  private readonly edgeCaches = new WeakMap<Session, Map<string, DeclaredCite>>()
+  private edgeCacheOf(session: Session): Map<string, DeclaredCite> {
+    let m = this.edgeCaches.get(session)
+    if (m === undefined) {
+      m = new Map<string, DeclaredCite>()
+      this.edgeCaches.set(session, m)
+    }
+    return m
+  }
+  /** 1-6：每会话每轮的声明尝试次数（失败有界重试：≤ DECLARE_MAX_ATTEMPTS 次后记账放弃）。 */
+  private readonly attemptTurns = new WeakMap<Session, Map<number, number>>()
   /** 防重复 turn 处理：(session, turn) 记账于声明阶段。 */
   private readonly doneTurns = new WeakMap<Session, Set<number>>()
 
@@ -479,7 +506,16 @@ export class CiteDeclarer {
   readonly records: CiteRecord[] = []
 
   /** 缓存中的声明边数（测试断言用）。 */
-  get cachedEdgeCount(): number { return this.edgeCache.size }
+  /** 观测口径 = 全部会话桶的合计（/argp 与测试断言用）。 */
+  get cachedEdgeCount(): number {
+    let total = 0
+    for (const session of this.recentSessions()) total += this.edgeCacheOf(session).size
+    return total
+  }
+  /** 近邻会话清单（cachedEdgeCount / 无 session 调用方的合并视图用；WeakMap 不可枚举，
+   *  故在 declareCurrentTurn 触达时登记引用）。 */
+  private readonly seenSessions = new Set<Session>()
+  private recentSessions(): Session[] { return [...this.seenSessions] }
 
   /** 是否已解析到 LLM 后端（dsh-llm / endpoint / 自动兜底任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
   get armed(): boolean { return this.endpoint !== null || this.dshLlm !== null || this.autoLlm !== null }
@@ -575,8 +611,11 @@ export class CiteDeclarer {
   async declareCurrentTurn(session: Session): Promise<CiteRecord | null> {
     const collect = collectDeclAtoms(session, this.windowTurns, SPLIT_THRESHOLD_CHARS)
     if (collect === null) return null
+    this.seenSessions.add(session)
     const done = this.doneTurns.get(session) ?? new Set<number>()
     this.doneTurns.set(session, done)
+    const attempts = this.attemptTurns.get(session) ?? new Map<number, number>()
+    this.attemptTurns.set(session, attempts)
     // 幂等查询：仅"已真正声明过"的轮会记账（见下方 done.add），其余短路态一律不记账。
     if (done.has(collect.turn)) return null // 防重复 turn 处理
 
@@ -599,7 +638,10 @@ export class CiteDeclarer {
       // 的 passWatermark「仅成功规划才推进」同语义）。
       return record
     }
-    done.add(collect.turn) // 幂等记账：过门控且有端点 ⇒ 该轮已真正声明
+    // 1-6（1.11.0-beta.0）：done.add 后置到**成功落地**——此前在 LLM await 之前记账，
+    // 任何一次调用/解析失败 = 该轮永久跳过（声明边永久缺失）。失败走有界重试
+    // （≤ DECLARE_MAX_ATTEMPTS 次），超限才 done.add 放弃。门控短路态（上方的
+    // interrupted/gate-skipped）不进本路径，天然不重试。
     this._calls += 1
     const record: CiteRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
     pushBounded(this.records, record, this.telemetryCap)
@@ -634,7 +676,8 @@ export class CiteDeclarer {
       if (!Array.isArray(citesArr)) {
         record.error = 'parse-failed'
         this.dumpCites(record)
-        return record // 解析失败：本轮无边（安全方向），绝不阻断
+        noteDeclareFailure(record, collect.turn, done, attempts)
+        return record // 解析失败：本轮无边（安全方向），绝不阻断；有界重试内再试一次
       }
       const fromSeqs = new Set(collect.fromAtoms.map(a => a.seq))
       const toSeqs = new Set(collect.toAtoms.map(a => a.seq))
@@ -642,23 +685,27 @@ export class CiteDeclarer {
       record.invalid = invalid
       record.accepted = cites.length
       record.cites = cites
-      if (cites.length > 0) this.cacheCites(cites)
+      if (cites.length > 0) this.cacheCites(session, cites)
       this.dumpCites(record)
+      done.add(collect.turn) // 成功落地才记账（幂等：该轮不再声明）
+      attempts.delete(collect.turn)
     } catch (error) {
       record.error = error instanceof Error ? error.message : String(error)
+      noteDeclareFailure(record, collect.turn, done, attempts)
     }
     return record
   }
 
-  /** 边入缓存：同 (from,to) 覆盖（后轮声明刷新 level）；超限按插入序淘汰最旧。 */
-  private cacheCites(cites: DeclaredCite[]): void {
+  /** 边入缓存（per-session 桶）：同 (from,to) 覆盖（后轮声明刷新 level）；超限按插入序淘汰最旧。 */
+  private cacheCites(session: Session, cites: DeclaredCite[]): void {
+    const cache = this.edgeCacheOf(session)
     for (const cite of cites) {
       const key = cite.fromSeq + '->' + cite.toSeq
-      if (!this.edgeCache.has(key) && this.edgeCache.size >= MAX_CACHED_EDGES) {
-        const oldest = this.edgeCache.keys().next().value
-        if (oldest !== undefined) this.edgeCache.delete(oldest)
+      if (!cache.has(key) && cache.size >= MAX_CACHED_EDGES) {
+        const oldest = cache.keys().next().value
+        if (oldest !== undefined) cache.delete(oldest)
       }
-      this.edgeCache.set(key, cite)
+      cache.set(key, cite)
     }
   }
 
@@ -742,7 +789,7 @@ export class CiteDeclarer {
    * 行为**（端点离场即丢）。摘要新增 `redirectedEdges` = **至少一个端点经重定向**才命中的
    * 边数，它是 `emitted` 的**子集**，**不计入** `emitted + dropped* = cacheSize` 求和式。
    */
-  buildInjectEdges(atoms: Atom[], redirect?: (seq: number) => number | undefined): SemanticEdge[] {
+  buildInjectEdges(atoms: Atom[], redirect?: (seq: number) => number | undefined, session?: Session): SemanticEdge[] {
     try {
       const idBySeq = new Map<number, number>()
       for (const a of atoms) idBySeq.set(a.seq, a.id)
@@ -766,7 +813,11 @@ export class CiteDeclarer {
       let droppedByMissingEndpoint = 0
       let droppedBySelfLoop = 0
       let redirectedEdges = 0
-      for (const cite of this.edgeCache.values()) {
+      // 1-6：有 session ⇒ 只注入该会话的声明边；无 session（历史调用方/直测）合并全部桶。
+      const sources = session !== undefined ? [this.edgeCacheOf(session)] : this.recentSessions().map(s => this.edgeCacheOf(s))
+      const allCites: DeclaredCite[] = []
+      for (const src of sources) for (const cite of src.values()) allCites.push(cite)
+      for (const cite of allCites) {
         const [from, fromRedirected] = resolve(cite.fromSeq)
         const [to, toRedirected] = resolve(cite.toSeq)
         if (from === undefined || to === undefined) { droppedByMissingEndpoint += 1; continue }
@@ -776,7 +827,7 @@ export class CiteDeclarer {
       }
       this.dump({
         kind: 'inject', at: new Date().toISOString(),
-        cacheSize: this.edgeCache.size, emitted: out.length,
+        cacheSize: allCites.length, emitted: out.length,
         droppedByMissingEndpoint, droppedBySelfLoop, redirectedEdges,
       })
       return out

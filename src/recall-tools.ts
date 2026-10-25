@@ -8,12 +8,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { AtomType } from './argp-types.js'
-import type { NodeState } from './log-access.js'
+import type { SessionRuntimeState } from './session-state.js'
 import { eventText, formatLogRow, formatRecallOutcome, queryLogRange, recallFromLog, resolveRootSeqs, sessionEvents, stateHeader } from './log-access.js'
 import { classifyUserMessage } from './graph-build.js'
 import { isTombstoneText, isLooseLegacyTombstoneText } from './tombstone-text.js'
 import { pushBounded } from './telemetry.js'
-import type { PrunedNodeInfo } from './prune-selection.js'
 
 /**
  * 窄宿主接口：三个工具闭包实际触达的引擎成员（字段 + 方法引用）。
@@ -21,17 +20,26 @@ import type { PrunedNodeInfo } from './prune-selection.js'
  * 到 class 上的薄编排方法，运行时 this 仍是引擎实例。
  */
 export interface RecallToolsHost {
+  /** 焦点回退（exec.agent.session 缺席时的兜底；单会话宿主语义不变）。 */
   session: Session | null
-  recallCallsThisTurn: number
-  recallCalls: { seq: number; hit: boolean; state?: NodeState }[]
   telemetryCap: number
-  prunedNodeIndex: Map<number, PrunedNodeInfo>
-  recallSourceSeq: number
-  recallResultSeq: number
+  /** 1.11.0-beta.0（1-1/1-2）：会话态分桶访问 + 方法显式带 session。 */
+  stateOf: (session: Session) => SessionRuntimeState
   shadowedSeqsOf: (session: Session) => Set<number>
-  noteRecallHit: (seq: number) => void
-  budgetRecallText: (text: string) => string
-  recallQuery: (query: string, maxResults?: number) => string
+  noteRecallHit: (session: Session, seq: number) => void
+  budgetRecallText: (session: Session, text: string) => string
+  recallQuery: (session: Session, query: string, maxResults?: number) => string
+}
+
+/**
+ * 工具调用的目标会话解析（1-2）：优先 exec.agent.session（agent loop 设置，多会话/
+ * 子代理宿主下逐调用正确），缺席时回退 host.session（焦点绑定——单会话宿主与
+ * 无 agent 上下文的测试路径）。ToolRunContext.agent 是 dsh-agent-loop 的运行时
+ * Agent（带 live session）；类型上经窄 cast 读取，避免依赖其具体包。
+ */
+function sessionOfToolCall(exec: unknown, host: RecallToolsHost): Session | null {
+  const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
+  return agent?.session ?? host.session
 }
 
 /**
@@ -61,35 +69,37 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    execute: async (args): Promise<string> => {
+    execute: async (args, exec): Promise<string> => {
       const seq = (args as { seq?: number }).seq
-      if (seq === undefined || host.session === null) return 'recall_pruned: no session bound'
-      if (host.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
+      const session = sessionOfToolCall(exec, host)
+      if (seq === undefined || session === null) return 'recall_pruned: no session bound'
+      const st = host.stateOf(session)
+      if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
         return 'recall_pruned: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
           + ' calls). This is a loop guard, not a content limit — retrieved text is capped by a separate '
           + 'character budget. Prefer recall(query) with keywords when you need several nodes at once, or retry next turn.'
       }
-      host.recallCallsThisTurn += 1
+      st.recallCallsThisTurn += 1
       // P1 修复 (b)：不再用 shadowedSeqsOf 门控。数据路径本来就是全日志级的
       // （eventText 直接索引 sessionEvents(session)[seq]），只有越界才算失败；返回值带状态标签，
       // 使掉出可见上下文但未被 ARGP 替换的节点（适配器窗口丢弃 / 从不进 surface）也可召回。
-      const shadowed = host.shadowedSeqsOf(host.session)
-      const outcome = recallFromLog(host.session, seq, s => shadowed.has(s), eventText)
-      pushBounded(host.recallCalls, { seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined }, host.telemetryCap)
+      const shadowed = host.shadowedSeqsOf(session)
+      const outcome = recallFromLog(session, seq, s => shadowed.has(s), eventText)
+      pushBounded(st.recallCalls, { seq, hit: outcome.ok, state: outcome.ok ? outcome.state : undefined }, host.telemetryCap)
       if (!outcome.ok) return formatRecallOutcome('recall_pruned', seq, outcome)
-      host.noteRecallHit(seq)
+      host.noteRecallHit(session, seq)
       // 版本链重定向（2026-08-23）：被剪旧 R 若属于某路径版本链，重定向返回该路径最新存活版本原文，
       // 替代旧值。避免模型基于已过时的旧快照做决定（旧值正是被剪的原因）；文件仍在演进时
       // 模型要的是「现在长什么样」。保留 state 标签说明这是重定向结果。
-      const redirect = host.prunedNodeIndex.get(seq)?.latestOfPath
+      const redirect = st.prunedNodeIndex.get(seq)?.latestOfPath
       if (redirect !== undefined && redirect !== seq) {
-        const latestOutcome = recallFromLog(host.session, redirect, s => shadowed.has(s), eventText)
+        const latestOutcome = recallFromLog(session, redirect, s => shadowed.has(s), eventText)
         if (latestOutcome.ok) {
           const result = stateHeader(seq, latestOutcome.state)
             + '\n[version-chain redirect: seq ' + seq + ' was superseded by newer version seq ' + redirect + ' of the same path; returning the latest]\n'
-            + host.budgetRecallText(latestOutcome.text)
-          host.recallSourceSeq = seq
-          host.recallResultSeq = host.session.seq
+            + host.budgetRecallText(session, latestOutcome.text)
+          st.recallSourceSeq = seq
+          st.recallResultSeq = session.seq
           return result
         }
       }
@@ -97,15 +107,15 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       // 归并墓碑）文案里的 recall 指针可能指向墓碑副本自身——直接取回只会得到又一层
       // 墓碑文本（递归空手而归）。检测「seq 的事件是 replace 且文本为墓碑」⇒ 沿
       // surfaceOp 链回溯到 append 根源返回原文；多根源（聚合墓碑）逐条带 seq 头。
-      const ev = sessionEvents(host.session)[seq] as { surfaceOp?: unknown } | undefined
+      const ev = sessionEvents(session)[seq] as { surfaceOp?: unknown } | undefined
       const op = ev?.surfaceOp
       if (typeof op === 'object' && op !== null && (op as { op?: string }).op === 'replace'
         && (isTombstoneText(outcome.text) || isLooseLegacyTombstoneText(outcome.text))) {
-        const roots = resolveRootSeqs(sessionEvents(host.session), seq)
+        const roots = resolveRootSeqs(sessionEvents(session), seq)
         if (!(roots.length === 1 && roots[0] === seq)) {
           const parts: string[] = []
           for (const root of roots) {
-            const ro = recallFromLog(host.session, root, s => shadowed.has(s), eventText)
+            const ro = recallFromLog(session, root, s => shadowed.has(s), eventText)
             if (ro.ok) parts.push('--- original seq=' + root + ' ---\n' + ro.text)
           }
           if (parts.length > 0) {
@@ -113,17 +123,17 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
               ? '[tombstone redirect: seq ' + seq + ' is a placeholder; returning the original seq ' + roots[0] + ' it replaced]\n'
               : '[tombstone redirect: seq ' + seq + ' is a consolidated placeholder covering ' + roots.length
                 + ' originals (' + roots[0] + '..' + roots[roots.length - 1] + '); returning each]\n'
-            host.recallSourceSeq = seq
-            host.recallResultSeq = host.session.seq
-            return host.budgetRecallText(note + parts.join('\n'))
+            st.recallSourceSeq = seq
+            st.recallResultSeq = session.seq
+            return host.budgetRecallText(session, note + parts.join('\n'))
           }
         }
       }
-      const result = formatRecallOutcome('recall_pruned', seq, outcome, text => host.budgetRecallText(text))
+      const result = formatRecallOutcome('recall_pruned', seq, outcome, text => host.budgetRecallText(session, text))
       // §3-3 recall 价值继承：记录"旧原子 seq → 本次 recall 结果将被 append 为的新 R 原子 seq"。
       // dsh 在工具 execute 返回后 append tool/result 事件，其 seq = 当前事件总数。
-      host.recallSourceSeq = seq
-      host.recallResultSeq = host.session.seq
+      st.recallSourceSeq = seq
+      st.recallResultSeq = session.seq
       return result
     },
   })
@@ -144,9 +154,11 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    execute: async (args): Promise<string> => {
-      if (host.session === null) return 'list_pruned: no session bound'
-      const shadowed = host.shadowedSeqsOf(host.session)
+    execute: async (args, exec): Promise<string> => {
+      const session = sessionOfToolCall(exec, host)
+      if (session === null) return 'list_pruned: no session bound'
+      const st = host.stateOf(session)
+      const shadowed = host.shadowedSeqsOf(session)
       const filters = (args ?? {}) as {
         turn?: number
         type?: string
@@ -158,9 +170,9 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       // P1 修复 (b) 的另一半：区间模式 = 发现原语。去门控只解决"知道 seq 就能取"，
       // 掉出渲染窗口的 live 节点没有 tombstone 也不带 seq，模型需要能按区间查全日志补集。
       if (filters.fromSeq !== undefined || filters.toSeq !== undefined) {
-        const total = host.session.seq
+        const total = session.seq
         const limit = Math.max(1, Math.min(200, filters.limit ?? 50))
-        const range = queryLogRange(host.session, {
+        const range = queryLogRange(session, {
           fromSeq: filters.fromSeq ?? 0,
           toSeq: filters.toSeq ?? total - 1,
           turn: filters.turn,
@@ -178,7 +190,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
           + 'live means still on the surface, off-surface means log-only)'
           + (range.truncated ? '; output capped at limit=' + limit + ', narrow the range or raise limit' : '')
         const rangeLines = range.rows.map(row => {
-          const indexed = host.prunedNodeIndex.get(row.seq)
+          const indexed = st.prunedNodeIndex.get(row.seq)
           const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
             ? ' citedBy=' + indexed.citedBySeq.join(',')
             : ''
@@ -195,7 +207,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       let truncated = false
       for (const seq of seqs) {
         if (lines.length >= limit) { truncated = true; break }
-        const event = sessionEvents(host.session)[seq]
+        const event = sessionEvents(session)[seq]
         if (event === undefined) continue
         const data = event.data as Record<string, unknown> | undefined
         const turn = typeof data?.turn === 'number' ? (data.turn as number) : 0
@@ -211,11 +223,11 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
           type = 'X'
         }
         if (filters.type !== undefined && type !== filters.type) continue
-        const text = eventText(host.session, seq)
+        const text = eventText(session, seq)
         if (filters.keyword !== undefined && !text.includes(filters.keyword)) continue
         const firstLine = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
         const preview = firstLine.length > 120 ? firstLine.slice(0, 120) + '…' : firstLine
-        const indexed = host.prunedNodeIndex.get(seq)
+        const indexed = st.prunedNodeIndex.get(seq)
         const citedBy = indexed !== undefined && indexed.citedBySeq.length > 0
           ? ' citedBy=' + indexed.citedBySeq.join(',')
           : ''
@@ -232,7 +244,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
         : ''
       // 0-4：默认模式与 recall 同款计入召回字符预算（此前只有取正文类工具付费，
       // 发现类列表可以无限白嫖预算）。
-      return host.budgetRecallText(header + lines.join('\n'))
+      return host.budgetRecallText(session, header + lines.join('\n'))
     },
   })
   ctx.tools.register(listPrunedTool)
@@ -248,16 +260,18 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
     },
-    execute: async (args): Promise<string> => {
-      if (host.session === null) return 'recall: no session bound'
-      if (host.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
+    execute: async (args, exec): Promise<string> => {
+      const session = sessionOfToolCall(exec, host)
+      if (session === null) return 'recall: no session bound'
+      const st = host.stateOf(session)
+      if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
         return 'recall: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
           + ' calls). This is a loop guard, not a content limit — narrow the query or retry next turn.'
       }
-      host.recallCallsThisTurn += 1
+      st.recallCallsThisTurn += 1
       const query = (args as { query?: string }).query ?? ''
       const maxResults = (args as { maxResults?: number }).maxResults ?? 5
-      return host.budgetRecallText(host.recallQuery(query, maxResults))
+      return host.budgetRecallText(session, host.recallQuery(session, query, maxResults))
     },
   })
   ctx.tools.register(recallQueryTool)

@@ -233,7 +233,7 @@ export interface CompressRecord {
      *   与"门控判无可压"是两种性质——前者是环境/模型失败，后者是正常判决）；
      * - 缺省（undefined）表示 called=true 的正常调用。
      */
-    skipReason?: 'no-candidate' | 'interrupted';
+    skipReason?: 'no-candidate' | 'interrupted' | 'stale-surface';
 }
 /**
  * planReplacements 选项（v1.2.0）：`hlsMode` 对独立调用方缺省 'off'（保守默认）；

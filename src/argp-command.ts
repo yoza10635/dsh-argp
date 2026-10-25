@@ -37,7 +37,7 @@ import { measureTokens } from './budget.js'
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
  */
-export const ARGP_STATUS_VERSION = '1.10.2'
+export const ARGP_STATUS_VERSION = '1.11.0-beta.0'
 
 /** 命令名（不带斜杠）。UI 发现列表按此展示。 */
 export const ARGP_COMMAND_NAME = 'argp'

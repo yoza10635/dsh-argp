@@ -249,11 +249,16 @@ export class PeratomCompressor {
     ctx.on('agent/status', ({ agent, status }) => {
       this.rememberRoute(agent)
       if (status !== 'idle') return
-      const pass = this.prepareCurrentTurn(agent.session).catch(error => {
-        this.ctx.logger.warn(`[argp-peratom] compressor prepare failed: ${error instanceof Error ? error.message : String(error)}`)
-      })
-      const prior = this.inFlightPass.get(agent.session)
-      this.inFlightPass.set(agent.session, prior === undefined ? pass : prior.then(() => pass, () => pass))
+      const session = agent.session
+      // 1-4（1.11.0-beta.0）：同会话 pass 串行——新 pass 排在既有在飞链之后，两个 idle
+      // pass 不再并发读写同一窗口（此前交错会把第二个 pass 的规划写到第一个 pass
+      // 换代后的 surface 上）。跨会话不互相阻塞（分桶 per-session）。
+      const prior = this.inFlightPass.get(session)
+      const pass = (prior ?? Promise.resolve()).catch(() => {}).then(() =>
+        this.prepareCurrentTurn(session).catch(error => {
+          this.ctx.logger.warn(`[argp-peratom] compressor prepare failed: ${error instanceof Error ? error.message : String(error)}`)
+        }))
+      this.inFlightPass.set(session, pass)
     })
 
     // 发射窗口：下一次 agent/pre-step（open turn 已开、新 user/message 未落盘）。
@@ -348,8 +353,8 @@ export class PeratomCompressor {
    * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
    * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
    */
-  async compressOpenTurn(session: Session): Promise<CompressRecord | null> {
-    return compressOpenTurn(this as unknown as FlushHost, session)
+  async compressOpenTurn(session: Session, signal?: AbortSignal): Promise<CompressRecord | null> {
+    return compressOpenTurn(this as unknown as FlushHost, session, signal)
   }
 }
 

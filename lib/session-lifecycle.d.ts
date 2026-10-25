@@ -69,7 +69,7 @@ export interface LifecycleHost {
     citeMinPrefixLen: number;
     overlapTheta: number;
     enableOverlapChain: boolean;
-    injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
+    injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined;
     disableCiteEdges: boolean;
     disableInferredEdges: boolean;
     tombstoneMergeMinRun: number;
@@ -94,6 +94,7 @@ export interface LifecycleHost {
     prunedNodeIndex: Map<number, PrunedNodeInfo>;
     reactivePending: WeakMap<Session, true>;
     compactSourceCommandId: CommandId | undefined;
+    bindRuntimeState: (session: Session) => void;
     shadowedSeqsOf: (session: Session) => Set<number>;
     rebuildLedgerFromLog: () => void;
     restoreUsageAnchor: (session: Session) => void;

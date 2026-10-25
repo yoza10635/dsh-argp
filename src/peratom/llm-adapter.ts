@@ -81,6 +81,7 @@ export async function completeViaDshLlm(
   timeoutMs: number,
   contextMessages?: readonly Message[],
   contextTools?: readonly ToolSchema[],
+  signal?: AbortSignal,
 ): Promise<PeratomLlmResult> {
   const llm = resolveLlmRuntime(ctx)
   if (llm === undefined) throw new Error('dsh-llm backend: host has no llm service')
@@ -94,7 +95,8 @@ export async function completeViaDshLlm(
     ...(contextTools !== undefined && contextTools.length > 0 ? { tools: [...contextTools] } : {}),
     temperature: 0,
     purpose: 'compaction',
-    signal: AbortSignal.timeout(timeoutMs),
+    // 1-5（1.11.0-beta.0）：外部取消与超时合并——任一触发即断流（abort 优先透传给调用方）。
+    signal: signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]),
   })
   let text = ''
   let usage: PeratomLlmUsage | undefined

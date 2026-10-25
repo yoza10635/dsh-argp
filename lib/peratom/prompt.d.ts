@@ -57,7 +57,9 @@ contextWire?: Record<string, unknown>[],
 /** A 形态 tools 透传（requestHeader().tools 的 wire 渲染）。 */
 contextTools?: Record<string, unknown>[], 
 /** 输出 cap（token）。压缩输出是 JSON plan，通常几百 token；设小 cap 给 prompt 让出 margin（防爆上限）。 */
-maxCompletionTokens?: number): Promise<string>;
+maxCompletionTokens?: number, 
+/** 1-5（1.11.0-beta.0）：外部取消（与 timeout 合并，任一触发即断）。 */
+signal?: AbortSignal): Promise<string>;
 /**
  * 后端选路（§11.13.1）：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底。
  * 三条都解不出返回 null —— 调用方按 disabled 记账（`no-endpoint`），不抛错、不阻断会话。

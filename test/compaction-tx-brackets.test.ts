@@ -46,13 +46,13 @@ import type { PruneTxHost } from '../src/prune-tx.ts'
 function makeStubHost(): PruneTxHost {
   return {
     log: { info: () => {}, warn: () => {}, error: () => {} },
-    prunedNodeIndex: new Map(),
+    // 1.11.0-beta.0：会话态经 stateOf 分桶。**故意返回缺 records 的对象**——事务成功
+    // end 之后的 `pushBounded(st.records, …)` 因此必然抛 TypeError（原"不给 records 字段"
+    // 注入点的等价迁移）。
+    stateOf: () => ({}) as never,
     compactSourceCommandId: undefined,
     charsPerToken: 4,
     telemetryCap: 10,
-    recallCharsUsed: 0,
-    lastRealPromptTokens: 0,
-    lastRealAnchorSeq: -1,
     // 接口要求但本函数不读取的成员（bindSession/atomize/tombstoneMergeMinRun 等属其他方法）。
     bindSession: () => {},
     atomize: () => [],

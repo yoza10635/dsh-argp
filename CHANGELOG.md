@@ -4,6 +4,29 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.11.0-beta.0] - 2026-10-25（会话所有权：per-Session 状态分桶 + exec 路由 + 提交语义）
+
+> **发行说明**：两份外部评审在根因层收敛的第一个架构主题——**多会话/多代理健壮性（〔Q〕评分 D 的两大 BLOCKER / 〔K〕阶段 A+B）**。此前引擎的全部会话态（台账、召回预算、shadowed 游标、usage 锚点、冻结 catalog、声明边缓存）是**进程级单例**：子代理/双会话宿主下 A→B 切换时 B 读到 A 的剪枝索引（同 seq 不同内容 = 跨会话泄漏）、A 的预算压制 B 的召回、A 的锚点让 B 误触发。本版全部按 `Session` 分桶（WeakMap），异步路径显式经 `exec.agent.session` 路由。**beta 期验证焦点：多会话宿主下的召回正确性与压缩事务完整性**；单会话行为不变（437 例全绿 + 10 例反例集）。
+
+### Changed
+
+- **会话运行时状态 per-Session 分桶**（1-1，〔Q〕M4）：新增 `src/session-state.ts`（`SessionRuntimeState`，约 22 字段/桶）+ 引擎 `stateOf(session)`（WeakMap 懒建）。台账（records/prunedNodeIndex/closurePrunes）、召回预算与计数、shadowed 三件套、冻结 catalog、usage 锚点、账本重建去重集、守卫覆盖全部随会话切换；同步路径（图剪）经 getter 兼容层读焦点桶（零调用点改动），异步路径显式带 session。闭包 id 计数器保持进程级单调（跨会话唯一无害）。
+- **召回工具 + recall-zoom 按 `exec.agent.session` 路由**（1-2）：三个召回工具与 recall_summary/recall_detail 的 execute 改收 `(args, exec)`，会话解析 = `exec.agent.session`（多会话宿主逐调用正确）→ 焦点绑定兜底（单会话语义不变）。zoom 的两档召回预算滑窗同步 per-session（A 会话的 compaction/end 不再归零 B 的预算）。
+- **declarer 边缓存会话键化**（1-6）：`edgeCache` 进程单例 → `WeakMap<Session, Map>` 每会话 512 条 LRU——A 会话声明的 18→25 不再注入 B 会话的建图。`buildInjectEdges` 加可选 session 参数（有 session 只注入该桶；历史调用方合并全部桶）。声明失败从"await 前记账永久跳过"改为**有界重试**（同轮 ≤2 次，成功才记账；解析失败/网络失败同待遇）。
+
+### Fixed
+
+- **水位语义：提交成功才推进**（1-3，〔K〕P1-3 裁决定案）：旧实现"LLM 规划成功即推水位"，而发射段 `flushStashed` 是**先 splice 后吞错**——规划成功但落盘失败的窗口被消费即弃（pending 已删、水位已进），该批原子永久跳过且无任何错误痕迹。现在：`flushStashed` 先试后删（flushEntry 成功才 splice 并推水位）、失败保留条目自动重试（单条 ≤2 次，超限有界放弃并留错误账）、零动作窗口视为"已考虑"照常推进（防无限重规划）。两段式的 idle 段只暂存不推水位（`peratom-pre-pressure` ⑦ 的锁已按新语义更新）。
+- **stale-surface 代际守卫**（1-4）：idle 暂存 → 下一次 pre-step 发射的窗口期里，并发图剪/手动 /compact 可能已把同一批 seq 换掉；旧决策写向换代后的 surface 要么撞宿主 span 校验要么写错对象。发射前校验收集窗口目标是否已被 replace 副本覆盖（surfaceOp 挂在**副本事件**上，判定必须扫 replace 覆盖集而非目标事件自身）⇒ 过期决策放弃发射（skipReason=stale-surface 入账，不重试）。
+- **同会话 pass 串行**（1-4）：两个 idle pass 不再并发读写同一窗口（新 pass 排在既有在飞链之后）；跨会话互不阻塞（分桶 per-session）。
+- **AbortSignal 贯穿 peratom LLM 链**（1-5）：compressor/declarer 的 LLM 调用全部收 signal，`AbortSignal.any` 合并超时（abort 与超时任一触发即断流）；abort 不进 schema 兼容重试（不是网络失败）；暂存前/写点前各有 `throwIfAborted` 取消点——abort 后半成品不入队、已入队条目留在 pending 等下一窗口。
+
+### 提示
+
+- **beta ≠ stable**：本版走 beta 渠道（npm dist-tag 的 `beta`），`latest` 不动；转 stable 前需多会话反例集在真实宿主全绿（`test/session-ownership.test.ts` 10 例为进程内版本）。
+- 测试：全量 437 例通过（新增 `session-ownership.test.ts` 10 例反例集：双会话泄漏/预算分桶/水位提交语义/不重不漏/stale 守卫/abort 三时点/边隔离）。
+- 无配置迁移、无 breaking API（引擎公共面签名向后兼容）。
+
 ## [1.10.2] - 2026-10-25（外部评审核验修复批：附件通路 / info-only 压缩 / 免疫毒化 / 召回账目）
 
 > **发行说明**：两份外部评审（本地逐条核验后）收敛出的小而独立的已核验修复批——8 项全部带"删掉修复即变红"的回归锁（`test/repair-1-10-2.test.ts` 等，变异验证过）。无 API 变化、无配置迁移；四项是真实缺陷修复（附件保留自 1.7.0 起在真实宿主上整体 no-op、info-only 分支丢弃模型压缩输出、文本形状可制造永久免剪、归并墓碑召回指错层），其余为账目诚实化与文案纠偏。

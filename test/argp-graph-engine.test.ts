@@ -1219,11 +1219,11 @@ test('recallQuery: searches pruned content by keywords and records stats', async
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
     engine.setSession(session)
     await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
-    const result = engine.recallQuery('A1', 5)
+    const result = engine.recallQuery(session, 'A1', 5)
     assert.ok(result.includes('Recalled'))
     assert.ok(result.includes('A1'))
     assert.ok(engine.recallQueryCalls.length >= 1)
-    const noHit = engine.recallQuery('definitely-not-present', 5)
+    const noHit = engine.recallQuery(session, 'definitely-not-present', 5)
     assert.ok(noHit.includes('no pruned nodes match'))
   } finally {
     await ctx.fiber.dispose()

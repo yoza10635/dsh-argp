@@ -84,8 +84,8 @@ test('P2 write-side: noteRecallHit 以 rootSeq 为 key 写入防抖（旧 closur
     assert.ok(cp !== undefined)
     assert.equal(cp.rootSeq, u1, 'closure record must carry rootSeq = root U seq')
     // recall 命中闭包内节点 → noteRecallHit 写入
-    const engineAny = engine as unknown as { noteRecallHit(seq: number): void; closureLastRecalled: Map<number, number> }
-    engineAny.noteRecallHit(a1)
+    const engineAny = engine as unknown as { noteRecallHit(session: Session, seq: number): void; closureLastRecalled: Map<number, number> }
+    engineAny.noteRecallHit(session, a1)
     assert.ok(engineAny.closureLastRecalled.has(u1), 'debounce key must be rootSeq (' + u1 + ')')
     assert.equal(engineAny.closureLastRecalled.get(u1), 5, 'debounce round should be latest turn (A5 turn=5)')
     assert.equal(engineAny.closureLastRecalled.size, 1, 'exactly one debounce entry — old closureId key must NOT be used')

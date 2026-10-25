@@ -19,6 +19,7 @@ import type { CompactionAgentContext, CompactionResult, ManualCompactAgentContex
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import type { Atom, AtomType } from './argp-types.js'
+import type { SessionRuntimeState } from './session-state.js'
 import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn, resolveRootSeqs } from './log-access.js'
 import { classifyUserMessage } from './graph-build.js'
 import { visibleChars } from './budget.js'
@@ -115,14 +116,11 @@ export interface PruneTxHost {
   bindSession: (session: Session) => void
   atomize: (session: Session) => Atom[]
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
-  prunedNodeIndex: Map<number, { seq: number; type: AtomType; turn: number; firstLine: string; citedBySeq: number[]; eff: number; latestOfPath?: number }>
+  /** 1.11.0-beta.0（1-1）：会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
+  stateOf: (session: Session) => SessionRuntimeState
   compactSourceCommandId: CommandId | undefined
   charsPerToken: number
-  records: GraphPruneRecord[]
   telemetryCap: number
-  recallCharsUsed: number
-  lastRealPromptTokens: number
-  lastRealAnchorSeq: number
   tombstoneMergeMinRun: number
   recencyGuard: number
   turnGuard: number
@@ -159,6 +157,7 @@ export function pruneIntervals(
     return data !== undefined && msg !== undefined && msg.content?.[0] !== undefined
   }
   type TombstoneSpec = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string }
+  const st = host.stateOf(session)
   let useIntervals = intervals
   let useTombstones = tombstones
   if (tombstones !== undefined && tombstones.length === intervals.length) {
@@ -180,7 +179,7 @@ export function pruneIntervals(
         + '; keeping those R node(s) alive (not pruned) to preserve issuer tool_calls pairing')
       // 调用方（图剪）在事务前已把这些原子索引进 prunedNodeIndex；节点保留活体，
       // 删除索引条目保持 recall 账本诚实（活体节点不应出现在 pruned 索引）。
-      for (const seq of droppedSeqs) host.prunedNodeIndex.delete(seq)
+      for (const seq of droppedSeqs) st.prunedNodeIndex.delete(seq)
       useIntervals = keptIv
       useTombstones = keptTs
     }
@@ -334,7 +333,7 @@ export function pruneIntervals(
     const endEvent = session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField })
     ended = true
     const charsAfter = visibleChars(session)
-    pushBounded(host.records, {
+    pushBounded(st.records, {
       at: new Date().toISOString(),
       compactionId,
       ...host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId },
@@ -351,14 +350,14 @@ export function pruneIntervals(
       forced,
     }, host.telemetryCap)
     // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）
-    host.recallCharsUsed = 0
+    st.recallCharsUsed = 0
     // 2026-08-23：压缩换代 surface——旧真实锚点（压缩前的 provider usage）失效，
     // 若保留会用大锚点 + 增量导致压缩后立即误触发。用压缩后 surface 估算重置锚点
     // （压缩后 surface 小、估算误差影响小；下一次请求的 usage 会再次精确锚定）。
     const nodes = session.surface.nodes
     const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
-    host.lastRealPromptTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
-    host.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : host.lastRealAnchorSeq
+    st.lastRealPromptTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
+    st.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : st.lastRealAnchorSeq
     // 永久冻结：落剪不再刷新 frozenCatalog（见 bindSession 注释）。剪枝本身已让可见上下文换代，
     // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。
     return {

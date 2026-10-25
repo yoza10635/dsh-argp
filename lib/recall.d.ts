@@ -10,6 +10,7 @@
  * 依赖方向：hub → recall（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session';
+import type { SessionRuntimeState } from './session-state.js';
 import { type NodeState } from './log-access.js';
 /**
  * 召回侧模块函数访问引擎状态所需的窄接口。
@@ -18,28 +19,18 @@ import { type NodeState } from './log-access.js';
  * charsPerToken 在 class 上是 getter——经 host 读取时 getter 以真实实例为
  * this 调用，语义与 this.charsPerToken 完全一致。
  */
+/**
+ * 1.11.0-beta.0（1-1/1-2）起 RecallHost 的会话态经 `stateOf(session)` 分桶访问；
+ * 函数签名一律显式带 session（异步调用方不得依赖引擎焦点指针——多会话交错时
+ * 焦点可能已切走）。session 字段保留给"当前焦点"语义的同步调用方（catalogText）。
+ */
 export interface RecallHost {
     session: Session | null;
-    shadowedSession: Session | null;
-    shadowedSet: Set<number>;
-    shadowedScanned: number;
+    stateOf: (session: Session) => SessionRuntimeState;
     charsPerToken: number;
     turnBasis: 'semantic' | 'all';
-    recallQueryCalls: {
-        query: string;
-        count: number;
-        hits: number;
-    }[];
     telemetryCap: number;
-    closurePrunes: {
-        closureId: string;
-        rootSeq: number;
-        prunedSeqs: number[];
-        at: string;
-    }[];
-    closureLastRecalled: Map<number, number>;
     resolvedWindowTokens: number;
-    recallCharsUsed: number;
 }
 /**
  * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
@@ -56,7 +47,7 @@ export declare function catalogText(host: RecallHost, maxItems?: number, snippet
 /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
  *
  * 原 class 方法；this.x → host.x。 */
-export declare function recallQuery(host: RecallHost, query: string, maxResults?: number): string;
+export declare function recallQuery(host: RecallHost, session: Session | null, query: string, maxResults?: number): string;
 /**
  * 程序化 recall（RecallHandle 语义）：**仅**命中被遮蔽节点，未命中返回 null。
  * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（历史 spike 系列的
@@ -66,21 +57,21 @@ export declare function recallQuery(host: RecallHost, query: string, maxResults?
  *
  * 原 class 方法；this.x → host.x。
  */
-export declare function recall(host: RecallHost, seq: number): string | null;
+export declare function recall(host: RecallHost, session: Session | null, seq: number): string | null;
 /**
  * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
  * 不要求节点属于 pruned 集合。越界返回 null。
  *
  * 原 class 方法；this.x → host.x。
  */
-export declare function recallAnyState(host: RecallHost, seq: number): {
+export declare function recallAnyState(host: RecallHost, session: Session | null, seq: number): {
     text: string;
     state: NodeState;
 } | null;
 /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
  *
  * 原 class 方法；this.x → host.x。 */
-export declare function nodeState(host: RecallHost, seq: number): NodeState | null;
+export declare function nodeState(host: RecallHost, session: Session | null, seq: number): NodeState | null;
 /**
  * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
  *
@@ -105,7 +96,7 @@ export declare function latestTurnOfSession(host: RecallHost): number;
  *
  * 原 class 私有方法；this.x → host.x。
  */
-export declare function noteRecallHit(host: RecallHost, seq: number): void;
+export declare function noteRecallHit(host: RecallHost, session: Session | null, seq: number): void;
 /**
  * recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。
  *
@@ -116,4 +107,4 @@ export declare function noteRecallHit(host: RecallHost, seq: number): void;
  *
  * 原 class 私有方法；this.x → host.x（recallCharsUsed 经 host 重赋值落到真实字段）。
  */
-export declare function budgetRecallText(host: RecallHost, text: string): string;
+export declare function budgetRecallText(host: RecallHost, session: Session | null, text: string): string;

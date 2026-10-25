@@ -1,5 +1,5 @@
 /**
- * CiteDeclarer（Stage-1 建图侧）：轮末引用边声明管线。
+ * CiteDeclarer（Stage-1 建图侧，plan P2）：轮末引用边声明管线。
  *
  * 宿主身份：**普通 cordis 服务，非 ctx.compaction 位**——与 PeratomCompressor
  * 并列走事件钩子，Stage-2 的 ArgpGraphEngine 独占 compaction 位，零改动消费边
@@ -160,7 +160,15 @@ export declare class CiteDeclarer {
     /** A 形态前缀预算（默认 132000；超预算该次降级 C）。 */
     private readonly prefixBudgetTokens;
     /** seq 空间声明边缓存：(fromSeq->toSeq) → 边。消费端 buildInjectEdges 做 seq→id 映射。 */
-    private readonly edgeCache;
+    /**
+     * 1-6（1.11.0-beta.0）：边缓存 per-session 分桶（此前进程级单例——多会话下同 seq 对
+     * 跨会话错配边：A 会话声明的 18→25 会注入 B 会话的建图）。key 语义与 MAX_CACHED_EDGES
+     * 上限随桶各自成立（每会话 512 条 LRU）。
+     */
+    private readonly edgeCaches;
+    private edgeCacheOf;
+    /** 1-6：每会话每轮的声明尝试次数（失败有界重试：≤ DECLARE_MAX_ATTEMPTS 次后记账放弃）。 */
+    private readonly attemptTurns;
     /** 防重复 turn 处理：(session, turn) 记账于声明阶段。 */
     private readonly doneTurns;
     /** LLM 声明调用计数器（门控跳过 / 中断 / disabled 轮零调用的断言读这里）。 */
@@ -171,7 +179,12 @@ export declare class CiteDeclarer {
     readonly telemetryCap: number;
     readonly records: CiteRecord[];
     /** 缓存中的声明边数（测试断言用）。 */
+    /** 观测口径 = 全部会话桶的合计（/argp 与测试断言用）。 */
     get cachedEdgeCount(): number;
+    /** 近邻会话清单（cachedEdgeCount / 无 session 调用方的合并视图用；WeakMap 不可枚举，
+     *  故在 declareCurrentTurn 触达时登记引用）。 */
+    private readonly seenSessions;
+    private recentSessions;
     /** 是否已解析到 LLM 后端（dsh-llm / endpoint / 自动兜底任一）。未武装时 auto 口径下回复级 cites 协议保持开启（两种边来源不能同时归零）。 */
     get armed(): boolean;
     constructor(ctx: Context, config?: CiteDeclarerConfig);
@@ -193,7 +206,7 @@ export declare class CiteDeclarer {
      * 返回观测记录；无可声明轮（无闭合 turn）返回 null。
      */
     declareCurrentTurn(session: Session): Promise<CiteRecord | null>;
-    /** 边入缓存：同 (from,to) 覆盖（后轮声明刷新 level）；超限按插入序淘汰最旧。 */
+    /** 边入缓存（per-session 桶）：同 (from,to) 覆盖（后轮声明刷新 level）；超限按插入序淘汰最旧。 */
     private cacheCites;
     /**
      * F1（1.7.1）：声明边落盘（**默认关**，env 门控的 JSONL 诊断通道）。
@@ -249,6 +262,6 @@ export declare class CiteDeclarer {
      * 行为**（端点离场即丢）。摘要新增 `redirectedEdges` = **至少一个端点经重定向**才命中的
      * 边数，它是 `emitted` 的**子集**，**不计入** `emitted + dropped* = cacheSize` 求和式。
      */
-    buildInjectEdges(atoms: Atom[], redirect?: (seq: number) => number | undefined): SemanticEdge[];
+    buildInjectEdges(atoms: Atom[], redirect?: (seq: number) => number | undefined, session?: Session): SemanticEdge[];
 }
 export {};

@@ -33,7 +33,7 @@ export interface GraphBuildHost {
   citeStats: CiteStats
   citeMinPrefixLen: number
   disableCiteEdges: boolean
-  injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined
+  injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined
   disableInferredEdges: boolean
   inferredOpts: InferredEdgeOptions
   lastInferredEdges: SemanticEdge[]
@@ -333,7 +333,7 @@ export function buildGraph(host: GraphBuildHost, atoms: Atom[]): { edges: Semant
   if (host.injectEdges !== undefined) {
     const validIds = new Set(atoms.map(a => a.id))
     const seen = new Set(edges.map(e => `${e.from}\u0000${e.to}`))
-    for (const e of host.injectEdges(atoms)) {
+    for (const e of host.injectEdges(atoms, host.session ?? undefined)) {
       if (e.from === e.to || !validIds.has(e.from) || !validIds.has(e.to)) continue
       const key = `${e.from}\u0000${e.to}`
       if (seen.has(key)) continue

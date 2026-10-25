@@ -38,7 +38,7 @@ export interface GraphBuildHost {
     citeStats: CiteStats;
     citeMinPrefixLen: number;
     disableCiteEdges: boolean;
-    injectEdges: ((atoms: Atom[]) => SemanticEdge[]) | undefined;
+    injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined;
     disableInferredEdges: boolean;
     inferredOpts: InferredEdgeOptions;
     lastInferredEdges: SemanticEdge[];

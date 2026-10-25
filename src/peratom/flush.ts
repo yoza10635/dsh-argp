@@ -71,6 +71,34 @@ export interface PendingEntry {
   decision: CompressDecision
   /** callAndStash 创建的观测记录；簿记直接写回此引用，不依赖 records 数组反查。 */
   record: CompressRecord
+  /** 1-3（1.11.0-beta.0）：发射失败计数；≥ FLUSH_MAX_FAILURES 次后放弃（有界，不无限重试）。 */
+  failures: number
+}
+
+/** 1-3：单条暂存事务的发射失败上限——超限放弃并保留错误账（此前"先 splice 后吞错"
+ * 让任何一次落盘失败 = 静默丢弃且窗口被消费，永不重试）。 */
+const FLUSH_MAX_FAILURES = 2
+
+/**
+ * 1-4（1.11.0-beta.0）：stale-surface 代际守卫——LLM 决策落盘前校验收集窗口的
+ * **目标原子仍处于原始 append 形态**（未被后续事务替换）。idle 暂存 → 下一次
+ * pre-step 发射的窗口期里，并发的图剪 / 手动 /compact / 上一条重试都可能已把同一
+ * 批 seq 换掉；旧决策写向换代后的 surface 要么撞宿主 span 校验（抛错）要么写错对象。
+ * 目标已被 replace ⇒ 决策过期，放弃发射（skipReason 入账，不重试——该窗口属于上一代）。
+ */
+function collectTargetsStale(session: Session, collect: CurrentTurnCollect): boolean {
+  // surfaceOp 挂在**副本事件自身**上（被替换者的日志事件仍是 'append'）——判定
+  // "目标已被换掉"必须扫 replace 副本的 [startSeq..endSeq] 覆盖集（O(日志) 一次建）。
+  const replaced = new Set<number>()
+  for (const ev of sessionEvents(session)) {
+    if (ev === undefined) continue
+    const op = (ev as { surfaceOp?: unknown }).surfaceOp
+    if (typeof op !== 'object' || op === null || (op as { op?: string }).op !== 'replace') continue
+    const { startSeq, endSeq } = op as { startSeq: number; endSeq: number }
+    for (let i = startSeq; i <= endSeq; i += 1) replaced.add(i)
+  }
+  const targets = [...collect.userLong, ...collect.toolResults]
+  return targets.some(t => replaced.has(t.seq))
 }
 
 // -- LLM 调用与暂存 ------------------------------------------------------
@@ -142,7 +170,7 @@ export function prefixWithinBudget(host: FlushHost, session: Session, promptChar
   return false
 }
 
-export async function callAndStash(host: FlushHost, session: Session, collect: CurrentTurnCollect): Promise<CompressRecord> {
+export async function callAndStash(host: FlushHost, session: Session, collect: CurrentTurnCollect, signal?: AbortSignal): Promise<CompressRecord> {
   const record: CompressRecord = { at: new Date().toISOString(), turn: collect.turn, called: true }
   pushBounded(host.records, record, host.telemetryCap)
   const backend = host.backend()
@@ -167,12 +195,13 @@ export async function callAndStash(host: FlushHost, session: Session, collect: C
     let raw: string
     let ms = Date.now() - started
     if (backend.kind === 'dsh-llm') {
+      signal?.throwIfAborted()
       // dsh-llm 生产后端：GenerateOptions 无 response_format——schema 约束仅在 fetch
       // 后端可用，此路径一次到位，依赖 extractJson 兜底解析（无 schema 重试舞蹈）。
       // A 形态：deriveMessages() 前缀 + 指令尾部 user；ctk 由宿主 compat 决定
       //（本机 qwen-chat-template 硬编码 preserve_thinking:true，见 llm-adapter 头注——
       // 该路径的同态对齐依赖宿主，fetch 路径才是 ctk 继承的完全控制面）。
-      const res = await completeViaDshLlm(host.ctx, backend.spec, prompt, host.timeoutMs, usePrefix ? context.messages : undefined, usePrefix ? context.tools : undefined)
+      const res = await completeViaDshLlm(host.ctx, backend.spec, prompt, host.timeoutMs, usePrefix ? context.messages : undefined, usePrefix ? context.tools : undefined, signal)
       raw = res.text
       if (res.usage !== undefined) record.usage = res.usage
       ms = Date.now() - started
@@ -180,11 +209,12 @@ export async function callAndStash(host: FlushHost, session: Session, collect: C
       const contextWire = usePrefix ? serializeWireMessages(context.messages, host.ctx.logger) : undefined
       const contextTools = usePrefix ? serializeWireTools(context.tools) : undefined
       try {
-        raw = await postChat(host.fetchImpl, backend.endpoint, prompt, host.timeoutMs, true, effectiveCtk, contextWire, contextTools, host.maxCompletionTokens)
+        raw = await postChat(host.fetchImpl, backend.endpoint, prompt, host.timeoutMs, true, effectiveCtk, contextWire, contextTools, host.maxCompletionTokens, signal)
         ms = Date.now() - started
       } catch (schemaError) {
+        signal?.throwIfAborted() // 1-5：abort 不是 schema 失败——不进兼容重试，直接向上抛
         // response_format 被端点拒绝/网络抖动：spike 30/32 兼容模式重试一次（裸 prompt）。
-        raw = await postChat(host.fetchImpl, backend.endpoint, prompt, host.timeoutMs, false, effectiveCtk, contextWire, contextTools, host.maxCompletionTokens)
+        raw = await postChat(host.fetchImpl, backend.endpoint, prompt, host.timeoutMs, false, effectiveCtk, contextWire, contextTools, host.maxCompletionTokens, signal)
         ms = Date.now() - started
         record.anomalies = (record.anomalies ?? 0) + 1
         void schemaError
@@ -198,7 +228,8 @@ export async function callAndStash(host: FlushHost, session: Session, collect: C
       return record // 解析失败静默跳过：本轮保原文（安全方向），绝不阻断会话
     }
     record.decision = decision
-    host.pending.push({ session, collect, decision, record })
+    signal?.throwIfAborted() // 1-5：abort 发生在 LLM 返回后、暂存前 ⇒ 不入队（半成品不发射）
+    host.pending.push({ session, collect, decision, record, failures: 0 })
     const extract = decision.tools.filter(t => t.level === 'extract').length
     const summary = decision.tools.filter(t => t.level === 'summary').length
     const falseActions = decision.tools.filter(t => t.level === 'false').length
@@ -230,34 +261,57 @@ export async function prepareCurrentTurn(host: FlushHost, session: Session): Pro
     pushBounded(host.records, record, host.telemetryCap)
     return record // 纯 dialog / 版本链成员 / 全小结果：零调用短路；不推进水位
   }
+  // 1-3（1.11.0-beta.0）：水位推进改到**提交成功**（flushStashed 内）——"规划成功但
+  // 落盘失败"的窗口此前被消费即弃（pending 已删、水位已进），该批原子永久跳过。
   const entry = await callAndStash(host, session, collect)
-  if (entry.error === undefined && !entry.parseFailed) {
-    host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
-    if (collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, collect.turn - 1, collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
-  }
   return entry
 }
 
-/** 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口（同步追加，吞错记账）。 */
-export function flushStashed(host: FlushHost, session: Session): void {
-  while (true) {
-    const idx = host.pending.findIndex(e => e.session === session)
-    if (idx < 0) return
-    const [entry] = host.pending.splice(idx, 1)
+/**
+ * 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口。
+ *
+ * 1-3（1.11.0-beta.0）重写：**先试后删**——flushEntry 成功才 splice 并推进水位；
+ * 失败保留条目（failures+1，≤ FLUSH_MAX_FAILURES 次内自动重试），超限放弃并留错误账。
+ * 旧实现"先 splice 后吞错"= 任何一次落盘失败即静默丢弃且水位已消费（不重不漏的反面）。
+ * 1-4：发射前过 stale-surface 代际守卫（目标已被换掉 ⇒ 决策过期，放弃不重试）。
+ * 1-5：signal 已 abort ⇒ 停止发射（未发射条目留在 pending，下一次窗口继续）。
+ */
+export function flushStashed(host: FlushHost, session: Session, signal?: AbortSignal): void {
+  let idx = host.pending.findIndex(e => e.session === session)
+  while (idx >= 0) {
+    const entry = host.pending[idx] as PendingEntry
     try {
-      flushEntry(host, entry.session, entry.collect, entry.decision, entry.record)
+      signal?.throwIfAborted()
+      if (collectTargetsStale(session, entry.collect)) {
+        entry.record.skipReason = 'stale-surface'
+        host.pending.splice(idx, 1)
+        host.ctx.logger.info(`[argp-peratom] compressor flush skipped: turn ${entry.collect.turn} targets already replaced (stale plan, generation moved)`)
+        idx = host.pending.findIndex(e => e.session === session)
+        continue
+      }
+      flushEntry(host, session, entry.collect, entry.decision, entry.record, signal)
+      host.pending.splice(idx, 1)
+      // 1-3：提交成功才推进水位（无异常返回 = 事务逻辑完成，含零动作跳过——全拒窗口
+      // 也是"已考虑"，推进防无限重规划）。
+      host.advanceWaterMark(session, entry.collect.turn, entry.collect.endSeq)
+      if (entry.collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, entry.collect.turn - 1, entry.collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      host.ctx.logger.warn(`[argp-peratom] compressor flush failed: ${message}`)
-      pushBounded(host.records, { at: new Date().toISOString(), turn: entry.collect.turn, called: true, error: message }, host.telemetryCap)
+      entry.failures += 1
+      entry.record.error = message
+      host.ctx.logger.warn(`[argp-peratom] compressor flush failed (${entry.failures}/${FLUSH_MAX_FAILURES}): ${message}`)
+      if (entry.failures >= FLUSH_MAX_FAILURES) {
+        host.pending.splice(idx, 1) // 有界放弃：错误账留在 record（已入 records 数组）
+      }
     }
+    idx = host.pending.findIndex(e => e.session === session)
   }
 }
 
 /** 公开入口（P4 溢出三步路径② / 单测）：立即收集+调用+发射，绕过两段式延迟。 */
-export async function compressCurrentTurn(host: FlushHost, session: Session): Promise<CompressRecord | null> {
+export async function compressCurrentTurn(host: FlushHost, session: Session, signal?: AbortSignal): Promise<CompressRecord | null> {
   const collect = host.collectCurrentTurn(session)
-  return compressCollect(host, session, collect)
+  return compressCollect(host, session, collect, signal)
 }
 
 /**
@@ -268,13 +322,13 @@ export async function compressCurrentTurn(host: FlushHost, session: Session): Pr
  * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
  * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
  */
-export async function compressOpenTurn(host: FlushHost, session: Session): Promise<CompressRecord | null> {
+export async function compressOpenTurn(host: FlushHost, session: Session, signal?: AbortSignal): Promise<CompressRecord | null> {
   const collect = host.collectOpenTurn(session)
-  return compressCollect(host, session, collect)
+  return compressCollect(host, session, collect, signal)
 }
 
 /** 共享压缩尾部：中断/无候选短路（不推进水位）+ callAndStash + 立即 flush（成功才推进水位）。 */
-export async function compressCollect(host: FlushHost, session: Session, collect: CurrentTurnCollect | null): Promise<CompressRecord | null> {
+export async function compressCollect(host: FlushHost, session: Session, collect: CurrentTurnCollect | null, signal?: AbortSignal): Promise<CompressRecord | null> {
   if (collect === null) return null
   const chain = buildVersionChainIndex(sessionEvents(session))
   if (collect.interrupted) {
@@ -287,18 +341,16 @@ export async function compressCollect(host: FlushHost, session: Session, collect
     pushBounded(host.records, record, host.telemetryCap)
     return record // 不推进水位（原实现在此之前 done.add ⇒ 一次 no-candidate 永久作废该轮）
   }
-  const entry = await callAndStash(host, session, collect)
-  if (entry.error === undefined && !entry.parseFailed) {
-    host.advanceWaterMark(session, collect.turn, collect.endSeq) // 成功规划才推进水位
-    if (collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, collect.turn - 1, collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
-  }
-  flushStashed(host, session)
+  // 1-3：水位推进在 flushStashed 的提交成功路径（见上）；本入口只负责收集→调用→发射。
+  const entry = await callAndStash(host, session, collect, signal)
+  flushStashed(host, session, signal)
   return entry
 }
 
 // -- 事务括号发射（仿 t1：start..end，双事件/多事件发射，断言内联）-------
 
-export function flushEntry(host: FlushHost, session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord): void {
+export function flushEntry(host: FlushHost, session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord, signal?: AbortSignal): void {
+  signal?.throwIfAborted() // 1-5：写点前的取消点——abort 优先于任何事务事件落盘
   const plan = planReplacements(collect, decision, sessionEvents(session), {
     hlsMode: host.hlsMode,
     hlsRoiThreshold: host.hlsRoiThreshold,

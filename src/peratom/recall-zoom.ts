@@ -145,11 +145,28 @@ export class RecallZoom {
   private readonly enabled: boolean
 
   private session: Session | null = null
+  /**
+   * 1.11.0-beta.0（1-1）：两档预算滑窗 per-session 分桶（此前进程级单例——A 会话的
+   * compaction/end 会归零 B 会话的预算、B 的消耗压制 A 的召回）。
+   */
+  private readonly budgets = new WeakMap<Session, { detail: number; summary: number }>()
+  private budgetsOf(session: Session): { detail: number; summary: number } {
+    let b = this.budgets.get(session)
+    if (b === undefined) {
+      b = { detail: 0, summary: 0 }
+      this.budgets.set(session, b)
+    }
+    return b
+  }
+  /** 工具调用的目标会话（1-2）：exec.agent.session 优先，焦点绑定兜底。 */
+  private sessionOfToolCall(exec: unknown): Session | null {
+    const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
+    return agent?.session ?? this.session
+  }
 
-  /** detail 档单窗累计字符（compaction/end 归零）。 */
-  private detailCharsUsed = 0
-  /** summary 档单窗累计字符（compaction/end 归零）。 */
-  private summaryCharsUsed = 0
+  /** 焦点会话的 detail 档单窗累计（观测/测试；per-session 桶在 budgets）。 */
+  private get detailCharsUsed(): number { return this.session === null ? 0 : this.budgetsOf(this.session).detail }
+  private get summaryCharsUsed(): number { return this.session === null ? 0 : this.budgetsOf(this.session).summary }
 
   /** 遥测数组容量上限（P4.5：records 有界）。 */
   readonly telemetryCap: number
@@ -175,10 +192,12 @@ export class RecallZoom {
     })
 
     // 预算滑窗重置：每笔 compaction 事务成功后归零（与 budgetRecallText 同款语义）。
-    ctx.on('session/event', (_session, event) => {
+    ctx.on('session/event', (session, event) => {
       if (event.type === 'compaction/end') {
-        this.detailCharsUsed = 0
-        this.summaryCharsUsed = 0
+        // 1-1：按 event 所属会话归零（此前进程级归零会清掉并发会话的预算）。
+        const b = this.budgetsOf(session)
+        b.detail = 0
+        b.summary = 0
       }
     })
 
@@ -192,7 +211,7 @@ export class RecallZoom {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
       },
-      execute: async (args): Promise<string> => this.recallSummary((args as { seq?: number }).seq),
+      execute: async (args, exec): Promise<string> => this.recallSummary((args as { seq?: number }).seq, this.sessionOfToolCall(exec)),
     })
     ctx.tools.register(summaryTool)
 
@@ -208,9 +227,9 @@ export class RecallZoom {
         schema: { type: 'string' },
         render: (_args, value) => [{ type: 'text', text: value }],
       },
-      execute: async (args): Promise<string> => {
+      execute: async (args, exec): Promise<string> => {
         const a = args as { seq?: number; from?: number; limit?: number }
-        return this.recallDetail(a.seq, a.from, a.limit)
+        return this.recallDetail(a.seq, a.from, a.limit, this.sessionOfToolCall(exec))
       },
     })
     ctx.tools.register(detailTool)
@@ -233,7 +252,7 @@ export class RecallZoom {
   get detailBudget(): number { return this.detailBudgetChars }
   /** summary 档单窗预算（字符）= budgetRatio × detail。 */
   get summaryBudget(): number { return Math.floor(this.detailBudgetChars * this.budgetRatio) }
-  /** detail 档已用字符（测试断言 / 观测）。 */
+  /** detail 档已用字符（测试断言 / 观测；焦点会话口径）。 */
   get detailUsed(): number { return this.detailCharsUsed }
   /** summary 档已用字符。 */
   get summaryUsed(): number { return this.summaryCharsUsed }
@@ -242,10 +261,12 @@ export class RecallZoom {
     this.session = session
   }
 
-  /** 强制重置预算滑窗（测试 / 手动压缩用；生产由 compaction/end 触发）。 */
+  /** 强制重置预算滑窗（测试 / 手动压缩用；生产由 compaction/end 触发；作用于焦点会话）。 */
   resetBudget(): void {
-    this.detailCharsUsed = 0
-    this.summaryCharsUsed = 0
+    if (this.session === null) return
+    const b = this.budgetsOf(this.session)
+    b.detail = 0
+    b.summary = 0
   }
 
   /** 预算引导文案：教模型升档 / 降档，而非硬拒。 */
@@ -263,14 +284,15 @@ export class RecallZoom {
   }
 
   /** gist 档召回（P3）：三档降级取数 + summary 预算。 */
-  async recallSummary(seqArg: number | undefined): Promise<string> {
+  async recallSummary(seqArg: number | undefined, sessionArg?: Session | null): Promise<string> {
     const seq = seqArg
-    if (seq === undefined || this.session === null) return 'recall_summary: no session bound'
-    const session = this.session
+    const session = sessionArg ?? this.session
+    if (seq === undefined || session === null) return 'recall_summary: no session bound'
+    const b = this.budgetsOf(session)
     const budget = this.summaryBudget
-    if (this.summaryCharsUsed >= budget) {
+    if (b.summary >= budget) {
       pushBounded(this.records, { tool: 'recall_summary', seq, hit: false, chars: 0, budgetBlocked: 'summary' }, this.telemetryCap)
-      return this.budgetGuidance('summary', this.summaryCharsUsed, budget)
+      return this.budgetGuidance('summary', b.summary, budget)
     }
     const resolution = resolveSummaryText(session, seq)
     if (resolution === null) {
@@ -278,14 +300,14 @@ export class RecallZoom {
       return formatRecallOutcome('recall_summary', seq, { ok: false, reason: 'no-text', state: nodeState(session, seq) })
     }
     const state = nodeState(session, seq)
-    const allowed = Math.min(resolution.text.length, budget - this.summaryCharsUsed)
+    const allowed = Math.min(resolution.text.length, budget - b.summary)
     const truncated = resolution.text.length > allowed
-    const post = this.summaryCharsUsed + allowed
+    const post = b.summary + allowed
     // 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
     const body = truncated
       ? resolution.text.slice(0, allowed) + '…(truncated: summary recall budget ' + post + '/' + budget + ' chars)'
       : resolution.text
-    this.summaryCharsUsed = post
+    b.summary = post
     pushBounded(this.records, { tool: 'recall_summary', seq, hit: true, state, source: resolution.source, chars: allowed }, this.telemetryCap)
     const suffix = resolution.source === 'original'
       ? '\n[no stored summary for seq ' + seq + ' — returning original text]'
@@ -302,14 +324,15 @@ export class RecallZoom {
    * 拿回被剪的长代码/长工具输出——截断不再是不可恢复的信息丢失。
    * 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
    */
-  async recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number): Promise<string> {
+  async recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number, sessionArg?: Session | null): Promise<string> {
     const seq = seqArg
-    if (seq === undefined || this.session === null) return 'recall_detail: no session bound'
-    const session = this.session
+    const session = sessionArg ?? this.session
+    if (seq === undefined || session === null) return 'recall_detail: no session bound'
+    const b = this.budgetsOf(session)
     const budget = this.detailBudget
-    if (this.detailCharsUsed >= budget) {
+    if (b.detail >= budget) {
       pushBounded(this.records, { tool: 'recall_detail', seq, hit: false, chars: 0, budgetBlocked: 'detail' }, this.telemetryCap)
-      return this.budgetGuidance('detail', this.detailCharsUsed, budget)
+      return this.budgetGuidance('detail', b.detail, budget)
     }
     const shadowed = scanShadowedSeqs(session)
     const outcome = recallFromLog(session, seq, s => shadowed.has(s), (s, q) => rawEventText(s, q)?.text ?? '')
@@ -328,14 +351,14 @@ export class RecallZoom {
       pushBounded(this.records, { tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: 0 }, this.telemetryCap)
       return header + '\n…(end of content at seq ' + seq + ': nothing beyond char ' + from + ')' + note
     }
-    const allowed = Math.min(remaining, budget - this.detailCharsUsed, limit ?? remaining)
+    const allowed = Math.min(remaining, budget - b.detail, limit ?? remaining)
     const end = from + allowed
-    const post = this.detailCharsUsed + allowed
+    const post = b.detail + allowed
     const body = text.slice(from, end)
       + (end < text.length
         ? '…(truncated at ' + end + '/' + text.length + ' chars; call recall_detail(seq=' + seq + ', from=' + end + ') to continue)'
         : '')
-    this.detailCharsUsed = post
+    b.detail = post
     pushBounded(this.records, { tool: 'recall_detail', seq, hit: true, state: outcome.state, chars: allowed }, this.telemetryCap)
     return header + '\n' + body + note
   }

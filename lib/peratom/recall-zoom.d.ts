@@ -55,10 +55,17 @@ export declare class RecallZoom {
     private readonly detailBudgetChars;
     private readonly enabled;
     private session;
-    /** detail 档单窗累计字符（compaction/end 归零）。 */
-    private detailCharsUsed;
-    /** summary 档单窗累计字符（compaction/end 归零）。 */
-    private summaryCharsUsed;
+    /**
+     * 1.11.0-beta.0（1-1）：两档预算滑窗 per-session 分桶（此前进程级单例——A 会话的
+     * compaction/end 会归零 B 会话的预算、B 的消耗压制 A 的召回）。
+     */
+    private readonly budgets;
+    private budgetsOf;
+    /** 工具调用的目标会话（1-2）：exec.agent.session 优先，焦点绑定兜底。 */
+    private sessionOfToolCall;
+    /** 焦点会话的 detail 档单窗累计（观测/测试；per-session 桶在 budgets）。 */
+    private get detailCharsUsed();
+    private get summaryCharsUsed();
     /** 遥测数组容量上限（P4.5：records 有界）。 */
     readonly telemetryCap: number;
     /** 全部召回尝试记录（时间序）。 */
@@ -68,17 +75,17 @@ export declare class RecallZoom {
     get detailBudget(): number;
     /** summary 档单窗预算（字符）= budgetRatio × detail。 */
     get summaryBudget(): number;
-    /** detail 档已用字符（测试断言 / 观测）。 */
+    /** detail 档已用字符（测试断言 / 观测；焦点会话口径）。 */
     get detailUsed(): number;
     /** summary 档已用字符。 */
     get summaryUsed(): number;
     setSession(session: Session): void;
-    /** 强制重置预算滑窗（测试 / 手动压缩用；生产由 compaction/end 触发）。 */
+    /** 强制重置预算滑窗（测试 / 手动压缩用；生产由 compaction/end 触发；作用于焦点会话）。 */
     resetBudget(): void;
     /** 预算引导文案：教模型升档 / 降档，而非硬拒。 */
     private budgetGuidance;
     /** gist 档召回（P3）：三档降级取数 + summary 预算。 */
-    recallSummary(seqArg: number | undefined): Promise<string>;
+    recallSummary(seqArg: number | undefined, sessionArg?: Session | null): Promise<string>;
     /**
      * exact 档召回（verbatim 天花板）：日志原文 + detail 预算 + from/limit 分页。
      *
@@ -88,6 +95,6 @@ export declare class RecallZoom {
      * 拿回被剪的长代码/长工具输出——截断不再是不可恢复的信息丢失。
      * 预算只计实际投递的正文（allowed）；截断 marker 是固定长度诊断元信息，不计入。
      */
-    recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number): Promise<string>;
+    recallDetail(seqArg: number | undefined, fromArg?: number, limitArg?: number, sessionArg?: Session | null): Promise<string>;
 }
 export default RecallZoom;

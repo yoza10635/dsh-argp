@@ -10,6 +10,7 @@
  * 依赖方向：hub → recall（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session'
+import type { SessionRuntimeState } from './session-state.js'
 import type { AtomType } from './argp-types.js'
 import { sessionEvents, eventText, recallFromLog, nodeStateOf, type NodeState } from './log-access.js'
 import { classifyUserMessage } from './graph-build.js'
@@ -22,19 +23,18 @@ import { pushBounded } from './telemetry.js'
  * charsPerToken 在 class 上是 getter——经 host 读取时 getter 以真实实例为
  * this 调用，语义与 this.charsPerToken 完全一致。
  */
+/**
+ * 1.11.0-beta.0（1-1/1-2）起 RecallHost 的会话态经 `stateOf(session)` 分桶访问；
+ * 函数签名一律显式带 session（异步调用方不得依赖引擎焦点指针——多会话交错时
+ * 焦点可能已切走）。session 字段保留给"当前焦点"语义的同步调用方（catalogText）。
+ */
 export interface RecallHost {
   session: Session | null
-  shadowedSession: Session | null
-  shadowedSet: Set<number>
-  shadowedScanned: number
+  stateOf: (session: Session) => SessionRuntimeState
   charsPerToken: number
   turnBasis: 'semantic' | 'all'
-  recallQueryCalls: { query: string; count: number; hits: number }[]
   telemetryCap: number
-  closurePrunes: { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[]
-  closureLastRecalled: Map<number, number>
   resolvedWindowTokens: number
-  recallCharsUsed: number
 }
 
 /**
@@ -45,12 +45,13 @@ export interface RecallHost {
  * 经 host 重赋值落到真实字段）。
  */
 export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> {
-  if (host.shadowedSession !== session) {
-    host.shadowedSession = session
-    host.shadowedSet = new Set()
-    host.shadowedScanned = 0
+  const st = host.stateOf(session)
+  if (st.shadowedSession !== session) {
+    st.shadowedSession = session
+    st.shadowedSet = new Set()
+    st.shadowedScanned = 0
   }
-  for (let index = host.shadowedScanned; index < session.seq; index += 1) {
+  for (let index = st.shadowedScanned; index < session.seq; index += 1) {
     const event = sessionEvents(session)[index]
     if (event === undefined) continue
     // 权威剪枝账本：只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，
@@ -67,12 +68,12 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
     if (event.type === 'compaction/prune') {
       const shadowed = (event.data as { shadowedSeqs?: number[] }).shadowedSeqs
       if (Array.isArray(shadowed)) {
-        for (const seq of shadowed) host.shadowedSet.add(seq)
+        for (const seq of shadowed) st.shadowedSet.add(seq)
       }
     }
   }
-  host.shadowedScanned = session.seq
-  return host.shadowedSet
+  st.shadowedScanned = session.seq
+  return st.shadowedSet
 }
 
 /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
@@ -80,13 +81,14 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
  * 原 class 方法；this.x → host.x。 */
 export function catalogText(host: RecallHost, maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
   if (host.session === null) return ''
-  const shadowed = shadowedSeqsOf(host, host.session)
+  const session = host.session
+  const shadowed = shadowedSeqsOf(host, session)
   const entries: { type: AtomType; turn: number; seq: number; snippet: string }[] = []
   const charBudget = tokenBudget * host.charsPerToken
   let usedChars = 0
   for (const seq of shadowed) {
     if (entries.length >= maxItems) break
-    const event = sessionEvents(host.session)[seq]
+    const event = sessionEvents(session)[seq]
     if (event === undefined) continue
     const data = event.data as Record<string, unknown> | undefined
     let type: AtomType
@@ -99,7 +101,7 @@ export function catalogText(host: RecallHost, maxItems = 20, snippetChars = 70, 
     } else {
       continue
     }
-    const text = eventText(host.session, seq)
+    const text = eventText(session, seq)
     const snippet = text.split('\n').map(l => l.trim()).find(l => l !== '') ?? ''
     const clipped = snippet.length > snippetChars ? snippet.slice(0, snippetChars) + '…' : snippet
     if (usedChars + clipped.length > charBudget && entries.length > 0) break
@@ -117,17 +119,18 @@ export function catalogText(host: RecallHost, maxItems = 20, snippetChars = 70, 
 /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
  *
  * 原 class 方法；this.x → host.x。 */
-export function recallQuery(host: RecallHost, query: string, maxResults = 5): string {
-  if (host.session === null) return 'recall: no session bound'
-  const shadowed = shadowedSeqsOf(host, host.session)
+export function recallQuery(host: RecallHost, session: Session | null, query: string, maxResults = 5): string {
+  if (session === null) return 'recall: no session bound'
+  const st = host.stateOf(session)
+  const shadowed = shadowedSeqsOf(host, session)
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
   interface Hit { seq: number; score: number; text: string; type: AtomType; turn: number }
   const hits: Hit[] = []
   for (const seq of shadowed) {
-    const event = sessionEvents(host.session)[seq]
+    const event = sessionEvents(session)[seq]
     if (event === undefined) continue
     const data = event.data as Record<string, unknown> | undefined
-    const text = eventText(host.session, seq)
+    const text = eventText(session, seq)
     if (text === '') continue
     const lower = text.toLowerCase()
     let score = 0
@@ -143,8 +146,8 @@ export function recallQuery(host: RecallHost, query: string, maxResults = 5): st
   }
   hits.sort((a, b) => b.score - a.score || (a.type === 'U' ? -1 : b.type === 'U' ? 1 : a.seq - b.seq))
   const selected = hits.slice(0, maxResults)
-  for (const h of selected) noteRecallHit(host, h.seq)
-  pushBounded(host.recallQueryCalls, { query, count: selected.length, hits: selected.length }, host.telemetryCap)
+  for (const h of selected) noteRecallHit(host, session, h.seq)
+  pushBounded(st.recallQueryCalls, { query, count: selected.length, hits: selected.length }, host.telemetryCap)
   if (selected.length === 0) return 'recall: no pruned nodes match query "' + query + '"'
   const lines = selected.map(h => '[' + h.type + (h.turn !== 0 ? h.turn : '') + '] ' + h.text)
   return 'Recalled ' + selected.length + ' pruned atom(s) for "' + query + '":\n' + lines.join('\n')
@@ -159,10 +162,10 @@ export function recallQuery(host: RecallHost, query: string, maxResults = 5): st
  *
  * 原 class 方法；this.x → host.x。
  */
-export function recall(host: RecallHost, seq: number): string | null {
-  if (host.session === null) return null
-  if (!shadowedSeqsOf(host, host.session).has(seq)) return null
-  const text = eventText(host.session, seq)
+export function recall(host: RecallHost, session: Session | null, seq: number): string | null {
+  if (session === null) return null
+  if (!shadowedSeqsOf(host, session).has(seq)) return null
+  const text = eventText(session, seq)
   return text === '' ? null : text
 }
 
@@ -172,10 +175,10 @@ export function recall(host: RecallHost, seq: number): string | null {
  *
  * 原 class 方法；this.x → host.x。
  */
-export function recallAnyState(host: RecallHost, seq: number): { text: string; state: NodeState } | null {
-  if (host.session === null) return null
-  const shadowed = shadowedSeqsOf(host, host.session)
-  const outcome = recallFromLog(host.session, seq, s => shadowed.has(s), eventText)
+export function recallAnyState(host: RecallHost, session: Session | null, seq: number): { text: string; state: NodeState } | null {
+  if (session === null) return null
+  const shadowed = shadowedSeqsOf(host, session)
+  const outcome = recallFromLog(session, seq, s => shadowed.has(s), eventText)
   if (!outcome.ok) return null
   return { text: outcome.text, state: outcome.state }
 }
@@ -183,10 +186,10 @@ export function recallAnyState(host: RecallHost, seq: number): { text: string; s
 /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
  *
  * 原 class 方法；this.x → host.x。 */
-export function nodeState(host: RecallHost, seq: number): NodeState | null {
-  if (host.session === null) return null
-  const shadowed = shadowedSeqsOf(host, host.session)
-  return nodeStateOf(host.session, seq, s => shadowed.has(s))
+export function nodeState(host: RecallHost, session: Session | null, seq: number): NodeState | null {
+  if (session === null) return null
+  const shadowed = shadowedSeqsOf(host, session)
+  return nodeStateOf(session, seq, s => shadowed.has(s))
 }
 
 /**
@@ -234,10 +237,12 @@ export function latestTurnOfSession(host: RecallHost): number {
  *
  * 原 class 私有方法；this.x → host.x。
  */
-export function noteRecallHit(host: RecallHost, seq: number): void {
-  for (const c of host.closurePrunes) {
+export function noteRecallHit(host: RecallHost, session: Session | null, seq: number): void {
+  if (session === null) return
+  const st = host.stateOf(session)
+  for (const c of st.closurePrunes) {
     if (c.prunedSeqs.includes(seq)) {
-      host.closureLastRecalled.set(c.rootSeq, latestTurnOfSession(host))
+      st.closureLastRecalled.set(c.rootSeq, latestTurnOf(host, session))
       break
     }
   }
@@ -253,12 +258,14 @@ export function noteRecallHit(host: RecallHost, seq: number): void {
  *
  * 原 class 私有方法；this.x → host.x（recallCharsUsed 经 host 重赋值落到真实字段）。
  */
-export function budgetRecallText(host: RecallHost, text: string): string {
+export function budgetRecallText(host: RecallHost, session: Session | null, text: string): string {
+  if (session === null) return text
+  const st = host.stateOf(session)
   const perCallLimit = Math.floor(host.resolvedWindowTokens * 0.05 * host.charsPerToken)
   const totalLimit = Math.floor(host.resolvedWindowTokens * 0.10 * host.charsPerToken)
-  const remaining = Math.max(0, totalLimit - host.recallCharsUsed)
+  const remaining = Math.max(0, totalLimit - st.recallCharsUsed)
   if (remaining === 0) {
-    return '(recall text budget exhausted: ' + host.recallCharsUsed + '/' + totalLimit
+    return '(recall text budget exhausted: ' + st.recallCharsUsed + '/' + totalLimit
       + ' chars used since the last compaction. Nothing was returned — this is a budget limit, '
       + 'not missing data. The budget resets on the next compaction; narrow the request or retry later.)'
   }
@@ -266,9 +273,9 @@ export function budgetRecallText(host: RecallHost, text: string): string {
   let result = text
   if (result.length > allowed) {
     result = result.slice(0, allowed) + '…(truncated at ' + allowed + ' chars; recall budget '
-      + (host.recallCharsUsed + allowed) + '/' + totalLimit
+      + (st.recallCharsUsed + allowed) + '/' + totalLimit
       + ' chars used since the last compaction, resets on the next one)'
   }
-  host.recallCharsUsed += result.length
+  st.recallCharsUsed += result.length
   return result
 }

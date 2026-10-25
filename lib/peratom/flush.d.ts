@@ -45,6 +45,8 @@ export interface PendingEntry {
     decision: CompressDecision;
     /** callAndStash 创建的观测记录；簿记直接写回此引用，不依赖 records 数组反查。 */
     record: CompressRecord;
+    /** 1-3（1.11.0-beta.0）：发射失败计数；≥ FLUSH_MAX_FAILURES 次后放弃（有界，不无限重试）。 */
+    failures: number;
 }
 /**
  * A 形态前缀快照（设计文档 §4 tail-only 语义的落地）：agent 当前
@@ -89,13 +91,21 @@ export declare function resolveEffectiveCtk(host: FlushHost, session: Session): 
  * 还比 C 贵（被支配）。无 usage 可参照（会话头）⇒ 保守返回 false（降级 C）。
  */
 export declare function prefixWithinBudget(host: FlushHost, session: Session, promptChars: number): boolean;
-export declare function callAndStash(host: FlushHost, session: Session, collect: CurrentTurnCollect): Promise<CompressRecord>;
+export declare function callAndStash(host: FlushHost, session: Session, collect: CurrentTurnCollect, signal?: AbortSignal): Promise<CompressRecord>;
 /** idle 触发段：记账防重 → 收集 → 门控 → LLM → 暂存待发射。返回观测记录。 */
 export declare function prepareCurrentTurn(host: FlushHost, session: Session): Promise<CompressRecord | null>;
-/** 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口（同步追加，吞错记账）。 */
-export declare function flushStashed(host: FlushHost, session: Session): void;
+/**
+ * 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口。
+ *
+ * 1-3（1.11.0-beta.0）重写：**先试后删**——flushEntry 成功才 splice 并推进水位；
+ * 失败保留条目（failures+1，≤ FLUSH_MAX_FAILURES 次内自动重试），超限放弃并留错误账。
+ * 旧实现"先 splice 后吞错"= 任何一次落盘失败即静默丢弃且水位已消费（不重不漏的反面）。
+ * 1-4：发射前过 stale-surface 代际守卫（目标已被换掉 ⇒ 决策过期，放弃不重试）。
+ * 1-5：signal 已 abort ⇒ 停止发射（未发射条目留在 pending，下一次窗口继续）。
+ */
+export declare function flushStashed(host: FlushHost, session: Session, signal?: AbortSignal): void;
 /** 公开入口（P4 溢出三步路径② / 单测）：立即收集+调用+发射，绕过两段式延迟。 */
-export declare function compressCurrentTurn(host: FlushHost, session: Session): Promise<CompressRecord | null>;
+export declare function compressCurrentTurn(host: FlushHost, session: Session, signal?: AbortSignal): Promise<CompressRecord | null>;
 /**
  * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
  * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（closed 口径会
@@ -104,10 +114,10 @@ export declare function compressCurrentTurn(host: FlushHost, session: Session): 
  * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
  * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
  */
-export declare function compressOpenTurn(host: FlushHost, session: Session): Promise<CompressRecord | null>;
+export declare function compressOpenTurn(host: FlushHost, session: Session, signal?: AbortSignal): Promise<CompressRecord | null>;
 /** 共享压缩尾部：中断/无候选短路（不推进水位）+ callAndStash + 立即 flush（成功才推进水位）。 */
-export declare function compressCollect(host: FlushHost, session: Session, collect: CurrentTurnCollect | null): Promise<CompressRecord | null>;
-export declare function flushEntry(host: FlushHost, session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord): void;
+export declare function compressCollect(host: FlushHost, session: Session, collect: CurrentTurnCollect | null, signal?: AbortSignal): Promise<CompressRecord | null>;
+export declare function flushEntry(host: FlushHost, session: Session, collect: CurrentTurnCollect, decision: CompressDecision, record: CompressRecord, signal?: AbortSignal): void;
 /**
  * 有界等待在飞的轮末 pass（见 `PeratomCompressorConfig.flushWaitMs`）。
  * 取走屏障（同一批 pass 只在首个 pre-step 等一次）；超时/失败都不抛——宁可放行让

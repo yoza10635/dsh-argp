@@ -189,6 +189,6 @@ export declare class PeratomCompressor {
      * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
      * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
      */
-    compressOpenTurn(session: Session): Promise<CompressRecord | null>;
+    compressOpenTurn(session: Session, signal?: AbortSignal): Promise<CompressRecord | null>;
 }
 export default PeratomCompressor;

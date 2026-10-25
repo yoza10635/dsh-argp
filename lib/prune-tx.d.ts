@@ -2,6 +2,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionAgentContext, CompactionResult } from '@deepseek-ai/dsh-compaction';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { Atom, AtomType } from './argp-types.js';
+import type { SessionRuntimeState } from './session-state.js';
 /**
  * tombstone 可合并判据（v1.2.x §11.8① 修复；1.7.1 换判别轴）。
  *
@@ -92,22 +93,11 @@ export interface PruneTxHost {
         warn: (msg: string) => void;
         error: (msg: string) => void;
     };
-    prunedNodeIndex: Map<number, {
-        seq: number;
-        type: AtomType;
-        turn: number;
-        firstLine: string;
-        citedBySeq: number[];
-        eff: number;
-        latestOfPath?: number;
-    }>;
+    /** 1.11.0-beta.0（1-1）：会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
+    stateOf: (session: Session) => SessionRuntimeState;
     compactSourceCommandId: CommandId | undefined;
     charsPerToken: number;
-    records: GraphPruneRecord[];
     telemetryCap: number;
-    recallCharsUsed: number;
-    lastRealPromptTokens: number;
-    lastRealAnchorSeq: number;
     tombstoneMergeMinRun: number;
     recencyGuard: number;
     turnGuard: number;

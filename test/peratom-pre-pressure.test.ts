@@ -466,7 +466,11 @@ test('⑦ 水位：轮内压力 pass 后，轮末 idle pass 仍能压新增原�
 
   const idle = await h.compressor.prepareCurrentTurn(session)
   assert.equal(idle?.called, true, '轮末 idle pass 补压水位之后的新增原子（旧实现此处置零调用）')
-  assert.ok(h.compressor.turnWaterMark(session, 2) >= lateR, '水位随后推进到新边界')
+  // 1-3（1.11.0-beta.0）：两段式下 idle 段只**暂存**（pending），水位在**提交成功**
+  // （下一次 flushStashed）才推进——"规划成功但落盘失败"不再消费窗口。
+  assert.ok(h.compressor.turnWaterMark(session, 2) < lateR, 'idle 暂存后水位未推进（等提交）')
+  h.compressor.flushStashed(session)
+  assert.ok(h.compressor.turnWaterMark(session, 2) >= lateR, 'flushStashed 提交成功后水位推进到新边界')
   assert.equal(h.bodies.length, 2, '两次规划各发一次请求')
 })
 
