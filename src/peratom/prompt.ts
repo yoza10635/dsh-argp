@@ -1,33 +1,29 @@
 /**
- * PeratomCompressor Prompt 与 LLM 调用模块（P5 结构重构 Wave 3 第 5 步，C 报告 §4 B 表）。
- *
- * 从 1,520 行 `compressor.ts`（God Class）拆出的**Prompt / 后端选路**侧：
+ * PeratomCompressor Prompt 与 LLM 调用模块（Prompt / 后端选路侧）：
  *  - 规则前言（PROMPT_RULES，吸收 P0 三层对冲 + 已知债务 6 修正）；
  *  - 原子→prompt 组装（buildPrompt，纯函数）；
  *  - JSON Schema 强制输出契约（OUTPUT_SCHEMA）+ OpenAI 兼容 fetch（postChat，纯函数，
  *    失败降级裸 prompt）；
  *  - 后端选路（backend：显式 config.llm > fetch > 自动兜底，窄宿主接口）。
  *
- * 循环 import 规避（C 报告关键设计决策 1）：本模块**不** import compressor 运行时，
- * 仅 type-only import（编译期擦除，无运行时环）。buildPrompt / postChat 是纯函数
- * （只依赖入参）；backend 经窄接口 {@link PromptHost} 读三个后端字段。
+ * 循环 import 规避：本模块**不** import compressor 运行时，仅 type-only import
+ * （编译期擦除，无运行时环）。buildPrompt / postChat 是纯函数（只依赖入参）；
+ * backend 经窄接口 {@link PromptHost} 读三个后端字段。
  * 依赖方向：compressor-types（叶）← prompt ← flush ← compressor（组合根）。
- *
- * 行为逐字节不变：函数体逻辑逐字保留（this.x → host.x），仅 `this` 换 `host`。
  */
 import type { DshLlmSpec } from './llm-adapter.js'
 import type { CurrentTurnCollect, ResolvedEndpoint } from './compressor-types.js'
 
 /**
- * 后端选路结果（§11.13.1）：dsh-llm 生产后端 / fetch 遗产路径 / null（disabled）。
+ * 后端选路结果（§11.13.1）：dsh-llm 生产后端 / fetch 兼容路径 / null（disabled）。
  * 导出供 flush 模块的 FlushHost 与组合根引用。
  */
 export type LlmBackend = { kind: 'dsh-llm'; spec: DshLlmSpec } | { kind: 'fetch'; endpoint: ResolvedEndpoint } | null
 
 /**
- * 后端选路窄宿主接口（C 报告关键设计决策 1）：只含 backend 所需成员。
+ * 后端选路窄宿主接口：只含 backend 所需成员。
  *  - `dshLlm`：显式 config.llm（优先）；
- *  - `endpoint`：fetch 遗产路径（endpoint/apiKey/env 解析）；
+ *  - `endpoint`：fetch 兼容路径（endpoint/apiKey/env 解析）；
  *  - `autoLlm`：自动兜底（真会话里延迟解析 agent 路由）。
  */
 export interface PromptHost {

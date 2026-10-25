@@ -1,11 +1,11 @@
 /**
- * Per-Atom 门控模块（Stage-1 共用，plan P1）：确定性判定，LLM 只执行动作。
+ * Per-Atom 门控模块（Stage-1 共用）：确定性判定，LLM 只执行动作。
  *
  * 职责三块（全部纯函数、零 LLM / 零 Session 运行时依赖，cite-declarer 同用）：
  *  1. 中断轮次一等公民化（dsh 0.1.1-rc.2 diff「利好 2」）：从事件流精确识别被中断轮次，
  *     `filterInterruptedAtoms` 把同一 turn 的残留原子排除——半成品内容不得进入压缩候选 /
  *     引用图 / 版本链。compressor 与 atomize 同步过滤（本函数是唯一事实源）。
- *  2. 压缩门控谓词：turnCompressible / rNeedCompress（设计 §2 决策序）。
+ *  2. 压缩门控谓词：turnCompressible / rNeedCompress（决策序）。
  *  3. 版本链索引（决策④硬排除的判定底座）：同 (tool name + arguments) 键出现 ≥2 次的
  *     R 原子视为版本链成员，强制 need_compress=false。
  *
@@ -57,7 +57,7 @@ export interface VersionChainIndex {
  * 一律按 verbatim 保护处理——错误方向只允许往"少压"错）。
  */
 /**
- * 全日志构建 callId → 工具种类名索引（tool 对照表的查找底座，设计 §6-2）。
+ * 全日志构建 callId → 工具种类名索引（tool 对照表的查找底座）。
  * 工具名只落在 assistant/message 内嵌 tool-call 块的 name 上；tool/result 只带 callId，
  * 故须经 callId 反查。无 issuer（孤立 tool/result）→ 无名字，策略表跳过，落回启发式默认。
  */
@@ -65,11 +65,7 @@ export declare function buildToolNameIndex(events: readonly SessionEvent[]): Map
 export declare function buildVersionChainIndex(events: readonly SessionEvent[]): VersionChainIndex;
 /**
  * 事件 → 模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
- *
- * P1 收敛：原先这里是与 `log-access.eventText` 逐字相同的"私有镜像"（注释声称
- * "gate 保持叶子纯净"——但 gate 本就 import 本模块的 `turnOf`，且 `log-access` 是
- * 叶子而非 Stage-2 引擎，镜像既无隔离收益又造成双份维护）。现统一委托
- * `eventTextOf`（单一事实源），本名保留以维持 peratom/测试的既有 import。
+ * 委托 `log-access.eventTextOf`（单一事实源）；本名保留以维持 peratom/测试的既有 import。
  */
 export declare function projectSurfaceText(event: SessionEvent): string;
 /** need_compress 三档（false=保原文 / summary=一句话概括 / extract=关键内容摘录）。 */
@@ -91,7 +87,7 @@ export interface GateToolResult {
     turn: number;
     text: string;
     callId?: string;
-    /** 工具种类名（tool 对照表 / 作者声明的查找键，设计 §6-2）。callId→name 由 buildToolNameIndex 解析。 */
+    /** 工具种类名（tool 对照表 / 作者声明的查找键）。callId→name 由 buildToolNameIndex 解析。 */
     toolName?: string;
 }
 export type GateAtom = GateUserLong | GateToolResult;
@@ -99,10 +95,10 @@ export interface GateOptions {
     /** 工具结果小结果阈值（默认 DEFAULT_SMALL_RESULT_CHARS）。 */
     smallResultChars?: number;
     /**
-     * 工具作者声明通道 / **tool 对照表**（设计 §6-2 `setToolPolicy(toolName, policy)`，
+     * 工具作者声明通道 / **tool 对照表**（`setToolPolicy(toolName, policy)`，
      * 决策序第 2 层，上限提示非强制）。键 = **工具种类名**（toolName），非 callId——
      * 同一工具的多条结果应同档。声明只放宽/收紧启发式默认，不可越过版本链硬排除
-     * （决策序第 1 层先行短路）；未声明的工具走大小启发式（缺席默认，设计 §6-5）。
+     * （决策序第 1 层先行短路）；未声明的工具走大小启发式（缺席默认）。
      */
     toolPolicies?: ReadonlyMap<string, NeedCompress>;
     /**
@@ -113,14 +109,14 @@ export interface GateOptions {
     skipContextForms?: readonly string[];
 }
 /**
- * R 档位裁决（设计 §2 决策序，先命中先生效）：
+ * R 档位裁决（决策序，先命中先生效）：
  * ① 版本链成员 → false（硬排除，不可覆盖）；② 作者声明 → 采纳；③ 大小启发式默认。
  */
 export declare function rNeedCompress(r: Pick<GateToolResult, 'text' | 'callId' | 'toolName'>, chain: VersionChainIndex, opts?: GateOptions): NeedCompress;
 /** user 长消息判定（拆分阈值，types.ts SPLIT_THRESHOLD_CHARS 口径由调用方传入比较）。 */
 export declare function userIsLong(text: string, thresholdChars: number): boolean;
 /**
- * 当轮调用门控（plan P1 / 设计 §2 调用门控）：仅当轮存在可压缩原子才触发 LLM——
+ * 当轮调用门控：仅当轮存在可压缩原子才触发 LLM——
  * 任一 User 长消息 ∨ 任一 Tool 的 need_compress ≠ false。纯 dialog 轮直接跳过：
  * 零调用（计数器可断言）、零 cites（孤立原子规则）。
  */

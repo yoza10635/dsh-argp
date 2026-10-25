@@ -1,19 +1,19 @@
 /**
- * Per-atom 引擎 LLM 调用后端（P5 后债务清算：dsh-llm 生产适配器）。
+ * Per-atom 引擎 LLM 调用后端（dsh-llm 生产适配器）。
  *
  * 两个后端：
  *  - 'dsh-llm'：走宿主 `ctx.llm`（LlmRuntime.stream）——生产形态。`purpose: 'compaction'`
  *    归类为辅助模型调用（GenerateOptions 词表原生支持）；注意 GenerateOptions 无
  *    response_format——schema 约束解码仅在 fetch 后端可用，此路径依赖 extractJson 兜底。
- *  - 'fetch'：OpenAI 兼容直连（spike 30/32 遗产：response_format schema 强制 + 被拒降级
- *    重试）——本地实验与无 dsh-llm 宿主的向后兼容形态，行为不变。
+ *  - 'fetch'：OpenAI 兼容直连（response_format schema 强制 + 被拒降级重试）——
+ *    本地实验与无 dsh-llm 宿主的向后兼容形态。
  *
  * 多模型分工：compressor / cite-declarer 各自 config 的 `llm` 可指向不同 provider/model
- *（compressor 跑 lite 档省成本；台账 D21 口径——lite 服从率未实测，不作为默认）。
+ *（compressor 跑 lite 档省成本；lite 服从率未实测，不作为默认）。
  * 后端判定：`config.llm`（dsh-llm）优先于 endpoint/apiKey（fetch）；两者皆缺省时
- * 按 fetch 环境变量口径解析（既有行为不变）；环境变量也缺席时走**宿主路由自动兜底**
- * （`autoDshLlmSpec`：真会话里从 `agent.options` 取 provider/model + 宿主 `ctx.llm`，
- * 2026-09-17 §11.13.1）。三条路都解不出才让组件 disabled（零网络）。
+ * 按 fetch 环境变量口径解析；环境变量也缺席时走**宿主路由自动兜底**
+ *（`autoDshLlmSpec`：真会话里从 `agent.options` 取 provider/model + 宿主 `ctx.llm`）。
+ * 三条路都解不出才让组件 disabled（零网络）。
  */
 import { writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'

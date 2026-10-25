@@ -1,7 +1,5 @@
 /**
- * PeratomCompressor 引擎侧确定性规划模块（P5 结构重构 Wave 3 第 5 步，C 报告 §4 B 表）。
- *
- * 从 1,520 行 `compressor.ts`（God Class）拆出的**纯函数**侧：
+ * PeratomCompressor 引擎侧确定性规划模块（纯函数侧）：
  *  - 防御性 JSON 提取（extractJson，spike 32 同款）；
  *  - 模型输出信任边界（normalizeDecision：seq/quotes/level/text 全字段校验，异形丢弃）；
  *  - 引擎侧规划（planReplacements：模型输出 → 落盘动作，全部策略裁决在引擎侧）
@@ -11,8 +9,6 @@
  *   compressor-types（叶）← decision ← flush ← compressor（组合根）。
  * 本模块不 import 任何 peratom 运行时类，仅依赖叶子/纯函数模块（split/gate/
  * token-ontology/types）与 dsh-llm 的 createUserMessage。
- *
- * 行为逐字节不变：函数体逻辑逐字保留，仅搬家。
  */
 import { type ContentBlock } from '@deepseek-ai/dsh-llm';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';

@@ -1,15 +1,9 @@
 /**
- * ARGP 通用类型叶子模块（P5 结构重构 Wave 3 第 1 步）。
+ * ARGP 通用类型叶子模块。
  *
  * 本模块是**叶子**：只含类型定义 + 纯常量，不 import 任何 src 运行时模块。
  * 唯一依赖是 `cites-strip` 的 `ParsedCite`（type-only import，编译期擦除；
  * cites-strip 本身是零依赖叶子），故运行时零依赖、类型图无环。
- *
- * 背景（C 报告 S3）：最通用的类型 `Atom` / `SemanticEdge` / `DeterministicEdge` 原先
- * 定义在 3,313 行的 hub `argp-graph-engine.ts` 里，被 peratom/* 反向 import
- * （cite-declarer / mount 取类型、recall-zoom 取 eventText）⇒ 模块回边，阻碍
- * peratom 独立单测与按需加载。现将通用类型收敛到本叶子，依赖方向变为
- * peratom → argp-types（叶子），回边消除。
  *
  * 留在 hub 的类型：`ArgpGraphConfig`——它引用 peratom 三个管线 config
  * （PeratomCompressorConfig / CiteDeclarerConfig / RecallZoomConfig），若迁入本叶子会迫使

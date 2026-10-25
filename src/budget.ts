@@ -1,19 +1,13 @@
 /**
- * ARGP 预算/度量模块（P5 结构重构 Wave 3 第 4 步，C 报告 §4 A 表）。
+ * ARGP 预算/度量模块：比例预算纯函数（scaleBudgets）+ token-meter 获取
+ * （acquireTokenMeter）+ surface 可见字符（visibleChars）+ 预算解析
+ * （resolveScaledBudgets）+ token 测量（measureTokens）。
+ * scaleBudgets / visibleChars / acquireTokenMeter 为纯函数（无 host）。
  *
- * 从 3,380 行 hub `argp-graph-engine.ts`（God Class）拆出的**预算侧**函数：
- * 比例预算纯函数（scaleBudgets）+ token-meter 获取（acquireTokenMeter）+
- * surface 可见字符（visibleChars）+ 预算解析（resolveScaledBudgets）+
- * token 测量（measureTokens）。
- *
- * 循环 import 规避（C 报告关键设计决策 1）：本模块**不** import hub 运行时。
- * 需要读/写引擎可变字段的函数（resolveScaledBudgets / measureTokens）接收窄接口
- * {@link BudgetHost} 而非具体 class；hub 的 class 以 `this as unknown as BudgetHost`
- * 传入（编译期断言，运行时即真实实例，私有字段经 host 类型可读写/重赋值）。
- * 依赖方向：hub → budget（单向）。
- *
- * 行为逐字节不变：函数体逻辑逐字保留（this.x → host.x），仅 `this` 换 `host`。
- * scaleBudgets / visibleChars / acquireTokenMeter 为纯函数（无 this）。
+ * 循环 import 规避：本模块**不** import hub 运行时。需要读/写引擎可变字段的函数
+ * （resolveScaledBudgets / measureTokens）接收窄接口 {@link BudgetHost} 而非具体
+ * class；hub 的 class 以 `this as unknown as BudgetHost` 传入（编译期断言，运行时
+ * 即真实实例，私有字段经 host 类型可读写/重赋值）。依赖方向：hub → budget（单向）。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -64,7 +58,7 @@ export function visibleChars(session: Session): number {
 }
 
 /**
- * 预算/度量模块函数访问引擎状态所需的窄接口（C 报告关键设计决策 1）。
+ * 预算/度量模块函数访问引擎状态所需的窄接口。
  * 仅列出 resolveScaledBudgets / measureTokens 实际读写的字段；
  * hub 的 ArgpGraphEngine 以 `this as unknown as BudgetHost` 满足它。
  * windowRatio/retainRatio/charsPerToken 在 class 上是 getter——经 host 读取时

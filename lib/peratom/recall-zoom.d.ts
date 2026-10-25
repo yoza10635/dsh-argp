@@ -41,7 +41,7 @@ export interface RecallZoomConfig {
     telemetryCap?: number;
 }
 /**
- * 解析某 seq 的"最佳可用 summary 文本"，三档降级（设计 §4 + plan P3）：
+ * 解析某 seq 的"最佳可用 summary 文本"，三档降级：
  *  1. `stored`——该事件（或引用它的压缩副本）携带 `data[ARG_NS].summary`（U-info 原子）；
  *  2. `copy`——引用该 seq 的最新压缩副本正文（tool/result extract 副本 / dialog 副本）；
  *  3. `original`——从未压缩，降级返回 append-only 日志原文。

@@ -2,7 +2,7 @@
  * 双引擎生产挂载工厂（P4）：把三条 per-atom 管线与 Stage-2 图引擎组装为一个
  * 声明式可挂载的整体，作为 `ctx.compaction` 位的 compaction 插件入口。
  *
- * 装配拓扑（与 per-atom-implementation-plan.md §0 一致（已迁出公开仓库））：
+ * 装配拓扑：
  *   PeratomCompressor（普通 cordis 服务，idle 触发）────┐
  *   CiteDeclarer（普通 cordis 服务，idle 触发）──┐      │
  *   RecallZoom（普通 cordis 服务，注册工具）    │      │
@@ -77,13 +77,13 @@ export async function mountPeratomStack(ctx: Context, config: PeratomStackConfig
   }
   // P4 接线：溢出三步第②步 = 当前 open turn 的 per-atom 降熵（顺带补 cites）。
   // 溢出发生在 open turn 的请求上，必须压它——closed 口径会错压上一闭合轮
-  // （2026-08-29 review 中项）。compressOpenTurn 失败隔离内建（endpoint 缺失/
+  // 。compressOpenTurn 失败隔离内建（endpoint 缺失/
   // 网络错误只记 record 不抛），钩子侧另有 try/catch 双保险。
   if (compressor !== null) {
     graphConfig.onOverflowCompress = async (session: Session): Promise<void> => {
       await compressor.compressOpenTurn(session)
     }
-    // P6 接线（2026-09-19 方案 B）：轮内压力达标时先压 open turn 原子再图剪
+    // P6 接线：轮内压力达标时先压 open turn 原子再图剪
     //（pre-step 单变异窗口；与 onOverflowCompress 同入口，触发条件不同：压力 vs 溢出）。
     graphConfig.onPrePressureCompress = async (session: Session): Promise<void> => {
       await compressor.compressOpenTurn(session)

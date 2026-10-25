@@ -1,26 +1,23 @@
 /**
- * 会话生命周期 + 构造期装配（P5 Wave 3 第 4 步，C 报告 S1 + §4 蓝图 A：session-lifecycle 模块）。
- *
- * 从 hub `argp-graph-engine.ts` 迁出：
+ * 会话生命周期 + 构造期装配：
  *  - 构造期装配四函数中的三个：normalizeConfig（字段归一）/ registerSettings（UI 设置页注册）/
  *    mountPeratomStack（peratom 三管线自挂载 + maxOverflowRetries 提升 + citesObligation 解析）。
  *    （第四个 registerRecallTools 在 recall-tools.ts。）
  *  - 运行时方法：bindSession（统一绑定 + 账目懒重建）/ rebuildLedgerFromLog（A7 事务账目重建）/
  *    rearmReactive（反应式零候选重挂）/ compactNow（/compact 手动压缩入口）。
  *
- * 所有函数体逐字保留，仅 `this.x` → `host.x`（窄接口 LifecycleHost + `this as unknown as
- * LifecycleHost` 调用，编译期类型、运行时同一实例；方法引用经 host 派发回 class 薄编排方法，
- * this 绑定语义不变）。构造期副作用顺序由 hub 构造器调用次序保证（normalizeConfig →
- * registerSettings → mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on），
- * 与原先逐字一致。
+ * 函数经窄接口 LifecycleHost 触达引擎（`this as unknown as LifecycleHost`，编译期类型、
+ * 运行时同一实例；方法引用经 host 派发回 class 薄编排方法，this 绑定语义不变）。
+ * 构造期副作用顺序由 hub 构造器调用次序保证：normalizeConfig → registerSettings →
+ * mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on。
  *
  * 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
- * 随 registerSettings 一并迁入本模块：ArgpUserSettingsSchema 是运行时值（z.object 产物），
- * 若留在 hub 会迫使本模块运行时 import hub 形成环；迁入后 hub 反向 import 本模块并 re-export，
- * 公共 API 不变（index.ts 的 `export *` 透出）。
+ * 在本模块：ArgpUserSettingsSchema 是运行时值（z.object 产物），若放在 hub 会迫使本模块
+ * 运行时 import hub 形成环；hub 反向 import 本模块并 re-export，公共 API 不变
+ * （index.ts 的 `export *` 透出）。
  *
  * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）；它是 hub 侧的宽接口
- * （引用 peratom 三管线 config），若迁入本模块会迫使本模块 import peratom
+ * （引用 peratom 三管线 config），若放在本模块会迫使本模块 import peratom
  * 全部 config 类型，故按「深度依赖则留 hub」原则保留在 hub，本模块仅 type-only 引用。
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -44,7 +41,7 @@ export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;
 /**
  * 窄宿主接口：本模块函数实际触达的引擎成员（字段 + 方法引用）。
  * 方法引用（shadowedSeqsOf/rebuildLedgerFromLog/restoreUsageAnchor/catalogText/bindSession）
- * 经 host 派发到 class 上的薄编排方法，运行时 this 仍是引擎实例——与原先 `this.method(...)` 一致。
+ * 经 host 派发到 class 上的薄编排方法，运行时 this 仍是引擎实例。
  */
 export interface LifecycleHost {
     windowTokens: number;
@@ -105,10 +102,9 @@ export interface LifecycleHost {
 }
 /**
  * 构造期字段归一（纯字段赋值，无 ctx 副作用）：windowTokens/retainTokens 静态默认 + 顶层旋钮
- * 缺省 + 三级触发旋钮 + 推断边参数。原先分散在构造器两处（settings 注册块前后），现合并为单一
- * 纯函数；字段赋值与任何 ctx 副作用无交互（settings 回调不读本批字段），故整体置于
- * registerSettings 之前不改变可观测行为。tokenMeter 获取（acquireTokenMeter(ctx)）是唯一的
- * ctx 读取，保持在 settings 注册之前（与原 line 541 次序一致）。
+ * 缺省 + 三级触发旋钮 + 推断边参数。字段赋值与任何 ctx 副作用无交互（settings 回调不读
+ * 本批字段），故整体置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）
+ * 是唯一的 ctx 读取，保持在 settings 注册之前。
  */
 export declare function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
 /**

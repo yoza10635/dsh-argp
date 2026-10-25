@@ -1,18 +1,14 @@
 /**
- * ARGP 建图模块（P5 结构重构 Wave 3 第 4 步，C 报告 §4 A 表）。
+ * ARGP 建图模块：原子化（atomize）+ 建图（buildGraph）+ 版本链去重
+ * （findVersionDuplicates）+ cites 提取（extractCites）+ user 分类
+ * （classifyUserMessage）+ 它们的纯辅助（looksAskText / citePrefixTooShort /
+ * n-gram 索引 / lineOverlap）。
  *
- * 从 3,380 行 hub `argp-graph-engine.ts`（God Class）拆出的**建图侧**函数：
- * 原子化（atomize）+ 建图（buildGraph）+ 版本链去重（findVersionDuplicates）
- * + cites 提取（extractCites）+ user 分类（classifyUserMessage）+ 它们的纯辅助
- * （looksAskText / citePrefixTooShort / n-gram 索引 / lineOverlap）。
- *
- * 循环 import 规避（C 报告关键设计决策 1）：本模块**不** import hub 运行时。
- * 需要读/写引擎可变字段的函数（atomize / buildGraph / findVersionDuplicates）
- * 接收窄接口 {@link GraphBuildHost} 而非具体 class；hub 的 class 以
- * `this as unknown as GraphBuildHost` 传入（编译期断言，运行时即真实实例，
- * 私有字段经 host 类型可读写/重赋值）。依赖方向：hub → graph-build（单向）。
- *
- * 行为逐字节不变：函数体逻辑逐字保留（this.x → host.x），仅 `this` 换 `host`。
+ * 循环 import 规避：本模块**不** import hub 运行时。需要读/写引擎可变字段的函数
+ * （atomize / buildGraph / findVersionDuplicates）接收窄接口 {@link GraphBuildHost}
+ * 而非具体 class；hub 的 class 以 `this as unknown as GraphBuildHost` 传入
+ * （编译期断言，运行时即真实实例，私有字段经 host 类型可读写/重赋值）。
+ * 依赖方向：hub → graph-build（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { Atom, SemanticEdge, DeterministicEdge } from './argp-types.js';
@@ -33,7 +29,7 @@ export interface InferredStats {
     skippedDup: number;
 }
 /**
- * 建图侧模块函数访问引擎状态所需的窄接口（C 报告关键设计决策 1）。
+ * 建图侧模块函数访问引擎状态所需的窄接口。
  * 仅列出 atomize / buildGraph / findVersionDuplicates 实际读写的字段；
  * hub 的 ArgpGraphEngine 以 `this as unknown as GraphBuildHost` 满足它。
  */
@@ -61,7 +57,7 @@ export interface GraphBuildHost {
  */
 export declare function looksAskText(text: string): boolean;
 /**
- * user/message 原子分类（P0 分类陷阱防线，plan「分类陷阱」节）。
+ * user/message 原子分类（P0 分类陷阱防线）。
  *
  * 顺序不可交换：先识别 `data[argp].info === true`（U-info 聚合副本——由 peratom 管线
  * 插件 append，但必须按 U 待遇参与剪枝候选），再落「非 `user` 源 → X」（注入/checkpoint）
@@ -71,9 +67,7 @@ export declare function looksAskText(text: string): boolean;
  * 判据**版本无关**：真实用户消息恒带 `source.kind === 'user'`（宿主 createUserMessage
  * 约定）；注入（V3 `plugin` / V4 `argp` / `compact-checkpoint`）命中自有来源白名单 ⇒ X。
  * 其余非-user kind（dsh-agent merge 扩展）不是 X——由正交的性质轴（form）裁决。
- *
- * 此前该规则内联在四处（catalogText / recallQuery / atomize / rebuildLedgerFromLog），
- * 现统一收敛到本纯函数；导出供测试直接锁定顺序行为（A8 先例）。
+ * 导出供测试直接锁定顺序行为（A8 先例）。
  */
 export declare function classifyUserMessage(data: unknown): 'U' | 'X';
 /**
@@ -107,15 +101,12 @@ export declare function extractCites(text: string): {
  * 进原子台账（手动剪枝段在它处作为**有意边界**断开，见 selectManualRanges），但永不进
  * Stage-1 候选（isMaterial）、永不被剪。宿主若日后激活该类型，边界已在此定义，
  * 而不是一个意外的非原子漏点。
- *
- * 原 class 方法；this.citeStats → host.citeStats（同一对象引用，累计语义不变）。
  */
 export declare function atomize(host: GraphBuildHost, session: Session): Atom[];
 /**
  * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
  * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
  * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
- * 原 class 私有方法（读 this.citeMinPrefixLen）；现 minLen 显式入参。
  */
 export declare function citePrefixTooShort(prefix: string, minLen: number): boolean;
 /** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
@@ -129,15 +120,15 @@ export declare function queryNGramCandidates(index: Map<string, number[]>, prefi
  * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
  * 前缀长度守卫：过短前缀不计 declared 也不建边。
  *
- * 原 class 方法；this.x → host.x（citeStats / lastEdges / lastDeterministicEdges /
- * lastInferredEdges / inferredStats 为同一对象引用，重赋值经 host 落到真实字段）。
+ * citeStats / lastEdges / lastDeterministicEdges / lastInferredEdges / inferredStats
+ * 经 host 读写：对象字段为同一引用（累计语义），重赋值经 host 落到真实字段。
  */
 export declare function buildGraph(host: GraphBuildHost, atoms: Atom[]): {
     edges: SemanticEdge[];
     deterministicEdges: DeterministicEdge[];
     inDegree: Map<number, number>;
 };
-/** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。原 class 私有 static 方法。 */
+/** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
 export declare function lineOverlap(a: string, b: string): number;
 /**
  * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
@@ -148,8 +139,6 @@ export declare function lineOverlap(a: string, b: string): number;
  *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
  *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
  * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
- *
- * 原 class 私有方法；this.session → host.session，this.enableOverlapChain/overlapTheta → host.*。
  */
 export declare function findVersionDuplicates(host: GraphBuildHost, atoms: Atom[], inDegree: Map<number, number>): {
     dupIds: Set<number>;

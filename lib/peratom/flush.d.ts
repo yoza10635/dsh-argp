@@ -6,7 +6,7 @@ import type { GateOptions } from './gate.js';
 import type { CompressDecision, CompressRecord, CurrentTurnCollect } from './compressor-types.js';
 import { type LlmBackend } from './prompt.js';
 /**
- * 发射侧窄宿主接口（C 报告关键设计决策 1）：只含本模块所需成员。
+ * 发射侧窄宿主接口：只含本模块所需成员。
  *  - 字段：records / telemetryCap（观测台账）、_calls（调用计数）、ctx（宿主日志）、
  *    fetchImpl / timeoutMs / maxCompletionTokens（fetch 后端）、pending（暂存事务）、
  *    hlsMode / hlsRoiThreshold（HLS 修复档）、inFlightPass / flushWaitMs（在飞 pass 屏障）、
@@ -98,10 +98,10 @@ export declare function flushStashed(host: FlushHost, session: Session): void;
 export declare function compressCurrentTurn(host: FlushHost, session: Session): Promise<CompressRecord | null>;
 /**
  * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
- * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
- * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
- * 水位语义（2026-09-21 修订）：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
- * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（原先的"轮级一次性"
+ * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（closed 口径会
+ * 错压上一闭合轮）。
+ * 水位语义：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
+ * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
  * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
  */
 export declare function compressOpenTurn(host: FlushHost, session: Session): Promise<CompressRecord | null>;

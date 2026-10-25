@@ -35,7 +35,7 @@ import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session
  */
 export declare function sessionEvents(session: Session): readonly SessionEvent[];
 /**
- * 事件 turn 号类型化访问器（C-S7 收敛，P5 Wave 3 第 3 步）。
+ * 事件 turn 号类型化访问器。
  *
  * 根因：宿主包 dsh-session 的 `SessionEvent` 虽是判别联合，但 `turn` 不是公共字段
  * （仅 turn/start、turn/end、step/*、assistant/message 等部分事件携带），宿主类型
@@ -47,34 +47,25 @@ export declare function turnOf(event: SessionEvent): number | undefined;
 /**
  * 从一个事件投影出模型可见文本（text + tool-call 概要 + tool-result 内层 text；reasoning 不算）。
  *
- * P5 结构重构 Wave 3 第 1 步：自 hub `argp-graph-engine.ts` 迁入本叶子——本函数只依赖
- * `sessionEvents`（本模块）+ 纯数据操作，不触碰任何 hub 运行时（无 this.ctx / engine 状态），
- * 故可安全下沉。迁移消除了 peratom/recall-zoom → hub 的运行时回边（recall-zoom 现直接
- * 从本模块 import）。hub 侧保留 `export { eventText } from './log-access.js'` 转发以维持
- * 既有公共 API 与测试 import 不变。
+ * 本函数只依赖 `sessionEvents`（本模块）+ 纯数据操作，不触碰任何 hub 运行时
+ * （无 this.ctx / engine 状态）。hub 侧保留 `export { eventText } from './log-access.js'`
+ * 转发以维持既有公共 API 与测试 import 不变。
  */
 export declare function eventText(session: Session, seq: number): string;
 /**
- * 从单个事件投影模型可见文本（`eventText` 的纯事件形态，P1 收敛：peratom/gate 的
- * `projectSurfaceText` 私有镜像与本函数逐字相同，现统一委托到这里，单一事实源）。
+ * 从单个事件投影模型可见文本（`eventText` 的纯事件形态；peratom/gate 的
+ * `projectSurfaceText` 委托到这里，单一事实源）。
  */
 export declare function eventTextOf(event: SessionEvent): string;
 /**
  * 日志尾部的 open turn（从日志末尾向前找：最近的 turn/start 且其后无 turn/end）。
- *
- * P5 Wave 3 第 3 步：自 `ArgpGraphEngine.detectOpenTurn`（private 方法）与
- * `peratom/compressor.ts` 模块级函数两份逐字相同实现收敛到本叶子（只读
- * sessionEvents）。返回 open turn 号；无开放轮（末尾已闭合 / 会话头）返回 null。
+ * 返回 open turn 号；无开放轮（末尾已闭合 / 会话头）返回 null。
  */
 export declare function detectOpenTurn(session: Session): number | null;
 /**
  * 主链 reasoningEffort：从最近一条携带 `config.reasoningEffort` 的 `request/header`
  * 事件重建（LlmCallConfig 无 chat_template_kwargs 字段，只有 reasoningEffort——
- * 故从它重建，非读现成 ctk）。
- *
- * P5 Wave 3 第 3 步：自 `peratom/compressor.ts` 与 `peratom/cite-declarer.ts`
- * 两份逐字相同的抽取强转循环（方案 B ctk 的主链对齐部分）收敛到本叶子
- * （只读 sessionEvents）。无声明返回 undefined。
+ * 故从它重建，非读现成 ctk）。无声明返回 undefined。
  */
 export declare function mainChainReasoningEffort(session: Session): string | undefined;
 /**
@@ -106,22 +97,19 @@ export declare function asSeqs(values: readonly number[]): SessionSeq[];
 export type NodeState = 'shadowed' | 'live' | 'off-surface';
 /**
  * 全日志扫描收集被遮蔽 surface seq（权威剪枝账本：compaction/prune.shadowedSeqs 的并集）。
- *
- * 2026-08-27：与 ArgpGraphEngine.shadowedSeqsOf 对齐——只认 compaction/prune 事件
- * （pruneIntervals 每次真剪枝必发，shadowedSeqs 即被剪 seq 权威清单）。此前靠
- * 「replace 形态推断」（任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed），
- * 会把 per-atom 原地压缩（peratom/compressor.ts 的副本，无 compaction/prune 事件）误判为
- * shadowed，导致 recall_summary/recall_detail 对压缩原子谎报 state=shadowed（同一反模式的
- * 第二条路径，且连 argpCites 门控都没有，比 shadowedSeqsOf 更激进）。
+ * 只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，shadowedSeqs 即被剪 seq
+ * 权威清单），与 ArgpGraphEngine.shadowedSeqsOf 同口径。**不可**改用「replace 形态推断」
+ * （任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed）：那会把 per-atom 原地压缩
+ * （peratom/compressor.ts 的副本，无 compaction/prune 事件）误判为 shadowed，导致
+ * recall_summary/recall_detail 对压缩原子谎报 state=shadowed。
  */
 export declare function scanShadowedSeqs(session: Session): Set<number>;
 /**
  * 原始文本访问器（P2.5 / P1「能精确则精确，做不到则精确标注」）。
  *
- * 背景：recall_detail 原先经 `argp-graph-engine.eventText` 投影——多 text 块用
- * `join('\n')` 塞合成换行、tool-call 参数被 `JSON.stringify` 重序列化，"byte-for-byte"
- * 名不副实。`eventText` 是共享投影（recall_pruned / list_pruned / summary 降级等多调用方），
- * 行为不动；本访问器专供 recall_detail 取**原始字面量**：
+ * `eventText` 是共享投影（recall_pruned / list_pruned / summary 降级等多调用方）：
+ * 多 text 块用 `join('\n')` 塞合成换行、tool-call 参数被 `JSON.stringify` 重序列化，
+ * 并非 byte-for-byte。本访问器专供 recall_detail 取**原始字面量**：
  *
  *  - **text 块**：返回日志里存的字面量本身（不塞合成换行）；多块时按原顺序保真，
  *    块间分隔符是投影（原件是离散块、无单一字符串），`reconstructed` 标注之；

@@ -1,9 +1,9 @@
 /**
- * CiteDeclarer（Stage-1 建图侧，plan P2）：轮末引用边声明管线。
+ * CiteDeclarer（Stage-1 建图侧）：轮末引用边声明管线。
  *
- * 宿主身份（plan §0）：**普通 cordis 服务，非 ctx.compaction 位**——与 PeratomCompressor
- * 并列走事件钩子，Stage-2 的 ArgpGraphEngine 独占 compaction 位，零改动消费边（见
- * `buildInjectEdges`，plan §0 第 2 点"injectEdges 通道已存在，Stage-2 零改动"）。
+ * 宿主身份：**普通 cordis 服务，非 ctx.compaction 位**——与 PeratomCompressor
+ * 并列走事件钩子，Stage-2 的 ArgpGraphEngine 独占 compaction 位，零改动消费边
+ * （见 `buildInjectEdges`：injectEdges 通道已存在，Stage-2 零改动）。
  *
  * 职责：每轮末声明"当轮行为原子（U/A）引用了哪些窗口内的数据原子（U/R）"，产边缓存
  * 到 seq 空间，Stage-2 每次建图经 `buildInjectEdges(atoms)` 取边并做 seq→id 映射。
@@ -14,12 +14,11 @@
  * fromSeq 可能被影子化，对应边在建图时因端点离 surface 被 buildGraph 天然丢弃（优雅降级，
  * 不破坏 toSeq 的保护语义）。
  *
- * 失败隔离（plan P2）：LLM 调用失败 / 解析失败 → 记 failed 计数、本轮无边、静默重试至多
+ * 失败隔离：LLM 调用失败 / 解析失败 → 记 failed 计数、本轮无边、静默重试至多
  * 1 次（response_format 被拒时降级裸 prompt，compressor 同款）；`buildInjectEdges` 吞一切
- * 异常恒返回 `[]`——declarer 故障绝不阻断 Stage-2 建图或会话（plan §0 第 3 点"失败隔离
- * 免费获得"）。
+ * 异常恒返回 `[]`——declarer 故障绝不阻断 Stage-2 建图或会话（失败隔离免费获得）。
  *
- * 孤立原子规则（plan P2，与 gate.ts 共用谓词自动一致）：门控跳过的轮次（纯 dialog /
+ * 孤立原子规则（与 gate.ts 共用谓词自动一致）：门控跳过的轮次（纯 dialog /
  * 全版本链 / 全小结果 / 中断轮）不调用、不建边。
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -45,7 +44,7 @@ import { autoDshLlmSpec } from './llm-adapter.js'
 import { serializeWireMessages, serializeWireTools } from './llm-adapter.js'
 import type { AgentRouteHint, DshLlmSpec } from './llm-adapter.js'
 
-/** 声明窗口（plan P2 决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
+/** 声明窗口（决策⑥起步值）：当轮行为原子 + 近 N 轮数据原子。 */
 export const CITATION_WINDOW_TURNS = 10
 
 /** 声明边缓存上限（超限按插入序淘汰最旧；会话生命周期内的边总量有界）。 */
@@ -116,8 +115,8 @@ export interface CiteDeclarerConfig {
   apiKey?: string
   model?: string
   /**
-   * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
-   * （fetch 遗产路径）。多模型分工：可指向与 compressor 不同的 lite 档（台账 D21）。
+   * dsh-llm 生产后端：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+   * （fetch 兼容路径）。多模型分工：可指向与 compressor 不同的 lite 档。
    */
   llm?: DshLlmSpec
   /** 声明窗口轮数（默认 CITATION_WINDOW_TURNS=10）。 */
@@ -129,8 +128,7 @@ export interface CiteDeclarerConfig {
   /**
    * 追加到请求体的模板参数**基础层**（本地 llama.cpp + Qwen 的
    * `{ enable_thinking: false }` 等）。A 形态下 `resolveEffectiveCtk` 以最近
-   * 真实 agent 请求的 ctk 为基础叠加本层 + et:false（与 compressor 同款，
-   * 2026-09-19 方案 B 定案）。
+   * 真实 agent 请求的 ctk 为基础叠加本层 + et:false（与 compressor 同款，方案 B 定案）。
    */
   chatTemplateKwargs?: Record<string, unknown>
   /** 输出 cap（token，默认 4096；cites JSON 通常几百 token，小 cap 防爆上限）。 */
@@ -150,7 +148,7 @@ interface ResolvedEndpoint {
 /**
  * 缺省端点解析：与 PeratomCompressor 同口径（ARGP_MODEL_SOURCE=qwen-local → 本地；
  * 否则 DeepSeek 生产端点）。apiKey 缺失 → disabled（静默跳过，零网络副作用）——
- * declarer 可独立关闭（plan P2 验收判据 3 的"不挂载"路径）。
+ * declarer 可独立关闭（"不挂载"路径）。
  */
 export function citeDeclarerDefaultEndpoint(env: NodeJS.ProcessEnv = process.env): ResolvedEndpoint | null {
   if (env['ARGP_MODEL_SOURCE'] === 'qwen-local') {
@@ -295,7 +293,7 @@ interface ChatCompletionResponse {
  * A 形态（设计文档 §4 tail-only 语义，与 compressor 同款）：引用声明调用站在
  * agent 链延长线上——`[...agent 当前 deriveMessages() 的 wire 渲染, {user: 声明指令}]`。
  * ctk 由调用方解析（resolveEffectiveCtk：继承主链 requestHeader ctk +
- * enable_thinking:false 覆盖，2026-09-19 方案 B 定案——同态渲染 = 继承主链；
+ * enable_thinking:false 覆盖，方案 B 定案——同态渲染 = 继承主链；
  * 强制 pt:true 已证实更差：LCP 12.7% < pt:false 30.3%）。前缀预算门控与
  * compressor 同款（超预算该次降级 C）。
  */
@@ -330,7 +328,7 @@ async function postChat(
     }
   }
   // ctk 由调用方解析（resolveEffectiveCtk）；此处不再强制 preserve_thinking
-  //（2026-09-19 定案，见头注）。
+  //（方案 B 定案，见头注）。
   if (chatTemplateKwargs !== undefined && Object.keys(chatTemplateKwargs).length > 0) {
     body['chat_template_kwargs'] = chatTemplateKwargs
   }
@@ -541,9 +539,8 @@ export class CiteDeclarer {
     return null
   }
 
-  /** 方案 B ctk（与 compressor 同款，2026-09-19 定案）：et:false + pt:false + 主链 reasoningEffort 对齐。 */
+  /** 方案 B ctk（与 compressor 同款）：et:false + pt:false + 主链 reasoningEffort 对齐。 */
   private resolveEffectiveCtk(session: Session): Record<string, unknown> {
-    // 2026-09-21（P5 Wave 3 第 3 步）：主链 reasoningEffort 抽取收敛到 log-access 共享访问器。
     const mainChainEffort = mainChainReasoningEffort(session)
     const ctk: Record<string, unknown> = { ...(this.chatTemplateKwargs ?? {}) }
     ctk['enable_thinking'] = false
@@ -627,7 +624,7 @@ export class CiteDeclarer {
           raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, true, effectiveCtk, contextWire, contextToolsWire, this.maxCompletionTokens)
         } catch {
           // response_format 被端点拒绝 / 网络抖动：降级裸 prompt 静默重试一次（compressor 同款，
-          // plan P2"至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
+          // "至多重试 1 次"）。第二次仍失败 → 外层 catch 记 error，本轮无边。
           raw = await postChat(this.fetchImpl, backend.endpoint, prompt, this.timeoutMs, false, effectiveCtk, contextWire, contextToolsWire, this.maxCompletionTokens)
         }
       }
@@ -729,7 +726,7 @@ export class CiteDeclarer {
 
   /**
    * Stage-2 接线点（ArgpGraphEngineConfig.injectEdges 回调）：seq→id 映射。
-   * 吞一切异常恒返回 `[]`——declarer 故障绝不阻断建图（plan P2 失败隔离）。
+   * 吞一切异常恒返回 `[]`——declarer 故障绝不阻断建图（失败隔离）。
    * 端点已离 surface 的边：buildGraph 的 validIds 校验（atom.id 集合）天然丢弃（优雅降级）。
    * 注意：buildGraph 校验空间是**本次投影内的 atom.id**（局部索引），不是 seq——
    * 故缓存保持 seq 空间，本方法每次建图现映射。

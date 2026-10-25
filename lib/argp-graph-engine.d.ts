@@ -1,7 +1,7 @@
 /**
  * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
  *
- * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 design-vs-impl-trace.md（已迁出公开仓库））：
+ * 按设计稿 §3-§7 移植，机制验证版简化：
  *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
  *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
  *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
@@ -195,7 +195,7 @@ export interface ArgpGraphConfig {
      */
     tombstoneMergeMinRun?: number;
     /**
-     * P0 双引擎生产挂载（2026-08-28，webui-liaison 台账发现一，已迁出公开仓库）：非空时
+     * P0 双引擎生产挂载：非空时
      * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
      * injectEdges/onOverflowCompress 由内部接线——显式传入的同名 config 键被忽略并告警。
      * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
@@ -220,7 +220,7 @@ export interface ArgpGraphConfig {
      * 回复级 cites 义务开关（argp-cites system section，order 151）。
      * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
      * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
-     * UI 显示泄漏，见 webui-liaison 台账发现三证据链，已迁出公开仓库）。
+     * UI 显示泄漏）。
      * 2026-09-21 时序修复：auto 兜底（autoLlm）的 declarer 构造期未武装、会话中期
      * 才经 agent/status 武装——auto 口径下 section 恒注册，text 回调在 armed 翻转后
      * 动态返回 ''（renderPrompt 过滤空 section ⇒ system 块不再含协议）；armed 单调
@@ -429,7 +429,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  导致迟触发/窗口保护失效，2026-08-23）。 */
     private lastRealPromptTokens;
     /** 声明窗口缓存（session → 适配器声明的 contextWindow，来自 request/context 事件）。
-     *  2026-08-28 真环境联调：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
+     *  真环境联调实证：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
      *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
     private readonly declaredContextWindows;
     /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
@@ -491,15 +491,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private restoreUsageAnchor;
     /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
-     *  P5 Wave 3 第 4 步：实现迁 recall.catalogText（this → host 窄接口），本方法变薄编排。 */
+     */
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;
     /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
-     *  P5 Wave 3 第 4 步：实现迁 recall.recallQuery（this → host 窄接口），本方法变薄编排。 */
+     */
     recallQuery(query: string, maxResults?: number): string;
     /**
      * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
      * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
-     * P5 Wave 3 第 4 步：实现迁 recall.shadowedSeqsOf（this → host 窄接口），本方法变薄编排。
      */
     private shadowedSeqsOf;
     /**
@@ -508,20 +507,18 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
      * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
      * 程序化的全日志入口是 recallAnyState()。
-     * P5 Wave 3 第 4 步：实现迁 recall.recall（this → host 窄接口），本方法变薄编排。
      */
     recall(seq: number): string | null;
     /**
      * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
      * 不要求节点属于 pruned 集合。越界返回 null。
-     * P5 Wave 3 第 4 步：实现迁 recall.recallAnyState（this → host 窄接口），本方法变薄编排。
      */
     recallAnyState(seq: number): {
         text: string;
         state: NodeStateLabel;
     } | null;
     /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
-     *  P5 Wave 3 第 4 步：实现迁 recall.nodeState（this → host 窄接口），本方法变薄编排。 */
+     */
     nodeState(seq: number): NodeStateLabel | null;
     /**
      * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
@@ -535,7 +532,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
      * 「system prompt at surface node 0 is never selected for pruning」。
      *
-     * P5 Wave 3 第 4 步：实现迁 graph-build.atomize（this → host 窄接口），本方法变薄编排。
      */
     atomize(session: Session): Atom[];
     /**
@@ -545,14 +541,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
      * 前缀长度守卫：过短前缀不计 declared 也不建边。
      *
-     * P5 Wave 3 第 4 步：实现迁 graph-build.buildGraph（this → host 窄接口），本方法变薄编排。
      */
     buildGraph(atoms: Atom[]): {
         edges: SemanticEdge[];
         deterministicEdges: DeterministicEdge[];
         inDegree: Map<number, number>;
     };
-    /** surface 可见字符总量（与 spike 4 同基准）。P5 Wave 3 第 4 步：实现迁 budget.visibleChars（纯函数）。 */
+    /** surface 可见字符总量（与 spike 4 同基准）。 */
     private visibleChars;
     /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
      *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
@@ -561,7 +556,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
      *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
      *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。
-     *  P5 Wave 3 第 4 步：实现迁 budget.measureTokens（this → host 窄接口），本方法变薄编排。 */
+     */
     private measureTokens;
     /**
      * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
@@ -578,7 +573,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
      * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
      *
-     * P5 Wave 3 第 4 步：实现迁 graph-build.findVersionDuplicates（this → host 窄接口），本方法变薄编排。
      */
     private findVersionDuplicates;
     /**
@@ -599,7 +593,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
      * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
      * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
-     * P5 Wave 3 第 4 步：实现迁 recall.noteRecallHit（this → host 窄接口），本方法变薄编排。
      */
     private noteRecallHit;
     /**
@@ -609,7 +602,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
      *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
      *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
-     * P5 Wave 3 第 4 步：实现迁 recall.budgetRecallText（this → host 窄接口），本方法变薄编排。
      */
     private budgetRecallText;
     /**
@@ -618,7 +610,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 且 enableSummarize=true 时也不会产出 LLM 摘要；实际路径仍为 lifecycle → force。
      */
     private summarizeCriticalChain;
-    /** P2 选择侧（2026-08-22 拆出）：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
+    /** P2 选择侧：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
      *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
      *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
      *  pruned、统一事务剪"（compactIfNeeded 降级链内联），闭包原子需与已剪集合去重
@@ -716,17 +708,16 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      *  ① 是对话载体 A/R（U/X 不参剪，手动入口不剪骨架，见 compactRegion 的 P5 约束）；
      *  ② 不落在 turnGuard（最近 N 轮）与 recencyGuard（surface 末尾 N 节点）保护窗口内。
      *
-     *  修复（2026-09-21）：旧实现扫到第一个不合格节点就 `break`，而真实会话的 surface 被
-     *  用户消息切成「U A R A R U A R …」多段结构 ⇒ 手动 /compact 永远只剪最老一小段
-     *  （表现为"图剪压不动"）。现在改为收集全部极大连续段，交给一笔 pruneIntervals 事务剪除。
-     *  P5 Wave 3 第 4 步：实现迁 prune-tx.selectManualRanges（this → host 窄接口），本方法变薄编排。
+     *  收集**全部**极大连续段（不可在第一个不合格节点处早停——真实会话的 surface 被
+     *  用户消息切成「U A R A R U A R …」多段结构，早停会让手动 /compact 永远只剪最老
+     *  一小段，表现为"图剪压不动"），交给一笔 pruneIntervals 事务剪除。
      */
     private selectManualRanges;
     /** 手动多区间压缩：逐段复核边界后合并为一笔事务剪除。
      *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
      *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
      *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。
-     *  P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegions（this → host 窄接口），本方法变薄编排。 */
+     */
     private compactRegions;
     /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
      *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result

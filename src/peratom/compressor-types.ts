@@ -1,20 +1,15 @@
 /**
- * PeratomCompressor 类型与端点解析叶子（P5 结构重构 Wave 3 第 5 步，C 报告 §4 B 表）。
+ * PeratomCompressor 类型与端点解析叶子：配置（PeratomCompressorConfig）+
+ * 端点解析（ResolvedEndpoint / defaultEndpoint）+ 结构化输出契约类型
+ * （UserSplit / ToolAction / CompressDecision）+ 收集结构（CurrentTurnCollect）
+ * + 观测记录（CompressRecord）+ 规划选项（PlanOptions）。
  *
- * 从 1,520 行 `compressor.ts`（God Class）拆出的**纯类型 + 纯函数**侧：
- * 配置（PeratomCompressorConfig）+ 端点解析（ResolvedEndpoint / defaultEndpoint）
- * + 结构化输出契约类型（UserSplit / ToolAction / CompressDecision）
- * + 收集结构（CurrentTurnCollect）+ 观测记录（CompressRecord）
- * + 规划选项（PlanOptions）。
- *
- * 依赖方向（C 报告 §4 B 表）：本模块是**叶子**——不 import 任何 peratom 运行时，
- * 仅 type-only import（编译期擦除，无运行时环）：
+ * 依赖方向：本模块是**叶子**——不 import 任何 peratom 运行时，仅 type-only import
+ * （编译期擦除，无运行时环）：
  *   - `DshLlmSpec`（llm-adapter）：PeratomCompressorConfig.llm 的类型；
  *   - `GateUserLong` / `GateToolResult` / `NeedCompress`（gate）：
  *     CurrentTurnCollect 的原子数组 + tool 对照表值类型。
  * 依赖方：decision / collect / prompt / flush / compressor（组合根）单向依赖本模块。
- *
- * 行为逐字节不变：类型定义与 defaultEndpoint 函数体逐字保留，仅搬家。
  */
 import type { DshLlmSpec } from './llm-adapter.js'
 import type { GateUserLong, GateToolResult, NeedCompress } from './gate.js'
@@ -29,8 +24,8 @@ export interface PeratomCompressorConfig {
   apiKey?: string
   model?: string
   /**
-   * dsh-llm 生产后端（P5 后债务清算）：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
-   * （fetch 遗产路径）。多模型分工：与 declarer 各自指定 provider/model（lite 档可选）。
+   * dsh-llm 生产后端：经宿主 LlmRuntime 调用，优先于 endpoint/apiKey
+   * （fetch 兼容路径）。多模型分工：与 declarer 各自指定 provider/model（lite 档可选）。
    */
   llm?: DshLlmSpec
   /** 用户长消息阈值（默认 SPLIT_THRESHOLD_CHARS=100）。 */
@@ -82,7 +77,7 @@ export interface PeratomCompressorConfig {
    */
   prefixBudgetTokens?: number
   /**
-   * 初始 tool 对照表（设计 §6-2）：工具种类名 → 压缩档位。运行期可经
+   * 初始 tool 对照表：工具种类名 → 压缩档位。运行期可经
    * `setToolPolicy(toolName, policy)` 增改；构造期传入便于单测 / 声明式挂载预置。
    */
   toolPolicies?: ReadonlyMap<string, NeedCompress>
@@ -160,14 +155,14 @@ export interface UserSplit {
   seq: number
   quotes: string[]
   /**
-   * 资料（info）压缩档位（设计 §10 决策 1 补实现）：`false`=原样 / `summary`=概括 /
-   * `extract`=逐字摘取。用户源 info 默认偏好 summary（设计 L54：叙述类资料保意图）；
+   * 资料（info）压缩档位：`false`=原样 / `summary`=概括 /
+   * `extract`=逐字摘取。用户源 info 默认偏好 summary（叙述类资料保意图）；
    * shell 报错/含精确串 → extract。缺省（undefined）= 不压缩（引擎回退原文切片）。
    */
   infoLevel?: 'false' | 'summary' | 'extract'
   /**
    * 压缩后的 info 文本：summary/extract 时必填；false 或缺省时留空/缺省（引擎回退逐字切片）。
-   * 单档（§10 决策 7"只有两种形态"）：surface 放此文本、`data[ARG_NS].summary` 存同文本。
+   * 单档：surface 放此文本、`data[ARG_NS].summary` 存同文本。
    */
   infoText?: string
 }
@@ -175,7 +170,7 @@ export interface UserSplit {
 export interface ToolAction {
   seq: number
   /**
-   * 工具结果压缩档位（设计对称：与 info 同级显式信号）。`false`=全是关键内容、
+   * 工具结果压缩档位（与 info 同级显式信号）。`false`=全是关键内容、
    * 无可压空间（典型如完整源码模块）→ 原子保原文、不 emit replace；`text` 此时可空。
    */
   level: 'extract' | 'summary' | 'false'
@@ -221,7 +216,7 @@ export interface CompressRecord {
   skippedFallbackDialog?: number
   /** 保真守卫拒绝的 tool 副本数（缺高信号 token → 原文保面，spike 34 驱动）。 */
   skippedFidelity?: number
-  /** 模型显式选 false（不压）的 tool 原子数（设计对称：与 info 同级显式信号）。 */
+  /** 模型显式选 false（不压）的 tool 原子数（与 info 同级显式信号）。 */
   skippedFalse?: number
   /** no-op 守卫拒的 tool 副本数（收益 ≤5% 视同 false；spike 37 全文照抄实锤驱动）。 */
   skippedNoopGain?: number
@@ -261,11 +256,10 @@ export interface CompressRecord {
   anomalies?: number
   error?: string
   /**
-   * called=false 时的短路原因（观测"合法跳过"用，review 严重发现 #2）：
+   * called=false 时的短路原因（观测"合法跳过"用）：
    * - 'no-candidate'：门控判无可压原子（纯 dialog / 全部原子 < 小结果阈值或版本链成员）；
    * - 'interrupted'：轮次被中断（error/aborted 收尾，半成品原子被 filterInterruptedAtoms 清空，
-   *   与"门控判无可压"是两种性质——前者是环境/模型失败，后者是正常判决。19:50 复跑里
-   *   LLM 连接失败的轮次曾误显示为 no-candidate，VK-plan-c 无法区分，故拆出）；
+   *   与"门控判无可压"是两种性质——前者是环境/模型失败，后者是正常判决）；
    * - 缺省（undefined）表示 called=true 的正常调用。
    */
   skipReason?: 'no-candidate' | 'interrupted'
@@ -276,8 +270,8 @@ export interface CompressRecord {
 // ---------------------------------------------------------------------------
 
 /**
- * planReplacements 选项（v1.2.0）：`hlsMode` 对独立调用方缺省 'off'（保守默认，
- * 既有行为不变）；PeratomCompressor 类显式传自身配置（生产缺省 'trailer'）。
+ * planReplacements 选项（v1.2.0）：`hlsMode` 对独立调用方缺省 'off'（保守默认）；
+ * PeratomCompressor 类显式传自身配置（生产缺省 'trailer'）。
  */
 export interface PlanOptions {
   hlsMode?: 'trailer' | 'off'
@@ -287,10 +281,9 @@ export interface PlanOptions {
    * tool/result 压缩副本的**头部标记**（v1.6.1）：`'on'` = 副本正文头部拼
    * `[已压缩-摘取 seq=N]` / `[已压缩-摘要 seq=N]`（详见 decision.toolCopyMarkerText）。
    *
-   * 独立调用方缺省 `'off'`（v1.6 既有行为逐字节不变，既有单测零改动）；
-   * 生产路径由 `PeratomCompressor` 传自身配置（config 缺省 `'on'`）。
+   * 独立调用方缺省 `'off'`；生产路径由 `PeratomCompressor` 传自身配置（config 缺省 `'on'`）。
    *
-   * 存在理由（2026-09-23 核查）：dsh-session 硬约束使 tool/result 副本**不能**挂
+   * 存在理由：dsh-session 硬约束使 tool/result 副本**不能**挂
    * `data[ARG_NS]` 元数据、也**不能**换 source（`decision.toolCopyPayload` /
    * `flush.flushEntry` 注释），且副本 `source.kind` 仍是 `'tool'` ⇒ LLM 侧没有任何
    * 信号能把它与真实工具输出区分开。extract 档尤甚：prompt 要求 text 是原文**逐字**

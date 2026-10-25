@@ -1,23 +1,18 @@
 /**
- * ARGP 召回模块（P5 结构重构 Wave 3 第 4 步，C 报告 §4 A 表）。
- *
- * 从 3,380 行 hub `argp-graph-engine.ts`（God Class）拆出的**召回侧**函数：
- * 被遮蔽 seq 增量账本（shadowedSeqsOf）+ catalog 生成（catalogText）+
+ * ARGP 召回模块：被遮蔽 seq 增量账本（shadowedSeqsOf）+ catalog 生成（catalogText）+
  * 关键词召回（recallQuery）+ 程序化召回（recall / recallAnyState / nodeState）
  * + 轮次口径（latestTurnOf / latestTurnOfSession）+ 召回防抖（noteRecallHit）
  * + 召回字数预算（budgetRecallText）。
  *
- * 循环 import 规避（C 报告关键设计决策 1）：本模块**不** import hub 运行时。
- * 需要读/写引擎可变字段的函数接收窄接口 {@link RecallHost} 而非具体 class；
- * hub 的 class 以 `this as unknown as RecallHost` 传入（编译期断言，运行时即
- * 真实实例，私有字段经 host 类型可读写/重赋值）。依赖方向：hub → recall（单向）。
- *
- * 行为逐字节不变：函数体逻辑逐字保留（this.x → host.x），仅 `this` 换 `host`。
+ * 循环 import 规避：本模块**不** import hub 运行时。需要读/写引擎可变字段的函数接收
+ * 窄接口 {@link RecallHost} 而非具体 class；hub 的 class 以 `this as unknown as
+ * RecallHost` 传入（编译期断言，运行时即真实实例，私有字段经 host 类型可读写/重赋值）。
+ * 依赖方向：hub → recall（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session';
 import { type NodeState } from './log-access.js';
 /**
- * 召回侧模块函数访问引擎状态所需的窄接口（C 报告关键设计决策 1）。
+ * 召回侧模块函数访问引擎状态所需的窄接口。
  * 仅列出各召回函数实际读写的字段；hub 的 ArgpGraphEngine 以
  * `this as unknown as RecallHost` 满足它。
  * charsPerToken 在 class 上是 getter——经 host 读取时 getter 以真实实例为

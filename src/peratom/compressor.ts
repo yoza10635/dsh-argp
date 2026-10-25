@@ -1,7 +1,7 @@
 /**
- * PeratomCompressor（Stage-1，plan P1）：eager 轮末熵降管线。
+ * PeratomCompressor（Stage-1）：eager 轮末熵降管线。
  *
- * 宿主身份（plan §0）：**普通 cordis 服务，非 ctx.compaction 服务位**——Stage-2 的
+ * 宿主身份：**普通 cordis 服务，非 ctx.compaction 服务位**——Stage-2 的
  * ArgpGraphEngine 独占 compaction 位，本服务走事件钩子，失败隔离免费获得。
  *
  * 触发与发射的两段式设计（对齐 dsh-session 不变量）：
@@ -19,7 +19,7 @@
  *    ——事务顺延到后续窗口，即旧行为），使"下一个 user message 等待"成为确定性语义。
  *  - 防重复处理：按 (session, turn) 记**压缩水位**（见 passWatermark）——已规划过的
  *    前缀不再入候选，重复 idle / pre-step 因窗口为空而幂等短路；成功 pass 之后
- *    同轮新增内容仍可再压（2026-09-21 起，替代原"轮级一次性"记账）。
+ *    同轮新增内容仍可再压（水位增量制）。
  *  - `compressCurrentTurn(session)` 公开入口：立即收集+调用+发射（P4 溢出三步路径②与单测用），
  *    绕过两段式延迟。
  *
@@ -30,9 +30,9 @@
  * 无再压缩路径（决策⑦）：collect 只取"原始态"原子——已是 U-info/replace 副本的 seq 直接跳过；
  * 版本链成员硬排除（gate 决策序①）；被中断轮次整轮排除（filterInterruptedAtoms 内嵌）。
  *
- * P5 结构重构 Wave 3 第 5 步（C 报告 §4 B 表）：本文件瘦身为**组合根**——class 只持有
- * 字段 + 构造函数（注册钩子）+ 薄编排方法（转发到模块）。实现拆到 5 个模块，依赖方向
- * compressor-types（叶）← decision/collect/prompt ← flush ← compressor（组合根）：
+ * 本文件是**组合根**：class 只持有字段 + 构造函数（注册钩子）+ 薄编排方法（转发到模块）。
+ * 实现在 5 个模块，依赖方向 compressor-types（叶）← decision/collect/prompt ← flush ←
+ * compressor（组合根）：
  *  - compressor-types.ts：纯类型 + defaultEndpoint（叶子，不 import 任何 peratom 运行时）；
  *  - decision.ts：extractJson / normalizeDecision / planReplacements（纯函数）；
  *  - collect.ts：isMaterial / waterMarkOf / advanceWaterMark / collectFromWindow /
@@ -41,12 +41,8 @@
  *  - flush.ts：buildContextPrefix / resolveEffectiveCtk / prefixWithinBudget / callAndStash /
  *    prepareCurrentTurn / compressCollect / flushStashed / flushEntry / awaitInFlightPass /
  *    rememberRoute（窄宿主接口 FlushHost）。
- * 循环 import 规避沿用 hub 第 4 步模式：模块 type-only import（编译期擦除）+
- * `this as unknown as *Host` 窄接口；模块永不运行时 import 本组合根。
- * 行为逐字节不变：方法体逐字保留（this.x → host.x），仅搬家。
- *
- * 2026-09-21（P5 Wave 3 第 3 步）：detectOpenTurn 已迁 log-access 叶子
- * （与 argp-graph-engine 的逐字相同实现收敛），本模块改调导入的模块函数。
+ * 循环 import 规避：模块 type-only import（编译期擦除）+ `this as unknown as *Host`
+ * 窄接口；模块永不运行时 import 本组合根。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -57,8 +53,8 @@ import type { GateOptions, NeedCompress } from './gate.js'
 import { DEFAULT_HLS_ROI_THRESHOLD } from '../token-ontology.js'
 import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_PREFIX_BUDGET_TOKENS, DEFAULT_SKIP_CONTEXT_FORMS } from '../constants.js'
 import { DEFAULT_TELEMETRY_CAP } from '../telemetry.js'
-// P5 Wave 3 第 5 步：纯类型 + 端点解析迁 compressor-types 叶子（type-only import 编译期擦除，
-// 无运行时环）。本地 import 供类/构造函数使用；export ... from 供公共 API 与测试 re-export。
+// 纯类型 + 端点解析在 compressor-types 叶子（type-only import 编译期擦除，无运行时环）。
+// 本地 import 供类/构造函数使用；export ... from 供公共 API 与测试 re-export。
 import { defaultEndpoint } from './compressor-types.js'
 import type {
   PeratomCompressorConfig,
@@ -159,13 +155,13 @@ export class PeratomCompressor {
   /**
    * 每轮压缩**水位**：(session, turn) → 已被规划过的最大 seq（-1 = 未压过）。
    *
-   * 语义（2026-09-21 修订，替代原 `doneTurns` 的"轮级一次性"）：
+   * 语义（水位增量制，非"轮级一次性"）：
    *  - **成功的 pass** 把该轮水位推进到本次窗口的 `endSeq`（= 规划器已考虑过的边界）；
    *  - 后续 pass（轮末 idle 或再次压力）**只收 `seq > 水位` 的原子** ⇒ 轮内压力 pass
-   *    不再吃掉轮末 idle pass，同一轮可增量再压。真环境 2026-09-21 实证：turn 6 的
-   *    轮内 pass（step 85）用掉唯一配额后，step 85-92 的新增内容永不入压。
+   *    不再吃掉轮末 idle pass，同一轮可增量再压。真环境实证（turn 6）：轮内 pass
+   *    （step 85）用掉唯一配额后，step 85-92 的新增内容永不入压。
    *  - 门控短路（`no-candidate`）/ 中断轮**不推进水位** ⇒ 该轮仍可被后续 pass 处理
-   *    （原实现把 `done.add` 放在门控**之前**，一次 no-candidate 即永久作废该轮）。
+   *    （门控短路若推进水位，一次 no-candidate 即永久作废该轮）。
    *  - 天然幂等：同一轮无新增原子时窗口为空 ⇒ collect 返回 null ⇒ 零 LLM 调用。
    *  - 未推进水位的重复调用只做一次日志扫描（无网络、无事务），代价可忽略。
    */
@@ -173,7 +169,7 @@ export class PeratomCompressor {
   /** idle 阶段产出、等待下一次 open-turn 窗口发射的事务。 */
   private readonly pending: PendingEntry[] = []
   /**
-   * tool 对照表 / 作者声明（设计 §6-2）：工具种类名 → 压缩档位。
+   * tool 对照表 / 作者声明：工具种类名 → 压缩档位。
    * 未声明的工具缺席默认（走大小启发式）；声明只放宽/收紧启发式，不可越过版本链硬排除。
    */
   private readonly toolPolicies = new Map<string, NeedCompress>()
@@ -182,7 +178,7 @@ export class PeratomCompressor {
   getToolPolicy(toolName: string): NeedCompress | undefined { return this.toolPolicies.get(toolName) }
 
   /**
-   * 声明某工具种类的压缩档位（设计 §6-2 `setToolPolicy(toolName, policy)`）。
+   * 声明某工具种类的压缩档位（`setToolPolicy(toolName, policy)`）。
    * `false`=永不压缩（保原文）；'summary'=一句话概括；'extract'=关键内容摘录。
    * 传 `undefined` 撤销声明（回启发式默认）。声明是"提示非命令"：
    * 版本链硬排除（决策序第 1 层）与保真守卫仍先行，错误方向只往"少压"错。
@@ -199,13 +195,11 @@ export class PeratomCompressor {
 
   /** 某轮已规划过的最大 seq（-1 = 未压过）。 */
   private waterMarkOf(session: Session, turn: number): number {
-    // P5 Wave 3 第 5 步：实现迁 collect.waterMarkOf（this → host 窄接口），本方法变薄编排。
     return waterMarkOf(this as unknown as CollectHost, session, turn)
   }
 
   /** 成功落地后推进水位（单调不回退）。 */
   private advanceWaterMark(session: Session, turn: number, endSeq: number): void {
-    // P5 Wave 3 第 5 步：实现迁 collect.advanceWaterMark（this → host 窄接口），本方法变薄编排。
     advanceWaterMark(this as unknown as CollectHost, session, turn, endSeq)
   }
 
@@ -277,7 +271,6 @@ export class PeratomCompressor {
 
   /**
    * 有界等待在飞的轮末 pass（见 `PeratomCompressorConfig.flushWaitMs`）。
-   * P5 Wave 3 第 5 步：实现迁 flush.awaitInFlightPass（this → host 窄接口），本方法变薄编排。
    */
   private awaitInFlightPass(session: Session): Promise<void> {
     return awaitInFlightPass(this as unknown as FlushHost, session)
@@ -288,7 +281,6 @@ export class PeratomCompressor {
   /**
    * 记住 agent 路由（§11.13.1 自动兜底）。构造期拿不到路由，只能在真会话的
    * `agent/status` / `agent/pre-step` 钩子里现取。非自动模式直接短路。
-   * P5 Wave 3 第 5 步：实现迁 flush.rememberRoute（this → host 窄接口），本方法变薄编排。
    */
   private rememberRoute(agent: { options?: AgentRouteHint } | undefined): void {
     rememberRoute(this as unknown as FlushHost, agent)
@@ -297,7 +289,6 @@ export class PeratomCompressor {
   /**
    * 后端选路（§11.13.1）：显式 `config.llm` > fetch（endpoint/apiKey/env）> 自动兜底。
    * 三条都解不出返回 null —— 调用方按 disabled 记账（`no-endpoint`），不抛错、不阻断会话。
-   * P5 Wave 3 第 5 步：实现迁 prompt.backend（this → host 窄接口），本方法变薄编排。
    */
   private backend(): LlmBackend {
     return backend(this as unknown as PromptHost)
@@ -310,7 +301,6 @@ export class PeratomCompressor {
    * ① 中断轮整轮排除（filterInterruptedAtoms，interrupted=true 时数组恒空）；
    * ② 版本链成员硬排除（决策④，need_compress=false）；③ 大小启发式门控。
    * 无再压缩路径：U-info 副本 / plugin checkpoint 一律跳过（决策⑦）。
-   * P5 Wave 3 第 5 步：实现迁 collect.collectCurrentTurn（this → host 窄接口），本方法变薄编排。
    */
   collectCurrentTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null {
     return collectCurrentTurn(this as unknown as CollectHost, session, afterSeq)
@@ -319,11 +309,9 @@ export class PeratomCompressor {
   /**
    * 收集当前开放轮（最后一条 turn/start 之后、尚无 turn/end）的可压原子。
    * P4 溢出三步路径②专用：溢出发生在 open turn 的请求上，第②步要降熵的正是
-   * 这个 open turn——closed-turn 口径会错压上一闭合轮（2026-08-29 review 中项，
-   * 与 per-atom 设计 §8「对当前轮大原子降熵」的意图不符）。过滤与闭合轮完全
+   * 这个 open turn——closed-turn 口径会错压上一闭合轮。过滤与闭合轮完全
    * 同款（中断/版本链/大小门控；U-info/checkpoint 跳过）；open turn 无 turn/end，
    * 不会出现在中断集里。无 turn/start（会话头）返回 null。
-   * P5 Wave 3 第 5 步：实现迁 collect.collectOpenTurn（this → host 窄接口），本方法变薄编排。
    */
   collectOpenTurn(session: Session, afterSeq?: number): CurrentTurnCollect | null {
     return collectOpenTurn(this as unknown as CollectHost, session, afterSeq)
@@ -333,7 +321,6 @@ export class PeratomCompressor {
 
   /**
    * idle 触发段：记账防重 → 收集 → 门控 → LLM → 暂存待发射。返回观测记录。
-   * P5 Wave 3 第 5 步：实现迁 flush.prepareCurrentTurn（this → host 窄接口），本方法变薄编排。
    */
   async prepareCurrentTurn(session: Session): Promise<CompressRecord | null> {
     return prepareCurrentTurn(this as unknown as FlushHost, session)
@@ -341,7 +328,6 @@ export class PeratomCompressor {
 
   /**
    * 发射段：把该 session 的全部就绪事务落入下一次 open-turn 窗口（同步追加，吞错记账）。
-   * P5 Wave 3 第 5 步：实现迁 flush.flushStashed（this → host 窄接口），本方法变薄编排。
    */
   flushStashed(session: Session): void {
     flushStashed(this as unknown as FlushHost, session)
@@ -349,7 +335,6 @@ export class PeratomCompressor {
 
   /**
    * 公开入口（P4 溢出三步路径② / 单测）：立即收集+调用+发射，绕过两段式延迟。
-   * P5 Wave 3 第 5 步：实现迁 flush.compressCurrentTurn（this → host 窄接口），本方法变薄编排。
    */
   async compressCurrentTurn(session: Session): Promise<CompressRecord | null> {
     return compressCurrentTurn(this as unknown as FlushHost, session)
@@ -357,12 +342,11 @@ export class PeratomCompressor {
 
   /**
    * 公开入口（P4 溢出三步路径② 生产接线）：对当前 open turn 立即收集+调用+发射。
-   * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（设计 §8
-   * 「对当前轮大原子降熵」；closed 口径会错压上一轮，2026-08-29 review 中项）。
-   * 水位语义（2026-09-21 修订）：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
-   * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（原先的"轮级一次性"
+   * 溢出发生在 open turn 的请求上，第②步必须压它而不是最新闭合轮（closed 口径会
+   * 错压上一闭合轮）。
+   * 水位语义：open turn 压缩后**只推进该轮水位**（= 本次窗口 endSeq），
+   * 该轮闭合时 idle prepare 仍会跑，但只收水位之后的新增原子（"轮级一次性"
    * 记账会让轮内 pass 吃掉轮末 pass，使该轮尾部永不入压）。
-   * P5 Wave 3 第 5 步：实现迁 flush.compressOpenTurn（this → host 窄接口），本方法变薄编排。
    */
   async compressOpenTurn(session: Session): Promise<CompressRecord | null> {
     return compressOpenTurn(this as unknown as FlushHost, session)

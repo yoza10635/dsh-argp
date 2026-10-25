@@ -1,7 +1,7 @@
 /**
  * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
  *
- * 按设计稿 §3-§7 移植，机制验证版简化（差异台账见 design-vs-impl-trace.md（已迁出公开仓库））：
+ * 按设计稿 §3-§7 移植，机制验证版简化：
  *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
  *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
  *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
@@ -25,9 +25,9 @@ import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { asSeq, detectOpenTurn, eventText, sessionEvents, turnOf } from './log-access.js'
 import type { NodeState as NodeStateLabel } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
-// eventText 已迁 log-access（P5 Wave 3 第 1 步）；此处转发以维持既有公共 API 与测试 import。
+// eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
-// 通用类型收敛到叶子 argp-types（P5 Wave 3 第 1 步）：本地使用 + 转发维持公共 API。
+// 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
 import type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
 import { EDGE_WEIGHTS } from './argp-types.js'
 export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
@@ -37,24 +37,24 @@ import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_PASSES, DEFAULT_RETAIN_RATIO, DEFA
 import { pushBounded } from './telemetry.js'
 export type { ParsedCite, CiteLevel } from './cites-strip.js'
 import type { InferredEdgeOptions } from './token-ontology.js'
-// 建图侧模块（P5 Wave 3 第 4 步）：atomize/buildGraph/findVersionDuplicates/extractCites/
+// 建图侧模块：atomize/buildGraph/findVersionDuplicates/extractCites/
 // classifyUserMessage/looksAskText + 纯辅助。本地使用 + 转发维持既有公共 API。
 import { looksAskText, classifyUserMessage, extractCites, atomize, buildGraph, findVersionDuplicates, type CiteStats, type InferredStats, type GraphBuildHost } from './graph-build.js'
 export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js'
 export type { CiteStats, InferredStats } from './graph-build.js'
-// 预算/度量模块（P5 Wave 3 第 4 步）：scaleBudgets/resolveScaledBudgets/measureTokens/
+// 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
 export { scaleBudgets } from './budget.js'
-// 召回模块（P5 Wave 3 第 4 步）：shadowedSeqsOf/catalogText/recallQuery/recall/
+// 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
 // recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
 import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
-// 剪枝选择模块（P5 Wave 3 第 4 步）：isAtomCandidate/isGroupCandidate/sortKey/
+// 剪枝选择模块：isAtomCandidate/isGroupCandidate/sortKey/
 // mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
 import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, buildPruneIndexes, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
 export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, buildPruneIndexes } from './prune-selection.js'
 export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
-// 剪枝事务模块（P5 Wave 3 第 4 步）：pruneIntervals/consolidateTombstones/
+// 剪枝事务模块：pruneIntervals/consolidateTombstones/
 // compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
 // 本地使用 + 转发维持公共 API。
 import { pruneIntervals, consolidateTombstones, compactRegions, selectManualRanges, compactRegion, isMergeableTombstone, type GraphPruneRecord, type PruneTxHost } from './prune-tx.js'
@@ -63,24 +63,14 @@ export type { GraphPruneRecord } from './prune-tx.js'
 import { registerRecallTools, type RecallToolsHost } from './recall-tools.js'
 // /argp 只读状态命令（1.10.0）：经嵌套 ctx.inject(['commands']) 注册，宿主无命令服务时静默不注册。
 import { registerArgpCommand, type ArgpStatusHost } from './argp-command.js'
-// 会话生命周期 + 构造期装配模块（P5 Wave 3 第 4 步）：normalizeConfig/registerSettings/
+// 会话生命周期 + 构造期装配模块：normalizeConfig/registerSettings/
 // mountPeratomStack + bindSession/rebuildLedgerFromLog/rearmReactive/compactNow。
-// 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）随 registerSettings 迁入，此处转发维持公共 API。
+// 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）在 session-lifecycle，此处转发维持公共 API。
 import { normalizeConfig, registerSettings, mountPeratomStack, bindSession, rebuildLedgerFromLog, rearmReactive, compactNow, ARG_SETTINGS_KEY, ArgpUserSettingsSchema, type LifecycleHost } from './session-lifecycle.js'
 export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js'
 import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js'
 import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js'
 import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
-// 设置页常量与 schema（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
-// 已迁 session-lifecycle（P5 Wave 3 第 4 步，随 registerSettings 一并迁出；dsh-settings 禁 import 的 NOTE 亦随之迁移）；
-// 经上方 import 本地可用、经 re-export 维持公共 API。
-
-// scaleBudgets 已迁 budget（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
-
-// looksAskText / classifyUserMessage 已迁 graph-build（P5 Wave 3 第 4 步）；
-// 经上方 import 本地可用、经 re-export 维持公共 API。
-
-// isMergeableTombstone 已迁 prune-tx（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 /**
  * 解析后的设置页旋钮（dsh 0.1.7+ 的 `Config` 形状）。与下面 `static Config` schema
@@ -238,7 +228,7 @@ export interface ArgpGraphConfig {
    */
   tombstoneMergeMinRun?: number
   /**
-   * P0 双引擎生产挂载（2026-08-28，webui-liaison 台账发现一，已迁出公开仓库）：非空时
+   * P0 双引擎生产挂载：非空时
    * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
    * injectEdges/onOverflowCompress 由内部接线——显式传入的同名 config 键被忽略并告警。
    * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
@@ -266,7 +256,7 @@ export interface ArgpGraphConfig {
    * 回复级 cites 义务开关（argp-cites system section，order 151）。
    * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
    * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
-   * UI 显示泄漏，见 webui-liaison 台账发现三证据链，已迁出公开仓库）。
+   * UI 显示泄漏）。
    * 2026-09-21 时序修复：auto 兜底（autoLlm）的 declarer 构造期未武装、会话中期
    * 才经 agent/status 武装——auto 口径下 section 恒注册，text 回调在 armed 翻转后
    * 动态返回 ''（renderPrompt 过滤空 section ⇒ system 块不再含协议）；armed 单调
@@ -298,8 +288,6 @@ export interface ArgpGraphConfig {
    */
   onPrePressureCompress?: (session: Session) => Promise<void>
 }
-
-// GraphPruneRecord 已迁 prune-tx（P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
@@ -345,13 +333,6 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
     // 不再从 replace 事件推断被遮节点，故本处省略不影响剪枝账目。
   })
 }
-
-// extractCites / CiteStats / InferredStats 已迁 graph-build（P5 Wave 3 第 4 步）；
-// 经上方 import 本地可用、经 re-export 维持公共 API。
-
-// isAtomCandidate / isGroupCandidate / sortKey / mergeIntervals / buildTombstones /
-// PruneInterval / PruneTombstone / PruneState / PrunedNodeInfo 已迁 prune-selection
-// （P5 Wave 3 第 4 步）；经上方 import 本地可用、经 re-export 维持公共 API。
 
 /** 默认在这些 preset 下不生效（极简 preset 保留原生态）。 */
 const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
@@ -496,7 +477,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  导致迟触发/窗口保护失效，2026-08-23）。 */
   private lastRealPromptTokens = 0
   /** 声明窗口缓存（session → 适配器声明的 contextWindow，来自 request/context 事件）。
-   *  2026-08-28 真环境联调：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
+   *  真环境联调实证：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
    *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
   private readonly declaredContextWindows = new WeakMap<Session, number>()
   /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
@@ -538,17 +519,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.log = ctx.logger
     // 在这些 preset 下不生效（构造期定；默认 ['minimal']）。
     this.skipPresets = [...(config.skipPresets ?? DEFAULT_SKIP_PRESETS)]
-    // P5 Wave 3 第 4 步：构造期装配拆四函数——session-lifecycle.normalizeConfig（字段归一，纯）/
-    // registerSettings（UI 设置页 ctx.inject）/ mountPeratomStack（peratom 三管线自挂载 + 派生赋值），
-    // 加 recall-tools.registerRecallTools（下方）。副作用次序不变：字段归一 → settings 注册 →
-    // peratom 自挂载 → 召回工具注册。字段赋值与 ctx 副作用无交互（settings 回调不读归一字段），
-    // 两批字段赋值合并为单一 normalizeConfig 置于 registerSettings 之前，可观测行为不变。
+    // 构造期装配四函数：session-lifecycle.normalizeConfig（字段归一，纯）/
+    // registerSettings（UI 设置页 ctx.inject）/ mountPeratomStack（peratom 三管线自挂载 + 派生赋值）/
+    // recall-tools.registerRecallTools（下方）。副作用次序：字段归一 → settings 注册 →
+    // peratom 自挂载 → 召回工具注册（字段赋值与 ctx 副作用无交互，settings 回调不读归一字段）。
     normalizeConfig(ctx, this as unknown as LifecycleHost, config)
     registerSettings(ctx, this as unknown as LifecycleHost, config)
     mountPeratomStack(ctx, this as unknown as LifecycleHost, config)
 
-    // P5 Wave 3 第 4 步：三个召回工具闭包迁 recall-tools.registerRecallTools（闭包体逐字保留，this → host 窄接口）。
-    // 三个 ctx.tools.register 调用次序不变（recall_pruned → list_pruned → recall）。
+    // 三个召回工具经 recall-tools.registerRecallTools 注册，调用次序 recall_pruned → list_pruned → recall。
     registerRecallTools(ctx, this as unknown as RecallToolsHost)
     // /argp 状态命令：只读出口，放在工具注册之后（与 settings/peratom 同批的 ctx 副作用，
     // 但它依赖 commands 服务，缺失时 inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
@@ -659,7 +638,7 @@ export class ArgpGraphEngine extends CompactionEngine {
             + output + ' < requested ' + budget + ' ⇒ prune + continue the same turn')
         }
       }
-      // 声明窗口缓存（2026-08-28 真环境联调）：request/context 事件携带适配器声明的
+      // 声明窗口缓存（真环境联调实证）：request/context 事件携带适配器声明的
       // contextWindow（settings 模型条目），是权威口径。pre-step 压力检查可能早于首个
       // request/context 事件落账（新会话 turn-1），此缓存使后续检查/重启会话立即拿到
       // 声明值，不再退化为物理窗口探测（llama.cpp 场景 262144 vs 声明 32000，7.7× 口径差）。
@@ -673,7 +652,7 @@ export class ArgpGraphEngine extends CompactionEngine {
           this.declaredContextWindows.set(session, declared)
         }
       }
-      // 外来压缩事务可见性（2026-08-28 真环境联调）：本插件的 compactionId 一律带
+      // 外来压缩事务可见性（真环境联调实证）：本插件的 compactionId 一律带
       // `argp-` 前缀；不带前缀的 compaction/start = 其他压缩实现（如原生摘要器）在
       // 本 ctx.compaction 位之外运作——lossy 摘要会先于图剪发生，必须在日志可见。
       if (event.type === 'compaction/start') {
@@ -923,7 +902,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
    */
   private bindSession(session: Session): void {
-    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.bindSession（this → host 窄接口），本方法变薄编排。
     bindSession(this as unknown as LifecycleHost, session)
   }
 
@@ -981,12 +959,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
-   *  P5 Wave 3 第 4 步：实现迁 recall.catalogText（this → host 窄接口），本方法变薄编排。 */
+   */
   catalogText(maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
     return catalogText(this as unknown as RecallHost, maxItems, snippetChars, tokenBudget)
   }
   /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
-   *  P5 Wave 3 第 4 步：实现迁 recall.recallQuery（this → host 窄接口），本方法变薄编排。 */
+   */
   recallQuery(query: string, maxResults = 5): string {
     return recallQuery(this as unknown as RecallHost, query, maxResults)
   }
@@ -994,7 +972,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   /**
    * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
    * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
-   * P5 Wave 3 第 4 步：实现迁 recall.shadowedSeqsOf（this → host 窄接口），本方法变薄编排。
    */
   private shadowedSeqsOf(session: Session): Set<number> {
     return shadowedSeqsOf(this as unknown as RecallHost, session)
@@ -1006,7 +983,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
    * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
    * 程序化的全日志入口是 recallAnyState()。
-   * P5 Wave 3 第 4 步：实现迁 recall.recall（this → host 窄接口），本方法变薄编排。
    */
   recall(seq: number): string | null {
     return recall(this as unknown as RecallHost, seq)
@@ -1015,14 +991,13 @@ export class ArgpGraphEngine extends CompactionEngine {
   /**
    * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
    * 不要求节点属于 pruned 集合。越界返回 null。
-   * P5 Wave 3 第 4 步：实现迁 recall.recallAnyState（this → host 窄接口），本方法变薄编排。
    */
   recallAnyState(seq: number): { text: string; state: NodeStateLabel } | null {
     return recallAnyState(this as unknown as RecallHost, seq)
   }
 
   /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
-   *  P5 Wave 3 第 4 步：实现迁 recall.nodeState（this → host 窄接口），本方法变薄编排。 */
+   */
   nodeState(seq: number): NodeStateLabel | null {
     return nodeState(this as unknown as RecallHost, seq)
   }
@@ -1039,7 +1014,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
    * 「system prompt at surface node 0 is never selected for pruning」。
    *
-   * P5 Wave 3 第 4 步：实现迁 graph-build.atomize（this → host 窄接口），本方法变薄编排。
    */
   atomize(session: Session): Atom[] {
     return atomize(this as unknown as GraphBuildHost, session)
@@ -1052,12 +1026,11 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
    * 前缀长度守卫：过短前缀不计 declared 也不建边。
    *
-   * P5 Wave 3 第 4 步：实现迁 graph-build.buildGraph（this → host 窄接口），本方法变薄编排。
    */
   buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; deterministicEdges: DeterministicEdge[]; inDegree: Map<number, number> } {
     return buildGraph(this as unknown as GraphBuildHost, atoms)
   }
-  /** surface 可见字符总量（与 spike 4 同基准）。P5 Wave 3 第 4 步：实现迁 budget.visibleChars（纯函数）。 */
+  /** surface 可见字符总量（与 spike 4 同基准）。 */
   private visibleChars(session: Session): number {
     return visibleChars(session)
   }
@@ -1069,7 +1042,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
    *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
    *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。
-   *  P5 Wave 3 第 4 步：实现迁 budget.measureTokens（this → host 窄接口），本方法变薄编排。 */
+   */
   private measureTokens(session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
     return measureTokens(this as unknown as BudgetHost, session, extraTokens)
   }
@@ -1106,7 +1079,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
    * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
    *
-   * P5 Wave 3 第 4 步：实现迁 graph-build.findVersionDuplicates（this → host 窄接口），本方法变薄编排。
    */
   private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number>; latestRByKey: Map<string, number>; rKeyByRId: Map<number, string> } {
     return findVersionDuplicates(this as unknown as GraphBuildHost, atoms, inDegree)
@@ -1122,7 +1094,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
    */
   latestTurnOf(session: Session): number {
-    // P5 Wave 3 第 4 步：实现迁 recall.latestTurnOf（this → host 窄接口），本方法变薄编排。
     return latestTurnOf(this as unknown as RecallHost, session)
   }
 
@@ -1137,7 +1108,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
    * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
    * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
-   * P5 Wave 3 第 4 步：实现迁 recall.noteRecallHit（this → host 窄接口），本方法变薄编排。
    */
   private noteRecallHit(seq: number): void {
     noteRecallHit(this as unknown as RecallHost, seq)
@@ -1150,7 +1120,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
    *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
    *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
-   * P5 Wave 3 第 4 步：实现迁 recall.budgetRecallText（this → host 窄接口），本方法变薄编排。
    */
   private budgetRecallText(text: string): string {
     return budgetRecallText(this as unknown as RecallHost, text)
@@ -1170,7 +1139,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     return null
   }
 
-  /** P2 选择侧（2026-08-22 拆出）：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
+  /** P2 选择侧：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
    *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
    *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
    *  pruned、统一事务剪"（compactIfNeeded 降级链内联），闭包原子需与已剪集合去重
@@ -1194,13 +1163,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     atoms: Atom[]
     intervals: { seqs: number[]; chars: number; atoms: Atom[] }[]
   } | null {
-    // P5 Wave 3 第 4 步：实现迁 prune-selection.selectClosureToMerge（this → host 窄接口），本方法变薄编排。
     return selectClosureToMerge(this as unknown as PruneSelectionHost, session, atoms, edges, inDegree, askCover, latestTurn, alreadyPruned)
   }
 
-  // 2026-09-21（P5 Wave 3 第 3 步）：原独立闭包事务方法删除（生产零调用、仅测试引用；
-  // 注释自认 2026-08-22 起已被内联）——其选择逻辑即 selectClosureToMerge，执行语义已内联进
-  // compactIfNeeded 降级链（候选耗尽 → 闭包并入 pruned → 统一 pruneIntervals 事务剪）。
 
 /**
  * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
@@ -1212,7 +1177,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   private async resolveScaledBudgets(
     agent: CompactionAgentContext,
   ): Promise<{ windowTokens: number; retainTokens: number; declaredKnown: boolean }> {
-    // P5 Wave 3 第 4 步：实现迁 budget.resolveScaledBudgets（this → host 窄接口），本方法变薄编排。
     return resolveScaledBudgets(this as unknown as BudgetHost, agent)
   }
 
@@ -1226,7 +1190,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
    */
   private consolidateTombstones(session: Session): number {
-    // P5 Wave 3 第 4 步：实现迁 prune-tx.consolidateTombstones（this → host 窄接口），本方法变薄编排。
     return consolidateTombstones(this as unknown as PruneTxHost, session)
   }
 
@@ -1276,7 +1239,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 额度用尽则不再重挂（避免"每步白压"）。
    */
   private rearmReactive(session: Session, used: number): void {
-    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.rearmReactive（this → host 窄接口），本方法变薄编排。
     rearmReactive(this as unknown as LifecycleHost, session, used)
   }
 
@@ -1390,7 +1352,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
     const measurement = this.measureTokens(session, incomingTokens)
-    // 声明窗口未知时的早检跳过（2026-08-28）：物理口径宁可不用（宁缺勿错）；
+    // 声明窗口未知时的早检跳过：物理口径宁可不用（宁缺勿错）；
     // context-overflow 触发除外——那是 provider 确认的真实溢出，必须处置。
     if (trigger !== 'context-overflow' && !declaredKnown) {
       this.log.info('[argp-graph] pressure check: declared contextWindow unknown, skip (will check after first request/context)')
@@ -1503,8 +1465,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       groups.push([a])
       groupOf.set(a.id, gid)
     }
-    // P5 Wave 3 第 2 步：3 个闭包（isAtomCandidate/isGroupCandidate/sortKey）提升为模块级纯函数，
-    // 原闭包捕获的 this 字段与局部量打包成显式 state（PruneState）。curInDegree/curInDegreeDecl
+    // 选择侧纯函数的显式 state（PruneState）。curInDegree/curInDegreeDecl
     // 每 pass 重推（链式解锁），方法内每 pass 同步到 pruneState（见下方 pass 循环）；
     // chainLen 占位空 Map，findVersionDuplicates 后回填（sortKey 仅在 pass 循环内调用，届时已回填）。
     const pruneState: PruneState = {
@@ -1557,7 +1518,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         // A10 专用：只数非 inferred 入边（见上方实验注释）。
         if (e.level !== 'inferred') curInDegreeDecl.set(e.to, (curInDegreeDecl.get(e.to) ?? 0) + 1)
       }
-      // P5 Wave 3 第 2 步：同步当前 pass 的有效入度到 pruneState（模块级 isAtomCandidate 按调用时读取）。
+      // 同步当前 pass 的有效入度到 pruneState（模块级 isAtomCandidate 按调用时读取）。
       pruneState.curInDegree = curInDegree
       pruneState.curInDegreeDecl = curInDegreeDecl
       const remaining = atoms.filter(a => !pruned.has(a.id))
@@ -1574,9 +1535,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
       }
       if (candidateGroups.length === 0) {
-        // 2026-08-22 降级链完整化：候选耗尽时不再 return 丢弃累积 pruned——原独立闭包事务
-        // 的 return 把正常候选 + 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），
-        // 25 次压缩剪除率 0-2%（"压缩饿死"，见 engine-fix-2026-08-22-compaction-starvation.md（已迁出公开仓库））。
+        // 降级链：候选耗尽时不再 return 丢弃累积 pruned——闭包事务式 return 会把正常候选 +
+        // 版本重复全部作废，每次压缩只剪 1 个闭包（2-10 原子），25 次压缩剪除率 0-2%（"压缩饿死"）。
         // fail 保持设计语义（§5.9/§5.11：资源用尽/超窗 → 报警终止，全有或全无、不产出）。
         // lifecycle（默认）：闭包生命周期（选择并入 pruned，含 root U 退休，排除已剪）→
         // summarize（默认关，独立事务）→ force_prune（忽略入度，剪到达标为止）；
@@ -1657,8 +1617,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 没挡「后续原子并入以 solo-R 开头的区间」——混剪后 R 被 user tombstone
     // 整体替换，callId 蒸发，issuer A 的 tool-call 失去应答 → provider 400。
     // 实测 26-local-full-verify2：23 个孤儿全部是此形态（seq 与混剪区间逐一对应）。
-    // P5 Wave 3 第 2 步：区间归并段提升为模块级纯函数 mergeIntervals（逐字保留）。
-    // droppedIntervals 原方法内计算但未被读取，现由 mergeIntervals 内部计算（供未来诊断/单测）。
+    // droppedIntervals 由 mergeIntervals 内部计算（未被读取，供未来诊断/单测）。
     let kept = mergeIntervals(pruned, position, issuerByCall, this.minSpanChars).kept
     // C（B3）事后整组校验：A 进了 kept ⇒ 其**全部**应答 R 也必须进 kept。
     //
@@ -1721,7 +1680,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     // （P3/P6：带 root/计数，recall 消歧）。
     // 2026-08-23 半拆组：单 R 区间（issuer A 未被剪）→ tool 占位墓碑（保留 callId 配对 A 的
     // tool_calls，wire 序列化输出 role:"tool"，不触发 provider 400；文本提示 recall 找回）。
-    // P5 Wave 3 第 2 步：tombstone 生成段提升为模块级纯函数 buildTombstones（逐字保留）。
     const tombstoneTexts = buildTombstones(kept, closureSeqMeta, issuerByCall, pruned, forced)
     return this.pruneIntervals(session, kept, edges.length, softCandidateGroups, forced, tombstoneTexts)
   }
@@ -1732,7 +1690,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
     if (this.skipIfPreset(agent.session)) return null
-    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.compactNow（this → host 窄接口），本方法变薄编排。
     return compactNow(this as unknown as LifecycleHost, agent, signal, sourceCommandId)
   }
 
@@ -1742,7 +1699,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     agent: CompactionAgentContext,
     signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    // P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegion（this → host 窄接口），本方法变薄编排。
     return compactRegion(this as unknown as PruneTxHost, start, end, agent, signal)
   }
 
@@ -1752,10 +1708,9 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  ① 是对话载体 A/R（U/X 不参剪，手动入口不剪骨架，见 compactRegion 的 P5 约束）；
    *  ② 不落在 turnGuard（最近 N 轮）与 recencyGuard（surface 末尾 N 节点）保护窗口内。
    *
-   *  修复（2026-09-21）：旧实现扫到第一个不合格节点就 `break`，而真实会话的 surface 被
-   *  用户消息切成「U A R A R U A R …」多段结构 ⇒ 手动 /compact 永远只剪最老一小段
-   *  （表现为"图剪压不动"）。现在改为收集全部极大连续段，交给一笔 pruneIntervals 事务剪除。
-   *  P5 Wave 3 第 4 步：实现迁 prune-tx.selectManualRanges（this → host 窄接口），本方法变薄编排。
+   *  收集**全部**极大连续段（不可在第一个不合格节点处早停——真实会话的 surface 被
+   *  用户消息切成「U A R A R U A R …」多段结构，早停会让手动 /compact 永远只剪最老
+   *  一小段，表现为"图剪压不动"），交给一笔 pruneIntervals 事务剪除。
    */
   private selectManualRanges(session: Session): { start: number; end: number }[] {
     return selectManualRanges(this as unknown as PruneTxHost, session)
@@ -1765,7 +1720,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
    *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
    *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。
-   *  P5 Wave 3 第 4 步：实现迁 prune-tx.compactRegions（this → host 窄接口），本方法变薄编排。 */
+   */
   private compactRegions(
     ranges: { start: number; end: number }[],
     agent: CompactionAgentContext,
@@ -1787,7 +1742,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
     summaryKind?: 'graph-prune' | 'tombstone-merge',
   ): CompactionResult | null {
-    // P5 Wave 3 第 4 步：实现迁 prune-tx.pruneIntervals（this → host 窄接口），本方法变薄编排。
     return pruneIntervals(this as unknown as PruneTxHost, session, intervals, semanticEdges, candidateCount, forced, tombstones, summaryKind)
   }
 
@@ -1798,12 +1752,9 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
    */
   rebuildLedgerFromLog(): void {
-    // P5 Wave 3 第 4 步：实现迁 session-lifecycle.rebuildLedgerFromLog（this → host 窄接口），本方法变薄编排。
     rebuildLedgerFromLog(this as unknown as LifecycleHost)
   }
 
-  // 2026-09-21（P5 Wave 3 第 3 步）：detectOpenTurn 已迁 log-access 叶子
-  // （与 peratom/compressor 的逐字相同实现收敛），本类改调导入的模块函数。
 }
 
 export default ArgpGraphEngine

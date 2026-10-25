@@ -3,9 +3,9 @@
  *
  * 职责边界：模型返回 SplitDecision.quotes 之后、落盘（P1 的 replace 事务）之前的全部
  * 确定性逻辑都在这里——定位（indexOf）、策略裁决（回退/翻转/退化）、dialog/info 文本构建。
- * 全部可单测；策略口径与 per-atom-implementation-plan.md P0 一一对应（已迁出公开仓库）。
+ * 全部可单测。
  *
- * 危险方向说明（plan「保守对冲」节）：空隙归 info 后，失败模式是"漏标的指令片段变成
+ * 危险方向说明：空隙归 info 后，失败模式是"漏标的指令片段变成
  * 可剪内容"。因此本模块的一切歧义都向 dialog 方向回退：
  *   - 任一片段定位失败 → 整条回退 dialog（保真不变式优先，静默计数由调用方负责）；
  *   - 抄写覆盖率 ≥ COVERAGE_FLIP → 整条保留为 dialog（模型实际在说"这都是指令"）；
@@ -17,7 +17,7 @@ export type Span = readonly [number, number]
 /** dialog 复合文本中，替代被摘除资料位置的省略标记（与剪枝墓碑 [elided …] 惯用法同构）。 */
 export const SPLIT_ELLIPSIS = '\n[…]\n'
 
-/** dialog 覆盖率翻转阈值（plan P0 退化规则）：≥80% 视为整条指令。 */
+/** dialog 覆盖率翻转阈值：≥80% 视为整条指令。 */
 export const COVERAGE_FLIP = 0.8
 
 /** 定位结果：首个出现位置（indexOf）命中的区间 + 定位失败的原文片段。 */
