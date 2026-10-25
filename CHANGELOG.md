@@ -4,6 +4,33 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.11.0-beta.1] - 攒批中（本地未发布；预算真值 + 焦点漂移修复，随批次 3 一起转 beta.1）
+
+> **发行说明**：两段攒批。批次 2（预算真值，9a48edb）+ 评审二批（D2 焦点漂移，本提交）。评审二批来源：`docs/design-review-v1.11.0-beta.1-2026-10-25.md` D2/§7 的可动项——评审确认 `this.rt` 焦点指针在 async 恢复点会被其他会话抢绑换装，且 beta.0 的 abort 反例存在恒真断言（未锁住任何行为）。
+
+### Fixed（评审二批：焦点漂移 / D2）
+
+- **async 恢复点回绑焦点**：`compactIfNeeded`/`isPressureExceeded` 在 `await resolveScaledBudgets`（内含最长 5s 模型探测）后、pre-step 处理器在 peratom 压缩 await 后，全部先 `bindSession(本会话)` 再继续——否则 `measureTokens` 锚点、`guardOverride` 守卫覆盖全部读到抢绑会话的桶（多会话串台）。`turn-stopping`/`runReactivePrune` 补入口绑定（原实现入口不绑，A 的反应式守卫放宽可能写进 B 的桶）。
+- **`resolvedWindowTokens` 会话桶化**：原为引擎级共享字段——B 的预算解析会覆盖 A 的 recall 字符限额与 /argp 报数。现入 `SessionRuntimeState`，`resolveScaledBudgets` 经 `stateOf(调用方会话)` 直写；`/argp` 状态页 trigger 改读**发起命令的会话**的桶。
+- **abort 不占 flush 失败预算**：`flushStashed` 的 catch 原本把 `throwIfAborted` 的取消也计入 `FLUSH_MAX_FAILURES`——同一次 flush 里连吃两次 abort 就触发"有界放弃"把条目丢掉，恰与"取消 = 保留待下窗重试"相反。取消现在直接上抛，条目与失败计数都不动。
+- **召回路由多会话拒绝**：`exec.agent` 缺席时的焦点回退只在引擎**只见过一个会话**时允许；见过 ≥2 个会话后拒绝并显式说明（此前会静默把焦点会话 B 的内容喂给 A 的调用）。recall-tools 三工具与 recall-zoom 两工具同判据。
+- **zoom detail 预算会话化**：`recall_detail`/`recall_summary` 的单窗预算不再锚死进程级 `DEFAULT_WINDOW_TOKENS`（16384），优先按该会话 `requestContext()` 声明的真实窗口推导（显式 `detailBudgetTokens` 配置恒定优先）。
+- **`compactIfNeeded` 接线 signal**（原 `_signal` 未用）：进入即取消返回 null；预算 await 后、任何事务写点前 `throwIfAborted`；`onOverflowCompress`/`onPrePressureCompress` 回调签名加可选 signal 并透传给 `compressOpenTurn`（溢出恢复被取消时 peratom 的 LLM await 立即断流）。
+- **恒真断言修复**（评审 §7）：`session-ownership` 的 abort-flush 反例原断言 `pending.length >= 0`（永不红）；改为精确断言（抛出 + 条目保留 + 零新增事务事件），连带暴露并修复上一条 abort 占预算 bug。
+
+### Changed（批次 2：预算真值，已含于 9a48edb）
+
+- **retain 绝对上界**（2-1）：`capRetain = min(目标, window − reserve − 10% headroom)`，floor 0——小窗口/大 reserve/大输出预算部署上按比例保留的量可能根本放不进窗口。
+- **预算地面真值优先级**（2-2）：声明窗口未知时宁缺勿错（物理口径 n_ctx 会放阈值 7×+），request/context 事件优先于模型探测。
+- **事务后 token 复测**（2-3）：图剪事务落盘后复测可见量，仍超 retain 记 `auditWarnings`（可见性告警，不改变成功返回）；正常 finish 顺带清 `reactivePending`（陈旧钳制信号不再滞留）。
+- **LLM 错误分类**（2-5）：`postChat` 非 2xx 附 `httpStatus`；schema 降级重试仅限 400/422（429/5xx 上抛由调用方调度，abort 永不重试）；dsh-llm 通路补发 `maxTokens`。
+- **召回预算复位口径**（2-6）：统一为"compaction 事务**成功**才复位"（带 error 的 end 是 partial 事务，不奖励新一轮全额召回预算）。
+
+### 提示
+
+- 测试：全量 449 例通过（新增 `focus-drift.test.ts` 7 例反例集 + abort 反例精确化 + budget-scale ⑧ 桶化改造）；突变验证 8/8 RED（每个修复删掉即红）。
+- 版本号仍为 1.11.0-beta.0（beta.1 随批次 3 一起 bump + 发布）。
+
 ## [1.11.0-beta.0] - 2026-10-25（会话所有权：per-Session 状态分桶 + exec 路由 + 提交语义）
 
 > **发行说明**：两份外部评审在根因层收敛的第一个架构主题——**多会话/多代理健壮性（〔Q〕评分 D 的两大 BLOCKER / 〔K〕阶段 A+B）**。此前引擎的全部会话态（台账、召回预算、shadowed 游标、usage 锚点、冻结 catalog、声明边缓存）是**进程级单例**：子代理/双会话宿主下 A→B 切换时 B 读到 A 的剪枝索引（同 seq 不同内容 = 跨会话泄漏）、A 的预算压制 B 的召回、A 的锚点让 B 误触发。本版全部按 `Session` 分桶（WeakMap），异步路径显式经 `exec.agent.session` 路由。**beta 期验证焦点：多会话宿主下的召回正确性与压缩事务完整性**；单会话行为不变（437 例全绿 + 10 例反例集）。

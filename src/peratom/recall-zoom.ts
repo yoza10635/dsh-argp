@@ -158,10 +158,24 @@ export class RecallZoom {
     }
     return b
   }
-  /** 工具调用的目标会话（1-2）：exec.agent.session 优先，焦点绑定兜底。 */
+  /** 工具调用的目标会话（1-2）：exec.agent.session 优先；焦点回退仅在只见过一个会话时
+   *  允许——多会话宿主下缺席 agent 上下文的回退会把 B 会话的内容喂给 A 的调用（beta.1
+   *  评审 D2 同族，与 recall-tools.sessionOfToolCall 同一判据）。 */
   private sessionOfToolCall(exec: unknown): Session | null {
     const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
-    return agent?.session ?? this.session
+    if (agent?.session !== undefined) return agent.session
+    return this.seenSessionCount <= 1 ? this.session : null
+  }
+  /** 绑定过的会话身份登记 + 计数（sessionOfToolCall 回退拒绝判据；WeakSet 不持引用）。 */
+  private readonly seenSessions = new WeakSet<Session>()
+  private seenSessionCount = 0
+  /** 绑定入口唯一通道：登记身份 + 换焦点（setSession / agent/pre-step 都走这里）。 */
+  private rememberSession(session: Session): void {
+    this.session = session
+    if (!this.seenSessions.has(session)) {
+      this.seenSessions.add(session)
+      this.seenSessionCount += 1
+    }
   }
 
   /** 焦点会话的 detail 档单窗累计（观测/测试；per-session 桶在 budgets）。 */
@@ -172,6 +186,10 @@ export class RecallZoom {
   readonly telemetryCap: number
   /** 全部召回尝试记录（时间序）。 */
   readonly records: RecallZoomRecord[] = []
+  /** 配置口径的窗口/token 比（windowTokensOf 的回退基线；显式 detailBudgetTokens 优先）。 */
+  private readonly configWindowTokens: number
+  private readonly configCharsPerToken: number
+  private readonly explicitDetailTokens: boolean
 
   constructor(ctx: Context, config: RecallZoomConfig = {}) {
     this.ctx = ctx
@@ -180,6 +198,9 @@ export class RecallZoom {
     this.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
     const charsPerToken = config.charsPerToken ?? DEFAULT_CHARS_PER_TOKEN
     const windowTokens = config.windowTokens ?? DEFAULT_WINDOW_TOKENS
+    this.configCharsPerToken = charsPerToken
+    this.configWindowTokens = windowTokens
+    this.explicitDetailTokens = config.detailBudgetTokens !== undefined
     this.detailBudgetChars = config.detailBudgetTokens !== undefined
       ? Math.floor(config.detailBudgetTokens * charsPerToken)
       : Math.floor(windowTokens * DETAIL_WINDOW_RATIO * charsPerToken)
@@ -187,7 +208,7 @@ export class RecallZoom {
     // 生产 session 绑定：模型在轮中调用工具，此处对齐 argp-graph-engine / PeratomCompressor 的
     // pre-step 绑定点（只绑 session，不干预步进决策——透传 next()）。
     ctx.on('agent/pre-step', async ({ agent }, next) => {
-      this.session = agent.session
+      this.rememberSession(agent.session)
       return next()
     })
 
@@ -255,13 +276,32 @@ export class RecallZoom {
   get detailBudget(): number { return this.detailBudgetChars }
   /** summary 档单窗预算（字符）= budgetRatio × detail。 */
   get summaryBudget(): number { return Math.floor(this.detailBudgetChars * this.budgetRatio) }
+  /** 会话解析窗口（beta.1 评审：预算不得锚在进程级固定 16384 上——宿主 requestContext
+   *  已声明本会话真实窗口时按它推导；未声明回退配置值/静态默认）。 */
+  private windowTokensOf(session: Session): number {
+    try {
+      const cw = (session as unknown as { requestContext?: () => { contextWindow?: number } | undefined }).requestContext?.()?.contextWindow
+      if (cw !== undefined && cw > 0) return cw
+    } catch { /* 回退配置口径 */ }
+    return this.configWindowTokens
+  }
+  /** detail 档单窗预算（会话口径；显式 detailBudgetTokens 配置恒定优先）。 */
+  private detailBudgetFor(session: Session): number {
+    return this.explicitDetailTokens
+      ? this.detailBudgetChars
+      : Math.floor(this.windowTokensOf(session) * DETAIL_WINDOW_RATIO * this.configCharsPerToken)
+  }
+  /** summary 档单窗预算（会话口径）。 */
+  private summaryBudgetFor(session: Session): number {
+    return Math.floor(this.detailBudgetFor(session) * this.budgetRatio)
+  }
   /** detail 档已用字符（测试断言 / 观测；焦点会话口径）。 */
   get detailUsed(): number { return this.detailCharsUsed }
   /** summary 档已用字符。 */
   get summaryUsed(): number { return this.summaryCharsUsed }
 
   setSession(session: Session): void {
-    this.session = session
+    this.rememberSession(session)
   }
 
   /** 强制重置预算滑窗（测试 / 手动压缩用；生产由 compaction/end 触发；作用于焦点会话）。 */
@@ -292,7 +332,7 @@ export class RecallZoom {
     const session = sessionArg ?? this.session
     if (seq === undefined || session === null) return 'recall_summary: no session bound'
     const b = this.budgetsOf(session)
-    const budget = this.summaryBudget
+    const budget = this.summaryBudgetFor(session)
     if (b.summary >= budget) {
       pushBounded(this.records, { tool: 'recall_summary', seq, hit: false, chars: 0, budgetBlocked: 'summary' }, this.telemetryCap)
       return this.budgetGuidance('summary', b.summary, budget)
@@ -332,7 +372,7 @@ export class RecallZoom {
     const session = sessionArg ?? this.session
     if (seq === undefined || session === null) return 'recall_detail: no session bound'
     const b = this.budgetsOf(session)
-    const budget = this.detailBudget
+    const budget = this.detailBudgetFor(session)
     if (b.detail >= budget) {
       pushBounded(this.records, { tool: 'recall_detail', seq, hit: false, chars: 0, budgetBlocked: 'detail' }, this.telemetryCap)
       return this.budgetGuidance('detail', b.detail, budget)

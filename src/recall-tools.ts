@@ -23,6 +23,8 @@ export interface RecallToolsHost {
   /** 焦点回退（exec.agent.session 缺席时的兜底；单会话宿主语义不变）。 */
   session: Session | null
   telemetryCap: number
+  /** 引擎累计绑定过的不同会话数（多会话回退拒绝判据；ArgpGraphEngine.sessionCount）。 */
+  sessionCount: () => number
   /** 1.11.0-beta.0（1-1/1-2）：会话态分桶访问 + 方法显式带 session。 */
   stateOf: (session: Session) => SessionRuntimeState
   shadowedSeqsOf: (session: Session) => Set<number>
@@ -33,13 +35,15 @@ export interface RecallToolsHost {
 
 /**
  * 工具调用的目标会话解析（1-2）：优先 exec.agent.session（agent loop 设置，多会话/
- * 子代理宿主下逐调用正确），缺席时回退 host.session（焦点绑定——单会话宿主与
- * 无 agent 上下文的测试路径）。ToolRunContext.agent 是 dsh-agent-loop 的运行时
- * Agent（带 live session）；类型上经窄 cast 读取，避免依赖其具体包。
+ * 子代理宿主下逐调用正确）。回退焦点绑定**只在引擎只见过一个会话时允许**（beta.1 评审
+ * D2 同族：多会话宿主下 exec.agent 缺席的静默回退会把 B 会话的上下文喂给 A 的调用；
+ * 单会话宿主与无 agent 上下文的测试路径不受影响）。ToolRunContext.agent 是
+ * dsh-agent-loop 的运行时 Agent（带 live session）；类型上经窄 cast 读取。
  */
 function sessionOfToolCall(exec: unknown, host: RecallToolsHost): Session | null {
   const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
-  return agent?.session ?? host.session
+  if (agent?.session !== undefined) return agent.session
+  return host.sessionCount() <= 1 ? host.session : null
 }
 
 /**
@@ -72,7 +76,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
     execute: async (args, exec): Promise<string> => {
       const seq = (args as { seq?: number }).seq
       const session = sessionOfToolCall(exec, host)
-      if (seq === undefined || session === null) return 'recall_pruned: no session bound'
+      if (seq === undefined || session === null) return 'recall_pruned: no session bound (multi-session host: recall requires agent context; single-session hosts bind implicitly)'
       const st = host.stateOf(session)
       if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
         return 'recall_pruned: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
@@ -156,7 +160,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
     },
     execute: async (args, exec): Promise<string> => {
       const session = sessionOfToolCall(exec, host)
-      if (session === null) return 'list_pruned: no session bound'
+      if (session === null) return 'list_pruned: no session bound (multi-session host: recall requires agent context)'
       const st = host.stateOf(session)
       const shadowed = host.shadowedSeqsOf(session)
       const filters = (args ?? {}) as {
@@ -262,7 +266,7 @@ export function registerRecallTools(ctx: Context, host: RecallToolsHost): void {
     },
     execute: async (args, exec): Promise<string> => {
       const session = sessionOfToolCall(exec, host)
-      if (session === null) return 'recall: no session bound'
+      if (session === null) return 'recall: no session bound (multi-session host: recall requires agent context)'
       const st = host.stateOf(session)
       if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
         return 'recall: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT

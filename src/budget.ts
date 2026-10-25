@@ -95,7 +95,9 @@ export interface BudgetHost {
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
   windowRatio: number
   retainRatio: number
-  resolvedWindowTokens: number
+  /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens 落到**调用方会话**的桶——
+   *  await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段重赋值会写错桶。 */
+  stateOf: (session: Session) => { resolvedWindowTokens: number }
   charsPerToken: number
   lastRealAnchorSeq: number
   lastRealPromptTokens: number
@@ -175,7 +177,8 @@ export async function resolveScaledBudgets(
     fallbackWindow: host.windowTokens, fallbackRetain: host.retainTokens,
     reserveTokens: host.reserveTokens,
   })
-  host.resolvedWindowTokens = scaled.windowTokens
+  // D2：写入调用方会话的桶（不依赖此刻的焦点——见 BudgetHost.stateOf 注释）。
+  host.stateOf(agent.session).resolvedWindowTokens = scaled.windowTokens
   return { ...scaled, declaredKnown }
 }
 

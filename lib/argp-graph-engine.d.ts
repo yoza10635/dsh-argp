@@ -240,7 +240,7 @@ export interface ArgpGraphConfig {
      * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
      * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
      */
-    onOverflowCompress?: (session: Session) => Promise<void>;
+    onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>;
     /**
      * P6 轮内压力压缩（2026-09-19 方案 B 主路径）：pre-step 压力达标（与
      * compactIfNeeded('pressure') 同口径）时，**先**对当前 open turn 做 per-atom
@@ -251,7 +251,7 @@ export interface ArgpGraphConfig {
      * 收手的 turn 不会再 fire。回调自身失败被吞掉（失败隔离：不影响后续图剪）。
      * 未注入（undefined）时行为与 P6 前完全一致（仅溢出才压 open turn）。
      */
-    onPrePressureCompress?: (session: Session) => Promise<void>;
+    onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>;
 }
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
@@ -306,8 +306,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly explicitWindowTokens;
     /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
     private readonly explicitRetainTokens;
-    /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
-    private resolvedWindowTokens;
     readonly reserveTokens: number;
     readonly tokenMeterFn?: (session: Session) => {
         contextTokens: number;
@@ -347,9 +345,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     get sortMode(): 'legacy' | 'density' | 'density-chain';
     readonly maxOverflowRetries: number;
     /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
-    readonly onOverflowCompress?: (session: Session) => Promise<void>;
+    readonly onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>;
     /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
-    readonly onPrePressureCompress?: (session: Session) => Promise<void>;
+    readonly onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>;
     /** 闭包静止窗 K（A11 参数化，默认 2）。 */
     readonly closureWindowK: number;
     /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
@@ -450,6 +448,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
     get lastRealAnchorSeq(): number;
     set lastRealAnchorSeq(v: number);
+    /** 本会话最近解析的有效窗口（桶化随 rt；budget.ts 经 stateOf 直写本桶，见 session-state.ts）。 */
+    get resolvedWindowTokens(): number;
+    set resolvedWindowTokens(v: number);
     /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
     private compactSourceCommandId;
     /** A7：账本重建后追加的审计警告（供测试断言/诊断；per-session）。 */
@@ -473,9 +474,14 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** 会话运行时状态分桶（1-1）：stateOf 懒建；rt = 当前焦点会话的桶（bindRuntimeState 换装）。 */
     private readonly sessionStates;
     private rt;
+    /** 绑定过的会话身份登记（sessionCount 用；WeakSet 不持有引用）。 */
+    private readonly seenSessions;
+    private seenSessionCount;
     stateOf(session: Session): SessionRuntimeState;
     /** bindSession 专用：把焦点桶换装为该会话的桶（session-lifecycle 经 LifecycleHost 调用）。 */
     bindRuntimeState(session: Session): void;
+    /** 引擎累计绑定过的不同会话数（WeakSet 计数；>1 时召回工具不得回退焦点会话）。 */
+    sessionCount(): number;
     /** 结构化日志门面（构造期自 ctx 捕获）。 */
     private readonly log;
     constructor(ctx: Context, config?: ArgpGraphConfig);
@@ -716,7 +722,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 无 preset 信息（undefined/null）时不跳过。命中时记一次日志（每会话一次）。
      */
     private skipIfPreset;
-    compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, _signal: AbortSignal, 
+    compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;

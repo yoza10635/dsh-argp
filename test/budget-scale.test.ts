@@ -120,17 +120,19 @@ test('resolveScaledBudgets：resolveModelInfo 挂起被 5s 超时兜底——不
     },
   }
   const fakeCtx = { get: (name: string) => (name === 'llm' ? hangingLlm : undefined) } as unknown as Context
+  // D2 桶化：resolvedWindowTokens 经 stateOf(session) 写入会话桶——fake 用独立桶对象承接。
+  const state = { resolvedWindowTokens: 0 }
   const host: BudgetHost = {
     explicitWindowTokens: false,
     windowTokens: DEFAULT_WINDOW_TOKENS,
     explicitRetainTokens: false,
-  reserveTokens: 0,
+    reserveTokens: 0,
     retainTokens: DEFAULT_RETAIN_TOKENS,
     declaredContextWindows: new WeakMap(),
     log: { info() {}, warn() {}, error() {} },
     windowRatio: DEFAULT_WINDOW_RATIO,
     retainRatio: DEFAULT_RETAIN_RATIO,
-    resolvedWindowTokens: 0,
+    stateOf: () => state,
     charsPerToken: 4,
     lastRealAnchorSeq: -1,
     lastRealPromptTokens: 0,
@@ -150,7 +152,7 @@ test('resolveScaledBudgets：resolveModelInfo 挂起被 5s 超时兜底——不
   settled = true
 
   // 超时后 contextWindow 仍 undefined ⇒ scaleBudgets 走 fallbackWindow(=host.windowTokens=DEFAULT)
-  assert.equal(host.resolvedWindowTokens, DEFAULT_WINDOW_TOKENS, 'resolveModelInfo 挂起 ⇒ 走静态默认窗口，不依赖声明值')
+  assert.equal(state.resolvedWindowTokens, DEFAULT_WINDOW_TOKENS, 'resolveModelInfo 挂起 ⇒ 走静态默认窗口，不依赖声明值')
   assert.equal(result.windowTokens, DEFAULT_WINDOW_TOKENS)
   assert.equal(result.retainTokens, DEFAULT_RETAIN_TOKENS)
   assert.equal(result.declaredKnown, false, '声明值未知 ⇒ declaredKnown=false（宁缺勿错）')

@@ -20,6 +20,7 @@ export declare function scaleBudgets(contextWindow: number | undefined, opts: {
     explicitRetain?: number;
     fallbackWindow?: number;
     fallbackRetain?: number;
+    reserveTokens?: number;
 }): {
     windowTokens: number;
     retainTokens: number;
@@ -52,6 +53,7 @@ export interface BudgetHost {
     windowTokens: number;
     explicitRetainTokens: boolean;
     retainTokens: number;
+    reserveTokens: number;
     declaredContextWindows: WeakMap<Session, number>;
     log: {
         info: (msg: string) => void;
@@ -60,7 +62,11 @@ export interface BudgetHost {
     };
     windowRatio: number;
     retainRatio: number;
-    resolvedWindowTokens: number;
+    /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens 落到**调用方会话**的桶——
+     *  await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段重赋值会写错桶。 */
+    stateOf: (session: Session) => {
+        resolvedWindowTokens: number;
+    };
     charsPerToken: number;
     lastRealAnchorSeq: number;
     lastRealPromptTokens: number;

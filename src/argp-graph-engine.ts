@@ -276,7 +276,7 @@ export interface ArgpGraphConfig {
    * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
    * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
    */
-  onOverflowCompress?: (session: Session) => Promise<void>
+  onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
   /**
    * P6 轮内压力压缩（2026-09-19 方案 B 主路径）：pre-step 压力达标（与
    * compactIfNeeded('pressure') 同口径）时，**先**对当前 open turn 做 per-atom
@@ -287,7 +287,7 @@ export interface ArgpGraphConfig {
    * 收手的 turn 不会再 fire。回调自身失败被吞掉（失败隔离：不影响后续图剪）。
    * 未注入（undefined）时行为与 P6 前完全一致（仅溢出才压 open turn）。
    */
-  onPrePressureCompress?: (session: Session) => Promise<void>
+  onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
 }
 
 /**
@@ -368,8 +368,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly explicitWindowTokens!: boolean
   /** true = config 显式给 retainTokens；false = 运行时按 windowTokens × retainRatio 解析。 */
   private readonly explicitRetainTokens!: boolean
-  /** 最近一次 resolveScaledBudgets 解析出的有效预算（recall 预算等后续同步使用点读取）。 */
-  private resolvedWindowTokens = DEFAULT_WINDOW_TOKENS
   readonly reserveTokens!: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   readonly degradationStrategy!: 'lifecycle' | 'summarize' | 'force' | 'fail'
@@ -406,9 +404,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
   readonly maxOverflowRetries!: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
-  readonly onOverflowCompress?: (session: Session) => Promise<void>
+  readonly onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
   /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
-  readonly onPrePressureCompress?: (session: Session) => Promise<void>
+  readonly onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
   /** 闭包静止窗 K（A11 参数化，默认 2）。 */
   readonly closureWindowK!: number
   /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
@@ -504,6 +502,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
   get lastRealAnchorSeq(): number { return this.rt.lastRealAnchorSeq }
   set lastRealAnchorSeq(v: number) { this.rt.lastRealAnchorSeq = v }
+  /** 本会话最近解析的有效窗口（桶化随 rt；budget.ts 经 stateOf 直写本桶，见 session-state.ts）。 */
+  get resolvedWindowTokens(): number { return this.rt.resolvedWindowTokens }
+  set resolvedWindowTokens(v: number) { this.rt.resolvedWindowTokens = v }
   /** /compact 手动压缩的发起命令 ID（presentation correlation，透传给事务事件）。 */
   private compactSourceCommandId: CommandId | undefined = undefined
   /** A7：账本重建后追加的审计警告（供测试断言/诊断；per-session）。 */
@@ -528,6 +529,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 会话运行时状态分桶（1-1）：stateOf 懒建；rt = 当前焦点会话的桶（bindRuntimeState 换装）。 */
   private readonly sessionStates = new WeakMap<Session, SessionRuntimeState>()
   private rt: SessionRuntimeState = createSessionRuntimeState()
+  /** 绑定过的会话身份登记（sessionCount 用；WeakSet 不持有引用）。 */
+  private readonly seenSessions = new WeakSet<Session>()
+  private seenSessionCount = 0
   stateOf(session: Session): SessionRuntimeState {
     let st = this.sessionStates.get(session)
     if (st === undefined) {
@@ -539,7 +543,16 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** bindSession 专用：把焦点桶换装为该会话的桶（session-lifecycle 经 LifecycleHost 调用）。 */
   bindRuntimeState(session: Session): void {
     this.rt = this.stateOf(session)
+    // 会话可见性登记（1-2 延伸，beta.1 评审）：召回工具的"焦点回退"只在引擎只见过
+    // 一个会话时允许；多会话宿主下 exec.agent 缺席的回退会静默串台，改为显式拒绝
+    // （recall-tools.sessionOfToolCall 经 RecallToolsHost.sessionCount 读取）。
+    if (!this.seenSessions.has(session)) {
+      this.seenSessions.add(session)
+      this.seenSessionCount += 1
+    }
   }
+  /** 引擎累计绑定过的不同会话数（WeakSet 计数；>1 时召回工具不得回退焦点会话）。 */
+  sessionCount(): number { return this.seenSessionCount }
   /** 结构化日志门面（构造期自 ctx 捕获）。 */
   private readonly log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
 
@@ -770,7 +783,8 @@ export class ArgpGraphEngine extends CompactionEngine {
       // "durable progress" 凭证，不吞 provider 溢出错误。
       if (!isStepOne && this.onOverflowCompress !== undefined) {
         try {
-          await this.onOverflowCompress(session)
+          // signal 透传（1-5 延伸）：溢出恢复被取消时，peratom 的 LLM await 也应立即取消
+          await this.onOverflowCompress(session, signal)
         } catch (compressError: unknown) {
           const message = compressError instanceof Error ? compressError.message : String(compressError)
           this.log.warn(`[argp-graph] overflow per-atom compress failed: ${message}; relying on step-3 forcePrune`)
@@ -838,16 +852,19 @@ export class ArgpGraphEngine extends CompactionEngine {
             && this.onPrePressureCompress !== undefined && detectOpenTurn(session) !== null) {
             if (await this.isPressureExceeded(agent, incoming)) {
               try {
-                await this.onPrePressureCompress(session)
+                await this.onPrePressureCompress(session, signal)
               } catch (error: unknown) {
                 const message = error instanceof Error ? error.message : String(error)
                 this.log.error('[argp-graph] pre-pressure peratom compress FAILED: ' + message)
                 this.log.warn(`[argp-graph] pre-pressure compress failed: ${message}; proceeding to graph prune`)
               }
             }
-          }
-          const previousOverride = this.guardOverride
-          if (!turnStart) {
+      }
+      // D2：上方 peratom 压缩的 await 窗口内焦点可能已换装他桶——回绑后再捕获/恢复
+      // guardOverride，否则 A 会话的轮中放宽守卫会写进 B 的桶（B 下一次图剪被莫名放宽）。
+      this.bindSession(agent.session)
+      const previousOverride = this.guardOverride
+      if (!turnStart) {
             // 轮中剪：只放宽 turnGuard；recencyGuard 照旧保护最新节点（刚收到的 tool result 不动）。
             this.guardOverride = {
               recencyGuard: this.args.recencyGuard.get(),
@@ -887,6 +904,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (!this.reactivePending.has(session)) return
       this.reactivePending.delete(session)
       if (signal.aborted) return
+      this.bindSession(session) // D2：入点补绑——下方 guardOverride 的捕获/放宽/恢复不得落进他桶
       const used = this.reactiveRescues.get(session) ?? 0
       if (used >= this.reactiveRetries) {
         this.log.warn('[argp-graph] auto-continue: limit reached (' + used + '/' + this.reactiveRetries
@@ -1257,6 +1275,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   private async isPressureExceeded(agent: CompactionAgentContext, extraTokens = 0): Promise<boolean> {
     const session = agent.session
     const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+    this.bindSession(session) // D2：await 窗口内焦点可能被其他会话换装——回绑后再测量（measureTokens 读锚点走 rt）
     const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) return false
     if (!declaredKnown) return false
@@ -1298,6 +1317,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (!this.reactivePending.has(agent.session)) return
     this.reactivePending.delete(agent.session)
     if (signal.aborted) return
+    this.bindSession(agent.session) // D2：调用链上方有 await（compactIfNeeded/peratom），入点回绑
     const used = this.reactiveRescues.get(agent.session) ?? 0
     if (used >= this.reactiveRetries) {
       this.log.warn('[argp-graph] reactive prune retries exhausted after ' + used
@@ -1381,14 +1401,20 @@ export class ArgpGraphEngine extends CompactionEngine {
   override async compactIfNeeded(
     agent: CompactionAgentContext,
     trigger: CompactionTrigger,
-    _signal: AbortSignal,
+    signal: AbortSignal,
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens = 0,
   ): Promise<CompactionResult | null> {
     const session = agent.session
+    if (signal.aborted) return null // 进入即已取消：不动 surface，调用方各自的 aborted 分支接管
     if (this.skipIfPreset(session)) return null
     this.bindSession(session) // A7（问题 3）：compactIfNeeded 也走统一绑定（含账目懒重建）
     const { windowTokens, retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+    // D2（beta.1 评审）：上面这个 await 的窗口内，其他会话的 pre-step 可能已把焦点桶
+    // （this.rt）换装——恢复后必须先回绑本会话再继续，否则 measureTokens 的锚点、
+    // 图缓存等 getter 层字段全部落到别人的桶（多会话串台）。回绑幂等（焦点未动即早退）。
+    this.bindSession(session)
+    signal.throwIfAborted() // 取消优先于任何事务写点（错误分类：abort 不属于可重试类别）
     const thresholdTokens = windowTokens - this.reserveTokens
     if (thresholdTokens <= 0) {
       this.log.info('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')

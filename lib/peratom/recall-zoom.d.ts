@@ -61,8 +61,15 @@ export declare class RecallZoom {
      */
     private readonly budgets;
     private budgetsOf;
-    /** 工具调用的目标会话（1-2）：exec.agent.session 优先，焦点绑定兜底。 */
+    /** 工具调用的目标会话（1-2）：exec.agent.session 优先；焦点回退仅在只见过一个会话时
+     *  允许——多会话宿主下缺席 agent 上下文的回退会把 B 会话的内容喂给 A 的调用（beta.1
+     *  评审 D2 同族，与 recall-tools.sessionOfToolCall 同一判据）。 */
     private sessionOfToolCall;
+    /** 绑定过的会话身份登记 + 计数（sessionOfToolCall 回退拒绝判据；WeakSet 不持引用）。 */
+    private readonly seenSessions;
+    private seenSessionCount;
+    /** 绑定入口唯一通道：登记身份 + 换焦点（setSession / agent/pre-step 都走这里）。 */
+    private rememberSession;
     /** 焦点会话的 detail 档单窗累计（观测/测试；per-session 桶在 budgets）。 */
     private get detailCharsUsed();
     private get summaryCharsUsed();
@@ -70,11 +77,22 @@ export declare class RecallZoom {
     readonly telemetryCap: number;
     /** 全部召回尝试记录（时间序）。 */
     readonly records: RecallZoomRecord[];
+    /** 配置口径的窗口/token 比（windowTokensOf 的回退基线；显式 detailBudgetTokens 优先）。 */
+    private readonly configWindowTokens;
+    private readonly configCharsPerToken;
+    private readonly explicitDetailTokens;
     constructor(ctx: Context, config?: RecallZoomConfig);
     /** detail 档单窗预算（字符）。 */
     get detailBudget(): number;
     /** summary 档单窗预算（字符）= budgetRatio × detail。 */
     get summaryBudget(): number;
+    /** 会话解析窗口（beta.1 评审：预算不得锚在进程级固定 16384 上——宿主 requestContext
+     *  已声明本会话真实窗口时按它推导；未声明回退配置值/静态默认）。 */
+    private windowTokensOf;
+    /** detail 档单窗预算（会话口径；显式 detailBudgetTokens 配置恒定优先）。 */
+    private detailBudgetFor;
+    /** summary 档单窗预算（会话口径）。 */
+    private summaryBudgetFor;
     /** detail 档已用字符（测试断言 / 观测；焦点会话口径）。 */
     get detailUsed(): number;
     /** summary 档已用字符。 */

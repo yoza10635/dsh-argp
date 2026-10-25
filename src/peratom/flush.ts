@@ -302,6 +302,10 @@ export function flushStashed(host: FlushHost, session: Session, signal?: AbortSi
       host.advanceWaterMark(session, entry.collect.turn, entry.collect.endSeq)
       if (entry.collect.mergedPrevTurnMaxSeq !== undefined) host.advanceWaterMark(session, entry.collect.turn - 1, entry.collect.mergedPrevTurnMaxSeq) // 并入的中断轮水位双推进
     } catch (error) {
+      // 1-5 修正（beta.1 评审）：abort 不是失败——不得占用 FLUSH_MAX_FAILURES 预算
+      //（否则同一次 flushStashed 连吃 2 次 throwIfAborted 就触发"有界放弃"把条目丢掉，
+      // 恰与"取消 = 条目保留待下窗重试"相反）。取消向上抛，由调用方归类。
+      if (signal?.aborted) throw error
       const message = error instanceof Error ? error.message : String(error)
       entry.failures += 1
       entry.record.error = message

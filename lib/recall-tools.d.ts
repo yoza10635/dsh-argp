@@ -16,6 +16,8 @@ export interface RecallToolsHost {
     /** 焦点回退（exec.agent.session 缺席时的兜底；单会话宿主语义不变）。 */
     session: Session | null;
     telemetryCap: number;
+    /** 引擎累计绑定过的不同会话数（多会话回退拒绝判据；ArgpGraphEngine.sessionCount）。 */
+    sessionCount: () => number;
     /** 1.11.0-beta.0（1-1/1-2）：会话态分桶访问 + 方法显式带 session。 */
     stateOf: (session: Session) => SessionRuntimeState;
     shadowedSeqsOf: (session: Session) => Set<number>;

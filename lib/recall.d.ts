@@ -30,7 +30,6 @@ export interface RecallHost {
     charsPerToken: number;
     turnBasis: 'semantic' | 'all';
     telemetryCap: number;
-    resolvedWindowTokens: number;
 }
 /**
  * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，

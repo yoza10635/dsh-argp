@@ -13,8 +13,10 @@
  * peratom 三管线、账本重建）显式线程 session（exec.agent.session 路由，1-2），
  * 不得依赖焦点指针。
  *
- * 依赖方向：本模块是**类型叶子**——只 import type，无运行时依赖、无环。
+ * 依赖方向：本模块是**类型叶子**——只 import type 与无依赖的 constants 常量，
+ * 无运行时依赖、无环。
  */
+import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SemanticEdge, DeterministicEdge } from './argp-types.js'
 import type { CiteStats, InferredStats } from './graph-build.js'
@@ -60,6 +62,12 @@ export interface SessionRuntimeState {
   lastRealPromptTokens: number
   /** 锚点已覆盖的 surface 最大 seq。 */
   lastRealAnchorSeq: number
+  /**
+   * 最近一次 resolveScaledBudgets 为**本会话**解析出的有效窗口（1.11.0-beta.1 桶化：
+   * 原为引擎级共享字段，多会话下 B 的解析会覆盖 A 的 recall 限额（recall.ts 按它推
+   * per-call/total 上限）与 /argp 报数；budget.ts 经 stateOf(session) 写入本桶）。
+   */
+  resolvedWindowTokens: number
   /** A7 账本重建审计警告（有界）。 */
   auditWarnings: string[]
   /** A7 已重建过的 compactionId（本会话幂等去重）。 */
@@ -92,6 +100,7 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     frozenCatalog: null,
     lastRealPromptTokens: 0,
     lastRealAnchorSeq: -1,
+    resolvedWindowTokens: DEFAULT_WINDOW_TOKENS,
     auditWarnings: [],
     rebuiltCompactionIds: new Set(),
     shadowedSession: null,

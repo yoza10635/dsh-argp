@@ -34,7 +34,6 @@ export interface RecallHost {
   charsPerToken: number
   turnBasis: 'semantic' | 'all'
   telemetryCap: number
-  resolvedWindowTokens: number
 }
 
 /**
@@ -120,7 +119,7 @@ export function catalogText(host: RecallHost, maxItems = 20, snippetChars = 70, 
  *
  * 原 class 方法；this.x → host.x。 */
 export function recallQuery(host: RecallHost, session: Session | null, query: string, maxResults = 5): string {
-  if (session === null) return 'recall: no session bound'
+  if (session === null) return 'recall: no session bound (multi-session host: recall requires agent context)'
   const st = host.stateOf(session)
   const shadowed = shadowedSeqsOf(host, session)
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
@@ -261,8 +260,8 @@ export function noteRecallHit(host: RecallHost, session: Session | null, seq: nu
 export function budgetRecallText(host: RecallHost, session: Session | null, text: string): string {
   if (session === null) return text
   const st = host.stateOf(session)
-  const perCallLimit = Math.floor(host.resolvedWindowTokens * 0.05 * host.charsPerToken)
-  const totalLimit = Math.floor(host.resolvedWindowTokens * 0.10 * host.charsPerToken)
+  const perCallLimit = Math.floor(st.resolvedWindowTokens * 0.05 * host.charsPerToken)
+  const totalLimit = Math.floor(st.resolvedWindowTokens * 0.10 * host.charsPerToken)
   const remaining = Math.max(0, totalLimit - st.recallCharsUsed)
   if (remaining === 0) {
     return '(recall text budget exhausted: ' + st.recallCharsUsed + '/' + totalLimit

@@ -306,10 +306,16 @@ test('D: abort 在 flush 写点前 —— flushStashed 停止发射，条目保�
         failures: 0,
       })
     }
+    const before = host.pending.length
+    assert.ok(before >= 1, '前置：pending 条目在位')
+    const eventsBefore = session.snapshotEvents().filter(e => e.type.startsWith('compaction/')).length
     const ac = new AbortController()
     ac.abort()
-    flushStashedModule(h.compressor as never, session, ac.signal)
-    assert.equal(host.pending.length >= 0, true, 'abort 后 flushStashed 正常返回（不抛穿）')
+    // 精确断言（beta.1 评审：原 `length >= 0` 恒真，什么都没锁住）：abort 在写点前抛出
+    // 且**不占失败预算**——条目必须原样保留（连吃 2 次 abort 不触发有界放弃），零新增事务事件。
+    assert.throws(() => flushStashedModule(h.compressor as never, session, ac.signal), /abort/i)
+    assert.equal(host.pending.length, before, 'abort 后条目保留（不 splice、不计数失败）')
+    assert.equal(session.snapshotEvents().filter(e => e.type.startsWith('compaction/')).length, eventsBefore, '未发射任何事务事件')
   } finally {
     await h.ctx.fiber.dispose()
   }
