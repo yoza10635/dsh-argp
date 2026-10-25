@@ -74,8 +74,11 @@ jobs:
       - name: Pin DSH line to peer floor (0.2.0-rc.1)
         if: matrix.dsh == 'oldest'
         shell: bash
+        # --legacy-peer-deps：降级集不含传递依赖（dsh-session-projection 等经 dsh-agent
+        # 仍解析到 0.2.1-rc.3，其 peer 声明钉新线 ⇒ ERESOLVE）。矩阵格是测试环境，
+        # 跳过 peer 仲裁只装不校验；真实准入语义由 engines.dsh/peer 声明与 latest 线保证。
         run: >
-          npm install --no-save --no-audit --no-fund
+          npm install --no-save --legacy-peer-deps --no-audit --no-fund
           @deepseek-ai/dsh-agent@0.2.0-rc.1
           @deepseek-ai/dsh-agent-loop@0.2.0-rc.1
           @deepseek-ai/dsh-agent-loop-testkit@0.2.0-rc.1
