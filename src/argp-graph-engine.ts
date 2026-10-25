@@ -85,7 +85,6 @@ export interface ArgpLiveConfig {
   recencyGuard: Volatile<number>
   turnGuard: Volatile<number>
   minSpanChars: Volatile<number>
-  enableSummarize: Volatile<boolean>
   sortMode: Volatile<string>
   charsPerToken: Volatile<number>
 }
@@ -148,10 +147,9 @@ export interface ArgpGraphConfig {
   telemetryCap?: number
   /** 可选显式 token 测量函数；不传则退化为字符估算。 */
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  /** 是否启用 summarize 降级。默认 false：本地单 slot 模型下 summarize 会破坏 KV cache，ARGP 走 force_prune。 */
-  enableSummarize?: boolean
-  /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
-  degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  /** 降级链：lifecycle（默认，闭包→force） / force / fail。'summarize' 档已撤（批次 3-1：
+   *  原为恒 null 的 stub，与"可选降级"宣称不符；存量配置值运行时自然落入 lifecycle 链）。 */
+  degradationStrategy?: 'lifecycle' | 'force' | 'fail'
   /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
    *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）
    *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积；显式传入以回退旧行为）
@@ -352,7 +350,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     recencyGuard: z.number().step(1).min(0).default(4).volatile(),
     turnGuard: z.number().step(1).min(0).default(1).volatile(),
     minSpanChars: z.number().step(1).min(0).default(0).volatile(),
-    enableSummarize: z.boolean().default(false).volatile(),
     sortMode: z.string().default('density').volatile(),
     charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
   })
@@ -370,7 +367,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly explicitRetainTokens!: boolean
   readonly reserveTokens!: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  readonly degradationStrategy!: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  readonly degradationStrategy!: 'lifecycle' | 'force' | 'fail'
   readonly turnBasis!: 'semantic' | 'all'
   /** 在这些 preset 下不生效的 preset id 列表（构造期定，默认 ['minimal']）。 */
   private readonly skipPresets: string[]
@@ -394,7 +391,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   get minSpanChars(): number { return this.args.minSpanChars.get() }
   get charsPerToken(): number { return this.args.charsPerToken.get() }
   get maxPasses(): number { return this.args.maxPasses.get() }
-  get enableSummarize(): boolean { return this.args.enableSummarize.get() }
   get sortMode(): 'legacy' | 'density' | 'density-chain' {
     // 0-8（1.10.2）：volatile 源的值经 settings 页写回（z.string() 无枚举约束），此处
     // 运行时兜底——非法值回退默认 'density'（构造期 config 路径已在 normalizeConfig
@@ -601,10 +597,13 @@ export class ArgpGraphEngine extends CompactionEngine {
     // argp-cites 等静态 section 构成稳定前缀。
     // 根因修复：原实现把动态 catalog 拼进 order:150 的契约段，导致 system message 前缀每轮变、
     // 缓存从 catalog 处断开（2026-08-22 发现，A 臂测试缓存零命中）。recall 协议不依赖其在 system 靠前。
-    // 位置说明（2026-09-10 核实）：本段文本恒为空串（frozenCatalog 首绑即冻成 ''，见 bindSession 与
-    // test/argp-graph-engine.test.ts:374/397 断言），故 order 取值对本段的缓存影响实为零——保持 9999
-    // 仅为保守不动既有排布。注意 dsh 0.1.5-rc.1 起 HARNESS_SOURCE/WEB_SURFACE/DEPLOYMENT_PERSONA_SUFFIX
-    // 被排到 10000/10100/10200，本段不再字面意义上"最后"，但三段均为会话内静态、不构成每轮 cache-miss。
+    // 位置说明（批次 3-1 核验修订）：**新会话**首绑先于任何剪枝 ⇒ frozenCatalog 冻结为 ''
+    //（空目录 per-design：发现能力由 tombstone 指针承担，G2/0-6）；**resume 会话**（重启/换
+    // 进程重开日志）首绑时 bindSession 先经 shadowedSeqsOf 建账再拍快照 ⇒ catalog 拍到
+    // **真实目录**并在本进程内恒定回放——机制非死段（test/argp-graph-engine.test.ts 批次 3-1
+    // 例锁定），是"重启后模型还能看到曾有内容被剪"的唯一 system 提示。恒定回放保 KV：两类
+    // 会话的 system 块全程逐字节不变；order 9999 仅为保守排布（0.1.5-rc.1 起 10000+ 段在其后，
+    // 均为会话内静态）。
     ctx.systemPrompt.section({
       name: 'argp-catalog',
       order: 9999,
@@ -1187,18 +1186,9 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * A6（保守选项 a）：summarize 末环不实现 —— 保持默认关闭（enableSummarize=false）、
-   * force_prune 为终端降级，文档明确。本 stub 恒返回 null，degradationStrategy='summarize'
-   * 且 enableSummarize=true 时也不会产出 LLM 摘要；实际路径仍为 lifecycle → force。
+   * 批次 3-1（beta.1）已撤：原为 A6（保守选项 a）的恒 null stub——degradationStrategy
+   * 的 'summarize' 档与 enableSummarize 旋钮一并移除（"可选降级"的宣称与 stub 实现不符）。
    */
-  private summarizeCriticalChain(
-    _session: Session,
-    _atoms: Atom[],
-    _edges: SemanticEdge[],
-    _latestTurn: number,
-  ): CompactionResult | null {
-    return null
-  }
 
   /** P2 选择侧：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
    *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
@@ -1633,10 +1623,9 @@ export class ArgpGraphEngine extends CompactionEngine {
           }, this.telemetryCap)
           continue // 重推后继续：可能还有更多可剪闭包 / force
         }
-        if (this.degradationStrategy === 'summarize' && this.enableSummarize) {
-          const summarizeResult = this.summarizeCriticalChain(session, atoms, edges, latestTurn)
-          if (summarizeResult !== null) return summarizeResult
-        }
+        // 批次 3-1（beta.1）：summarize 档已撤（恒返回 null 的 stub 与"可选降级"的宣称不符——
+        // 二选一取撤：A6 不实现 LLM 摘要降级的决策保持，旋钮不再暴露；存量配置值 'summarize'
+        // 运行时自然落入本链（lifecycle→force），无破坏）。此处直接进 force_prune：忽略入度。
         candidateGroups = liveGroups.filter(g => isGroupCandidate(g, true, pruneState)) // force_prune：忽略入度
         if (candidateGroups.length === 0) break
         forced = true

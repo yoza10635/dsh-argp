@@ -452,3 +452,58 @@ test('④ 无 effect 的退化 ctx：注册照旧发生（无 fiber 可持有 di
   assert.doesNotThrow(() => apply(bare))
   assert.deepEqual(locale.locales(clientKey), ['en', 'zh'], '退化路径仍完成注册')
 })
+
+// ── 批次 3-2 CardForm：宿主快照异步刷新（写落盘 ≠ 快照已更新）不得误判保存失败 ──
+
+test('批次 3-2: set/unset 落盘后快照迟刷新（20ms）——保存/恢复默认仍判成功', async () => {
+  // 真实宿主形态：内部 state 即时变、**快照不可变**——getSnapshot 在重发布前一直返回
+  // 旧快照（写入 Promise resolve ≠ 快照已刷新；只延迟订阅通知测不出这条路径）
+  const state: SettingsScopeSnapshot = {
+    status: 'ready', writable: true,
+    value: { windowRatio: 0.8 }, base: { windowRatio: 0.8 }, user: undefined,
+  }
+  let published: SettingsScopeSnapshot = {
+    status: state.status, writable: state.writable,
+    value: { ...state.value }, base: { ...state.base }, user: undefined,
+  }
+  const listeners = new Set<() => void>()
+  const republish = (): void => {
+    published = {
+      status: state.status, writable: state.writable,
+      value: { ...state.value }, base: { ...state.base },
+      user: state.user === undefined ? undefined : { ...state.user },
+    }
+    for (const l of listeners) l()
+  }
+  const lateNotify = (): void => { setTimeout(republish, 20) }
+  const scope: SettingsScopeLike<Record<string, unknown>> = {
+    subscribe: (l) => { listeners.add(l); return () => { listeners.delete(l) } },
+    getSnapshot: () => published,
+    set: async (field, val) => {
+      state.value[field] = val
+      state.user = { ...(state.user ?? {}), [field]: val }
+      lateNotify()
+    },
+    unset: async (field) => {
+      delete state.value[field]
+      if (state.user !== undefined) delete state.user[field]
+      lateNotify()
+    },
+  }
+  const form = new CardForm(scope, [numberField('windowRatio', { min: 0.1, max: 1 })])
+
+  // 编辑保存：写后快照 20ms 才见 —— 不得误判 failed
+  form.actions().edit('windowRatio', '0.5')
+  form.actions().save()
+  await new Promise(r => setTimeout(r, 120))
+  assert.equal(form.shell().failed, false, '迟刷新快照不得把成功保存误判为失败')
+  assert.equal(form.shell().dirty, false, '成功保存清空暂存')
+  assert.equal(state.user?.windowRatio, 0.5)
+
+  // 恢复默认（clear 路径）同判据
+  form.actions().resetField('windowRatio')
+  form.actions().save()
+  await new Promise(r => setTimeout(r, 120))
+  assert.equal(form.shell().failed, false, 'restore-default 不得被迟刷新误判恒失败')
+  assert.equal(state.user?.windowRatio, undefined, '恢复默认后 user 层清除')
+})

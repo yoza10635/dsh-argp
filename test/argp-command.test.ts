@@ -90,7 +90,7 @@ test('/argp: 执行输出分段详单（身份 / 预算 / 剪枝 / 召回）', a
   const execution = await runtime.execute(agent, '/argp', [], AbortSignal.timeout(5000))
   assert.ok(execution !== undefined, 'expected /argp to resolve')
   assert.equal(execution.result.kind, 'success')
-  const text = execution.result.kind === 'success' ? (execution.result.text ?? '') : ''
+  const text = execution?.result.kind === 'success' ? (execution.result.text ?? '') : ''
   const lines = text.split('\n')
   assert.ok(lines.length >= 4, 'expected >=4 status lines, got ' + text)
   assert.ok(lines[0].startsWith('ARGP ' + ARGP_STATUS_VERSION), 'head line: ' + lines[0])
@@ -168,4 +168,49 @@ test('/argp: 压缩一次后状态反映真实台账', async () => {
   const last = engine.records[0]
   assert.ok(text.includes('/ ' + last.shadowedSeqs.length + ' items'), 'items 计数应来自 records: ' + text)
   assert.ok(text.includes('pruned index ' + engine.prunedNodeIndex.size), 'pruned index: ' + text)
+})
+
+test('批次 3-2: /argp 报数按发起会话取桶 + retain 上界标注 + 日志真值兜底', async () => {
+  const { ctx, runtime, engine, session } = await makeStack()
+  try {
+    // 会话 A（发起命令的会话）：真实剪过一轮；焦点绑在 B（无剪枝）——旧实现显示 B 的空账
+    appendTurn(session, 1, 'u1', 'a1:' + 'x'.repeat(300))
+    appendTurn(session, 2, 'u2', 'a2:' + 'y'.repeat(300))
+    appendTurn(session, 3, 'u3', 'a3:' + 'z'.repeat(300))
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const other = Session.create(SessionId('argp-command-other'))
+    engine.setSession(other) // 焦点切到 B（旧实现 /argp 读焦点 ⇒ 显示空账/残留）
+
+    const agent = { session, runMaintenance: async <T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> => fn(new AbortController().signal) } as unknown as Agent
+    const execution = await runtime.execute(agent, '/argp', [], AbortSignal.timeout(5000))
+    const text = execution?.result.kind === 'success' ? (execution.result.text ?? '') : ''
+    assert.ok(text.includes('prunes: 1'), '台账按发起会话取桶（焦点在 B 也不得显示空账）: ' + text)
+    assert.ok(!text.includes('prunes: 0'), '不得回退到焦点会话的 0 账')
+    assert.ok(text.includes('[this process]'), '进程内遥测口径标注在场')
+
+    // retain 上界标注：window 100 − reserve 0 − headroom 10 ⇒ 上界 90；显式 retainTokens 95
+    // 被 cap 到 90 且标注 (capped from 95)
+    const { ctx: ctx2, runtime: runtime2, session: s2 } = await makeStack({ retainTokens: 95, windowTokens: 100 })
+    try {
+      appendTurn(s2, 1, 'u', 'a:' + 'x'.repeat(40))
+      const agent2 = { session: s2 } as unknown as Agent
+      const ex2 = await runtime2.execute(agent2, '/argp', [], AbortSignal.timeout(5000))
+      const text2 = ex2?.result.kind === 'success' ? (ex2.result.text ?? '') : ''
+      assert.ok(text2.includes('capped from 95'), '显式 retain 被 capRetain 截断时报数标注: ' + text2)
+    } finally {
+      await ctx2.fiber.dispose()
+    }
+
+    // 日志真值兜底：账本重建缺席（新进程）时不得伪造 0——直接构造"有日志无台账"形态
+    const orphan = Session.create(SessionId('argp-command-orphan'))
+    appendTurn(orphan, 1, 'u', 'a:' + 'x'.repeat(40))
+    orphan.append('compaction/start', { compactionId: 'c-orphan' } as never)
+    const agent3 = { session: orphan } as unknown as Agent
+    const ex3 = await runtime.execute(agent3, '/argp', [], AbortSignal.timeout(5000))
+    const text3 = ex3?.result.kind === 'success' ? (ex3.result.text ?? '') : ''
+    assert.ok(text3.includes('log has 1 transaction'), '无台账时按日志真值报数（不伪造 0）: ' + text3)
+  } finally {
+    await ctx.fiber.dispose()
+  }
 })

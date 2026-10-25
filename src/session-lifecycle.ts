@@ -66,7 +66,6 @@ export const ArgpUserSettingsSchema = z.object({
   recencyGuard: z.number().step(1).min(0).default(4),
   turnGuard: z.number().step(1).min(0).default(1),
   minSpanChars: z.number().step(1).min(0).default(0),
-  enableSummarize: z.boolean().default(false),
   sortMode: z.string().default('density'),
   charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN),
 }) as z<ArgpUserSettings>
@@ -99,7 +98,7 @@ export interface LifecycleHost {
   telemetryCap: number
   tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   tokenMeter: TokenMeter | undefined
-  degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail'
+  degradationStrategy: 'lifecycle' | 'force' | 'fail'
   turnBasis: 'semantic' | 'all'
   maxOverflowRetries: number
   midTurnPruneEnabled: boolean

@@ -28,10 +28,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type { CiteStats } from './graph-build.js'
-import type { GraphPruneRecord } from './prune-tx.js'
+import type { SessionRuntimeState } from './session-state.js'
 import type { BudgetHost } from './budget.js'
-import { measureTokens } from './budget.js'
+import { measureTokens, visibleChars, capRetain } from './budget.js'
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 
 /**
@@ -54,14 +53,13 @@ export const ARGP_COMMAND_DESCRIPTION = 'Show ARGP context-compression status fo
  * 耦合到 `ArgpGraphEngine` 这个大类上（也避免测试要构造整个引擎）。
  */
 export interface ArgpStatusHost extends BudgetHost {
-  /** 剪枝台账（有界环形缓冲，见 telemetry.pushBounded）。 */
-  readonly records: GraphPruneRecord[]
-  /** 召回调用记录（有界）。 */
-  readonly recallCalls: { seq: number; hit: boolean }[]
-  /** cites 边声明统计（Stage-1 declarer 喂 Stage-2 injectEdges）。 */
-  readonly citeStats: CiteStats
-  /** 已剪节点目录（seq → 元信息），供 list_pruned / recall_pruned 查询。 */
-  readonly prunedNodeIndex: Map<number, unknown>
+  /**
+   * 会话运行时状态桶（批次 3-2：records/recallCalls/citeStats/prunedNodeIndex 改按
+   * **发起命令的会话**取桶读取——旧字段是引擎焦点桶 getter，多会话下 /argp 显示的是
+   * 别的会话的账（跨会话残留）。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
+   * 的窄 {resolvedWindowTokens} 型变宽，引擎真身满足）。
+   */
+  stateOf: (session: Session) => SessionRuntimeState
   /** 双引擎自挂载句柄（null = 纯 Stage-2 图引擎）。诊断"双引擎到底挂没挂"的唯一出口。 */
   readonly peratomStack: { compressor: unknown | null; declarer: unknown | null; zoom: unknown | null } | null
   /** 在这些 preset 下引擎不生效（默认 ['minimal']）。 */
@@ -126,6 +124,7 @@ function fmtPct(hit: number, total: number): string {
 export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandInvocation, 'agent'>): CommandResult {
   const session = (invocation.agent as unknown as { session?: Session } | undefined)?.session ?? host.session
   const lines: string[] = []
+  const st = session !== null && session !== undefined ? host.stateOf(session) : null
 
   // 段 1：身份 + 引擎形态 + preset 生效性
   const stage1 = host.peratomStack !== null ? 'graph+peratom' : 'graph'
@@ -137,44 +136,71 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   }
   lines.push(head)
 
-  // 段 2：预算 + 当前占用（D2 桶化：trigger 读**发起命令的会话**的桶，不再读焦点/共享字段）
-  const trigger = session !== null && session !== undefined
-    ? host.stateOf(session).resolvedWindowTokens
-    : DEFAULT_WINDOW_TOKENS
-  const retain = host.explicitRetainTokens ? host.retainTokens : Math.floor(trigger * host.retainRatio)
+  // 段 2：预算 + 当前占用（D2 桶化：trigger 读**发起命令的会话**的桶，不再读焦点/共享字段；
+  // 批次 3-2：retain 口径与引擎一致——显式值走 capRetain 绝对上界（截断时标注），比例值
+  // = 可压缩内容（visible）× retainRatio，不再是误导的 window × retainRatio）
+  const trigger = host.explicitWindowTokens
+    ? host.windowTokens
+    : (st !== null ? st.resolvedWindowTokens : DEFAULT_WINDOW_TOKENS)
+  let retain: number
+  let capNote = ''
+  if (session !== null && session !== undefined) {
+    if (host.explicitRetainTokens) {
+      retain = capRetain(host.retainTokens, trigger, host.reserveTokens)
+      if (retain < host.retainTokens) capNote = ' (capped from ' + fmtTokens(host.retainTokens) + ')'
+    } else {
+      retain = Math.floor(Math.ceil(visibleChars(session) / host.charsPerToken) * host.retainRatio)
+    }
+  } else {
+    retain = Math.floor(trigger * host.retainRatio)
+  }
   if (session === null || session === undefined) {
-    lines.push('budget: trigger ' + fmtTokens(trigger) + ' / retain ' + fmtTokens(retain) + ' · no session bound yet')
+    lines.push('budget: trigger ' + fmtTokens(trigger) + ' / retain ' + fmtTokens(retain) + capNote + ' · no session bound yet')
   } else {
     const m = measureTokens(host, session)
-    lines.push('budget: trigger ' + fmtTokens(trigger) + ' / retain ' + fmtTokens(retain)
+    lines.push('budget: trigger ' + fmtTokens(trigger) + ' / retain ' + fmtTokens(retain) + capNote
       + ' · now ' + fmtTokens(m.contextTokens) + ' (source=' + m.source + ')')
   }
 
-  // 段 3：剪枝台账（次数 + 最近一次的形状）
-  const total = host.records.length
-  if (total === 0) {
-    lines.push('prunes: 0 (no compaction yet)')
+  // 段 3：剪枝台账（**会话桶**；批次 3-2：records 为进程内遥测——重启后由账本重建恢复，
+  // 重建未及/失败时不再伪造 0，改报日志真值；auditWarnings 一并露出）
+  const records = st?.records ?? []
+  const logStarts = session !== null && session !== undefined
+    ? session.snapshotEvents().filter(e => e.type === 'compaction/start').length
+    : 0
+  if (records.length === 0) {
+    lines.push(logStarts > 0
+      ? 'prunes: 0 in this process · log has ' + logStarts + ' transaction(s) (ledger rebuild pending)'
+      : 'prunes: 0 (no compaction yet)')
   } else {
-    const last = host.records[total - 1]
-    const beforeTok = Math.round(last.charsBefore / host.charsPerToken)
-    const afterTok = Math.round(last.charsAfter / host.charsPerToken)
-    lines.push('prunes: ' + total
-      + ' · last ' + last.intervals.length + ' ranges / ' + last.shadowedSeqs.length + ' items / '
-      + fmtTokens(beforeTok) + '→' + fmtTokens(afterTok)
-      + (last.forced ? ' (forced)' : '')
-      + ' · pruned index ' + host.prunedNodeIndex.size)
+    const last = records[records.length - 1]
+    if (last !== undefined) {
+      const beforeTok = Math.round(last.charsBefore / host.charsPerToken)
+      const afterTok = Math.round(last.charsAfter / host.charsPerToken)
+      lines.push('prunes: ' + records.length
+        + ' · last ' + last.intervals.length + ' ranges / ' + last.shadowedSeqs.length + ' items / '
+        + fmtTokens(beforeTok) + '→' + fmtTokens(afterTok)
+        + (last.forced ? ' (forced)' : '')
+        + ' · pruned index ' + (st?.prunedNodeIndex.size ?? 0))
+    }
+  }
+  if (st !== null && st.auditWarnings.length > 0) {
+    const latest = st.auditWarnings[st.auditWarnings.length - 1] ?? ''
+    lines.push('audit: ' + st.auditWarnings.length + ' warning(s) · latest: '
+      + (latest.length > 120 ? latest.slice(0, 120) + '…' : latest))
   }
 
-  // 段 4：召回命中（recall_pruned / recall_detail 的实际使用面）
-  const calls = host.recallCalls.length
-  const hits = host.recallCalls.reduce((n, r) => n + (r.hit ? 1 : 0), 0)
-  lines.push('recall: ' + calls + ' calls · ' + hits + ' hits (' + fmtPct(hits, calls) + ')')
+  // 段 4：召回命中（批次 3-2：会话桶 + 进程内口径标注——重启归零不是会话真值）
+  const recallCalls = st?.recallCalls ?? []
+  const calls = recallCalls.length
+  const hits = recallCalls.reduce((n, r) => n + (r.hit ? 1 : 0), 0)
+  lines.push('recall: ' + calls + ' calls · ' + hits + ' hits (' + fmtPct(hits, calls) + ') [this process]')
 
   // 段 5：cites 统计（仅双引擎 declarer 在位时输出；纯 Stage-2 下全 0 无意义）
-  if (host.peratomStack?.declarer != null) {
-    const c = host.citeStats
+  if (host.peratomStack?.declarer != null && st !== null) {
+    const c = st.citeStats
     lines.push('cites: ' + c.declared + ' declared · ' + c.resolved + ' resolved'
-      + ' (' + c.ambiguous + ' ambiguous, ' + c.failed + ' failed)')
+      + ' (' + c.ambiguous + ' ambiguous, ' + c.failed + ' failed) [this process]')
   }
 
   return { kind: 'success', text: lines.join('\n') }

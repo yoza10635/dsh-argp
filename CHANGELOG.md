@@ -4,9 +4,21 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-## [1.11.0-beta.1] - 攒批中（本地未发布；预算真值 + 焦点漂移修复，随批次 3 一起转 beta.1）
+## [1.11.0-beta.1] - 攒批中（本地未发布；预算真值 + 焦点漂移 + stable 前收尾批，随 beta.1 发布）
 
-> **发行说明**：两段攒批。批次 2（预算真值，9a48edb）+ 评审二批（D2 焦点漂移，本提交）。评审二批来源：`docs/design-review-v1.11.0-beta.1-2026-10-25.md` D2/§7 的可动项——评审确认 `this.rt` 焦点指针在 async 恢复点会被其他会话抢绑换装，且 beta.0 的 abort 反例存在恒真断言（未锁住任何行为）。
+> **发行说明**：三段攒批。批次 2（预算真值，9a48edb）+ 评审二批（D2 焦点漂移，dede2ac）+ Tier A 集成测试（3f4c3b6）+ 批次 3（stable 前收尾「诚实面与工程」，本提交）。评审二批来源：`docs/design-review-v1.11.0-beta.1-2026-10-25.md` D2/§7 的可动项——评审确认 `this.rt` 焦点指针在 async 恢复点会被其他会话抢绑换装，且 beta.0 的 abort 反例存在恒真断言（未锁住任何行为）。
+
+### Changed（批次 3：stable 前收尾「诚实面与工程」）
+
+- **宿主依赖升 0.2.1-rc.3 线全量验证**（3-6）：devDeps 钉 0.2.1-rc.3（testkit 同步，评审参考宿主线），peer 放宽 `^0.2.0-rc.1`（覆盖 0.2.0 宿主到 0.2.1 finals，桌面 rc.2 不破）。全量 460 例在 rc.3 生产回路上绿（含集成测试）。
+- **summarize 档撤除**（3-1）：`degradationStrategy: 'summarize'` 与 `enableSummarize` 旋钮移除——原为恒返回 null 的 stub（A6 保守决策），与"可选降级"的宣称不符；存量配置值运行时自然落入 lifecycle→force 链，无破坏。
+- **frozenCatalog 核验为真（非死段）**（3-1）：评审"首绑即冻结为空、机制不存在"的判断对新会话成立、对 **resume 会话不成立**——重启后首绑时账本先从日志重建，catalog 拍到真实目录并在本进程恒定回放（测试锁定）。修正了过度声明的"恒为空串"注释。
+- **/argp 报数纠正**（3-2）：台账/召回/cites 改按**发起命令的会话**取桶（旧实现读引擎焦点桶，多会话下显示别的会话的账）；retain 口径与引擎一致（显式值走 capRetain 绝对上界并在截断时标注 `(capped from N)`；比例值 = 可压缩内容 × retainRatio，不再是误导的 window×ratio；显式窗口未解析时显示配置值而非默认 16384）；无台账时按日志真值报数（不再伪造 0）；recall/cites 标注 `[this process]`（重启归零非会话真值）；auditWarnings 露出。
+- **设置卡 restore-default 恒失败修复**（3-2）：`set`/`unset` 落盘后快照异步刷新，写后立即校验读到陈旧 user 层 ⇒ 每次保存/恢复默认误判失败。改为等待快照收敛（60ms 轮询 + 1.5s 超时）。
+- **旋钮数对齐**（3-2）：schema 8 项 = 卡片 8 行（补上缺渲染的 minSpanChars/charsPerToken，撤 enableSummarize），中英 locale 同步。
+- **rawResponse 默认脱敏**（3-3）：peratom 遥测的模型原始响应只保头 200 字符 + 全文 sha256 短摘要（响应可能回显会话内容/密钥类敏感串）；`ARGP_PERATOM_RAW_FULL=1` 显式 opt-in 全文。
+- **发布与 CI**（3-4）：release.yml 加 tag=package.json=CHANGELOG 三方一致硬校验（正文抽取不再静默回退）；CI 加宿主契约矩阵（最低 0.2.0-rc.1/最新 0.2.1-rc.3 × Node 22/24 × Win/Linux，跑全量测试）+ tarball 安装冒烟；新增提示词组装"无未展开模板变量"闸（`{{cwd}}` 类复发防线，压缩请求体逐字节扫描）。
+- **三处正确性修正**（3-5）：recallQuery 平分排序比较器反对称化（旧式在 U-U 相遇时恒 -1，V8 小数组插入排序会把同分 U 倒序）+ maxResults 夹取 1..20（工具入参未夹取）；pruneIntervals 事务后 tool-pairing 不变量审计（自动图剪路径此前无校验——悬空 tool_call 必穿 surface 尾切，一次调用全局检测，违例落 auditWarnings）；shadowedSeqs 增量账本核验锁定（恰等于 compaction/prune 逐事件真值、整段 summary claim 不污染、被记节点必已离 surface）。
 
 ### Fixed（评审二批：焦点漂移 / D2）
 
@@ -28,7 +40,7 @@
 
 ### 提示
 
-- 测试：全量 449 例通过（新增 `focus-drift.test.ts` 7 例反例集 + abort 反例精确化 + budget-scale ⑧ 桶化改造）；突变验证 8/8 RED（每个修复删掉即红）。
+- 测试：全量 460 例通过（批次 3 新增 9 例：排序反对称/clamp、pairing 审计、账本核验、frozenCatalog resume、/argp 报数、CardForm 迟快照、rawResponse 脱敏、模板变量闸 + 突变 4/4 RED；此前批次合计突变 15/15 RED）。
 - **Tier A 集成测试**（评审 §7 第 3 层的进程内形态，随本批补入）：新增 `test/integration-loop.test.ts` 3 例——`mountAgentLoopTestHarness` 挂**生产 AgentLoop**（真实 inbox claim / pre-step / turn-stopping / idle / maintenance 事件序）+ `ctx.llm.registerAdapter` 脚本化 `LlmAdapter`（唯一抽象方法 `stream`；peratom 的 dsh-llm 通路经 `autoDshLlmSpec` 复用同一适配器）。I1 两段式水位经真实事件序（轮末提案暂存 → 下轮 pre-step flush → turn-2 真实请求已无原文）；I2 双 agent 探测窗口交错（不破坏 + 解析窗口按会话分桶 + 锚点不串台；写桶/桶隔离两突变均红）；I3 真实 maintenance 相位空任务（括号配对、下一轮照常——2-4 已知限制的安全侧）。结构性发现：首轮 pre-step 时 open turn 尚无 surface 原子（user 消息在 pre-step 之后落盘），探测窗口的 D2 压力场景在真实回路上无可观测后果——其锁位在单元反例集（focus-drift），集成层锁端到端不变量。
 - 版本号仍为 1.11.0-beta.0（beta.1 随批次 3 一起 bump + 发布）。
 

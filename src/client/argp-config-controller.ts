@@ -57,6 +57,8 @@ export type ArgpLocaleKey =
   | 'maxPasses' | 'maxPassesHint'
   | 'recencyGuard' | 'recencyGuardHint'
   | 'turnGuard' | 'turnGuardHint'
+  | 'minSpanChars' | 'minSpanCharsHint'
+  | 'charsPerToken' | 'charsPerTokenHint'
   | 'sortMode' | 'sortModeHint'
   | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain'
   | 'advanced'
@@ -77,6 +79,10 @@ export const en: Record<ArgpLocaleKey, string> = {
   recencyGuardHint: 'Newest N messages are never pruned',
   turnGuard: 'Recent protection (turns)',
   turnGuardHint: 'Last N turns are never pruned',
+  minSpanChars: 'Min span chars',
+  minSpanCharsHint: 'Intervals shorter than this many characters are left in place (safety floor against fragmenting the surface)',
+  charsPerToken: 'Chars per token',
+  charsPerTokenHint: 'Character-to-token ratio used by the character-based estimates; the real usage anchor from the provider takes precedence',
   sortMode: 'Prune priority',
   sortModeHint: 'Density = drop big, low-info spans first (recommended); +chain = repeated versions pruned sooner; In order = legacy',
   sortModeDensity: 'By information density (recommended)',
@@ -110,6 +116,10 @@ export const zh: Record<ArgpLocaleKey, string> = {
   recencyGuardHint: '最近 N 条消息不参与压缩',
   turnGuard: '最近保护轮数',
   turnGuardHint: '最近 N 轮对话不参与压缩',
+  minSpanChars: '最小剪枝段字符数',
+  minSpanCharsHint: '短于此字符数的区间不剪（防 surface 碎片化的安全下限）',
+  charsPerToken: '字符/Token 比',
+  charsPerTokenHint: '字符口径估算用的比值；真实估算以 provider usage 锚点为准',
   sortMode: '剪枝优先级',
   sortModeHint: '密度＝先删又大又冗余的段（推荐）；密度+版本链＝重复版本越多越先删；按出现顺序＝旧行为',
   sortModeDensity: '信息密度优先（推荐）',
@@ -450,12 +460,31 @@ export class CardForm<T> {
 
   private async clear(field: string): Promise<boolean> {
     await this.scope.unset(field)
-    return !this.stored(field)
+    return this.settle(() => !this.stored(field))
   }
 
   private async store(field: string, value: unknown): Promise<boolean> {
     await this.scope.set(field, value)
-    return this.userLayer()?.[field] === value
+    return this.settle(() => this.userLayer()?.[field] === value)
+  }
+
+  /**
+   * 批次 3-2（beta.1）：`set`/`unset` 的 Promise 只保证写入落盘，**不保证**快照已随之
+   * 刷新（宿主快照经事件总线异步重发布）。旧实现写后立即读快照校验，读到陈旧 user 层
+   * ⇒ 每次保存/恢复默认都被误判失败（"restore-default 恒失败"）。改为等待快照收敛：
+   * 60ms 轮询（订阅监听会重发布表单，轮询只读快照），1.5s 超时按当时快照判——真实
+   * 被宿主拒绝的写入仍会如期显示失败。
+   */
+  private settle(pred: () => boolean, timeoutMs = 1500): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+      const start = Date.now()
+      const check = (): void => {
+        if (pred()) { resolve(true); return }
+        if (Date.now() - start >= timeoutMs) { resolve(false); return }
+        setTimeout(check, 60)
+      }
+      check()
+    })
   }
 
   private stage(field: string, edit: StagedEdit): void {
@@ -501,6 +530,8 @@ export interface ArgpConfigState extends CardShell {
   maxPasses: CardFieldState
   recencyGuard: CardFieldState
   turnGuard: CardFieldState
+  minSpanChars: CardFieldState
+  charsPerToken: CardFieldState
   sortMode: CardFieldState
 }
 
@@ -519,12 +550,16 @@ export class ArgpConfigController {
     // Bounds mirror the server-side ArgpUserSettingsSchema (argp-graph-engine.ts):
     // the client must reject out-of-spec drafts before they are ever staged for
     // a write, so an out-of-range value can never silently land in the namespace.
+    // Bounds mirror the server-side ArgpUserSettingsSchema（批次 3-2 旋钮数对齐：schema 8 项
+    // 与卡片 8 行一致——补上此前缺渲染的 minSpanChars/charsPerToken，撤除 enableSummarize）。
     this.form = new CardForm(scope, [
       numberField('windowRatio', { min: 0.1, max: 1 }),
       numberField('retainRatio', { min: 0.05, max: 1 }),
       numberField('maxPasses', { min: 1, integer: true }),
       numberField('recencyGuard', { min: 0, integer: true }),
       numberField('turnGuard', { min: 0, integer: true }),
+      numberField('minSpanChars', { min: 0, integer: true }),
+      numberField('charsPerToken', { min: 0.5, max: 8 }),
       textField('sortMode', { enum: ['legacy', 'density', 'density-chain'] }),
     ])
     this.store = this.form.bind(() => this.projection())
@@ -538,6 +573,8 @@ export class ArgpConfigController {
       maxPasses: this.form.field('maxPasses'),
       recencyGuard: this.form.field('recencyGuard'),
       turnGuard: this.form.field('turnGuard'),
+      minSpanChars: this.form.field('minSpanChars'),
+      charsPerToken: this.form.field('charsPerToken'),
       sortMode: this.form.field('sortMode'),
     }
   }

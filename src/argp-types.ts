@@ -57,7 +57,6 @@ export interface ArgpUserSettings {
   recencyGuard: number
   turnGuard: number
   minSpanChars: number
-  enableSummarize: boolean
   sortMode: 'legacy' | 'density' | 'density-chain'
   charsPerToken: number
 }

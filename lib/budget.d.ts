@@ -25,6 +25,17 @@ export declare function scaleBudgets(contextWindow: number | undefined, opts: {
     windowTokens: number;
     retainTokens: number;
 };
+/**
+ * retain 绝对上界（2-1，1.11.0-beta.1）：`min(目标, windowTokens − reserve − headroom)`。
+ *
+ * 病灶：retain 一直只是**比例目标**（windowTokens × retainRatio），与"塞进真实窗口还剩
+ * 多少余量"无关——窗口小 / reserve 大 / 输出预算（maxTokens）大的部署上，按 0.2 比例
+ * 保留的量可能根本放不进窗口（Qwen 实测 82% 压缩率失真的根因之一：压完了仍然超）。
+ * headroom 固定取 windowTokens 的 10%（输出与组装误差的安全垫；宿主 compaction-basic
+ * 同式：retain ≤ context − maxTokens − reserve）。floor 0：极端小窗口时上界可为负，
+ * 调用方按 ≤0 视为"无保留空间"处理（图剪降级链会自然走 force/fail）。
+ */
+export declare function capRetain(retainTokens: number, windowTokens: number, reserveTokens: number): number;
 /** dsh token-meter 服务的最小结构（measure 返回 total/surface token）。 */
 export interface TokenMeter {
     measure(session: Session): {

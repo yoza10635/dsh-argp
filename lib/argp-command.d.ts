@@ -28,8 +28,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands';
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { CiteStats } from './graph-build.js';
-import type { GraphPruneRecord } from './prune-tx.js';
+import type { SessionRuntimeState } from './session-state.js';
 import type { BudgetHost } from './budget.js';
 /**
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
@@ -48,17 +47,13 @@ export declare const ARGP_COMMAND_DESCRIPTION = "Show ARGP context-compression s
  * 耦合到 `ArgpGraphEngine` 这个大类上（也避免测试要构造整个引擎）。
  */
 export interface ArgpStatusHost extends BudgetHost {
-    /** 剪枝台账（有界环形缓冲，见 telemetry.pushBounded）。 */
-    readonly records: GraphPruneRecord[];
-    /** 召回调用记录（有界）。 */
-    readonly recallCalls: {
-        seq: number;
-        hit: boolean;
-    }[];
-    /** cites 边声明统计（Stage-1 declarer 喂 Stage-2 injectEdges）。 */
-    readonly citeStats: CiteStats;
-    /** 已剪节点目录（seq → 元信息），供 list_pruned / recall_pruned 查询。 */
-    readonly prunedNodeIndex: Map<number, unknown>;
+    /**
+     * 会话运行时状态桶（批次 3-2：records/recallCalls/citeStats/prunedNodeIndex 改按
+     * **发起命令的会话**取桶读取——旧字段是引擎焦点桶 getter，多会话下 /argp 显示的是
+     * 别的会话的账（跨会话残留）。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
+     * 的窄 {resolvedWindowTokens} 型变宽，引擎真身满足）。
+     */
+    stateOf: (session: Session) => SessionRuntimeState;
     /** 双引擎自挂载句柄（null = 纯 Stage-2 图引擎）。诊断"双引擎到底挂没挂"的唯一出口。 */
     readonly peratomStack: {
         compressor: unknown | null;

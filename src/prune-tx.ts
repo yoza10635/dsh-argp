@@ -332,6 +332,25 @@ export function pruneIntervals(
     }
     const endEvent = session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField })
     ended = true
+    // 批次 3-5（beta.1）：事务后 tool-pairing 不变量审计——自动图剪路径此前无校验（手动
+    // compactRegions / 墓碑归并在区间选择期各有前校验；per-atom 墓碑保配对是设计保证，
+    // 此处是对该保证的可观测护栏）。任何悬空 tool_call 必然穿过 surface 尾切，对最后
+    // 一个节点做一次 toolPairingBalancedAfter 即全局检测；孤儿 tool result 会使助手
+    // throw，同计违例。事务已提交：只观测不改写（错误日志 + auditWarnings 留痕）。
+    try {
+      const postNodes = session.surface.nodes
+      const tail = postNodes[postNodes.length - 1]
+      if (tail !== undefined && !toolPairingBalancedAfter(session, tail)) {
+        throw new Error('unanswered tool call crosses the trailing surface cut')
+      }
+    } catch (pairError: unknown) {
+      const pairMsg = 'tool-pairing invariant violated after compaction: '
+        + (pairError instanceof Error ? pairError.message : String(pairError))
+        + ' (transaction committed; observability guard)'
+      host.log.error('[argp-graph] ' + pairMsg)
+      st.auditWarnings.push(pairMsg)
+      if (st.auditWarnings.length > host.telemetryCap) st.auditWarnings.shift()
+    }
     const charsAfter = visibleChars(session)
     pushBounded(st.records, {
       at: new Date().toISOString(),

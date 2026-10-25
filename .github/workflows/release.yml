@@ -26,6 +26,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 批次 3-4：tag=version=CHANGELOG 三方一致硬校验（此前 tag 与 package.json 版本可分叉，
+      # 正文抽取还会静默回退自动摘要——手动 tag 打错时 Release 名实不符且无人发现）
+      - name: Verify tag = package.json version = CHANGELOG section
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$VER" != "$PKG" ]; then
+            echo "tag v$VER != package.json version $PKG"; exit 1
+          fi
+          if ! grep -q "^## \[$VER\]" CHANGELOG.md; then
+            echo "CHANGELOG.md missing section [## [$VER]]"; exit 1
+          fi
+          echo "tag/version/CHANGELOG aligned at $VER"
+
       - name: Quality gate
         run: npm run check
 
@@ -48,8 +62,8 @@ jobs:
             echo "path=release-body.md" >> "$GITHUB_OUTPUT"
             echo "release body = CHANGELOG [$VER] section ($(wc -c < release-body.md) bytes)"
           else
+            echo "tag/CHANGELOG 校验已在前置步骤拦截缺失段，此处不可达；保留回退仅为防御"
             echo "path=" >> "$GITHUB_OUTPUT"
-            echo "no CHANGELOG section for [$VER]; falling back to generated notes"
           fi
 
       - name: Create GitHub Release

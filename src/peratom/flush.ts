@@ -14,7 +14,7 @@
  * planReplacements）直接 import。依赖方向：compressor-types（叶）← decision/prompt ←
  * flush ← compressor（组合根）。
  */
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { compactCheckpointSource, CompactionId } from '@deepseek-ai/dsh-compaction'
 import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
@@ -78,6 +78,11 @@ export interface PendingEntry {
 /** 1-3：单条暂存事务的发射失败上限——超限放弃并保留错误账（此前"先 splice 后吞错"
  * 让任何一次落盘失败 = 静默丢弃且窗口被消费，永不重试）。 */
 const FLUSH_MAX_FAILURES = 2
+
+/** 批次 3-3：rawResponse 脱敏摘要（sha256 前 12 位——可对账全文、不可还原内容）。 */
+function rawDigest(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 12)
+}
 
 /**
  * 1-4（1.11.0-beta.0）：stale-surface 代际守卫——LLM 决策落盘前校验收集窗口的
@@ -227,7 +232,12 @@ export async function callAndStash(host: FlushHost, session: Session, collect: C
       }
     }
     record.ms = ms
-    record.rawResponse = raw
+    // 批次 3-3（beta.1）：rawResponse 默认脱敏——响应可能回显会话内容（含密钥类敏感串），
+    // 遥测留痕只保头 200 字符 + 全文 sha256 短哈希（对齐 A2 dump 的数据责任口径）；
+    // 确需全文调试时显式 ARGP_PERATOM_RAW_FULL=1（opt-in）。
+    record.rawResponse = process.env['ARGP_PERATOM_RAW_FULL'] === '1'
+      ? raw
+      : (raw.length > 200 ? raw.slice(0, 200) + '…[truncated ' + raw.length + ' chars, sha256 ' + rawDigest(raw) + ']' : raw)
     const decision = normalizeDecision(extractJson(raw))
     if (decision === null) {
       record.parseFailed = true

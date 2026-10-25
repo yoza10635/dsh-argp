@@ -55,7 +55,7 @@ export interface LifecycleHost {
         surfaceTokens: number;
     };
     tokenMeter: TokenMeter | undefined;
-    degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
+    degradationStrategy: 'lifecycle' | 'force' | 'fail';
     turnBasis: 'semantic' | 'all';
     maxOverflowRetries: number;
     midTurnPruneEnabled: boolean;

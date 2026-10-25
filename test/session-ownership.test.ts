@@ -371,3 +371,47 @@ test('E: A 会话的声明边不注入 B 会话（edgeCache 分桶）', async ()
     await ctx.fiber.dispose()
   }
 })
+
+test('批次 3-3: rawResponse 默认脱敏——截断 + sha256 摘要；ARGP_PERATOM_RAW_FULL=1 全文 opt-in', async () => {
+  const h = await makeCompressorHarness()
+  try {
+    const { session } = buildOpenTurn('raw-redact')
+    h.respond('HEAD' + 'x'.repeat(4000) + 'TAILMARKER') // 超长非 JSON 原文（parseFailed 但留痕）
+    const rec = await h.compressor.compressOpenTurn(session)
+    assert.ok(rec !== null && rec.rawResponse !== undefined, '留痕在场')
+    assert.ok(rec.rawResponse.length <= 300, '默认截断（≤300 字符），实际 ' + rec.rawResponse.length)
+    assert.ok(rec.rawResponse.includes('sha256 '), '带 sha256 摘要（可对账不可还原）')
+    assert.ok(!rec.rawResponse.includes('TAILMARKER'), '深尾正文不得入遥测（头部 200 字符合法保留）')
+
+    const prev = process.env['ARGP_PERATOM_RAW_FULL']
+    process.env['ARGP_PERATOM_RAW_FULL'] = '1'
+    try {
+      const { session: s2 } = buildOpenTurn('raw-full')
+      h.respond('HEAD' + 'y'.repeat(4000))
+      const rec2 = await h.compressor.compressOpenTurn(s2)
+      assert.ok((rec2?.rawResponse?.length ?? 0) > 4000, 'opt-in 环境变量下保留全文')
+    } finally {
+      if (prev === undefined) delete process.env['ARGP_PERATOM_RAW_FULL']
+      else process.env['ARGP_PERATOM_RAW_FULL'] = prev
+    }
+  } finally {
+    await h.ctx.fiber.dispose()
+  }
+})
+
+test('批次 3-4: 提示词组装与事务文案无未展开模板变量（{{cwd}} 类复发闸）', async () => {
+  const h = await makeCompressorHarness()
+  try {
+    const { session } = buildOpenTurn('tmpl-drift')
+    h.respond({ splits: [], tools: [] })
+    await h.compressor.compressOpenTurn(session)
+    assert.ok(h.bodies.length > 0, '前置：发出过压缩请求')
+    for (const body of h.bodies) {
+      const text = JSON.stringify(body)
+      const m = /\{\{[a-zA-Z_][a-zA-Z0-9_]*\}\}/.exec(text)
+      assert.ok(m === null, '压缩请求体含未展开模板变量 ' + (m?.[0] ?? '') + '（1.10.2 的 {{cwd}} 炸点复发）')
+    }
+  } finally {
+    await h.ctx.fiber.dispose()
+  }
+})

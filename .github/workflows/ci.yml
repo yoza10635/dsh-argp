@@ -42,9 +42,73 @@ jobs:
       - name: Check commit message conventions (push only)
         if: github.event_name == 'push'
         run: |
-          BASE="${{ github.event.before }}"
+          BASE="${{ github.event_before }}"
           if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             echo "first push; skip commit message check"
             exit 0
           fi
           node scripts/check-commit-msg.mjs "$BASE..HEAD"
+
+  # 批次 3-4：宿主契约矩阵（评审 §7 第 3 层）——最低/最新 DSH 线 × Node 22/24 × Win/Linux。
+  # oldest 线 = peer 下限 0.2.0-rc.1（peer 地板挪动时同步更新此清单）；latest = devDeps 现行钉版。
+  # 跑全量测试（矩阵上不重复完整 check，主线 job 已覆盖）+ 单元格 tarball 安装冒烟。
+  matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+        dsh: [oldest, latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Pin DSH line to peer floor (0.2.0-rc.1)
+        if: matrix.dsh == 'oldest'
+        shell: bash
+        run: >
+          npm install --no-save --no-audit --no-fund
+          @deepseek-ai/dsh-agent@0.2.0-rc.1
+          @deepseek-ai/dsh-agent-loop@0.2.0-rc.1
+          @deepseek-ai/dsh-agent-loop-testkit@0.2.0-rc.1
+          @deepseek-ai/dsh-bash-local@0.2.0-rc.1
+          @deepseek-ai/dsh-commands@0.2.0-rc.1
+          @deepseek-ai/dsh-compaction@0.2.0-rc.1
+          @deepseek-ai/dsh-compaction-basic@0.2.0-rc.1
+          @deepseek-ai/dsh-llm@0.2.0-rc.1
+          @deepseek-ai/dsh-llm-deepseek@0.2.0-rc.1
+          @deepseek-ai/dsh-llm-pi-ai@0.2.0-rc.1
+          @deepseek-ai/dsh-session@0.2.0-rc.1
+          @deepseek-ai/dsh-session-format-catalog@0.2.0-rc.1
+          @deepseek-ai/dsh-session-format-v3-to-v4@0.2.0-rc.1
+          @deepseek-ai/dsh-shell-env@0.2.0-rc.1
+          @deepseek-ai/dsh-subprocess-local@0.2.0-rc.1
+          @deepseek-ai/dsh-system-prompt@0.2.0-rc.1
+          @deepseek-ai/dsh-token-meter@0.2.0-rc.1
+          @deepseek-ai/dsh-tool-bash@0.2.0-rc.1
+          @deepseek-ai/dsh-tools@0.2.0-rc.1
+
+      - name: Unit tests (${{ matrix.dsh }} DSH line)
+        run: npm test
+
+      # tarball 安装冒烟（单格执行即可）：npm pack 产物在干净目录可安装、入口可 import
+      - name: Tarball install smoke
+        if: matrix.dsh == 'latest' && matrix.node == 24 && matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          npm run build
+          npm pack --silent
+          TGZ=$(ls dsh-argp-*.tgz | head -1)
+          SMOKE=$(mktemp -d)
+          cd "$SMOKE"
+          npm init -y >/dev/null
+          npm install "$GITHUB_WORKSPACE/$TGZ" --no-audit --no-fund
+          node --input-type=module -e "import('dsh-argp').then(m => { console.log('tarball import ok:', typeof m.default) }).catch(e => { console.error(e); process.exit(1) })"

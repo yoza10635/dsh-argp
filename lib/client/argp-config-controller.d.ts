@@ -45,7 +45,7 @@ export interface ArgpUserSettings {
 /** Settings namespace this card owns (must equal the server-registered one). */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /** Locale keys the ARGP card renders. */
-export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'maxPasses' | 'maxPassesHint' | 'recencyGuard' | 'recencyGuardHint' | 'turnGuard' | 'turnGuardHint' | 'sortMode' | 'sortModeHint' | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
+export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'maxPasses' | 'maxPassesHint' | 'recencyGuard' | 'recencyGuardHint' | 'turnGuard' | 'turnGuardHint' | 'minSpanChars' | 'minSpanCharsHint' | 'charsPerToken' | 'charsPerTokenHint' | 'sortMode' | 'sortModeHint' | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
 /** English copy. */
 export declare const en: Record<ArgpLocaleKey, string>;
 /** Simplified Chinese copy. */
@@ -191,6 +191,14 @@ export declare class CardForm<T> {
     private plan;
     private clear;
     private store;
+    /**
+     * 批次 3-2（beta.1）：`set`/`unset` 的 Promise 只保证写入落盘，**不保证**快照已随之
+     * 刷新（宿主快照经事件总线异步重发布）。旧实现写后立即读快照校验，读到陈旧 user 层
+     * ⇒ 每次保存/恢复默认都被误判失败（"restore-default 恒失败"）。改为等待快照收敛：
+     * 60ms 轮询（订阅监听会重发布表单，轮询只读快照），1.5s 超时按当时快照判——真实
+     * 被宿主拒绝的写入仍会如期显示失败。
+     */
+    private settle;
     private stage;
     private spec;
     private sectionValue;
@@ -206,6 +214,8 @@ export interface ArgpConfigState extends CardShell {
     maxPasses: CardFieldState;
     recencyGuard: CardFieldState;
     turnGuard: CardFieldState;
+    minSpanChars: CardFieldState;
+    charsPerToken: CardFieldState;
     sortMode: CardFieldState;
 }
 /** The registration-side face the slot entry injects. */

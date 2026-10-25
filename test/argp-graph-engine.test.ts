@@ -1785,3 +1785,117 @@ test('overflow retries: 缺省自挂 compressor ⇒ 3；显式 peratom:false ⇒
     }
   }
 })
+
+// ---------------------------------------------------------------------------
+// 批次 3-5（beta.1）：召回排序反对称 / maxResults 夹取 / pairing 审计 / 账本核验
+// ---------------------------------------------------------------------------
+
+test('批次 3-5: recallQuery 同分 U 按 seq 升序（比较器反对称）+ maxResults 夹取 1..20', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('recall-sort-clamp'))
+    const uSeqs: number[] = []
+    for (const t of ['needle alpha', 'needle beta', 'needle gamma']) {
+      appendUser(session, t)
+      uSeqs.push(session.snapshotEvents().length - 1)
+    }
+    // 手工记账（peratom U 压缩同型：user/message + 逐原子 compaction/prune）
+    for (const seq of uSeqs) {
+      session.append('compaction/prune', { shadowedRange: { start: asSeq(seq), end: asSeq(seq) }, shadowedSeqs: asSeqs([seq]), shadowedTokenCount: 10 })
+    }
+    engine.setSession(session)
+    const out = engine.recallQuery(session, 'needle', 5)
+    const i1 = out.indexOf('needle alpha'), i2 = out.indexOf('needle beta'), i3 = out.indexOf('needle gamma')
+    assert.ok(i1 >= 0 && i2 >= 0 && i3 >= 0, '三条同分命中都在')
+    assert.ok(i1 < i2 && i2 < i3, '同分 U 必须按 seq 升序（旧比较器 U-U 恒 -1 ⇒ 倒序）')
+
+    // 夹取：25 个命中 + maxResults=999 ⇒ 最多 20 条
+    for (let i = 0; i < 25; i += 1) {
+      appendUser(session, 'pad needle pad-' + i)
+      const seq = session.snapshotEvents().length - 1
+      session.append('compaction/prune', { shadowedRange: { start: asSeq(seq), end: asSeq(seq) }, shadowedSeqs: asSeqs([seq]), shadowedTokenCount: 10 })
+    }
+    const outBig = engine.recallQuery(session, 'needle', 999)
+    assert.ok(outBig.includes('Recalled 20 pruned atom(s)'), 'maxResults=999 夹取到 20（实际前缀：' + outBig.split('\n')[0] + '）')
+    const outZero = engine.recallQuery(session, 'needle', 0)
+    assert.ok(outZero.includes('Recalled 1 pruned atom(s)'), 'maxResults=0 夹取到下限 1')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('批次 3-5: pruneIntervals 事务后 tool-pairing 审计——孤儿 tool_call 落 auditWarnings', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('pairing-audit'))
+    appendUser(session, 'run the tool')
+    const callId = 'tc-audit-1'
+    session.append('assistant/message', { stream: [], turn: 1, step: 1, message: { role: 'assistant', id: 'am_audit', source: { kind: 'model', provider: 'test', model: 'test' }, content: [{ type: 'tool-call', id: callId, name: 'read_file', arguments: '{}' }] } } as never, { surfaceOp: 'append' })
+    session.append('tool/result', { turn: 1, step: 1, message: { role: 'user', id: 'm_audit', source: { kind: 'tool', callId }, content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: 'result body ' + 'x'.repeat(120) }], isError: false }] } } as never, { surfaceOp: 'append' })
+    const rSeq = session.snapshotEvents().length - 1
+    engine.setSession(session)
+    const warningsBefore = (engine as unknown as { stateOf(s: Session): { auditWarnings: string[] } }).stateOf(session).auditWarnings.length
+    // 直接调 pruneIntervals 且不给 tool 占位墓碑（默认 user 墓碑替换 R）——制造 issuer A
+    // 存活但应答被换掉的孤儿形态（生产路径由 buildTombstones 的 tool 墓碑挡住，此处验证审计护栏）
+    const atom: Atom = { id: 0, seq: rSeq, type: 'R', turn: 1, text: 'x'.repeat(120), toolCallIds: [callId], cites: [], citesFailed: false }
+    const result = (engine as unknown as { pruneIntervals(s: Session, ivs: unknown[], e: number, c: number, f: boolean): unknown }).pruneIntervals(session, [{ seqs: [rSeq], chars: 120, atoms: [atom] }], 0, 0, false)
+    assert.ok(result !== null, '事务本身成功（护栏只观测不改写）')
+    const warnings = (engine as unknown as { stateOf(s: Session): { auditWarnings: string[] } }).stateOf(session).auditWarnings
+    assert.ok(warnings.length > warningsBefore, '孤儿 tool_call 必须落 auditWarnings（自动图剪路径的 pairing 校验）')
+    assert.ok(warnings.some(w => w.includes('tool-pairing')), '警告文案可检索')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('批次 3-5: shadowedSeqs 账本核验——恰为真被替换集，整段 summary claim 不污染', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('shadowed-verify'))
+    appendUser(session, 'anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    const shadowed = (engine as unknown as { shadowedSeqsOf(s: Session): Set<number> }).shadowedSeqsOf(session)
+    assert.ok(shadowed.size > 0, '前置：发生过剪枝')
+    // 账本恰等于日志里 compaction/prune 事件声明的集合（summary 的整段 claim 不进账本）
+    const logShadowed = new Set<number>()
+    for (const e of session.snapshotEvents()) {
+      if (e.type !== 'compaction/prune') continue
+      for (const s of ((e.data as { shadowedSeqs?: number[] }).shadowedSeqs ?? [])) logShadowed.add(s)
+    }
+    assert.deepEqual([...shadowed].sort((a, b) => a - b), [...logShadowed].sort((a, b) => a - b), '增量账本 = 逐事件真值')
+    // 被记 shadowed 的节点必须已离 surface；仍在线的节点不得被误记
+    for (const s of shadowed) assert.ok(!session.surface.nodes.includes(asSeq(s)), 'shadowed seq ' + s + ' 必须已离 surface')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('批次 3-1: frozenCatalog 非死段——新会话空目录，resume 首绑拍到真实目录', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('catalog-resume'))
+    appendUser(session, 'anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    engine.setSession(session)
+    assert.equal(engine.frozenCatalog, '', '新会话：首绑先于任何剪枝 ⇒ 空目录（per-design，发现走 tombstone 指针）')
+    await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.equal(engine.frozenCatalog, '', '落剪不刷新 catalog（KV 恒定性）')
+
+    // 模拟重启 resume：新引擎实例对同一日志会话首绑——账本先建、快照拍到真实目录
+    const { ctx: ctx2, engine: engine2 } = await makeEngine()
+    try {
+      engine2.setSession(session)
+      const cat = engine2.frozenCatalog
+      assert.ok(cat !== null && cat.includes('Compression removed'), 'resume 首绑拍到真实目录（机制非死段）: ' + (cat ?? '').slice(0, 60))
+    } finally {
+      await ctx2.fiber.dispose()
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

@@ -50,7 +50,6 @@ export interface ArgpLiveConfig {
     recencyGuard: Volatile<number>;
     turnGuard: Volatile<number>;
     minSpanChars: Volatile<number>;
-    enableSummarize: Volatile<boolean>;
     sortMode: Volatile<string>;
     charsPerToken: Volatile<number>;
 }
@@ -115,10 +114,9 @@ export interface ArgpGraphConfig {
         contextTokens: number;
         surfaceTokens: number;
     };
-    /** 是否启用 summarize 降级。默认 false：本地单 slot 模型下 summarize 会破坏 KV cache，ARGP 走 force_prune。 */
-    enableSummarize?: boolean;
-    /** 降级链：lifecycle（默认，闭包→force） / summarize / force / fail。 */
-    degradationStrategy?: 'lifecycle' | 'summarize' | 'force' | 'fail';
+    /** 降级链：lifecycle（默认，闭包→force） / force / fail。'summarize' 档已撤（批次 3-1：
+     *  原为恒 null 的 stub，与"可选降级"宣称不符；存量配置值运行时自然落入 lifecycle 链）。 */
+    degradationStrategy?: 'lifecycle' | 'force' | 'fail';
     /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
      *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）
      *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积；显式传入以回退旧行为）
@@ -283,7 +281,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         recencyGuard: z<number, number, "volatile-defined">;
         turnGuard: z<number, number, "volatile-defined">;
         minSpanChars: z<number, number, "volatile-defined">;
-        enableSummarize: z<boolean, boolean, "volatile-defined">;
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
@@ -293,7 +290,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         recencyGuard: z<number, number, "volatile-defined">;
         turnGuard: z<number, number, "volatile-defined">;
         minSpanChars: z<number, number, "volatile-defined">;
-        enableSummarize: z<boolean, boolean, "volatile-defined">;
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
     }>>, "plain">;
@@ -311,7 +307,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         contextTokens: number;
         surfaceTokens: number;
     };
-    readonly degradationStrategy: 'lifecycle' | 'summarize' | 'force' | 'fail';
+    readonly degradationStrategy: 'lifecycle' | 'force' | 'fail';
     readonly turnBasis: 'semantic' | 'all';
     /** 在这些 preset 下不生效的 preset id 列表（构造期定，默认 ['minimal']）。 */
     private readonly skipPresets;
@@ -341,7 +337,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     get minSpanChars(): number;
     get charsPerToken(): number;
     get maxPasses(): number;
-    get enableSummarize(): boolean;
     get sortMode(): 'legacy' | 'density' | 'density-chain';
     readonly maxOverflowRetries: number;
     /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
@@ -630,11 +625,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private budgetRecallText;
     /**
-     * A6（保守选项 a）：summarize 末环不实现 —— 保持默认关闭（enableSummarize=false）、
-     * force_prune 为终端降级，文档明确。本 stub 恒返回 null，degradationStrategy='summarize'
-     * 且 enableSummarize=true 时也不会产出 LLM 摘要；实际路径仍为 lifecycle → force。
+     * 批次 3-1（beta.1）已撤：原为 A6（保守选项 a）的恒 null stub——degradationStrategy
+     * 的 'summarize' 档与 enableSummarize 旋钮一并移除（"可选降级"的宣称与 stub 实现不符）。
      */
-    private summarizeCriticalChain;
     /** P2 选择侧：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
      *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
      *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入

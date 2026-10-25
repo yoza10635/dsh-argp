@@ -47,7 +47,7 @@ export function scaleBudgets(
  * 同式：retain ≤ context − maxTokens − reserve）。floor 0：极端小窗口时上界可为负，
  * 调用方按 ≤0 视为"无保留空间"处理（图剪降级链会自然走 force/fail）。
  */
-function capRetain(retainTokens: number, windowTokens: number, reserveTokens: number): number {
+export function capRetain(retainTokens: number, windowTokens: number, reserveTokens: number): number {
   const headroom = Math.floor(windowTokens * 0.1)
   const ceiling = windowTokens - reserveTokens - headroom
   if (ceiling <= 0) return 0
