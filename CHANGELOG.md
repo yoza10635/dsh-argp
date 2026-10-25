@@ -4,6 +4,35 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.10.2] - 2026-10-25（外部评审核验修复批：附件通路 / info-only 压缩 / 免疫毒化 / 召回账目）
+
+> **发行说明**：两份外部评审（本地逐条核验后）收敛出的小而独立的已核验修复批——8 项全部带"删掉修复即变红"的回归锁（`test/repair-1-10-2.test.ts` 等，变异验证过）。无 API 变化、无配置迁移；四项是真实缺陷修复（附件保留自 1.7.0 起在真实宿主上整体 no-op、info-only 分支丢弃模型压缩输出、文本形状可制造永久免剪、归并墓碑召回指错层），其余为账目诚实化与文案纠偏。
+
+### Fixed
+
+- **peratom: 附件保留自 1.7.0 起在真实宿主上整体 no-op**（0-1，〔Q〕M1）：`attachmentBlocksOf` 读 `data.message.content`，而 user/message 的 content 在 `data.content`（无 message 层，与本仓 log-access 口径相悖）⇒ 真实宿主上 U-info 副本的附件块恒为空、附件被纯文本副本静默丢出上下文；测试 fixture 当时用了同样的错误形状，双双自洽从未暴露。修形状 + fixture 改真实宿主形状。
+- **peratom: info-only 分支（纯资料消息）丢弃模型的 `infoLevel`/`infoText`**（0-2，〔K〕P1-7）：整条 U-info 的 replace 写死原文 `atom.text`，模型的 summary/extract 压缩输出整档 no-op。与 split 分支共用同款裁决（`resolveInfoCopy`）：summary 审计放行、extract 缺硬 token 回退原文（回退仍保留 ARG_NS 元数据的结构作用）。
+- **graph: 文本形状可零成本制造永久免剪——两处免疫判据换结构锚定**（0-3，〔Q〕M3，双 BLOCKER）：
+  - `citesFailed` 闸（正文含 `"cites"` 字面量但协议解析失败 → 保守保护）改为 **force 降级可越**：该标志源于不可信文本的形状检测，不可越 = 模型/工具输出复述一个字面量即可让原子永生（实测 force_prune 也剪不动、50 次重建全保留）。正常路径的保守保护不变。
+  - 墓碑终止态（G1）与 A10 的"组已收割"判定（allStubbed）从裸文本前缀改为 **`tombstoneReplaceSeqs` 结构锚**（replace 事件 + 墓碑文法整串匹配串联，`buildTombstoneReplaceSeqs` 单一事实源）：意外碰撞（源码引用/日志转录的前缀片段）不再命中；刻意照抄完整文法的 **append** 事件也永不获终止态——真墓碑只能由 surfaceOp replace 产生。文法表覆盖现行四族 + git 历史全部遗留族（v1.3.0–v1.7.0 逐字核对），存量老会话重放不受影响。
+- **recall: `list_pruned` 默认模式无界渲染**（0-4，〔Q〕M6）：此前默认模式列全部 shadowed 节点（长会话数千行一次性进上下文），range 模式反而有 50/200 顶。默认模式加同款硬顶（默认 50、上限 200）+ **最新优先**（封顶后不停在最老 50 条）+ 计入召回字符预算（此前只有取正文类工具付费，发现类列表可无限白嫖）。
+- **graph: 账本重建把 error-end 事务重建成成功墓碑**（0-5，〔K〕P1-4）：`rebuildLedgerFromLog` 此前对带 error 的 `compaction/end` 一视同仁——partial 事务重建成成功记录、`tombstoneSeq` 指向 off-surface 的 error end 事件（喂给 `buildTombstoneRedirect` 产出假重定向）。现在：error 显式入账（`GraphPruneRecord.error`）、不产墓碑重定向记录、`prunedNodeIndex` 只收**确实离场**的 seq（被 claim 却仍在 surface 的不入剪索引，按实际 replace 恢复提交子集）。
+- **recall: 归并墓碑的召回指针指向墓碑副本自身——递归空手而归**（0-6，〔Q〕M6）：聚合墓碑的 `seqs=`/`recall_pruned(N)` 写的是被归并墓碑副本的 seq，recall 打过去只会取回又一层墓碑文本。归并时沿 surfaceOp replace 链回溯到 **append 根源**（`resolveRootSeqs`）写进文案；存量旧聚合墓碑由 `recall_pruned` 的墓碑重定向兜底——检测"seq 的事件是 replace 且文本为墓碑"⇒ 返回根源原文（多根源逐条带 seq 头）。
+
+### Added
+
+- **构造期配置形状校验**（0-8，〔K〕P2-11 部分）：`skipPresets` 非数组（旧实现 spread 成字符数组 = preset 快照静默永不匹配）、NaN/Infinity 数值旋钮（预算与守卫静默偏移）在构造期**收集全部违例一次性显式拒绝**（插件激活失败并报清单，而非表面正常行为悄然错乱）。volatile 设置页旋钮不在此路径（到达时是 thunk 对象），归 settings schema 与 `sortMode` getter 兜底（非法值回退 `density`）。
+
+### Docs
+
+- **README / locale 过度声明纠偏**（0-7，〔Q〕§6 + 〔K〕§9）：「压缩率精确兑现」→「压缩目标按字符口径收敛（字符 ≠ provider 实际 token）」；「逐字节精确召回 / 历史永不销毁」→「文本块逐字、结构化参数 JSON 语义等价重建，原文保留在日志」；t-long 基准的 32K 数字标注对应已退役的旧 retain 公式。中英 locale 的 `meta.description` 同步收窄。
+
+### 提示
+
+- 测试：全量 426 例通过（新增 12 例修复锁 + 既有口径锁按新语义更新 3 处）。
+- `spike/47-gate-replay.ts` 的闸级镜像与 `isAtomCandidate` 同步换锚（一致性自校验 0 不一致）。
+- 本版无安装约束变化、无迁移动作。
+
 ## [1.10.1] - 2026-10-12（显示层与模型口径：插件页两层文案分离 + 退役模型名迁移 + README 可读性重构）
 
 > **发行说明**：三件互相独立的小事打包——① 插件管理页双层文案（包卡片与组件行）曾试验 exports 子路径分离方案，实测会截肢 client half，已回退（本版双层文案行为与 1.10.0 相同，新增 prerelease-check 回归锁防止复发）。② 直连 DeepSeek 后端的内置默认模型名从已退役的 `deepseek-v4-flash` 迁到 `deepseek-flash`。③ README 首屏重构（概览图 / npm 徽章 / 30 秒上手），并修正两处与 1.9.1 之后行为不符的旧口径。

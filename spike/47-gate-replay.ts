@@ -56,7 +56,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { EDGE_WEIGHTS } from '../src/argp-types.ts'
 import type { Atom } from '../src/argp-types.ts'
 import { atomize, buildGraph, findVersionDuplicates, looksAskText, type GraphBuildHost } from '../src/graph-build.ts'
-import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, buildPruneIndexes, type PruneState } from '../src/prune-selection.ts'
+import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, buildPruneIndexes, buildTombstoneReplaceSeqs, type PruneState } from '../src/prune-selection.ts'
 import { TOMBSTONE_MAX_CHARS, isTombstoneText } from '../src/tombstone-text.ts'
 import { DEFAULT_MAX_PASSES } from '../src/constants.ts'
 import { loadSessionEvents, type RawSessionEvent } from './lib/session-corpus.ts'
@@ -318,6 +318,8 @@ const pruneState: PruneState = {
   aGroupChars,
   // 1.8.0 审计 P2-2：与引擎 pruneState 构造点同构（buildPruneIndexes 单一事实源）。
   ...buildPruneIndexes(edges, deterministicEdges, atoms),
+  // 1.10.2（0-3）：墓碑终止态结构锚定，与引擎构造点同构。
+  tombstoneReplaceSeqs: buildTombstoneReplaceSeqs(events as never, atoms),
 }
 console.log('\n--- ③ 参数 ---')
 console.log('recencyGuard=' + recencyGuard + ' turnGuard=' + turnGuard + ' minSpanChars=' + MIN_SPAN_CHARS
@@ -343,11 +345,11 @@ function firstGate(a: Atom, st: PruneState, allowInDegree: boolean): string {
     return 'pass'
   }
   if (a.type !== 'A' && a.type !== 'R' && a.type !== 'U') return 'type-not-eligible'
-  if (isTombstoneText(a.text) && a.text.length <= TOMBSTONE_MAX_CHARS) return 'tombstone-terminal'
+  if (st.tombstoneReplaceSeqs.has(a.seq) && a.text.length <= TOMBSTONE_MAX_CHARS) return 'tombstone-terminal'
   const pos = st.position.get(a.seq)
   if (pos === undefined || pos >= st.recencyCut) return 'position-guard'
   if (a.turn > st.latestTurn - st.turnGuard) return 'turn-guard'
-  if (a.citesFailed) return 'cites-failed'
+  if (a.citesFailed && !allowInDegree) return 'cites-failed'
   if (a.type === 'A' && a.toolCallIds.length > 0) {
     const groupIds = new Set<number>([a.id])
     const groupRs = st.atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
@@ -356,7 +358,7 @@ function firstGate(a: Atom, st: PruneState, allowInDegree: boolean): string {
       // C（B3）：组内 R 全立碑 ⇒ 放行。**本分支必须与 `src/prune-selection.ts` 的 A10 块逐字对应**——
       // 本函数是 `isAtomCandidate` 的重写副本（④ 段需要"首个拦截闸"的归因，单个布尔给不出来），
       // 漏同步即触发下方一致性校验（实测：C 落地后忘改本处 ⇒ 312 例不一致）。
-      const allStubbed = groupRs.every(r => isTombstoneText(r.text))
+      const allStubbed = groupRs.every(r => st.tombstoneReplaceSeqs.has(r.seq))
       if (!allStubbed) {
         const aCitesR = st.edges.some(e => e.from === a.id && groupRs.some(r => e.to === r.id))
         const anyRExternalIncoming = groupRs.some(r =>
@@ -412,7 +414,7 @@ for (const a of atoms.filter(x => x.type === 'A')) {
   a10Total += 1
   const groupRs = atoms.filter(x => x.type === 'R' && a.toolCallIds.includes(x.toolCallIds[0] ?? ''))
   if (groupRs.length === 0) { a10NoGroup += 1; continue }
-  const allStubbed = groupRs.every(r => isTombstoneText(r.text))
+  const allStubbed = groupRs.every(r => pruneState.tombstoneReplaceSeqs.has(r.seq))
   if (allStubbed) {
     a10AllStub += 1
     a10AllStubSelfChars += a.text.length
@@ -438,12 +440,13 @@ console.log('  ⇒ 毛释放 ≈ ' + K(a10AllStubGroupChars) + 'K tok'
 // ---------------------------------------------------------------------------
 // ⑥ G1 效果预估（1.7.0 会重复入候选的墓碑面）
 // ---------------------------------------------------------------------------
+const tombstoneReplaceSeqsAll = pruneState.tombstoneReplaceSeqs
 let g1Eligible = 0
 let g1EligibleChars = 0
 let g1OverCap = 0
 for (const a of atoms) {
   if (a.type !== 'A' && a.type !== 'R' && a.type !== 'U') continue
-  if (!isTombstoneText(a.text)) continue
+  if (!tombstoneReplaceSeqsAll.has(a.seq)) continue
   if (a.text.length <= TOMBSTONE_MAX_CHARS) { g1Eligible += 1; g1EligibleChars += a.text.length } else g1OverCap += 1
 }
 console.log('\n--- ⑥ G1 终止态排除面 ---')

@@ -97,14 +97,23 @@ export declare function toolTombstoneSummary(): string;
 /** 是否为 tool 占位墓碑文本（`[elided:` 冒号族）。 */
 export declare function isToolTombstoneText(text: string): boolean;
 /**
- * 是否为 ARGP 墓碑文本（**全部**四族：tool / 区间 / 闭包 / 聚合）。
+ * 是否为 ARGP 墓碑文本（**全部**四族，现行 + 已知历史文法的整串匹配）。
  *
- * G1 用它做"已立碑 = 终止态"判定，故必须**宽**（宁可多认也不漏认：漏认 ⇒ 空转回归；
- * 多认一个非墓碑文本 ⇒ 少剪一次，安全方向）。peratom 的压缩副本标记
+ * G1/A10 的终止态判定经 `buildTombstoneReplaceSeqs`（文本判据 + replace 事件锚串联）
+ * 使用本函数；单用文本判据不足以承担终止态语义。peratom 的压缩副本标记
  * （`[已压缩-摘取 seq=N]` / `[已压缩-摘要 seq=N]`）**不算**墓碑 —— 它是 LLM 压缩过的
  * 摘要，仍含信息，应当可继续被剪。
  */
 export declare function isTombstoneText(text: string): boolean;
+/**
+ * 宽松旧版墓碑判据（**只允许与 replace 事件锚串联使用**）：墓碑前缀 + `recall_pruned(`
+ * + ARGP 自我标识（`pruned by ARGP` / `旧版本结果已压缩` / `tombstone-merge`）。
+ *
+ * 用途：覆盖枚举不到的**历史中间版本**墓碑（1.4–1.6 的闭包/聚合措辞微调过多次）。
+ * 它们全部是 replace 事件，事件锚已排除伪造；宽松文本只影响"真墓碑漏认"方向
+ * （漏认 ⇒ 空转回归，宁可宽认）。**禁止**脱离事件锚单独使用本判据。
+ */
+export declare function isLooseLegacyTombstoneText(text: string): boolean;
 /**
  * 是否为**可合并**墓碑（`consolidateTombstones` 的判据，1.7.0 的 `isMergeableTombstone`）。
  *

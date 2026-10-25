@@ -19,7 +19,7 @@ import type { CompactionAgentContext, CompactionResult, ManualCompactAgentContex
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import type { Atom, AtomType } from './argp-types.js'
-import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn } from './log-access.js'
+import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn, resolveRootSeqs } from './log-access.js'
 import { classifyUserMessage } from './graph-build.js'
 import { visibleChars } from './budget.js'
 import { shadowedTokensOf } from './constants.js'
@@ -48,7 +48,7 @@ export interface GraphPruneRecord {
   at: string
   compactionId: string
   /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
-  sourceCommandId?: string
+  sourceCommandId?: CommandId
   intervals: { start: number; end: number; tombstoneSeq: number }[]
   startEventSeq: number
   summaryEventSeq: number
@@ -60,6 +60,12 @@ export interface GraphPruneRecord {
   charsBefore: number
   charsAfter: number
   forced: boolean
+  /**
+   * 事务以 error end 收尾时携带错误消息（1.10.2，0-5）：该事务是 partial（已落地的
+   * replace 子集真实有效，但整体未成功）。带 error 的记录**不参与**墓碑重定向表
+   * （intervals 为空），账本重建侧据此与成功事务区分。
+   */
+  error?: string
 }
 
 /**
@@ -426,9 +432,13 @@ export function consolidateTombstones(host: PruneTxHost, session: Session): numb
   }))
   const chars = tombAtoms.reduce((s, a) => s + a.text.length, 0)
   const interval = { seqs: tombSeqs, chars, atoms: tombAtoms }
-  // 聚合墓碑文本：保持「[elided … recall_pruned」形态（自身可再归并，地板随压缩次数
-  // 收敛到常数；seq 跨度显式保留，被吞聚合的内部 seq 可递归 recall）。
-  const aggText = consolidatedTombstone(tombSeqs.length, tombSeqs[0] as number, tombSeqs[tombSeqs.length - 1] as number)
+  // 聚合墓碑文本（0-6，1.10.2 起 seqs/recall 指针指向 **append 根源**而非墓碑副本自身）：
+  // 沿 surfaceOp replace 链回溯被归并各墓碑覆盖的原文并集（链式归并天然穿透到最初原文）。
+  // 1.10.2 前的旧文案指向副本 seq——recall 打过去只取回又一层墓碑（递归空手）；
+  // 存量旧聚合墓碑由 recall_pruned 的墓碑重定向兜底（recall-tools.ts）。保持
+  // 「[elided … recall_pruned」形态（自身可再归并，地板随压缩次数收敛到常数）。
+  const rootSeqs = [...new Set(tombSeqs.flatMap(s => resolveRootSeqs(sessionEvents(session), s)))].sort((a, b) => a - b)
+  const aggText = consolidatedTombstone(tombSeqs.length, rootSeqs[0] as number, rootSeqs[rootSeqs.length - 1] as number)
   try {
     pruneIntervals(host, session, [interval], 0, 0, true, [{ type: 'user', text: aggText }], 'tombstone-merge')
   } catch (error: unknown) {

@@ -121,11 +121,16 @@ interface PlanResult {
 /**
  * 从 user/message 事件提取 image/file 附件块（U-info 副本保留用；含 offloaded 标记）。
  * 非 user 事件 / 无 content / seq 不匹配 → 空数组（安全回退 = 现状纯文本副本）。
+ *
+ * user/message 的 content 在 **data.content**（无 message 层），与 log-access.eventTextOf
+ * 同口径（宿主 SessionEventMap：assistant/message 与 tool/result 才有 data.message 包装）。
+ * 1.10.2（0-1）前误读 `data.message.content` ⇒ 真实宿主上附件恒 []（1.7.0 的附件保留
+ * 功能整体 no-op；测试 fixture 当时用了同样的错误形状，双双自洽所以四年来没炸）。
  */
 export function attachmentBlocksOf(event: SessionEvent | undefined, expectedSeq?: number): ContentBlock[] {
   if (event === undefined || event.type !== 'user/message') return []
   if (expectedSeq !== undefined && (event as { seq?: unknown }).seq !== expectedSeq) return []
-  const content = (event.data as { message?: { content?: ContentBlock[] } })?.message?.content
+  const content = (event.data as { content?: unknown } | undefined)?.content
   if (!Array.isArray(content)) return []
   return content.filter(b => b.type === 'image' || b.type === 'file')
 }
@@ -227,6 +232,61 @@ function toolCopyPayload(origData: unknown, text: string): unknown {
 }
 
 /**
+ * info 压缩裁决（split 与 info-only 两分支共用，1.10.2 0-2 起）：
+ *  - summary/extract 且模型给了非空压缩文本 → 保真守卫（summary 审计放行缺失清单入账 /
+ *    extract 硬拒或 HLS 尾注修复档，按 hlsMode）；
+ *  - 守卫不过 / 缺省 / 空文本 → 回退 verbatim（原文保面，错误方向只往"少压"错）。
+ * verbatim 入参 = 被 压缩的 info 基线文本：split 分支是 info 片段、info-only 分支是整条
+ * user（后者 1.10.2 前直接丢弃 infoLevel/infoText，模型的压缩输出整档 no-op，K P1-7）。
+ */
+interface InfoGuardCounters {
+  skippedFidelity: number
+  hlsRepairs: number
+  hlsRoiSkipped: number
+  fidelityMissing: string[]
+  summaryDropped: string[]
+  restoredByGuard: string[]
+}
+
+function resolveInfoCopy(verbatim: string, split: UserSplit, hlsMode: 'off' | 'trailer', hlsRoiThreshold: number, c: InfoGuardCounters): string {
+  if (split.infoLevel !== 'summary' && split.infoLevel !== 'extract') return verbatim
+  const candidate = split.infoText ?? ''
+  if (candidate.length === 0) return verbatim
+  const guard = fidelityGuard(verbatim, candidate)
+  if (guard.ok) return candidate
+  if (split.infoLevel === 'summary') {
+    // summary 审计放行：概括天然丢精确串，缺失清单入账供审核（与 tool summary 同档纪律）。
+    c.summaryDropped.push(...guard.missing)
+    return candidate
+  }
+  if (hlsMode === 'trailer') {
+    // HLS 修复档（v1.2.0 组件 B）：尾注补全缺失硬 token——保真由构造（fidelityGuard
+    // 平凡通过 = 构造性断言）。经济学门控（θ）：修复后不划算（ROI < θ）→ 退回原文保面。
+    const econ = hlsRepairEconomics(verbatim.length, candidate.length, guard.missing, hlsRoiThreshold)
+    if (!econ.accept) {
+      c.hlsRoiSkipped += 1
+      c.skippedFidelity += 1
+      c.fidelityMissing.push(...guard.missing)
+      return verbatim
+    }
+    const repaired = repairWithTrailer(candidate, guard.missing)
+    if (fidelityGuard(verbatim, repaired).ok) {
+      c.hlsRepairs += 1
+      c.restoredByGuard.push(...guard.missing)
+      return repaired
+    }
+    // 构造性断言失败 = bug 信号：回退原文保面（保守方向）。
+    c.skippedFidelity += 1
+    c.fidelityMissing.push(...guard.missing)
+    return verbatim
+  }
+  // extract 硬拒（v1.1）：缺任一高信号 token 即回退逐字（原文保面）。
+  c.skippedFidelity += 1
+  c.fidelityMissing.push(...guard.missing)
+  return verbatim
+}
+
+/**
  * 引擎侧规划：模型输出过信任边界（seq 必须命中本轮收集集，先到先得去重），
  * 用户消息过 resolveSplit 全套保守策略（定位失败回退 dialog / 覆盖率翻转 / 空隙归 info）。
  * 返回落盘步骤序列；steps 为空 = 本轮无可落地动作（不开发务括号）。
@@ -247,15 +307,10 @@ export function planReplacements(
   const steps: PlannedStep[] = []
   let replaces = 0
   let skippedFallbackDialog = 0
-  let skippedFidelity = 0
   let skippedFalse = 0
   let skippedNoopGain = 0
-  const fidelityMissing: string[] = []
-  const summaryDropped: string[] = []
-  const restoredByGuard: string[] = []
-  let hlsRepairs = 0
-  let hlsRoiSkipped = 0
   let anomalies = 0
+  const infoGuard: InfoGuardCounters = { skippedFidelity: 0, hlsRepairs: 0, hlsRoiSkipped: 0, fidelityMissing: [], summaryDropped: [], restoredByGuard: [] }
 
   const seenUserSeqs = new Set<number>()
   for (const split of decision.splits) {
@@ -269,47 +324,7 @@ export function planReplacements(
       const verbatimInfo = buildInfoText(atom.text, res.infoSpans)
       // info 压缩：summary/extract 用模型压缩文本；false/缺省回退逐字切片。
       // guard 的 original 取 info 片段而非整条 user——dialog 里的路径/错误码不要求出现在 info 副本中。
-      let infoText = verbatimInfo
-      if (split.infoLevel === 'summary' || split.infoLevel === 'extract') {
-        const candidate = split.infoText ?? ''
-        if (candidate.length > 0) {
-          const guard = fidelityGuard(verbatimInfo, candidate)
-          if (!guard.ok) {
-            if (split.infoLevel === 'summary') {
-              // summary 审计放行：概括天然丢精确串，缺失清单入账供审核（与 tool summary 同档纪律）。
-              summaryDropped.push(...guard.missing)
-              infoText = candidate
-            } else if (hlsMode === 'trailer') {
-              // HLS 修复档（v1.2.0 组件 B）：尾注补全缺失硬 token——保真由构造
-              // （fidelityGuard 平凡通过 = 构造性断言；I-B1/I-B3）。
-              // 经济学门控（θ=1）：修复后不划算（ROI < θ）→ 退回原文保面（v1.1 行为）。
-              const econ = hlsRepairEconomics(verbatimInfo.length, candidate.length, guard.missing, hlsRoiThreshold)
-              if (!econ.accept) {
-                hlsRoiSkipped += 1
-                skippedFidelity += 1
-                fidelityMissing.push(...guard.missing)
-              } else {
-                const repaired = repairWithTrailer(candidate, guard.missing)
-                if (fidelityGuard(verbatimInfo, repaired).ok) {
-                  hlsRepairs += 1
-                  restoredByGuard.push(...guard.missing)
-                  infoText = repaired
-                } else {
-                  // 构造性断言失败 = bug 信号：回退原文保面（保守方向）。
-                  skippedFidelity += 1
-                  fidelityMissing.push(...guard.missing)
-                }
-              }
-            } else {
-              // extract 硬拒（v1.1）：缺任一高信号 token 即回退逐字（原文保面，错误方向只往"少压"错）。
-              skippedFidelity += 1
-              fidelityMissing.push(...guard.missing)
-            }
-          } else {
-            infoText = candidate
-          }
-        }
-      }
+      const infoText = resolveInfoCopy(verbatimInfo, split, hlsMode, hlsRoiThreshold, infoGuard)
       steps.push({
         kind: 'replace',
         type: 'user/message',
@@ -330,11 +345,15 @@ export function planReplacements(
       })
     } else if (res.kind === 'info-only') {
       // 零标注退化：整条 U-info 单事件 replace（纯资料消息的自然情形，非特判）。
+      // 1.10.2（0-2）起 info 压缩与 split 分支同款裁决（resolveInfoCopy）：模型的
+      // infoLevel/infoText 生效；守卫不过回退原文——回退仍是"同文 replace + 元数据"，
+      // 结构作用（ARG_NS 标记 + 召回锚点）保留。
+      const infoText = resolveInfoCopy(atom.text, split, hlsMode, hlsRoiThreshold, infoGuard)
       steps.push({
         kind: 'replace',
         type: 'user/message',
         at: atom.seq,
-        data: userCopyPayload(atom.text, { sourceSeq: atom.seq, summary: atom.text }, attachmentBlocksOf(events[atom.seq], atom.seq)),
+        data: userCopyPayload(infoText, { sourceSeq: atom.seq, summary: infoText }, attachmentBlocksOf(events[atom.seq], atom.seq)),
         sourceEventSeqs: [atom.seq],
       })
       replaces += 1
@@ -381,27 +400,27 @@ export function planReplacements(
     let text = action.text
     if (!guard.ok) {
       if (action.level === 'summary') {
-        summaryDropped.push(...guard.missing)
+        infoGuard.summaryDropped.push(...guard.missing)
       } else if (hlsMode === 'trailer') {
         // 经济学门控（θ=1）：修复后不划算（ROI < θ，典型 = 修复文本 ≥ 原文）→
         // 原样退回 v1.1 硬拒（原文保面）。门控拒收与构造性失败同列 skippedFidelity，
         // 单列 hlsRoiSkipped 以度量代价盲区间频率。
         const econ = hlsRepairEconomics(atom.text.length, action.text.length, guard.missing, hlsRoiThreshold)
         if (!econ.accept) {
-          hlsRoiSkipped += 1
-          skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+          infoGuard.hlsRoiSkipped += 1
+          infoGuard.skippedFidelity += 1; infoGuard.fidelityMissing.push(...guard.missing); continue
         }
         const repaired = repairWithTrailer(action.text, guard.missing)
         if (fidelityGuard(atom.text, repaired).ok) {
-          hlsRepairs += 1
-          restoredByGuard.push(...guard.missing)
+          infoGuard.hlsRepairs += 1
+          infoGuard.restoredByGuard.push(...guard.missing)
           text = repaired
         } else {
           // 构造性断言失败 = bug 信号：回退原文保面（保守方向）。
-          skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+          infoGuard.skippedFidelity += 1; infoGuard.fidelityMissing.push(...guard.missing); continue
         }
       } else {
-        skippedFidelity += 1; fidelityMissing.push(...guard.missing); continue
+        infoGuard.skippedFidelity += 1; infoGuard.fidelityMissing.push(...guard.missing); continue
       }
     }
     steps.push({
@@ -416,5 +435,18 @@ export function planReplacements(
     replaces += 1
   }
 
-  return { steps, replaces, skippedFallbackDialog, skippedFidelity, skippedFalse, skippedNoopGain, fidelityMissing, summaryDropped, hlsRepairs, restoredByGuard, hlsRoiSkipped, anomalies }
+  return {
+    steps,
+    replaces,
+    skippedFallbackDialog,
+    skippedFidelity: infoGuard.skippedFidelity,
+    skippedFalse,
+    skippedNoopGain,
+    fidelityMissing: infoGuard.fidelityMissing,
+    summaryDropped: infoGuard.summaryDropped,
+    hlsRepairs: infoGuard.hlsRepairs,
+    restoredByGuard: infoGuard.restoredByGuard,
+    hlsRoiSkipped: infoGuard.hlsRoiSkipped,
+    anomalies,
+  }
 }

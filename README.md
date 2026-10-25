@@ -8,7 +8,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎**：替换"让模型自由改写历史"的摘要式压缩——**LLM 只提方案、确定性守卫负责处置**，被压缩 / 被剪枝的原文永不销毁（append-only 日志 + 逐字召回），压缩率精确兑现（0-LLM 图规则收敛）。双引擎形态、**安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝（见[安装与挂载](#安装与挂载)）。
+**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎**：替换"让模型自由改写历史"的摘要式压缩——**LLM 只提方案、确定性守卫负责处置**，被压缩 / 被剪枝的原文保留在 append-only 日志、可按 seq 召回（文本块逐字；工具调用参数为 JSON 语义等价重建），压缩目标按**字符口径**收敛（0-LLM 图规则；字符 ≠ provider 实际 token，估算误差见「已知限制」）。双引擎形态、**安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝（见[安装与挂载](#安装与挂载)）。
 
 ![dsh-argp 概览：守护式两阶段上下文压缩](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
 
@@ -18,8 +18,8 @@ dsh plugin --profile <name> add dsh-argp    # 安装即挂；装好后在会话�
 
 三个核心机制：
 
-- **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议，永不销毁。
-- **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，压缩率精确兑现；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
+- **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议；原文保留在只追加日志（守卫覆盖编码在内的高信号 token，非全量无损承诺）。
+- **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，剪枝量按字符口径收敛到预算；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
 - **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail` 随取随回（text 块逐字字面量，哈希测试锁定；tool-call 参数为对象时 JSON 语义等价重建并精确标注；保真仅保证结构化承重 token 逐字，散文级不保证逐字；大节点 from/limit 分页续读）。上下文是日志的一个渲染视图，不是历史本身。
 
 ## 为什么
@@ -49,7 +49,7 @@ ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"
 
 1. **原子化 + 建图**：确定性边（assistant → 其 tool result，经 toolCallId）+ 语义边（模型按契约输出的 `{"cites":[{"t":"前缀","l":"c|s|x"}]}`，四级分级 critical/supporting/contextual/isolated）。
 2. **拓扑剪枝**：反复摘除入度为 0 的原子（边等级 → 有效重要性 → 最近引用轮次排序），被剪引用方的出边消失、下游逐 pass 解锁；闭包生命周期（ACTIVE→COMPLETED→PRUNABLE→PRUNED）整闭包退休已完成任务。
-3. **压缩率精确兑现**：触发线 window = contextWindow×0.8（默认）；保留目标 retain = **可压缩内容 × 0.2**（1.5.1 起：可压缩内容 = 完整请求 − system/tools/MCP 固定开销 = 剪枝目标量 visible，恒定压缩率 80%；旧公式 retain = window×0.2 = 0.16W 把固定开销算进基数，与目标量不含固定开销不对称）。触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（summarize 档是恒返回 null 的 stub——A6 保守选项 a 不实现，`enableSummarize` 默认 false）+ 反应式补救阶梯（第 2 次起放宽 recency/turn 守卫）收敛到预算或显式失败。
+3. **压缩目标按字符口径收敛**（trigger/retain 均为字符×charsPerToken 估算，真实 token 以 provider usage 锚点为准，不构成逐 token 精确承诺）：触发线 window = contextWindow×0.8（默认）；保留目标 retain = **可压缩内容 × 0.2**（1.5.1 起：可压缩内容 = 完整请求 − system/tools/MCP 固定开销 = 剪枝目标量 visible，恒定压缩率 80%；旧公式 retain = window×0.2 = 0.16W 把固定开销算进基数，与目标量不含固定开销不对称）。触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（summarize 档是恒返回 null 的 stub——A6 保守选项 a 不实现，`enableSummarize` 默认 false）+ 反应式补救阶梯（第 2 次起放宽 recency/turn 守卫）收敛到预算或显式失败。
 
 ### 三级触发（Stage-2 触发阶梯）
 
@@ -184,7 +184,7 @@ cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
 
 ### Graph 引擎历史验证（v0.3.x，DeepSeek v4-flash / Qwen3.8-27B）
 
-50 轮 t-long：U 锚点 7/7、needle 7/7（5/7 经 recall 找回）、4 事务 0 error、压缩目标精确兑现（32K）；200K 主流档成本 ¥2.695 vs 基线 high ¥3.087（该基线含 77% 空流 error，系平台 B-5 缺陷——对照数字按此口径解读，disabled 档 ¥3.19 为更干净的对照）。
+50 轮 t-long：U 锚点 7/7、needle 7/7（5/7 经 recall 找回）、4 事务 0 error、压缩目标达成（32K，字符口径；该基准对应当时的 retain 公式，与现行口径不同）；200K 主流档成本 ¥2.695 vs 基线 high ¥3.087（该基线含 77% 空流 error，系平台 B-5 缺陷——对照数字按此口径解读，disabled 档 ¥3.19 为更干净的对照）。
 
 ## 复现
 

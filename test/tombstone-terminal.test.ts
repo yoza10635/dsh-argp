@@ -30,6 +30,7 @@ import {
   consolidatedTombstone,
   isMergeableTombstoneText,
   isTombstoneText,
+  isLooseLegacyTombstoneText,
   isToolTombstoneText,
   seqRangeTombstone,
   toolTombstone,
@@ -95,8 +96,8 @@ function makeAtom(over: Partial<Atom> & Pick<Atom, 'seq' | 'type' | 'text'>): At
 function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
   // 1.8.0 审计 P2-2：索引字段从 over 拆出——Partial 会把必需的 4 个索引字段放宽成 | undefined，
   // 使 base 无法标注为 PruneState；索引在 return 处从**合并后**的 edges/deterministicEdges/atoms 重建。
-  const { incomingEdges: _ie, outgoingEdges: _oe, incomingDetEdges: _ide, rsByCallId: _rbc, ...rest } = over
-  const base: Omit<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId'> = {
+  const { incomingEdges: _ie, outgoingEdges: _oe, incomingDetEdges: _ide, rsByCallId: _rbc, tombstoneReplaceSeqs, ...rest } = over
+  const base: Omit<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId' | 'tombstoneReplaceSeqs'> = {
     turnGuard: 1,
     askCoverage: new Map(),
     position: new Map(atoms.map((a, i) => [a.seq, i])),
@@ -117,7 +118,14 @@ function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
     ...rest,
   }
   // 索引从**合并后**的 edges/deterministicEdges/atoms 构建（over 可能覆盖）。
-  return { ...base, ...buildPruneIndexes(base.edges, base.deterministicEdges, base.atoms) }
+  // 0-3（1.10.2）：墓碑终止态集合默认按文本判定填（合成原子无事件层）；
+  // 锚定语义（append 伪造墓碑不终止态）由测试显式传 tombstoneReplaceSeqs 覆盖。
+  return {
+    ...base,
+    tombstoneReplaceSeqs: tombstoneReplaceSeqs
+      ?? new Set(base.atoms.filter(a => isTombstoneText(a.text) || isLooseLegacyTombstoneText(a.text)).map(a => a.seq)),
+    ...buildPruneIndexes(base.edges, base.deterministicEdges, base.atoms),
+  }
 }
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
@@ -254,9 +262,11 @@ test('G1: 其他闸位不受影响（位置 / 年龄 / citesFailed 顺序不变�
   // 年龄闸
   const young = makeAtom({ seq: 4, type: 'R', turn: 10, text: 'live content'.repeat(5) })
   assert.equal(isAtomCandidate(young, false, makeState([young], { latestTurn: 10, turnGuard: 1 })), false, '年龄闸仍在')
-  // citesFailed 保护
+  // citesFailed 保护（0-3/1.10.2 起：正常路径保守保护不变；force 降级**可越**——该标志
+  // 源于不可信文本形状检测，不可越即"文本零成本制造永生区"，不得阻断最后降级）
   const failed = makeAtom({ seq: 5, type: 'A', text: 'answer', citesFailed: true })
-  assert.equal(isAtomCandidate(failed, true, makeState([failed])), false, 'citesFailed 保护仍在')
+  assert.equal(isAtomCandidate(failed, false, makeState([failed])), false, 'citesFailed 保护仍在（正常路径）')
+  assert.equal(isAtomCandidate(failed, true, makeState([failed])), true, 'force 降级可越 citesFailed（1.10.2 起）')
 })
 
 // ---------------------------------------------------------------------------

@@ -12,10 +12,10 @@
  * isAtomCandidate / isGroupCandidate / sortKey / mergeIntervals / buildTombstones
  * 为纯函数（入参显式 state）。
  */
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { Atom, AtomType, SemanticEdge, DeterministicEdge } from './argp-types.js'
 import { LEVEL_ORDER } from './argp-types.js'
-import { TOMBSTONE_MAX_CHARS, closureTombstone, isTombstoneText, seqRangeTombstone } from './tombstone-text.js'
+import { TOMBSTONE_MAX_CHARS, closureTombstone, isTombstoneText, isLooseLegacyTombstoneText, seqRangeTombstone } from './tombstone-text.js'
 import { sessionEvents } from './log-access.js'
 
 /** 空边列表常量（索引未命中时返回，避免 per-atom 分配新数组）。 */
@@ -69,6 +69,29 @@ export interface PruneState {
   incomingDetEdges: Map<number, DeterministicEdge[]>
   /** 每次调用索引：R 的首个 toolCallId（undefined → ''）→ R 原子（替代 per-A 的 `atoms.filter` O(R) 扫描）。 */
   rsByCallId: Map<string, Atom[]>
+  /**
+   * 结构锚定的墓碑终止态集合（1.10.2，0-3）：seq 同时满足①事件是 surfaceOp replace
+   * （真墓碑只能由 replace 产生；append 事件伪造的墓碑文本永不入集）②文本命中墓碑文法
+   * （严格 or 宽松旧版）。G1 与 A10 的 allStubbed 判定用它，替代裸文本前缀判据。
+   */
+  tombstoneReplaceSeqs: Set<number>
+}
+
+/**
+ * 构建 `tombstoneReplaceSeqs`（每次 compactIfNeeded 一次）：对全部原子检查
+ * 事件 surfaceOp 是否为 replace + 文本是否墓碑（严格文法 + 宽松旧版双档）。
+ * 单一事实源：引擎 pruneState 装配点、spike/47 重放、测试 makeState 三处共用。
+ */
+export function buildTombstoneReplaceSeqs(events: readonly SessionEvent[], atoms: readonly Atom[]): Set<number> {
+  const out = new Set<number>()
+  for (const a of atoms) {
+    const ev = events[a.seq]
+    if (ev === undefined) continue
+    const op = (ev as { surfaceOp?: string | { op?: string } }).surfaceOp
+    if (typeof op !== 'object' || op === null || op.op !== 'replace') continue
+    if (isTombstoneText(a.text) || isLooseLegacyTombstoneText(a.text)) out.add(a.seq)
+  }
+  return out
 }
 
 /**
@@ -157,11 +180,21 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
   // 归并（consolidateTombstones / isMergeableTombstoneText）走**事件层**，不经本函数，
   // 故"地板靠归并压下去"的机制不受影响。user 墓碑（X 类）在上一行已被排除——本行
   // 显式化的是同一件事，语义更清楚且覆盖 R 墓碑（真正的空转来源）。
-  if (isTombstoneText(a.text) && a.text.length <= TOMBSTONE_MAX_CHARS) return false
+  //
+  // 1.10.2（0-3）结构锚定：判定改为 `tombstoneReplaceSeqs`（replace 事件 + 墓碑文法
+  // 串联，buildTombstoneReplaceSeqs 构建）。裸文本前缀判据会让"复述前缀的工具输出 /
+  // 模型回复"零成本获得终止态免剪（Qwen M3 第二向量）；replace 事件锚使 append 事件
+  // 永不终止态——刻意伪造也只获得与普通原子同等的候选资格。
+  if (state.tombstoneReplaceSeqs.has(a.seq) && a.text.length <= TOMBSTONE_MAX_CHARS) return false
   const pos = state.position.get(a.seq)
   if (pos === undefined || pos >= state.recencyCut) return false
   if (a.turn > state.latestTurn - state.turnGuard) return false
-  if (a.citesFailed) return false
+  // citesFailed（0-3）：正文含 "cites" 字面量但尾部协议解析失败 → 保守保护（边数可能
+  // 被低估）。**force 降级可越**（allowInDegree=true 时跳过）：该标志源于不可信文本的
+  // 形状检测（includes('"cites"')），把它做成不可越的永久闸 = 文本可零成本制造永生区
+  // （Qwen M3 第一向量：force_prune 也剪不动、50 次重建全保留）。force 是"预算未达、
+  // 候选耗尽"的最后降级，形状免疫不得阻断它；正常路径（非 force）保持保守保护不变。
+  if (a.citesFailed && !allowInDegree) return false
   // A10（必补，收窄版）：A 带 R 组但漏 cites 时，该 A 对 R 无语义边 → 闭包守卫（inDegreeByClosure）
   // 防不住整闭包被剪。但**仅当组内 R 均无来自组外的其他入边**才结构性保护（收窄版）：
   //  - A 漏 cites 且 R 无任何外部入边（组内只有 issuer 的确定性配对边）→ 整组失去外部保护，
@@ -197,19 +230,15 @@ export function isAtomCandidate(a: Atom, allowInDegree: boolean, state: PruneSta
       // 上，A10 保住的只是 A 自己的 tool-call 参数，却让整组永久占位
       // （实测 268,086 字符 ≈ 103.2K tok，见 docs/plan-compaction-fixes §7.6）。
       //
-      // 判据 = `isTombstoneText`（全四族、**不设长度上限**）：与量出那 312 个靶子的口径
-      // 逐字一致（`spike/47-gate-replay.ts` ⑤ 段 / `scripts/step-audit.mjs`）。
-      // ⚠️ 两点不要"顺手改"：
-      //  - **不用 `isToolTombstoneText`**（窄口径）：R 的墓碑也可能是区间/闭包族，按 tool 族
-      //    过滤会与靶子口径漂移（A10 放过一部分、另一部分仍锁）；
-      //  - **不套 `TOMBSTONE_MAX_CHARS` 安全阀**：该阀服务于 G1 的"地板卡死"（长墓碑说明
-      //    还有东西可丢），与"内容是否已不在 surface"是两件不同的事。
+      // 判据（1.10.2，0-3 起结构锚定）= `tombstoneReplaceSeqs`（replace 事件 + 墓碑文法，
+      // 与 G1 同集合）：与量出那 312 个靶子的口径兼容（真墓碑必是 replace 事件），
+      // 且 append 伪造的墓碑文本不再解锁 A10。
       //
       // 放行后 A 并不"随便剪"：仍要过下方第 5 道闸（`curInDegree`）与位置/年龄守卫；
       // 且必须**整组退场**（A 被剪 ⇒ 其全部 R 同批进 pruned），由 `argp-graph-engine.ts`
       // pass 循环的 drag 分支 + 剪前回退保护负责 —— 否则留下的 `tool/result` 失去配对
       // A ⇒ 孤儿 `role:'tool'` 消息 ⇒ provider 400。
-      const allStubbed = groupRs.every(r => isTombstoneText(r.text))
+      const allStubbed = groupRs.every(r => state.tombstoneReplaceSeqs.has(r.seq))
       if (!allStubbed) {
         const groupSet = new Set<number>(groupRs.map(r => r.id))
         const aCitesR = (state.outgoingEdges.get(a.id) ?? EMPTY_SEMANTIC).some(e => groupSet.has(e.to))

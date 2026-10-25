@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "dsh-argp",
-    "description": "Guarded context compaction for DeepSeek Harness (dsh): the LLM proposes, deterministic guards dispose — eager per-atom shrink (extract/summary/false under verbatim guards) + lazy reference-graph eviction (0-LLM) + byte-exact recall from an append-only log. 压缩率精确兑现，历史永不销毁。"
+    "description": "Guarded context compaction for DeepSeek Harness (dsh): the LLM proposes, deterministic guards dispose — eager per-atom shrink (extract/summary/false under verbatim guards) + lazy reference-graph eviction (0-LLM) + seq-addressed recall from an append-only log (text verbatim; structured params are JSON semantic-equivalent reconstructions). Compaction targets converge on a character-count basis; originals stay in the log."
   }
 }

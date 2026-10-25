@@ -56,6 +56,11 @@ interface PlanResult {
 /**
  * 从 user/message 事件提取 image/file 附件块（U-info 副本保留用；含 offloaded 标记）。
  * 非 user 事件 / 无 content / seq 不匹配 → 空数组（安全回退 = 现状纯文本副本）。
+ *
+ * user/message 的 content 在 **data.content**（无 message 层），与 log-access.eventTextOf
+ * 同口径（宿主 SessionEventMap：assistant/message 与 tool/result 才有 data.message 包装）。
+ * 1.10.2（0-1）前误读 `data.message.content` ⇒ 真实宿主上附件恒 []（1.7.0 的附件保留
+ * 功能整体 no-op；测试 fixture 当时用了同样的错误形状，双双自洽所以四年来没炸）。
  */
 export declare function attachmentBlocksOf(event: SessionEvent | undefined, expectedSeq?: number): ContentBlock[];
 /**

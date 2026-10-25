@@ -12,7 +12,7 @@
  * isAtomCandidate / isGroupCandidate / sortKey / mergeIntervals / buildTombstones
  * 为纯函数（入参显式 state）。
  */
-import type { Session } from '@deepseek-ai/dsh-session';
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session';
 import type { Atom, AtomType, SemanticEdge, DeterministicEdge } from './argp-types.js';
 /** 剪枝区间（区间归并产物）。hasSoloR = 区间含「issuer A 未被剪」的独立 R（tool 占位墓碑配对约束）。 */
 export interface PruneInterval {
@@ -66,7 +66,19 @@ export interface PruneState {
     incomingDetEdges: Map<number, DeterministicEdge[]>;
     /** 每次调用索引：R 的首个 toolCallId（undefined → ''）→ R 原子（替代 per-A 的 `atoms.filter` O(R) 扫描）。 */
     rsByCallId: Map<string, Atom[]>;
+    /**
+     * 结构锚定的墓碑终止态集合（1.10.2，0-3）：seq 同时满足①事件是 surfaceOp replace
+     * （真墓碑只能由 replace 产生；append 事件伪造的墓碑文本永不入集）②文本命中墓碑文法
+     * （严格 or 宽松旧版）。G1 与 A10 的 allStubbed 判定用它，替代裸文本前缀判据。
+     */
+    tombstoneReplaceSeqs: Set<number>;
 }
+/**
+ * 构建 `tombstoneReplaceSeqs`（每次 compactIfNeeded 一次）：对全部原子检查
+ * 事件 surfaceOp 是否为 replace + 文本是否墓碑（严格文法 + 宽松旧版双档）。
+ * 单一事实源：引擎 pruneState 装配点、spike/47 重放、测试 makeState 三处共用。
+ */
+export declare function buildTombstoneReplaceSeqs(events: readonly SessionEvent[], atoms: readonly Atom[]): Set<number>;
 /**
  * 每次 compactIfNeeded 调用构建一次的边/原子索引（O(A+E) 建一次，pass 循环内 O(1) 查）。
  *

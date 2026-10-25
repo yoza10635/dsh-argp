@@ -267,6 +267,36 @@ export function nodeStateOf(session: Session, seq: number, isShadowed: (seq: num
   return 'off-surface'
 }
 
+/** surfaceOp replace 链回溯的深度上限（实测墓碑链长 ≤9；超出按数据损坏截断，返回已收集根）。 */
+const ROOT_SEQ_MAX_DEPTH = 32
+
+/**
+ * 沿 surfaceOp replace 链回溯到 append 根源 seq（1.10.2，0-6）。
+ *
+ * 归并墓碑指向修正用：墓碑副本事件是 replace，其 [startSeq..endSeq] 指向**上一代**
+ * （链式替换下是上一代墓碑而非原文）；循环回溯到 surfaceOp === 'append'（或无 op）
+ * 即原文根源。append 事件（含伪造墓碑文本的普通事件）返回自身单元素数组。
+ */
+export function resolveRootSeqs(events: readonly { surfaceOp?: unknown }[], seq: number): number[] {
+  const roots: number[] = []
+  const walk = (s: number, depth: number): void => {
+    if (depth > ROOT_SEQ_MAX_DEPTH) {
+      roots.push(s)
+      return
+    }
+    const ev = events[s] as { surfaceOp?: unknown } | undefined
+    const op = ev?.surfaceOp
+    if (typeof op !== 'object' || op === null || (op as { op?: string }).op !== 'replace') {
+      roots.push(s)
+      return
+    }
+    const { startSeq, endSeq } = op as { startSeq: number; endSeq: number }
+    for (let i = startSeq; i <= endSeq; i += 1) walk(i, depth + 1)
+  }
+  walk(seq, 0)
+  return [...new Set(roots)].sort((a, b) => a - b)
+}
+
 export type RecallOutcome =
   | { ok: true; state: NodeState; text: string }
   | { ok: false; reason: 'out-of-range'; total: number }

@@ -132,6 +132,16 @@ export interface RawEventText {
 export declare function rawEventText(session: Session, seq: number): RawEventText | null;
 /** 判定单个 seq 的状态。shadowed 优先（被遮蔽的节点也可能仍留在 surface 索引之外）。 */
 export declare function nodeStateOf(session: Session, seq: number, isShadowed: (seq: number) => boolean): NodeState;
+/**
+ * 沿 surfaceOp replace 链回溯到 append 根源 seq（1.10.2，0-6）。
+ *
+ * 归并墓碑指向修正用：墓碑副本事件是 replace，其 [startSeq..endSeq] 指向**上一代**
+ * （链式替换下是上一代墓碑而非原文）；循环回溯到 surfaceOp === 'append'（或无 op）
+ * 即原文根源。append 事件（含伪造墓碑文本的普通事件）返回自身单元素数组。
+ */
+export declare function resolveRootSeqs(events: readonly {
+    surfaceOp?: unknown;
+}[], seq: number): number[];
 export type RecallOutcome = {
     ok: true;
     state: NodeState;

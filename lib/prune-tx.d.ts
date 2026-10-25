@@ -21,7 +21,7 @@ export interface GraphPruneRecord {
     at: string;
     compactionId: string;
     /** /compact 发起命令 ID（presentation correlation；自动压缩时为 undefined）。 */
-    sourceCommandId?: string;
+    sourceCommandId?: CommandId;
     intervals: {
         start: number;
         end: number;
@@ -41,6 +41,12 @@ export interface GraphPruneRecord {
     charsBefore: number;
     charsAfter: number;
     forced: boolean;
+    /**
+     * 事务以 error end 收尾时携带错误消息（1.10.2，0-5）：该事务是 partial（已落地的
+     * replace 子集真实有效，但整体未成功）。带 error 的记录**不参与**墓碑重定向表
+     * （intervals 为空），账本重建侧据此与成功事务区分。
+     */
+    error?: string;
 }
 /**
  * F3（1.7.1）：旧 seq → 当前替身 seq（墓碑）的重定向表。

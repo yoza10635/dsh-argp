@@ -45,7 +45,13 @@ const FILE = {
   attachment: { attachmentId: 'file-1', name: 'b.txt', bytes: 50 },
 } as unknown as ContentBlock
 
-/** 合成 user/message 事件：text 块 + 可选附件块（data.message.content，V3/V4 同形）。 */
+/**
+ * 合成 user/message 事件：text 块 + 可选附件块。
+ * 真实宿主形状（0-1/1.10.2 起）：user/message 的 content 在 **data.content**（无 message
+ * 层；createUserMessage 的返回值即事件 data 本身），与 log-access.eventTextOf 同口径。
+ * 旧 fixture 把 content 包在 data.message 里——正是 1.7.0 attachmentBlocksOf 读错的
+ * 那个形状，fixture 与实现双双自洽所以从未暴露。
+ */
 function makeUserEvent(seq: number, text: string, attachments: ContentBlock[] = []): never {
   return {
     type: 'user/message',
@@ -53,11 +59,8 @@ function makeUserEvent(seq: number, text: string, attachments: ContentBlock[] = 
     time: 0,
     surfaceOp: 'append',
     data: {
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text }, ...attachments],
-        source: { kind: 'user' },
-      },
+      content: [{ type: 'text', text }, ...attachments],
+      source: { kind: 'user' },
     },
   } as never
 }

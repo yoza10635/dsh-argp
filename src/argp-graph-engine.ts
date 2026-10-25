@@ -51,8 +51,8 @@ export { scaleBudgets } from './budget.js'
 import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
 // 剪枝选择模块：isAtomCandidate/isGroupCandidate/sortKey/
 // mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
-import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, buildPruneIndexes, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
-export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, buildPruneIndexes } from './prune-selection.js'
+import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, buildPruneIndexes, buildTombstoneReplaceSeqs, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
+export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, buildPruneIndexes, buildTombstoneReplaceSeqs } from './prune-selection.js'
 export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
 // 剪枝事务模块：pruneIntervals/consolidateTombstones/
 // compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
@@ -395,7 +395,13 @@ export class ArgpGraphEngine extends CompactionEngine {
   get charsPerToken(): number { return this.args.charsPerToken.get() }
   get maxPasses(): number { return this.args.maxPasses.get() }
   get enableSummarize(): boolean { return this.args.enableSummarize.get() }
-  get sortMode(): 'legacy' | 'density' | 'density-chain' { return this.args.sortMode.get() as 'legacy' | 'density' | 'density-chain' }
+  get sortMode(): 'legacy' | 'density' | 'density-chain' {
+    // 0-8（1.10.2）：volatile 源的值经 settings 页写回（z.string() 无枚举约束），此处
+    // 运行时兜底——非法值回退默认 'density'（构造期 config 路径已在 normalizeConfig
+    // 显式拒绝；本兜底覆盖 settings 热改路径）。热路径不加告警（每 pass 每 原子调用）。
+    const v = this.args.sortMode.get() as unknown
+    return v === 'legacy' || v === 'density' || v === 'density-chain' ? v : 'density'
+  }
   readonly maxOverflowRetries!: number
   /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
   readonly onOverflowCompress?: (session: Session) => Promise<void>
@@ -1486,8 +1492,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       lastRef,
       charsPerToken: this.charsPerToken,
       aGroupChars,
-      // 1.8.0 审计 P2-2：边/原子索引每次 compactIfNeeded 建一次（O(A+E)），pass 循环内 O(1) 查。
+      // 1.8.0 审计 P2-2：边/原子索引每次 compactIfNeeded 建一次（O(A+E))，pass 循环内 O(1) 查。
       ...buildPruneIndexes(edges, deterministicEdges, atoms),
+      // 1.10.2（0-3）：墓碑终止态结构锚定（replace 事件 + 文法），G1/A10 共用。
+      tombstoneReplaceSeqs: buildTombstoneReplaceSeqs(sessionEvents(session), atoms),
     }
     const softCandidateGroups = groups.filter(g => isGroupCandidate(g, false, pruneState)).length
     const pruned = new Map<number, Atom>()

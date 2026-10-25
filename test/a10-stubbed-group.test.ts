@@ -29,6 +29,7 @@ import {
   closureTombstone,
   consolidatedTombstone,
   isTombstoneText,
+  isLooseLegacyTombstoneText,
   seqRangeTombstone,
   toolTombstone,
 } from '../src/tombstone-text.ts'
@@ -121,8 +122,8 @@ function makeAtom(over: Partial<Atom> & Pick<Atom, 'seq' | 'type' | 'text'>): At
 function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
   // 1.8.0 审计 P2-2：索引字段从 over 拆出——Partial 会把必需的 4 个索引字段放宽成 | undefined，
   // 使 base 无法标注为 PruneState；索引在 return 处从**合并后**的 edges/deterministicEdges/atoms 重建。
-  const { incomingEdges: _ie, outgoingEdges: _oe, incomingDetEdges: _ide, rsByCallId: _rbc, ...rest } = over
-  const base: Omit<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId'> = {
+  const { incomingEdges: _ie, outgoingEdges: _oe, incomingDetEdges: _ide, rsByCallId: _rbc, tombstoneReplaceSeqs, ...rest } = over
+  const base: Omit<PruneState, 'incomingEdges' | 'outgoingEdges' | 'incomingDetEdges' | 'rsByCallId' | 'tombstoneReplaceSeqs'> = {
     turnGuard: 1,
     askCoverage: new Map(),
     position: new Map(atoms.map((a, i) => [a.seq, i])),
@@ -143,7 +144,14 @@ function makeState(atoms: Atom[], over: Partial<PruneState> = {}): PruneState {
     ...rest,
   }
   // 索引从**合并后**的 edges/deterministicEdges/atoms 构建（over 可能覆盖）。
-  return { ...base, ...buildPruneIndexes(base.edges, base.deterministicEdges, base.atoms) }
+  // 0-3（1.10.2）：墓碑终止态集合默认按文本判定填（合成原子无事件层）；
+  // 锚定语义（append 伪造墓碑不终止态）由测试显式传 tombstoneReplaceSeqs 覆盖。
+  return {
+    ...base,
+    tombstoneReplaceSeqs: tombstoneReplaceSeqs
+      ?? new Set(base.atoms.filter(a => isTombstoneText(a.text) || isLooseLegacyTombstoneText(a.text)).map(a => a.seq)),
+    ...buildPruneIndexes(base.edges, base.deterministicEdges, base.atoms),
+  }
 }
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
@@ -262,8 +270,12 @@ test('C: 放行判据 = isTombstoneText 全族、不套长度安全阀（口径�
 
   // ② 超长墓碑仍放行 —— 顺手套上 TOMBSTONE_MAX_CHARS 时此条变红
   //    （该安全阀服务于 G1 的"地板卡死"，语义是"还有东西可丢"，与"内容是否已不在"是两件事）
-  const longText = toolTombstone(11) + ' '.repeat(TOMBSTONE_MAX_CHARS)
+  //    1.10.2（0-3）起判据锚定到文法 + replace 事件：现行四族生成器全部有界（≤~150 字符），
+  //    超长墓碑只来自 1.7.0 遗留闭包族（rootPreview 当年无截断），按遗留文法整串匹配。
+  const longText = '[elided closure closure-9 seqs=1..9: 9 of 9 surface nodes in this closure pruned by ARGP closure lifecycle; root='
+    + 'x'.repeat(TOMBSTONE_MAX_CHARS + 50) + '; recall_pruned(seq) retrieves original]'
   assert.ok(longText.length > TOMBSTONE_MAX_CHARS)
+  assert.ok(isTombstoneText(longText), '遗留长闭包墓碑仍被文法认出')
   assert.equal(isAtomCandidate(a, false, mk(longText)), true, '长度安全阀不参与 C 的放行判定')
 
   // ③ 非墓碑文本绝不因 C 放行
