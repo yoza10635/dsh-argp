@@ -4,6 +4,20 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.11.0] - 2026-10-27（stable 推进：真机浸泡通过 + Tier B 活体测试 + 死代码清扫）
+
+> **发行说明（汇总版）**：本版 = **1.11.0-beta.1 全部内容**（见下一节：预算真值 + D2 焦点漂移修复 + stable 前收尾批 + Tier A 集成测试）加上推进期两个提交：**Tier B 活体集成测试**与**死代码/陈旧注释清扫**。beta → stable 的推进依据：真机 web profile（宿主 0.2.1-rc.2，Qwen3.8-Flash-Next）浸泡通过——多会话交错下 `/argp` 桶各自独立（A/B 的 retain/now 各自取值无串台）、服务重启后会话 resume 记忆完整（模型准确回起重启前内容）、`/argp` 显示版本号/`graph+peratom`/`source=anchored`/`[this process]` 全部在位、服务日志零 error。
+
+### Added
+
+- **Tier B 活体集成测试**（`npm run test:live`）：testkit harness 上 agent 轮保持脚本化（驱动确定性），`purpose='compaction'` 调用经生产 wire 序列化器转发真实 OpenAI 兼容端点——与生产 dsh-llm 路径同形态（无 response_format，靠 extractJson 兜底）。`ARGP_ITEST_LLM` 门控（默认 `http://127.0.0.1:1234/v1` 经 `scripts/live-env.mjs` 预置；未设/不可达整文件自跳过，`npm test` 保持零网络）。L1 单轮契约（解析零失败 / 零调用错误 / 会话不破 / 事务括号配对）+ L2 五轮采样质量门（完成解析 5/5、可落地决策 ≥1、flush 事务 ≥3、相对无压缩基线净瘦 ≥1000 字符）。对 Qwen3.8-Flash-Next 三连跑全部可复现（temperature 0）。
+  - **真模型服从率发现**：Qwen Flash 在后续轮 4/5 次省略 `infoLevel`/`infoText`（提示词已声明必填，dsh-llm 路径 schema 仅文本描述）——引擎信任边界按设计回退逐字保面（安全方向，零损坏）；首压（干净上下文）服从完整。提示词硬化（few-shot 等）留待 1.11.x。
+  - **HLS 尾注修复档实证**：turn-1 的 extract 候选 86 字符被保真守卫拒收后机械补全缺失硬 token，3225→1065 字符（67% 瘦身）落地。
+
+### Changed
+
+- **死代码与陈旧注释清扫**：删 `hostHasLlm`（全库零引用）、client `booleanField`（enableSummarize 卡片行撤除后的孤儿工厂）、`SplitDecision`（零引用类型）、client `ArgpUserSettings.enableSummarize` 接口残留；降级链注释对齐现状（summarize 撤除后 lifecycle≡force，唯一分叉是 fail，三档保留为公开配置契约）。零行为变化；ts-prune 全库扫描的误报（barrel/测试在用/宿主 loader 契约）已逐一核实排除。
+
 ## [1.11.0-beta.1] - 2026-10-26（beta 渠道：预算真值 + 焦点漂移 + stable 前收尾批）
 
 > **发行说明**：三段攒批。批次 2（预算真值，9a48edb）+ 评审二批（D2 焦点漂移，dede2ac）+ Tier A 集成测试（3f4c3b6）+ 批次 3（stable 前收尾「诚实面与工程」，本提交）。评审二批来源：`docs/design-review-v1.11.0-beta.1-2026-10-25.md` D2/§7 的可动项——评审确认 `this.rt` 焦点指针在 async 恢复点会被其他会话抢绑换装，且 beta.0 的 abort 反例存在恒真断言（未锁住任何行为）。
