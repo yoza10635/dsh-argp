@@ -30,6 +30,7 @@ import type { CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { SessionRuntimeState } from './session-state.js';
 import type { BudgetHost } from './budget.js';
+import { type UiLocale } from './ui-locale.js';
 /**
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
@@ -79,5 +80,9 @@ export declare function registerArgpCommand(ctx: Context, host: ArgpStatusHost):
  *
  * 段数自适应：无意义的段（如未挂 declarer 时的 cites 段）整段省略，
  * 宁可少一行也不输出恒为 0 的噪声。
+ *
+ * 多语言（1.11.x）：`locale` 由注册侧每次调用经 `resolveUiLocale` 现取
+ * （settings `locale.preference`，缺省/异常回退英文）——设置页切语言后下一条
+ * /argp 即生效。缺省 'en' 保持既有测试与直接调用方的输出逐字节不变。
  */
-export declare function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandInvocation, 'agent'>): CommandResult;
+export declare function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandInvocation, 'agent'>, locale?: UiLocale): CommandResult;

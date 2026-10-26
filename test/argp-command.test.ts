@@ -28,8 +28,10 @@ import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { ARGP_COMMAND_NAME, ARGP_STATUS_VERSION } from '../src/argp-command.ts'
 import { sessionEvents } from '../src/log-access.ts'
 
-/** 构造：宿主命令服务 + ARGP 引擎 + 一个带会话的 agent 替身。 */
-async function makeStack(config: Record<string, unknown> = {}): Promise<{
+/** 构造：宿主命令服务 + ARGP 引擎 + 一个带会话的 agent 替身。
+ *  `settingsRows` 非空时在引擎挂载前提供一个含 describe 的假 settings 服务
+ *  （/argp 多语言用：resolveUiLocale 经 ctx.get('settings') 读它）。 */
+async function makeStack(config: Record<string, unknown> = {}, settingsRows?: { ns: string; value: unknown }[]): Promise<{
   ctx: Context
   engine: ArgpGraphEngine
   runtime: CommandRuntime
@@ -38,6 +40,12 @@ async function makeStack(config: Record<string, unknown> = {}): Promise<{
 }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp command test' } })
+  if (settingsRows !== undefined) {
+    ctx.provide('settings', {
+      configure: () => () => {},
+      describe: () => settingsRows,
+    })
+  }
   await ctx.plugin(CommandRuntime)
   await ctx.plugin(ArgpGraphEngine, {
     windowTokens: 100,
@@ -212,5 +220,73 @@ test('批次 3-2: /argp 报数按发起会话取桶 + retain 上界标注 + 日�
     assert.ok(text3.includes('log has 1 transaction'), '无台账时按日志真值报数（不伪造 0）: ' + text3)
   } finally {
     await ctx.fiber.dispose()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// /argp 多语言（1.11.x）：状态卡语言绑定宿主设置 locale.preference
+// ---------------------------------------------------------------------------
+
+test('resolveUiLocale: settings locale.preference 全形态解析（zh*/en/缺失/异形/异常一律安全回退）', async () => {
+  const { resolveUiLocale } = await import('../src/ui-locale.ts')
+  const describe = (rows: { ns: string; value: unknown }[]) => () => rows
+  const ctxWith = (settings: unknown): unknown => ({ settings })
+  // 显式 zh / BCP-47 变体 → zh
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: { preference: 'zh' } }]) })), 'zh')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: { preference: 'zh-CN' } }]) })), 'zh')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: { preference: 'ZH' } }]) })), 'zh')
+  // en / 其它语言 id → en
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: { preference: 'en' } }]) })), 'en')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: { preference: 'fr' } }]) })), 'en')
+  // 缺失行 / 空列表 / preference 缺席 / 异形 → en
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([]) })), 'en')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'other', value: { preference: 'zh' } }]) })), 'en')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: {} }]) })), 'en')
+  assert.equal(resolveUiLocale(ctxWith({ describe: describe([{ ns: 'locale', value: 'garbage' }]) })), 'en')
+  // 服务缺席 / 无 describe / describe 抛错 → en
+  assert.equal(resolveUiLocale(ctxWith(undefined)), 'en')
+  assert.equal(resolveUiLocale(ctxWith({})), 'en')
+  assert.equal(resolveUiLocale(ctxWith({ describe: () => { throw new Error('boom') } })), 'en')
+  // 宽松读取回退：属性访问无值时走 ctx.get（strict ctx 形态）
+  assert.equal(resolveUiLocale({ get: (n: string) => n === 'settings' ? { describe: describe([{ ns: 'locale', value: { preference: 'zh' } }]) } : undefined }), 'zh')
+  // get 也抛 → en
+  assert.equal(resolveUiLocale({ get: () => { throw new Error('no inject') } }), 'en')
+  // undefined ctx → en
+  assert.equal(resolveUiLocale(undefined), 'en')
+})
+
+test('/argp: 宿主显式 locale=zh ⇒ 状态卡中文渲染（真实 handler 经 settings 服务现取）', async () => {
+  const { runtime, agent, ctx, session } = await makeStack({}, [{ ns: 'locale', value: { preference: 'zh' } }])
+  appendTurn(session, 1, 'hello world', 'hi there')
+  try {
+    const execution = await runtime.execute(agent, '/argp', [], AbortSignal.timeout(5000))
+    assert.ok(execution !== undefined, 'expected /argp to resolve')
+    const text = execution.result.kind === 'success' ? (execution.result.text ?? '') : ''
+    assert.ok(text.startsWith('ARGP ' + ARGP_STATUS_VERSION + ' · 引擎 '), '中文头行: ' + text)
+    assert.ok(text.includes('预设 '), '预设标注: ' + text)
+    assert.ok(text.includes('预算：触发 '), '中文预算行: ' + text)
+    assert.ok(text.includes('剪枝：0（尚无压缩）'), '中文剪枝行: ' + text)
+    assert.ok(text.includes('召回：0 次调用'), '中文召回行: ' + text)
+    assert.ok(text.includes('cites：声明 '), '中文 cites 行（declarer 在位）: ' + text)
+    assert.ok(!text.includes('budget:'), '不应残留英文预算行: ' + text)
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('/argp: locale=en 或 preference 缺失 ⇒ 英文输出逐字节不变（回归锁定）', async () => {
+  for (const rows of [[{ ns: 'locale', value: { preference: 'en' } }], [{ ns: 'locale', value: {} }], []]) {
+    const { runtime, agent, ctx, session } = await makeStack({}, rows)
+    appendTurn(session, 1, 'hello world', 'hi there')
+    try {
+      const execution = await runtime.execute(agent, '/argp', [], AbortSignal.timeout(5000))
+      const text = execution?.result.kind === 'success' ? (execution.result.text ?? '') : ''
+      assert.ok(text.startsWith('ARGP ' + ARGP_STATUS_VERSION + ' · engine: '), '英文头行: ' + text)
+      assert.ok(text.includes('budget: trigger'), '英文预算行: ' + text)
+      assert.ok(text.includes('recall: 0 calls · 0 hits (n/a) [this process]'), '英文召回行逐字节: ' + text)
+      assert.ok(text.includes('cites: 0 declared · 0 resolved (0 ambiguous, 0 failed) [this process]'), '英文 cites 行逐字节: ' + text)
+    } finally {
+      await ctx.fiber.dispose()
+    }
   }
 })
