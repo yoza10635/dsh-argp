@@ -44,8 +44,6 @@ export interface AgentRouteHint {
  * 优先序由调用方保证：显式 `config.llm` > fetch（endpoint/apiKey/env）> 本兜底。
  */
 export declare function autoDshLlmSpec(ctx: Context, route: AgentRouteHint | null): DshLlmSpec | null;
-/** 宿主是否挂了 llm 服务（自动兜底的前提之一；测试/诊断用）。 */
-export declare function hostHasLlm(ctx: Context): boolean;
 /**
  * dsh-llm `Message` → OpenAI wire 消息数组（与 pi-ai openai-completions 的
  * transformMessages + 请求体构造等价；reasoning 字段名实测为 `reasoning`——

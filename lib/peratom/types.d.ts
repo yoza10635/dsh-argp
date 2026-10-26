@@ -12,15 +12,6 @@ export declare const SPLIT_THRESHOLD_CHARS = 100;
  */
 export declare const ARG_NS = "argp";
 /**
- * 拆分调用输出：模型只逐字抄写 dialog（指令）片段，
- * 未被抄写的余量整体归 info——不要求模型标注资料边界（空隙归 info）。
- */
-export interface SplitDecision {
-    seq: number;
-    /** 连续指令片段的逐字抄写：必须与原文完全一致（含空白/标点/全角半角/emoji），按原文顺序排列 */
-    quotes: string[];
-}
-/**
  * U-info 原子标记的落盘形态：原生 user/message 的 `data[ARG_NS]`。
  * 原始消息全文留在 append-only 日志（sourceSeq 即 recall_detail 的恢复目标）。
  */

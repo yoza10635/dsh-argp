@@ -114,8 +114,10 @@ export interface ArgpGraphConfig {
         contextTokens: number;
         surfaceTokens: number;
     };
-    /** 降级链：lifecycle（默认，闭包→force） / force / fail。'summarize' 档已撤（批次 3-1：
-     *  原为恒 null 的 stub，与"可选降级"宣称不符；存量配置值运行时自然落入 lifecycle 链）。 */
+    /** 降级链：lifecycle（默认）/ force / fail。'summarize' 档已撤（批次 3-1：
+     *  原为恒 null 的 stub，与"可选降级"宣称不符；存量配置值运行时自然落入 lifecycle 链）。
+     *  summarize 撤除后 lifecycle 与 force 同链（候选耗尽都是 闭包→force_prune），
+     *  唯一行为分叉是 fail（候选耗尽即终止、不产出）；三档保留为公开配置契约。 */
     degradationStrategy?: 'lifecycle' | 'force' | 'fail';
     /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
      *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）

@@ -155,7 +155,7 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   // NaN/Infinity 数值让预算与守卫静默偏移。cordis 对插件 config 不做 schema 校验
   // （YAML 手写层尤甚），形状责任在本插件。
   // ⚠️ 只校验**构造期按裸值消费**的字段：windowRatio/retainRatio/recencyGuard/turnGuard/
-  // minSpanChars/charsPerToken/maxPasses/sortMode/enableSummarize 九个设置页旋钮到达时是
+  // minSpanChars/charsPerToken/maxPasses/sortMode 八个设置页旋钮到达时是
   // Volatile thunk 对象（经 settings 源驱动，见下方注册块），裸值校验对它们恒误报；
   // 它们的约束在 settings schema（z.number().min/max）与运行时 getter 兜底。
   const violations: string[] = []
@@ -193,7 +193,7 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   host.explicitWindowTokens = config.windowTokens !== undefined
   host.explicitRetainTokens = config.retainTokens !== undefined
   // 顶层旋钮（windowRatio/retainRatio/recencyGuard/turnGuard/minSpanChars/charsPerToken/
-  // maxPasses/enableSummarize/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
+  // maxPasses/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
   // （见下方 settings 注册块），此处不再逐字段赋值；getter 读取 this.argpSettings。
   host.reserveTokens = config.reserveTokens ?? 0
   host.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP

@@ -17,10 +17,8 @@
  */
 /**
  * The engine knobs the `dsh-argp` namespace holds (mirrors the server schema).
- * The card surfaces six of them — two core (windowRatio/retainRatio) plus four
- * advanced (maxPasses/recencyGuard/turnGuard/sortMode); the remaining three
- * (minSpanChars/enableSummarize/charsPerToken) are schema-only escape hatches
- * not exposed in the UI.
+ * The card surfaces all eight — two core (windowRatio/retainRatio) plus six
+ * advanced (maxPasses/recencyGuard/turnGuard/minSpanChars/charsPerToken/sortMode).
  */
 export interface ArgpUserSettings {
     /** Compaction window as a fraction of the context budget. */
@@ -35,8 +33,6 @@ export interface ArgpUserSettings {
     turnGuard: number;
     /** Minimum span length (chars) worth keeping. */
     minSpanChars: number;
-    /** Enable extractive summarization of pruned spans. */
-    enableSummarize: boolean;
     /** Eviction ordering strategy. */
     sortMode: 'legacy' | 'density' | 'density-chain';
     /** Characters-per-token heuristic for budget math. */
@@ -166,8 +162,6 @@ export interface TextFieldSpec {
  * Empty clears; a value outside the enum is invalid (never silently stored).
  */
 export declare function textField(field: string, spec?: TextFieldSpec): CardFieldSpec;
-/** A boolean field rendered as a checkbox ('true'/'false' draft). */
-export declare function booleanField(field: string): CardFieldSpec;
 /** Stages one card's edits over one settings namespace and writes them on save. */
 export declare class CardForm<T> {
     private readonly scope;

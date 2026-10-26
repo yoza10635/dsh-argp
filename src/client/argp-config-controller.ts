@@ -18,10 +18,8 @@
 
 /**
  * The engine knobs the `dsh-argp` namespace holds (mirrors the server schema).
- * The card surfaces six of them — two core (windowRatio/retainRatio) plus four
- * advanced (maxPasses/recencyGuard/turnGuard/sortMode); the remaining three
- * (minSpanChars/enableSummarize/charsPerToken) are schema-only escape hatches
- * not exposed in the UI.
+ * The card surfaces all eight — two core (windowRatio/retainRatio) plus six
+ * advanced (maxPasses/recencyGuard/turnGuard/minSpanChars/charsPerToken/sortMode).
  */
 export interface ArgpUserSettings {
   /** Compaction window as a fraction of the context budget. */
@@ -36,8 +34,6 @@ export interface ArgpUserSettings {
   turnGuard: number
   /** Minimum span length (chars) worth keeping. */
   minSpanChars: number
-  /** Enable extractive summarization of pruned spans. */
-  enableSummarize: boolean
   /** Eviction ordering strategy. */
   sortMode: 'legacy' | 'density' | 'density-chain'
   /** Characters-per-token heuristic for budget math. */
@@ -311,21 +307,6 @@ export function textField(field: string, spec?: TextFieldSpec): CardFieldSpec {
   }
 }
 
-/** A boolean field rendered as a checkbox ('true'/'false' draft). */
-export function booleanField(field: string): CardFieldSpec {
-  return {
-    field,
-    format: value => (typeof value === 'boolean' ? String(value) : ''),
-    parse: (text) => {
-      const trimmed = text.trim().toLowerCase()
-      if (trimmed === '') return { kind: 'clear' }
-      if (trimmed === 'true') return { kind: 'set', value: true }
-      if (trimmed === 'false') return { kind: 'set', value: false }
-      return undefined
-    },
-  }
-}
-
 interface StagedEdit {
   text: string
   /** True when this edit clears the field whatever text it shows. */
@@ -550,8 +531,7 @@ export class ArgpConfigController {
     // Bounds mirror the server-side ArgpUserSettingsSchema (argp-graph-engine.ts):
     // the client must reject out-of-spec drafts before they are ever staged for
     // a write, so an out-of-range value can never silently land in the namespace.
-    // Bounds mirror the server-side ArgpUserSettingsSchema（批次 3-2 旋钮数对齐：schema 8 项
-    // 与卡片 8 行一致——补上此前缺渲染的 minSpanChars/charsPerToken，撤除 enableSummarize）。
+    // The eight fields must stay 1:1 with the card's eight rows (knob parity).
     this.form = new CardForm(scope, [
       numberField('windowRatio', { min: 0.1, max: 1 }),
       numberField('retainRatio', { min: 0.05, max: 1 }),

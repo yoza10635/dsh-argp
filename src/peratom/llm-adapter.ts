@@ -150,11 +150,6 @@ export function autoDshLlmSpec(ctx: Context, route: AgentRouteHint | null): DshL
   return { provider, model }
 }
 
-/** 宿主是否挂了 llm 服务（自动兜底的前提之一；测试/诊断用）。 */
-export function hostHasLlm(ctx: Context): boolean {
-  return resolveLlmRuntime(ctx) !== undefined
-}
-
 // ---------------------------------------------------------------------------
 // A 形态前缀序列化（compressor / cite-declarer 共用）
 //
