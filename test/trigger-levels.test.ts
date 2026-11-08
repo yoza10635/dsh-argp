@@ -521,7 +521,7 @@ test('L3⑤ 阶梯按 turn 重置：新一轮拿到完整续写额度', async ()
     await emitTurnStopping(ctx, agent, 4)
     assert.equal(steers.length, 1)
 
-    hostEmit(ctx, session, { type: 'turn/start', data: { turn: 5 } }) // 新一轮 ⇒ 阶梯清空
+    hostEmit(ctx, session, { type: 'turn/start', seq: session.snapshotEvents().length, data: { turn: 5 } }) // 新一轮 ⇒ 阶梯清空（seq 供 0.2.2 投影 drive 校验）
     appendClampedAssistant(ctx, session, 5, 1_911)
     await emitTurnStopping(ctx, agent, 5)
     assert.equal(steers.length, 2, 'turn 一换就重新拿到额度，避免"一条会话只救两次"')

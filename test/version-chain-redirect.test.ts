@@ -57,13 +57,13 @@ function appendAssistant(session: Session, text: string, turn: number): void {
 }
 
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
-  const res = await ctx.tools.execute({
+  const callId = ToolCallId('verchain-redirect-' + Math.random().toString(36).slice(2))
+  const batch = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: ToolCallId('verchain-redirect-' + Math.random().toString(36).slice(2)),
-    name,
-    arguments: args,
-  })
-  return res.content[0]?.type === 'text' ? res.content[0].text : ''
+    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
+  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
+  const res = batch.results[0]?.result
+  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
 }
 
 test('version-chain redirect: recall of pruned old R returns latest same-path version', async () => {

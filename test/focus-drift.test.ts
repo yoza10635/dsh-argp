@@ -170,14 +170,14 @@ test('D2: resolveScaledBudgets 把解析窗口写入调用方会话的桶（不�
 // ---------------------------------------------------------------------------
 
 async function runToolOn(ctx: Context, name: string, args: Record<string, unknown>, agentSession?: Session): Promise<string> {
-  const res = await ctx.tools.execute({
+  const callId = ToolCallId('drift-' + name + '-' + Math.random().toString(36).slice(2))
+  const batch = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: ToolCallId('drift-' + name + '-' + Math.random().toString(36).slice(2)),
-    name,
-    arguments: args,
+    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
     ...(agentSession !== undefined ? { agent: { session: agentSession } } : {}),
-  } as never)
-  return res.content[0]?.type === 'text' ? res.content[0].text : ''
+  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
+  const res = batch.results[0]?.result
+  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
 }
 
 test('路由：单会话回退保留；引擎见过 2 个会话后 exec.agent 缺席必须拒绝（不串台）', async () => {

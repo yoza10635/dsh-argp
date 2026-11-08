@@ -69,7 +69,8 @@ test('2-2: 不传 retainTokens 的默认分支 —— 压缩后 visible(after) �
     const session = Session.create(SessionId('ground-truth'))
     // 声明窗口（declaredKnown + 触发线前提）：2048 窗 ⇒ 阈值 1638 tok；
     // 内容 8024 字符 ≈ 2293 tok > 阈值 ⇒ 必触发。
-    ctx.emit('session/event', session, { type: 'request/context', data: { contextWindow: 2048 } } as never)
+    // seq=下一 log 序号：0.2.2-rc.1 起 ctx 总线投影 drive() 校验 event.seq。
+    ctx.emit('session/event', session, { type: 'request/context', seq: session.snapshotEvents().length, data: { contextWindow: 2048 } } as never)
     appendUser(session, 'anchor')
     // 4 条独立大 A（无边引用 ⇒ 全部可剪）
     for (let i = 0; i < 4; i += 1) appendAssistant(session, 'A' + i + ' ' + 'x'.repeat(2000), 1 + i)

@@ -91,13 +91,13 @@ async function makeZoom(config: Record<string, unknown> = {}): Promise<ZoomHarne
 }
 
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
-  const res = await ctx.tools.execute({
+  const callId = ToolCallId('rz-' + name + '-' + Math.random().toString(36).slice(2))
+  const batch = await ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: ToolCallId('rz-' + name + '-' + Math.random().toString(36).slice(2)),
-    name,
-    arguments: args,
-  })
-  return res.content[0]?.type === 'text' ? res.content[0].text : ''
+    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
+  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
+  const res = batch.results[0]?.result
+  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
 }
 
 function sha256(s: string): string {
@@ -267,13 +267,15 @@ test('compaction/end 事件归零预算（session/event 钩子）', async t => {
   // session.append 不触发监听器，须 ctx.emit 手动派发，实参 (session, event)；钩子只读
   // event.type，故事件体 as never 缩窄）。
   // 真实事件形状：data 承载 payload（测试旧 fixture 用扁平结构，2-6 起钩子读 data.error）。
-  h.ctx.emit('session/event', session, { type: 'compaction/end', data: { compactionId: 'x' } } as never)
+  // 0.2.2-rc.1 起 ctx 总线挂了 SessionProjectionRegistry，drive() 校验 event.seq ⇒
+  // 合成事件必须携带下一 log 序号。
+  h.ctx.emit('session/event', session, { type: 'compaction/end', seq: session.snapshotEvents().length, data: { compactionId: 'x' } } as never)
   assert.equal(h.zoom.detailUsed, 0, 'compaction/end must zero the budget via the session/event hook')
 
   // 2-6（1.11.0-beta.1）：带 error 的 end 是 partial 事务——不复位（成功才复位）。
   await runTool(h.ctx, 'recall_detail', { seq: 2 })
   assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'precondition: exhausted again')
-  h.ctx.emit('session/event', session, { type: 'compaction/end', data: { compactionId: 'x', error: 'partial' } } as never)
+  h.ctx.emit('session/event', session, { type: 'compaction/end', seq: session.snapshotEvents().length, data: { compactionId: 'x', error: 'partial' } } as never)
   assert.equal(h.zoom.detailUsed, h.zoom.detailBudget, 'error end must NOT reset the budget')
 })
 
@@ -421,12 +423,12 @@ test('enabled=false：不注册工具（直驱入口仍可用）', async t => {
   const direct = await h.zoom.recallDetail(2)
   assert.ok(direct.includes('EADDRINUSE'), 'direct drive works even with tools disabled')
   // 工具未注册 → 路由返回 unknown tool 错误（探针实证：不抛错，返回 isError 结果）
-  const res = await h.ctx.tools.execute({
+  const callId = ToolCallId('rz-disabled-' + Math.random().toString(36).slice(2))
+  const batch = await h.ctx.tools.execute({
     signal: new AbortController().signal,
-    callId: ToolCallId('rz-disabled-' + Math.random().toString(36).slice(2)),
-    name: 'recall_detail',
-    arguments: { seq: 2 },
-  })
-  assert.equal(res.isError, true, 'unregistered tool must return an error result')
-  assert.ok(String((res as { error?: { message?: string } }).error?.message ?? '').includes('unknown tool'), 'must be an unknown-tool error')
+    calls: [{ type: 'tool-use', id: callId, name: 'recall_detail', arguments: JSON.stringify({ seq: 2 }) }],
+  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
+  const res = batch.results[0]?.result
+  assert.equal(res?.isError, true, 'unregistered tool must return an error result')
+  assert.ok(String(res?.error?.message ?? '').includes('unknown tool'), 'must be an unknown-tool error')
 })
