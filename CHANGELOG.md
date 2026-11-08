@@ -4,6 +4,18 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.11.1] - 2026-11-08（宿主 0.2.2-rc.1 线兼容 + /argp 状态卡多语言）
+
+> **发行说明**：两个攒批提交——**宿主 0.2.2-rc.1 升级向上兼容全量验证**与 **`/argp` 状态卡绑定宿主语言**。`src/` 运行时代码除状态卡渲染外无行为变化、无配置迁移；准入仍由 `engines.dsh: ">=0.2.0-rc.1 <0.3.0-0"` 单独决定（未动），对宿主 0.2.0-rc.1 ~ 0.2.2-rc.1 全区间兼容，0.2.2-rc.1 上编译/单测/活体/真机四层验证通过。
+
+### Added
+
+- **/argp 状态卡跟随宿主语言设置（服务端多语言呈现）**：新叶子 `src/ui-locale.ts` 经 `settings.describe()` 从宿主设置 `locale` 命名空间的 preference **现取**语言（设置页切换后下一条命令即生效，无需重启），`renderArgpStatus` 拆出 `StatusCopy` 双语文案表——en/zh 两份实现经同一接口互为完整性校验（缺键编译错）；技术记号不翻译（preset id、`source=`、cites、引擎形态值），英文输出逐字节不变（回归锁定）。全形态防御：服务缺席/无 describe/异形值/调用抛错一律回退英文；"自动"模式（跟随浏览器语言）服务端不可见 client locale，维持英文——完全解需宿主在命令调用携带 locale（可提 feature request）。突变验证：拆除 handler locale 接线 ⇒ zh 端到端红，还原全绿。
+
+### Changed
+
+- **devDeps 升宿主 0.2.2-rc.1 线（向上兼容全量验证）**：`@deepseek-ai/*` 0.2.1-rc.3→0.2.2-rc.1、cordis 4.0.5→4.1.0（`dsh-agent@rc.1` peer 锁 `cordis ~4.1.0`，宿主 bundle 同载 4.1.0）。0.2.2 的两处变化均只落在**测试适配**：`ctx.tools.execute` 改批式（入参 `{calls,signal,agent?}`，返回 `{results:[{callId,result}]}`），ctx 总线新挂载的 `SessionProjectionRegistry.drive()` 校验 `event.seq`（合成 `session/event` fixture 补 seq，真实追加事件自带）。验证链：installer-asar 静态对照（session v4 不变、`register`/`defineTool` 兼容、compaction 包逐字节相同）→ tsc 干净 → Tier A 463/463 → Tier B 活体通过 → 真机桌面宿主 0.2.2-rc.1 启动并列载本插件无 incompatible 标记。**装树注意**：宿主 rc.1 包带指回 rc.3 的传递 peer pin，首次装树需 `npm install --force`（`--legacy-peer-deps` 会漏装 peer 依赖），锁文件已固化、`npm ci` 不受影响。
+
 ## [1.11.0] - 2026-10-27（stable 推进：真机浸泡通过 + Tier B 活体测试 + 死代码清扫）
 
 > **发行说明（汇总版）**：本版 = **1.11.0-beta.1 全部内容**（见下一节：预算真值 + D2 焦点漂移修复 + stable 前收尾批 + Tier A 集成测试）加上推进期两个提交：**Tier B 活体集成测试**与**死代码/陈旧注释清扫**。beta → stable 的推进依据：真机 web profile（宿主 0.2.1-rc.2，Qwen3.8-Flash-Next）浸泡通过——多会话交错下 `/argp` 桶各自独立（A/B 的 retain/now 各自取值无串台）、服务重启后会话 resume 记忆完整（模型准确回起重启前内容）、`/argp` 显示版本号/`graph+peratom`/`source=anchored`/`[this process]` 全部在位、服务日志零 error。
