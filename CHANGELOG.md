@@ -14,7 +14,7 @@
 
 ### Changed
 
-- **devDeps 升宿主 0.2.2-rc.1 线（向上兼容全量验证）**：`@deepseek-ai/*` 0.2.1-rc.3→0.2.2-rc.1、cordis 4.0.5→4.1.0（`dsh-agent@rc.1` peer 锁 `cordis ~4.1.0`，宿主 bundle 同载 4.1.0）。0.2.2 的两处变化均只落在**测试适配**：`ctx.tools.execute` 改批式（入参 `{calls,signal,agent?}`，返回 `{results:[{callId,result}]}`），ctx 总线新挂载的 `SessionProjectionRegistry.drive()` 校验 `event.seq`（合成 `session/event` fixture 补 seq，真实追加事件自带）。验证链：installer-asar 静态对照（session v4 不变、`register`/`defineTool` 兼容、compaction 包逐字节相同）→ tsc 干净 → Tier A 463/463 → Tier B 活体通过 → 真机桌面宿主 0.2.2-rc.1 启动并列载本插件无 incompatible 标记。**装树注意**：宿主 rc.1 包带指回 rc.3 的传递 peer pin，首次装树需 `npm install --force`（`--legacy-peer-deps` 会漏装 peer 依赖），锁文件已固化、`npm ci` 不受影响。
+- **devDeps 升宿主 0.2.2-rc.1 线（向上兼容全量验证）**：`@deepseek-ai/*` 0.2.1-rc.3→0.2.2-rc.1、cordis 4.0.5→4.1.0（`dsh-agent@rc.1` peer 锁 `cordis ~4.1.0`，宿主 bundle 同载 4.1.0）。0.2.2 的两处变化均只落在**测试适配**：`ctx.tools.execute` 改批式（入参 `{calls,signal,agent?}`，返回 `{results:[{callId,result}]}`），ctx 总线新挂载的 `SessionProjectionRegistry.drive()` 校验 `event.seq`（合成 `session/event` fixture 补 seq，真实追加事件自带）。验证链：installer-asar 静态对照（session v4 不变、`register`/`defineTool` 兼容、compaction 包逐字节相同）→ tsc 干净 → Tier A 463/463 → Tier B 活体通过 → 真机桌面宿主 0.2.2-rc.1 启动并列载本插件无 incompatible 标记。**装树说明**：互斥 peer 三角——`dsh-invariants@0.2.0-rc.1`（无 rc.1 可升，钉死旧线）peer cordis `~4.0.4` vs dsh-agent@rc.1 peer `~4.1.0`，另有 rc.1 包带指回 rc.3 的传递 pin。package.json 已声明 `overrides: {"@deepseek-ai/cordis": "4.1.0"}` 全树统一（与宿主 bundle 实载一致），`npm install` / `npm ci` 均免 flag 直过（首版 tag 的 CI 正是在裸 `npm ci` 上 ERESOLVE，本补丁修复）。
 
 ## [1.11.0] - 2026-10-27（stable 推进：真机浸泡通过 + Tier B 活体测试 + 死代码清扫）
 

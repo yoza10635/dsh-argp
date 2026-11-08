@@ -94,6 +94,9 @@
     "gate-replay": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/47-gate-replay.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
+  "overrides": {
+    "@deepseek-ai/cordis": "4.1.0"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
