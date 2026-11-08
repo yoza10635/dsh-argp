@@ -11,6 +11,7 @@
  *  6) 程序化接口 recallAnyState / nodeState
  */
 import test from 'node:test'
+import { execTool, toolText } from './tool-execute-shape.ts'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -58,14 +59,7 @@ function buildSession(): Session {
 }
 
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
-  const callId = ToolCallId('recall-log-' + name + '-' + Math.random().toString(36).slice(2))
-  const batch = await ctx.tools.execute({
-    signal: new AbortController().signal,
-    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
-  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
-  const res = batch.results[0]?.result
-  const text = res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
-  return text
+  return toolText(await execTool(ctx, { name, args, callId: ToolCallId('recall-log-' + name + '-' + Math.random().toString(36).slice(2)) }))
 }
 
 test('recall_pruned: shadowed 节点返回原文 + state=shadowed 标签', async () => {

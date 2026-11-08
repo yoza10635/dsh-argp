@@ -14,6 +14,7 @@
  *  6. compactIfNeeded signal：进入即取消 → null；await 后取消 → 拒绝且零写点
  */
 import test from 'node:test'
+import { execTool, toolText } from './tool-execute-shape.ts'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -170,14 +171,8 @@ test('D2: resolveScaledBudgets 把解析窗口写入调用方会话的桶（不�
 // ---------------------------------------------------------------------------
 
 async function runToolOn(ctx: Context, name: string, args: Record<string, unknown>, agentSession?: Session): Promise<string> {
-  const callId = ToolCallId('drift-' + name + '-' + Math.random().toString(36).slice(2))
-  const batch = await ctx.tools.execute({
-    signal: new AbortController().signal,
-    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
-    ...(agentSession !== undefined ? { agent: { session: agentSession } } : {}),
-  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
-  const res = batch.results[0]?.result
-  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
+  // 1-2 的关键形态：agent 携带**自己的** session（多会话宿主的真实形态）；测试只带 session 字段。
+  return toolText(await execTool(ctx, { name, args, agentSession, callId: ToolCallId('drift-' + name + '-' + Math.random().toString(36).slice(2)) }))
 }
 
 test('路由：单会话回退保留；引擎见过 2 个会话后 exec.agent 缺席必须拒绝（不串台）', async () => {

@@ -10,6 +10,7 @@
  * 每个测试 = 一个反例 + 断言（删掉对应修复即红）。
  */
 import test from 'node:test'
+import { execTool, toolText } from './tool-execute-shape.ts'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -42,17 +43,8 @@ function appendUser(session: Session, text: string): void {
 }
 
 async function runToolOn(ctx: Context, name: string, args: Record<string, unknown>, agentSession?: Session): Promise<string> {
-  const callId = ToolCallId('own-' + name + '-' + Math.random().toString(36).slice(2))
-  const batch = await ctx.tools.execute({
-    signal: new AbortController().signal,
-    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
-    // 1-2 的关键形态：agent 携带**自己的** session（多会话宿主的真实形态）。
-    // Agent 完整接口在运行时由 agent loop 提供；测试只携带 session 字段（工具侧
-    // 只读 agent.session），类型上经 as never 收窄。
-    ...(agentSession !== undefined ? { agent: { session: agentSession } } : {}),
-  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
-  const res = batch.results[0]?.result
-  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
+  // 1-2 的关键形态：agent 携带**自己的** session（多会话宿主的真实形态）；测试只带 session 字段。
+  return toolText(await execTool(ctx, { name, args, agentSession, callId: ToolCallId('own-' + name + '-' + Math.random().toString(36).slice(2)) }))
 }
 
 // ---------------------------------------------------------------------------

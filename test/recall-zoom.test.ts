@@ -11,6 +11,7 @@
  * 超预算截断、契约 section 静态注册、预算滑窗在 compaction/end 归零。
  */
 import test from 'node:test'
+import { execTool, toolText } from './tool-execute-shape.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
@@ -91,13 +92,7 @@ async function makeZoom(config: Record<string, unknown> = {}): Promise<ZoomHarne
 }
 
 async function runTool(ctx: Context, name: string, args: Record<string, unknown>): Promise<string> {
-  const callId = ToolCallId('rz-' + name + '-' + Math.random().toString(36).slice(2))
-  const batch = await ctx.tools.execute({
-    signal: new AbortController().signal,
-    calls: [{ type: 'tool-use', id: callId, name, arguments: JSON.stringify(args) }],
-  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
-  const res = batch.results[0]?.result
-  return res?.content?.[0]?.type === 'text' ? res.content[0].text ?? '' : ''
+  return toolText(await execTool(ctx, { name, args, callId: ToolCallId('rz-' + name + '-' + Math.random().toString(36).slice(2)) }))
 }
 
 function sha256(s: string): string {
@@ -423,12 +418,7 @@ test('enabled=false：不注册工具（直驱入口仍可用）', async t => {
   const direct = await h.zoom.recallDetail(2)
   assert.ok(direct.includes('EADDRINUSE'), 'direct drive works even with tools disabled')
   // 工具未注册 → 路由返回 unknown tool 错误（探针实证：不抛错，返回 isError 结果）
-  const callId = ToolCallId('rz-disabled-' + Math.random().toString(36).slice(2))
-  const batch = await h.ctx.tools.execute({
-    signal: new AbortController().signal,
-    calls: [{ type: 'tool-use', id: callId, name: 'recall_detail', arguments: JSON.stringify({ seq: 2 }) }],
-  } as never) as unknown as { results: { callId: string; result: { content?: { type: string; text?: string }[]; isError?: boolean; error?: { message?: string } } }[] }
-  const res = batch.results[0]?.result
+  const res = await execTool(h.ctx, { name: 'recall_detail', args: { seq: 2 }, callId: ToolCallId('rz-disabled-' + Math.random().toString(36).slice(2)) })
   assert.equal(res?.isError, true, 'unregistered tool must return an error result')
   assert.ok(String(res?.error?.message ?? '').includes('unknown tool'), 'must be an unknown-tool error')
 })
