@@ -4,6 +4,18 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+## [1.11.2] - 2026-11-09（hotfix：preset 死子路径条目炸新建会话，issue #3）
+
+> **发行说明**：P0 可用性热修（release-cadence 的 hotfix 例外）。三个 preset 的 delegation 组各有一条 `tool-subagent-list-agents` 指向 `@deepseek-ai/dsh-tool-subagent-control/list-agents`——该子路径在当前宿主包线（0.2.0-rc.1 起）的 `exports` 中**不存在**，凡装树里有此包者 preset 组装即抛 `agent-preset/invalid … never started`，**新建会话整体失败**（已有会话不受影响）。条目在 1.7.0 引入时对当时宿主正确，上游后来收掉该 export，1.11.1 时代在 0.2.2 线环境引爆。外部报告者（Maco0829，issue #3）与本机真机双向实证：删除前"新建会话失败"必现，删除后正常。
+
+### Fixed
+
+- **preset 删除不可解析的 `tool-subagent-list-agents` 条目**（三 preset 各一处）：`dsh-tool-subagent-control` 实载 exports 仅 `. / ./src/* / ./package.json / ./locale/*.json`；且 `list_agents` 工具本就由该包主入口 `apply(ctx)` 首步 `registerListAgents(ctx)` 注册，删除**零功能损失**（真机复核工具仍在）。宿主对"包缺席"宽容跳过、对"包在而子路径解析失败"严格报错——这解释了为何只有装了该包的环境（含桌面宿主 bundle 自带）会炸。
+
+### Added
+
+- **`test/preset-patch-entries.test.ts` 回归锁**：preset 的 `name:` 出现包子路径必须过白名单（白名单成员须附 exports 核实依据）。变异验证：塞回毒行 ⇒ 双测红。该测试首跑即抓到现存三处 `@deepseek-ai/dsh-plugin-manager/tools`，逐包核实其 exports 含 `./tools` 合法入名单——同类地雷自此进不了 CI。
+
 ## [1.11.1] - 2026-11-08（宿主 0.2.2-rc.1 线兼容 + /argp 状态卡多语言）
 
 > **发行说明**：两个攒批提交——**宿主 0.2.2-rc.1 升级向上兼容全量验证**与 **`/argp` 状态卡绑定宿主语言**。`src/` 运行时代码除状态卡渲染外无行为变化、无配置迁移；准入仍由 `engines.dsh: ">=0.2.0-rc.1 <0.3.0-0"` 单独决定（未动），对宿主 0.2.0-rc.1 ~ 0.2.2-rc.1 全区间兼容，0.2.2-rc.1 上编译/单测/活体/真机四层验证通过。
