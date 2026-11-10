@@ -119,7 +119,8 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
     type: 'tool';
     seq: number;
     callId: string;
-})[], summaryKind?: 'graph-prune' | 'tombstone-merge'): CompactionResult | null;
+    text?: string;
+})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune'): CompactionResult | null;
 /**
  * tombstone 归并。扫描 surface，找**连续**的「可合并墓碑」X 段
  * （user/message + isMergeableTombstone 文本），段长 ≥ tombstoneMergeMinRun 时一笔事务

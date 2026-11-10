@@ -139,8 +139,8 @@ export function pruneIntervals(
   semanticEdges: number,
   candidateCount: number,
   forced: boolean,
-  tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
-  summaryKind?: 'graph-prune' | 'tombstone-merge',
+  tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string })[],
+  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune',
 ): CompactionResult | null {
   // P1.2（2026-09-21）：事务开始前预校验 tool 占位墓碑的可克隆性。带 tool 墓碑的单 R 区间
   // 必须克隆原 R data（只改 inner text）以配对 issuer A 的 tool_calls；若原事件
@@ -156,7 +156,7 @@ export function pruneIntervals(
     const msg = data?.message as { role?: string; content?: unknown[] } | undefined
     return data !== undefined && msg !== undefined && msg.content?.[0] !== undefined
   }
-  type TombstoneSpec = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string }
+  type TombstoneSpec = { type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string }
   const st = host.stateOf(session)
   let useIntervals = intervals
   let useTombstones = tombstones
@@ -246,7 +246,9 @@ export function pruneIntervals(
         type: 'text',
         text: summaryKind === 'tombstone-merge'
           ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
-          : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+          : summaryKind === 'factor-prune'
+            ? `ARGP 因子剪：${prunedCount} R 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性贴标排序，0-LLM；原文保留在 append-only 日志，recall_history(labels) 可取回`
+            : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
       }],
       shadowedRange: { start: first, end: last },
       shadowedSeqs: rangeSeqs,
@@ -289,7 +291,9 @@ export function pruneIntervals(
         if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
           // G2（1.7.1）：文案自带**原始 R 的 log seq**（ts.seq 已在手，零额外查询）——
           // 1.7.0 写着 `recall_pruned(seq)` 却不给 seq，逼模型绕一步 list_pruned 反查。
-          const elidedText = toolTombstone(ts.seq)
+          // factor 臂传自定义最小桩（design-2.0 §1.2：桩文本禁引退役工具名，
+          // 缺省 toolTombstone 是图臂墓碑文法）。
+          const elidedText = ts.text ?? toolTombstone(ts.seq)
           // V4（0.1.7）：role:'tool' 顶层 toolCallId/isError 经展开保留，content 换单 text block；
           // V3（≤0.1.6）：role:'user' 内嵌 tool-result block，只改其 inner text。
           const newContent = origMsg.role === 'tool'

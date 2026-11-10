@@ -77,6 +77,12 @@ test('错误信号: exit≠0 记码；exit 0 不记；ALL_CAPS stop 词只举 er
   assert.equal(ok.errorish, false)
 })
 
+test('ALL_CAPS 条件挂码：成功输出不举 errorish 不挂码（自证循环反例锁）', () => {
+  const ok = extractTags({ tool: 'read', rawArgs: { file_path: 'a.ts' }, resultText: 'OLD CONTENT CONTENTS SUMMARY', sessionCwd: CWD })
+  assert.equal(ok.errorish, false, 'CONTENT/CONTENTS 是大写词但不是错误信号')
+  assert.deepEqual(ok.errorcodes, [], 'errorish 不成立 ⇒ ALLCAPS 候选码不挂（防伪造 sticky 轨）')
+})
+
 test('isError 注入：文本干净也举 errorish（宿主结构化标志优先 OR 入）', () => {
   const t = extractTags({ tool: 'read', rawArgs: { file_path: 'a.ts' }, resultText: 'clean output', sessionCwd: CWD, isError: true })
   assert.equal(t.errorish, true)

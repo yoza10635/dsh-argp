@@ -163,14 +163,22 @@ export function extractTags(input: ExtractInput): RTags {
     }
   }
   for (const m of input.resultText.matchAll(STATUS_RE)) {
-    if (m[1] !== undefined && m[1] !== '0') codes.add('status:' + m[1])
-  }
-  for (const m of input.resultText.matchAll(ALLCAPS_RE)) {
-    const c = m[0] ?? ''
-    if (!ALLCAPS_STOP.has(c)) codes.add(c)
+    if (m[1] !== undefined && m[1] !== '0') {
+      codes.add('status:' + m[1])
+      errorish = true
+    }
   }
   if (!errorish && ERR_HINT_RE.test(input.resultText)) errorish = true
-  if (codes.size > 0) errorish = true
+  // ALL_CAPS 是**条件挂码**（I-DIR 反例实锤：正常输出 'OLD CONTENT' 的 CONTENT
+  // 也是 5+ 大写词）：errorish 必须由 isError/exit≠0/status/错误词独立成立，
+  // ALLCAPS 只在成立时挂候选码——禁止 codes 自举 errorish（codes→errorish→codes
+  // 的自证循环会批量伪造 sticky 轨，把可剪面杀光）。
+  if (errorish) {
+    for (const m of input.resultText.matchAll(ALLCAPS_RE)) {
+      const c = m[0] ?? ''
+      if (!ALLCAPS_STOP.has(c)) codes.add(c)
+    }
+  }
 
   return {
     tool,
