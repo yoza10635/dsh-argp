@@ -17,6 +17,7 @@
  *  - 本类只剪 R（content-only 最小桩，宿主 assertToolResultRewrite 形态）；
  *    A 永不入剪枝区间（恒留待摘要），协议组互锁因此天然满足。
  */
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { detectOpenTurn, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
@@ -61,7 +62,14 @@ interface SessionFactorState {
   observedUpToSeq: number
   /** 在线采到的事件时文件基线（seq → key → 快照）。 */
   snapshots: Map<number, Map<string, FileSnapshot>>
+  /** 词表 note 的当前 surface 节点 seq；null = 本会话尚未注入。 */
+  vocabNoteSeq: number | null
+  /** 上次注入/重建时的账本 epoch（变化即重写 note）。 */
+  vocabEpoch: number
 }
+
+/** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
+export const VOCAB_NOTE_MARKER = '[argp-factor 词表]'
 
 export class FactorEngine {
   readonly ledger = new FactorLedger()
@@ -84,7 +92,7 @@ export class FactorEngine {
   private stateOf(session: Session): SessionFactorState {
     let st = this.states.get(session)
     if (st === undefined) {
-      st = { observedUpToSeq: -1, snapshots: new Map() }
+      st = { observedUpToSeq: -1, snapshots: new Map(), vocabNoteSeq: null, vocabEpoch: -1 }
       this.states.set(session, st)
     }
     return st
@@ -242,7 +250,7 @@ export class FactorEngine {
       : head + ' → ' + key + '（需要原文时 recall_history(' + key + ')）'
   }
 
-  /** 词表段（surface 剪枝区头部注入位在 P2 接线；本函数是渲染出口）。 */
+  /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
   vocabulary(session: Session): RenderVocabularyResult {
     this.observe(session)
     return renderVocabulary({
@@ -251,4 +259,71 @@ export class FactorEngine {
       budgetChars: this.cfg.vocabBudgetChars,
     })
   }
+
+  /**
+   * 词表 note 的单一可见副本维护（§1.4 注入位定稿：**不进 system 前缀**——每轮变动
+   * = 跨轮前缀缓存全断，`6d252cf` 教训；note 常驻剪枝区带、内容随 epoch 重写）。
+   *
+   * 通路 = pre-step 的 steer/replace（auto-continue 同款 notice 先例）：
+   *  - 首注：steer 一条 notice（source.kind='argp'，宿主归 X：进请求、不参剪、UI 按
+   *    notice 渲染）；指针以标记回溯为准——steer throw 或未落盘都**不记指针**
+   *    （记了 resume 找不回，等于坏指针 ⇒ 下轮自然重试）。
+   *  - 更新：**单节点 replace 原地重写**（墓碑归并同形态；replace 副本 model-only，
+   *    UI 留首份 notice——词表本就常驻更新，旧副本进 UI 无害）。绝不再 steer 第二条
+   *    （X 在 factor 臂永不参剪，多副本 = 不可剪地板累积）。
+   *  - resume：进程重启后指针丢失，按 VOCAB_NOTE_MARKER 从日志尾回溯找回最新副本。
+   */
+  async refreshVocabularyNote(session: Session, steer: (text: string) => unknown): Promise<void> {
+    const { text } = this.vocabulary(session)
+    if (text === '') return
+    const st = this.stateOf(session)
+    if (st.vocabNoteSeq === null) {
+      const found = lastVocabNoteSeq(sessionEvents(session) as unknown as EventLike[])
+      if (found !== null) {
+        st.vocabNoteSeq = found
+        st.vocabEpoch = this.ledger.epoch
+      }
+    }
+    if (st.vocabNoteSeq === null) {
+      await steer(VOCAB_NOTE_MARKER + '\n' + text)
+      // steer 落盘形态由宿主决定（auto-continue 先例：steer 即 append）——指针以
+      // **标记回溯**为准；steer 未落盘（异常宿主）则不记指针，下轮自然重试。
+      const seq = lastVocabNoteSeq(sessionEvents(session) as unknown as EventLike[])
+      if (seq === null) {
+        this.host.log.warn('[argp-factor] 词表 note steer 后未在日志找回（宿主 steer 未落盘？）——本轮跳过，下轮重试')
+        return
+      }
+      st.vocabNoteSeq = seq
+      st.vocabEpoch = this.ledger.epoch
+      return
+    }
+    if (st.vocabEpoch === this.ledger.epoch) return
+    st.vocabEpoch = this.ledger.epoch
+    const note = VOCAB_NOTE_MARKER + '\n' + text
+    // 裸 replace（无相邻 compaction/prune 配对）合法的前提 = 此刻无 armed claim：
+    // token-meter 投影只在 claim 悬着且范围不符时 throw（"no adjacent shadow price"），
+    // 无 claim 的单节点 replace 自折叠（cites-strip / U-info 副本同形态生产先例）。
+    // 调用点在 pre-step——上一笔剪枝事务以 compaction/end 收口、claim 已 drop。
+    await session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: note }],
+      source: { kind: 'argp', form: 'notice', summary: 'factor vocabulary (pruned labels; recall_history keys)' },
+    }), {
+      surfaceOp: { op: 'replace', startSeq: st.vocabNoteSeq as never, endSeq: st.vocabNoteSeq as never },
+      sourceEventSeqs: [st.vocabNoteSeq as never],
+    })
+  }
+}
+
+/** 日志尾向前找词表 note 的最新副本（replace 链的尾代 seq 最大，首个命中即最新）。 */
+function lastVocabNoteSeq(events: readonly EventLike[]): number | null {
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const e = events[i]
+    if (e === undefined || e.type !== 'user/message') continue
+    // user/message 的 content 挂 data.content（rawEventText 同口径）；双形态兼容读。
+    const d = (e.data ?? {}) as { content?: unknown; message?: { content?: unknown } }
+    const blocks = Array.isArray(d.content) ? d.content : Array.isArray(d.message?.content) ? d.message.content : null
+    const first = blocks === null ? undefined : blocks[0] as { type?: string; text?: string } | undefined
+    if (first !== undefined && first.type === 'text' && typeof first.text === 'string' && first.text.startsWith(VOCAB_NOTE_MARKER)) return e.seq
+  }
+  return null
 }

@@ -736,7 +736,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     incomingTokens?: number): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
-    /** factor 臂轮内压力剪（pre-step 用）；与 compactIfNeeded 同决策入口。 */
+    /**
+     * factor 臂轮内维护（pre-step 用）：先词表 note（§1.4 注入位=会话流 notice，不进
+     * system 前缀），后压力剪（与 compactIfNeeded 同决策入口）。词表先于压力判定——
+     * 账本 epoch 不因缺压而静止（sticky 观察也动 epoch），且 declaredKnown=false 的
+     * 早退不得连带饿死词表。
+     */
     private factorPressure;
     /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
      *

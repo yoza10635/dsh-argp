@@ -1,22 +1,3 @@
-/**
- * 因子引擎组合根（design-2.0 §3.2）：贴标 → 排序 → plan → prune-tx 成对发射。
- *
- * 全链 0 LLM（G7 口径）：本文件无 LLM import；摘要在 ua-summarizer（P2）。
- *
- * 账本一致性策略：**被剪账本 = shadowed 集合的投影**——发射侧零手动记账，
- * resume 重放与在线新增走同一条观察路（scanShadowedSeqs 引擎无关，
- * §1.5-9 无版本 pin 裁定的落点）。observeR/addPruned 由 ledger 的 rootSeq
- * 去重保证幂等，重复扫描无害——P1-d 正确性优先，增量缓存留给 P3 性能项。
- *
- * 可再生性采样的时序纪律（释放向，I-DIR）：**只在事件首次在线观察到时采样**
- * 文件基线；重放批（引擎挂上前的历史）不采样——启动后才 stat 到的 mtime
- * 无法区分"R 读后文件没动"与"R 读后已变又恰好没再变"，一律按未知（不可再生）。
- *
- * 挂载侧不变量（分发入口执行，见 argp-graph-engine factor 分支）：
- *  - engine='factor' ⇒ compressor/declarer/zoom 三管线不挂、cites 通道硬关；
- *  - 本类只剪 R（content-only 最小桩，宿主 assertToolResultRewrite 形态）；
- *    A 永不入剪枝区间（恒留待摘要），协议组互锁因此天然满足。
- */
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { type PruneTxHost } from '../prune-tx.ts';
@@ -49,6 +30,8 @@ export interface FactorDecision {
     /** §2.3 降级链上报量（>0 时调用方必须可见，不静默）。 */
     shortfallChars: number;
 }
+/** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
+export declare const VOCAB_NOTE_MARKER = "[argp-factor \u8BCD\u8868]";
 export declare class FactorEngine {
     readonly ledger: FactorLedger;
     private states;
@@ -70,6 +53,20 @@ export declare class FactorEngine {
     /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
      *  tagRsFromLog 的桩排除判据——单点引用，改文案不得动前缀。 */
     private stubText;
-    /** 词表段（surface 剪枝区头部注入位在 P2 接线；本函数是渲染出口）。 */
+    /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;
+    /**
+     * 词表 note 的单一可见副本维护（§1.4 注入位定稿：**不进 system 前缀**——每轮变动
+     * = 跨轮前缀缓存全断，`6d252cf` 教训；note 常驻剪枝区带、内容随 epoch 重写）。
+     *
+     * 通路 = pre-step 的 steer/replace（auto-continue 同款 notice 先例）：
+     *  - 首注：steer 一条 notice（source.kind='argp'，宿主归 X：进请求、不参剪、UI 按
+     *    notice 渲染）；指针以标记回溯为准——steer throw 或未落盘都**不记指针**
+     *    （记了 resume 找不回，等于坏指针 ⇒ 下轮自然重试）。
+     *  - 更新：**单节点 replace 原地重写**（墓碑归并同形态；replace 副本 model-only，
+     *    UI 留首份 notice——词表本就常驻更新，旧副本进 UI 无害）。绝不再 steer 第二条
+     *    （X 在 factor 臂永不参剪，多副本 = 不可剪地板累积）。
+     *  - resume：进程重启后指针丢失，按 VOCAB_NOTE_MARKER 从日志尾回溯找回最新副本。
+     */
+    refreshVocabularyNote(session: Session, steer: (text: string) => unknown): Promise<void>;
 }
