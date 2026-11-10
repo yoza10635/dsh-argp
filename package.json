@@ -92,6 +92,8 @@
     "spike43": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/43-corpus-audit.ts",
     "spike44": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/44-subagent-adapt.ts",
     "gate-replay": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/47-gate-replay.ts",
+    "spike48": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/48-tag-extract-audit.ts",
+    "spike49": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/49-recall-attribution.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "overrides": {
