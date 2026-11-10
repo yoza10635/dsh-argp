@@ -154,6 +154,68 @@ test('tiered 宽度熔断：焦点文档 hard 占比超阈 ⇒ 每文档只保�
   assert.equal(over.hardCopies, 1, '熔断后每文档最新一枚')
 })
 
+test('tiered 三值焦点带：strong(文档)=2 > medium(白名单命令)=1 > none=0（medium 永不 hard）', async () => {
+  // 焦点窗=turn3：npm 调用（args 通道 ⇒ medium 标签）；文本点名 a.ts（⇒ strong 文档标签）。
+  const { host, factor } = await makeTiered('tiered')
+  const session = makeSession('band3')
+  host.bindSession(session)
+  appendUser(session, 1, '开始任务')
+  appendGroup(session, 2, 's1', 'read', READ_A, 'OLD ver A'.repeat(40))
+  appendGroup(session, 2, 's2', 'read', READ_A, 'NEW ver A'.repeat(40))
+  appendGroup(session, 2, 'm1', 'bash', '{"command":"npm run build"}', 'build ok')
+  appendGroup(session, 2, 'n1', 'read', '{"file_path":"C:/Proj/y.ts"}', 'Y'.repeat(400))
+  appendUser(session, 3, '回到 ' + A_PATH + ' 这个文件')
+  appendGroup(session, 3, 'z', 'bash', '{"command":"npm run build"}', 'built again') // 焦点窗内的 npm 调用
+  const d = factor.decide(session, 100000)
+  const band = (id: string): number => {
+    const s = [...d.candidates.entries()].find(([, x]) => x.callId === id)?.[0]
+    assert.ok(s !== undefined, 'missing ' + id)
+    return d.focalBandBySeq.get(s) as number
+  }
+  assert.equal(d.focalMediumSize, 1, '焦点窗 npm 调用 ⇒ medium 标签 1 个')
+  assert.equal(band('s2'), 2, '焦点文档最新枚 = strong 带')
+  assert.equal(band('s1'), 2, '焦点文档旧枚也占 strong 带（hard 归熔断管，带位归 facet 管）')
+  assert.equal(band('m1'), 1, 'npm 命令原子 = medium 带')
+  assert.equal(band('n1'), 0, '普通读 = none')
+  assert.ok(!d.plan.hardProtected.includes((([...d.candidates.entries()].find(([, x]) => x.callId === 'm1')) as [number, unknown])[0]),
+    'medium 严禁进 hard（§2.5 双变量隔离）')
+  const idx = (id: string): number => d.plan.pruneOrder.indexOf(
+    ([...d.candidates.entries()].find(([, x]) => x.callId === id) as [number, unknown])[0])
+  assert.ok(idx('n1') < idx('m1'), 'none 带先剪于 medium 带（同 fresh 下带位先于体积）')
+})
+
+test('tiered 命令白名单：非白名单族（cd）不进 medium 标签', async () => {
+  const { host, factor } = await makeTiered('tiered')
+  const session = makeSession('bandcd')
+  host.bindSession(session)
+  appendUser(session, 1, '开始任务')
+  appendGroup(session, 2, 'm1', 'bash', '{"command":"cd C:/Proj && dir"}', 'listing')
+  appendGroup(session, 2, 'n1', 'read', '{"file_path":"C:/Proj/y.ts"}', 'Y'.repeat(400))
+  appendUser(session, 3, '看看目录')
+  appendGroup(session, 3, 'z', 'bash', '{"command":"cd C:/Proj && dir"}', 'listing2') // cd 族焦点调用
+  const d = factor.decide(session, 100000)
+  assert.equal(d.focalMediumSize, 0, 'cd 族被白名单挡在门外（爆炸半径定谳）')
+  const m1 = [...d.candidates.entries()].find(([, x]) => x.callId === 'm1')?.[0]
+  assert.equal(d.focalBandBySeq.get(m1 as number), 0, '非白名单命令原子停在 none 带')
+})
+
+test('flat 三值不越权：缺省构造命令焦点不产生标签/带位=布尔（地基锁补面）', async () => {
+  const run = async (tiered: 'flat' | undefined): Promise<string> => {
+    const { host, factor } = await makeTiered(tiered ?? 'flat')
+    const session = makeSession('flatband-' + String(tiered))
+    host.bindSession(session)
+    appendUser(session, 1, '开始任务')
+    appendGroup(session, 2, 'm1', 'bash', '{"command":"npm run build"}', 'build ok')
+    appendGroup(session, 2, 'n1', 'read', '{"file_path":"C:/Proj/y.ts"}', 'Y'.repeat(400))
+    appendUser(session, 3, '继续构建')
+    appendGroup(session, 3, 'z', 'bash', '{"command":"npm run build"}', 'built')
+    const d = factor.decide(session, 100000)
+    return JSON.stringify({ prune: d.plan.pruneOrder, hard: d.plan.hardProtected, med: d.focalMediumSize, mediumChars: d.mediumBandChars })
+  }
+  assert.equal(await run('flat'), await run(undefined), 'flat 缺省与显式全等')
+  assert.equal(JSON.parse(await run('flat')).med, 0, 'flat 不产 medium 标签（事件通道同关）')
+})
+
 test('tiered 豁免排序翻转：焦点命中的 superseded 旧版从"插队先剪"沉回非焦点之后', async () => {
   // C1=日志旧读（成功全读⇒可再生——错误扑空枚不可再生会被 flat 的 focalNonRegenerable
   // 硬保根本进不了剪序，矛盾面只有可再生枚能演示）；正文含 'ENOENT error' ⇒ 条件挂码，
@@ -185,6 +247,7 @@ test('tiered 豁免排序翻转：焦点命中的 superseded 旧版从"插队先
   const tiered = await run('tiered')
   // flat：superseded 位排在 focal 前 ⇒ 焦点旧版插队先剪（§9.12 冲突面成因）
   assert.ok(flat[0] < flat[2], 'flat：superseded 排在 focal 前——焦点旧版插队先剪')
-  // tiered：豁免 ⇒ 不标 superseded，沉到非焦点的 c2/cy 之后
-  assert.ok(tiered[0] > tiered[1] && tiered[0] > tiered[2], 'tiered：豁免生效——焦点命中的旧版最后剪')
+  // tiered：豁免只禁插队——c1 不再占 superseded=0 位，与 cy 同批按体积（cy 400B 先剪）。
+  // （band 语义下 errorcode 命中的焦点带位=0 是 v1.2 裁定的本意，沉底由三值带测单锁。）
+  assert.ok(tiered[0] > tiered[2], 'tiered：豁免生效——焦点命中的旧版不再插队')
 })

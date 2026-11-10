@@ -54,8 +54,13 @@ export interface ScoreInput {
   regenerable?: boolean
   /** staleness 覆盖证明（后续全量读 ⊇ 本读范围；部分读永不覆盖——引擎侧配反例）。 */
   superseded?: boolean
-  /** 焦点（标签 ∈ 焦点标签集；undefined=保守按焦点）。 */
+  /** 焦点（标签 ∈ 焦点标签集；undefined=保守按焦点）。flat 布尔通道。 */
   focal?: boolean
+  /**
+   * 三值焦点带（§2.5 v1.1：0 none / 1 medium 命令面 / 2 strong 文档面；tiered 通道）。
+   * 给了就优先于 focal 布尔。★ `focal === false ? 0 : 1` 的严格相等回退只适用于布尔。
+   */
+  focalBand?: 0 | 1 | 2
 }
 
 export interface ScoredEntry {
@@ -70,7 +75,8 @@ export function computeScore(i: ScoreInput): PruneScore {
   const readish = READ_TOOLS.has(i.tags.tool)
   const regenerable: 0 | 1 = i.regenerable === true && readish && i.tags.files.length > 0 ? 0 : 1
   const superseded: 0 | 1 = i.superseded === true && readish ? 0 : 1
-  const focal: 0 | 1 = i.focal === false ? 0 : 1
+  // 三值带优先；布尔回退保留 flat 现语义（undefined=保守按焦点=1）。
+  const focal: 0 | 1 | 2 = i.focalBand ?? (i.focal === false ? 0 : 1)
   return {
     hard: isHard ? 1 : 0,
     regenerable,

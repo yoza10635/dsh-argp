@@ -60,8 +60,11 @@ export interface PruneScore {
   regenerable: 0 | 1
   /** staleness 覆盖证明（0=被后续全量读覆盖）。 */
   superseded: 0 | 1
-  /** 焦点（0=非焦点先剪）。 */
-  focal: 0 | 1
+  /**
+   * 焦点带（0=非焦点先剪，升序=先剪；§2.5 v1.1 三值：0 none < 1 medium(命令面)
+   * < 2 strong(文档面)）。flat 只发 0/1——三值仅 tiered 消费。
+   */
+  focal: 0 | 1 | 2
   /** 新鲜度（turn 距离，旧者先）。 */
   freshness: number
   /** 体积（大者先）。 */

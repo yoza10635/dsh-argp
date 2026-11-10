@@ -9,7 +9,7 @@
  *    去重是 FactorLedger 的 rootSeq 职责（职责分层）；
  *  - isError 双形态：V4 `message.isError` 顶层 / V3 tool-result 块内。
  */
-import { extractTags } from './tag-extract.ts'
+import { COMMAND_MEDIUM_FAMILY_WHITELIST, COMMAND_TOOLS, extractTags } from './tag-extract.ts'
 import { indexKeys } from './factor-ledger.ts'
 import type { RTags } from './types.ts'
 
@@ -178,6 +178,30 @@ export function focalLabels(
     if (a.type !== 'U' && a.type !== 'A') continue
     const t = extractTags({ tool: '', rawArgs: null, resultText: a.text, sessionCwd })
     for (const key of indexKeys(t)) out.add(key)
+  }
+  return out
+}
+
+/**
+ * 焦点命令标签（medium 带，§2.5 v1.1：命令只参与排序、永不进 hard）。
+ * 命令**实际发生过**（焦点窗内 tool/call 事件的 args）才算焦点——U/A 文本通道恒缺
+ * args（focalCmd 构造级恒空的病灶，spike51）；族名过 COMMAND_MEDIUM_FAMILY_WHITELIST
+ * （首 token 太粗：cd 族爆炸半径/伪家族，实测定谳）。
+ */
+export function focalCommandLabels(
+  calls: readonly { turn: number; name: string; args: unknown }[],
+  latestTurn: number,
+  focalTurns: number,
+): Set<string> {
+  const out = new Set<string>()
+  if (focalTurns <= 0) return out
+  for (const c of calls) {
+    if (c.turn <= latestTurn - focalTurns) continue
+    if (!COMMAND_TOOLS.has(c.name)) continue
+    const t = extractTags({ tool: c.name, rawArgs: c.args, resultText: '' })
+    for (const cmd of t.commands) {
+      if (COMMAND_MEDIUM_FAMILY_WHITELIST.has(cmd.slice('command:'.length))) out.add(cmd)
+    }
   }
   return out
 }

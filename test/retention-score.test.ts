@@ -86,6 +86,21 @@ test('同级键序：非焦点 → 旧 → 大 → seq 升 tie', () => {
   assert.ok(compareForPrune(a, b) < 0 && compareForPrune(b, a) > 0, 'tie: rootSeq 升序')
 })
 
+test('三值焦点带（v1.1）：none=0 < medium=1 < strong=2；focalBand 优先于布尔回退', () => {
+  assert.equal(computeScore({ rootSeq: 1, turn: 5, currentTurn: 10, tags: mkTags(), focalBand: 0 }).focal, 0,
+    '★严格相等陷阱：none 档必须映射 0，不得被布尔回退翻成保守 1')
+  assert.equal(computeScore({ rootSeq: 1, turn: 5, currentTurn: 10, tags: mkTags(), focalBand: 1 }).focal, 1)
+  assert.equal(computeScore({ rootSeq: 1, turn: 5, currentTurn: 10, tags: mkTags(), focalBand: 2, focal: false }).focal, 2,
+    'focalBand 给了就优先（focal:false 不得压带）')
+  const none = mk(1, { focalBand: 0 })
+  const med = mk(2, { focalBand: 1 })
+  const strong = mk(3, { focalBand: 2 })
+  assert.ok(compareForPrune(none, med) < 0 && compareForPrune(med, strong) < 0, '带序：none 先剪于 medium 先剪于 strong')
+  // 布尔通道逐字不变（flat 地基）：undefined=保守 1
+  assert.equal(computeScore({ rootSeq: 1, turn: 5, currentTurn: 10, tags: mkTags(), focal: false }).focal, 0)
+  assert.equal(computeScore({ rootSeq: 1, turn: 5, currentTurn: 10, tags: mkTags() }).focal, 1)
+})
+
 // ---------------------------------------------------------------------------
 // 硬保护与降级链
 // ---------------------------------------------------------------------------

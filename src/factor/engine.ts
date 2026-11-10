@@ -24,7 +24,7 @@ import { detectOpenTurn, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from
 import { FOCAL_DOC_HARD_WIDTH_RATIO } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
-import { focalLabels, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
+import { focalCommandLabels, focalLabels, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
 import { computeScore, planPrune, type PrunePlan, type ScoredEntry } from './retention-score.ts'
 import { READ_TOOLS } from './tag-extract.ts'
@@ -72,6 +72,12 @@ export interface FactorDecision {
   focalDocFuse: boolean
   /** tiered：err 签名 exemplar hard 枚数（flat 恒 0；遥测/宽度账用）。 */
   errSigHardCount: number
+  /** tiered：medium 焦点标签数（focalSize 拆强/中两报，§2.5 遥测歧义账）。 */
+  focalMediumSize: number
+  /** tiered：medium 带（排序位）字节量——T-2 medium 面占比闸原料。 */
+  mediumBandChars: number
+  /** 逐候选焦点带（flat 语义：命中=1 未命中=0；tiered：三值）。 */
+  focalBandBySeq: ReadonlyMap<number, 0 | 1 | 2>
 }
 
 interface SessionFactorState {
@@ -168,12 +174,24 @@ export class FactorEngine {
     const focal = focalLabels(atoms as AtomLike[], latestTurn, this.cfg.focalTurns(), cwd)
     const tiered = this.cfg.focalTiered === 'tiered'
     const focalDocSet = new Set([...focal].filter(k => k.startsWith('document:')))
+    // medium 带原料（§2.5 v1.1）：焦点窗内 tool/call 的 args 命令族（白名单准入）。
+    // flat 恒空集——现行为字节不变（文本通道从未产过命令标签，事件通道同关）。
+    const focalMedium = new Set<string>()
+    if (tiered) {
+      const calls: { turn: number; name: string; args: unknown }[] = []
+      for (const e of sessionEvents(session) as unknown as EventLike[]) {
+        if (e.type !== 'tool/call') continue
+        const d = e.data as { turn?: number; name?: unknown; arguments?: unknown }
+        calls.push({ turn: typeof d.turn === 'number' ? d.turn : 0, name: String(d.name ?? ''), args: d.arguments })
+      }
+      for (const k of focalCommandLabels(calls, latestTurn, this.cfg.focalTurns())) focalMedium.add(k)
+    }
     const superseded = supersededMarks(tagsBySeq)
     const st = this.stateOf(session)
     const sticky = this.ledger.stickyActive()
     const candidates = new Map<number, RTagInput>()
     // 第一段：逐候选收集事实（tiered 的熔断要全局占比，hard 判定必须二段化）
-    interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[] }
+    interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[]; mediumHit: boolean }
     const facts: Fact[] = []
     for (const a of atoms) {
       if (a.type !== 'R') continue
@@ -199,6 +217,7 @@ export class FactorEngine {
       facts.push({
         seq: a.seq, turn: a.turn, input, inOpenTurn, regenerable, stickyMember, focalMatch,
         focalDocHit: tiered ? [...keys].filter(k => focalDocSet.has(k)) : [],
+        mediumHit: tiered ? keys.some(k => focalMedium.has(k)) : false,
       })
     }
     // 宽度熔断（§2.5 v1.1 护栏）：焦点文档 hard 候选字节占比超阈 ⇒ 每文档只保最新一枚
@@ -259,10 +278,17 @@ export class FactorEngine {
     }
     const entries: ScoredEntry[] = []
     let focalDocHardChars = 0
+    let mediumBandChars = 0
+    const focalBandBySeq = new Map<number, 0 | 1 | 2>()
     for (const f of facts) {
       const focalDocStrong = tiered && f.focalDocHit.length > 0
         && (!fuseActive || f.focalDocHit.some(lbl => docLatest.get(lbl) === f.seq))
       if (focalDocStrong) focalDocHardChars += f.input.tags.sizeChars
+      // 三值焦点带（§2.5 v1.1）：strong=文档面命中（hard 与否都占带位——熔断退 hard 时
+      // 排序位仍沉底）；medium=白名单命令面（★永不 hard）；其余 none。flat 走布尔回退。
+      const focalBand = tiered ? (f.focalDocHit.length > 0 ? 2 : f.mediumHit ? 1 : 0) : undefined
+      if (focalBand === 1) mediumBandChars += f.input.tags.sizeChars
+      focalBandBySeq.set(f.seq, focalBand ?? (f.focalMatch ? 1 : 0))
       entries.push({
         rootSeq: f.seq,
         score: computeScore({
@@ -283,6 +309,7 @@ export class FactorEngine {
           // （spike54 冲突面 90 枚/211KB；spike55 定案：非焦点释放阀保留）。
           superseded: tiered && f.focalMatch ? undefined : superseded.get(f.seq) === true ? true : undefined,
           focal: f.focalMatch,
+          focalBand,
         }),
       })
     }
@@ -292,6 +319,7 @@ export class FactorEngine {
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
       focalTiered: this.cfg.focalTiered, focalDocHardChars, focalDocFuse: fuseActive,
       errSigHardCount: errSigHardSeqs.size,
+      focalMediumSize: focalMedium.size, mediumBandChars, focalBandBySeq,
     }
   }
 

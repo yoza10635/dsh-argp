@@ -255,6 +255,7 @@ async function main(): Promise<void> {
       const perBudget: Record<string, { count: number; chars: number }> = {}
       for (const b of BUDGETS) perBudget[String(b)] = cutAtBudget(decision.plan.pruneOrder, charsBySeq, b)
       rec.variants[v.name] = {
+        mediumChars: decision.mediumBandChars, focalMediumSize: decision.focalMediumSize,
         softCount: decision.plan.pruneOrder.length,
         hardCount: decision.plan.hardProtected.length,
         perBudget,
@@ -436,6 +437,10 @@ function aggregate(records: readonly ArchiveRecord[]): Record<string, unknown> {
       return hist
     })(),
     violationsTotal: records.reduce((m, r) => m + Object.values(r.variants).reduce((k, v) => k + v.violations, 0), 0),
+    mediumGateTiered: (() => {
+      const shares = records.map(r => (r.rChars > 0 ? ((r.variants['tiered']?.mediumChars ?? 0) / r.rChars) * 100 : 0))
+      return { sharePctP50: stat(shares).p50, sharePctP90: stat(shares).p90, archivesWithMedium: records.filter(r => (r.variants['tiered']?.focalMediumSize ?? 0) > 0).length }
+    })(),
   }
 }
 
