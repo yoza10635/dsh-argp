@@ -85,9 +85,11 @@ function appendLoose(session: Session, type: string, data: Record<string, unknow
   wide.append(type, data, options)
 }
 
-export function toPristineSession(events: readonly RawSessionEvent[], slug: string): { session: Session; skipped: Map<string, number> } {
+export function toPristineSession(events: readonly RawSessionEvent[], slug: string): { session: Session; skipped: Map<string, number>; seqMap: number[] } {
   const session = Session.create(SessionId('t2-' + slug.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 24)))
   const skipped = new Map<string, number>()
+  /** pristine 事件下标 → 原始归档 seq（spike52 处理链对齐用；append 成功才 push）。 */
+  const seqMap: number[] = []
   for (const e of events) {
     let why: string | null = null
     if (!KEEP_TYPES.has(e.type)) why = 'type:' + e.type
@@ -116,12 +118,13 @@ export function toPristineSession(events: readonly RawSessionEvent[], slug: stri
       // append 的键形经宽化别名回灌（归档 type 是 string，宿主签名要 keyof SessionEventMap；
       // 运行时按原样透传，校验拒收走 catch 计数）。
       appendLoose(session, e.type, data, e.surfaceOp === 'append' ? { surfaceOp: 'append' } : {})
+      seqMap.push(e.seq)
     } catch (err) {
       const key = 'append-reject:' + e.type + ':' + String((err as Error).message).slice(0, 40)
       skipped.set(key, (skipped.get(key) ?? 0) + 1)
     }
   }
-  return { session, skipped }
+  return { session, skipped, seqMap }
 }
 
 // ---------------------------------------------------------------------------
