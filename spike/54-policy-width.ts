@@ -29,7 +29,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { sessionEvents } from '../src/log-access.ts'
-import { focalLabels, sessionCwdFromEvents, type AtomLike, type EventLike } from '../src/factor/factor-atoms.ts'
+import { focalLabels, sessionCwdFromEvents, supersededMarks, type AtomLike, type EventLike } from '../src/factor/factor-atoms.ts'
 import { indexKeys } from '../src/factor/factor-ledger.ts'
 import { loadSessionEvents } from './lib/session-corpus.ts'
 import { collectArchives, defaultRoots, mountVariant, toPristineSession } from './lib/t2-replay-core.ts'
@@ -76,6 +76,12 @@ for (const v of VARIANTS) {
 }
 let archivesDone = 0
 let totalSoftChars = 0
+// 版本链残留（supersededMarks）的释放面与焦点冲突面（用户 2026-11-11 裁定：
+// 文件版本链与因子方案矛盾——先量再裁）
+let supAtoms = 0
+let supChars = 0
+let supFocalClashAtoms = 0
+let supFocalClashChars = 0
 
 for (const arc of collectArchives(ROOTS)) {
   if (LIMIT > 0 && archivesDone >= LIMIT) break
@@ -148,6 +154,17 @@ for (const arc of collectArchives(ROOTS)) {
   const keysOf = new Map<number, Set<string>>()
   for (const [seq, c] of soft) keysOf.set(seq, new Set(indexKeys(c.tags)))
 
+  const sup = supersededMarks(decision.tagsBySeq)
+  for (const [seq, c] of soft) {
+    if (sup.get(seq) !== true) continue
+    supAtoms++
+    supChars += c.tags.sizeChars
+    if ([...(keysOf.get(seq) ?? [])].some(k => focalSet.has(k))) {
+      supFocalClashAtoms++
+      supFocalClashChars += c.tags.sizeChars
+    }
+  }
+
   // —— 各变体的额外保护集（仅作用软候选；已在 hard 的不在软集，天然排除）——
   const prot = new Map<string, Set<number>>()
   const docAll = inSoft(new Set([...soft.keys()].filter(s => [...(keysOf.get(s) ?? [])].some(k => focalDoc.has(k)))))
@@ -212,6 +229,10 @@ for (const arc of collectArchives(ROOTS)) {
 const kb = (n: number): string => (n / 1024).toFixed(0) + 'KB'
 const pct = (a: number, b: number): string => (b === 0 ? '-' : (100 * a / b).toFixed(1)) + '%'
 console.log('达标档案 = ' + archivesDone + ' | 软候选总字节 = ' + kb(totalSoftChars))
+console.log('superseded 版本链残留：软集释放面 = ' + supAtoms + ' 枚 / ' + kb(supChars)
+  + '（' + pct(supChars, totalSoftChars) + '） | 与焦点冲突面 = ' + supFocalClashAtoms + ' 枚 / '
+  + kb(supFocalClashChars) + '（superseded 的 ' + pct(supFocalClashChars, supChars) + '）——'
+  + 'compareForPrune 里 superseded 位排在 focal 前，冲突面上旧版本被链先剪、违反"焦点文档全枚保留"')
 const rows: string[] = ['变体          预算    额外保护(枚/KB, 宽)  挤占(枚/KB)   缺口(档/KB)  信号保住%  救回付账枚']
 for (const v of VARIANTS) {
   for (const b of BUDGETS) {
