@@ -1,0 +1,372 @@
+/**
+ * 被剪账本 + 倒排索引 + sticky 状态机 + 词表渲染（design-2.0 §1.3/§1.4/§2.2）。
+ *
+ * 全量重放、零持久化：一切状态可从 append-only 日志的 prune 事件重建（引擎侧职责，
+ * 本模块只吃 `(rootSeq, turn, RTags)` 三元组，不碰 fs、不碰 LLM）。
+ *
+ * 纪律：
+ *  - **append root seq 去重**——replace 链同一调用多次入账只计一次（`shadowedSeqsOf`
+ *    口径教训，spike/48 实测 47K 剪枝副本 vs 7.8K 真调用的病灶）；
+ *  - **词表源 = 被剪账本**（§1.5-7：列存活原子会把"已被清空"的标签挤出 top-N）；
+ *  - **fail-closed 出口**：渲染前再过一遍 `labelAllowed`（文法表改版后旧索引条目
+ *    不得漏进 prompt——拒收者留索引、不进 prompt）；
+ *  - **sticky 闭集从紧**（I-DIR：闭集是释放向，判据须严）：任何 tool 类的复发
+ *    都重置观察窗，"同文件他操作成功"绝不构成关闭理由。
+ */
+import { labelAllowed } from './tag-canonical.ts'
+import type { Facet, RTags, StickyState } from './types.ts'
+
+// ---------------------------------------------------------------------------
+// 索引键形：`<facet>:<label>`；document/scope/errorcode 加前缀，command 族
+// tag-extract 已产出 `command:<family>` 形态，原样入键（前缀即键形契约）。
+// ---------------------------------------------------------------------------
+
+export function indexKeys(tags: RTags): string[] {
+  const out: string[] = []
+  for (const f of tags.files) out.push('document:' + f)
+  for (const s of tags.scopes) out.push('scope:' + s)
+  for (const c of tags.commands) out.push(c)
+  for (const e of tags.errorcodes) out.push('errorcode:' + e)
+  return out
+}
+
+/** 词表可列类别（tool 仅展示不进查询键、scope 仅辅助排序——都不渲染进行）。 */
+export const VOCAB_FACETS = ['document', 'command', 'errorcode'] as const
+export type VocabFacet = (typeof VOCAB_FACETS)[number]
+
+export function facetOfKey(key: string): Facet | null {
+  if (key.startsWith('document:')) return 'document'
+  if (key.startsWith('scope:')) return 'scope'
+  if (key.startsWith('command:')) return 'command'
+  if (key.startsWith('errorcode:')) return 'errorcode'
+  if (key.startsWith('tool:')) return 'tool'
+  return null
+}
+
+// ---------------------------------------------------------------------------
+// 账本
+// ---------------------------------------------------------------------------
+
+export interface LedgerEntry {
+  /** append root seq：去重键，也是稳定排序基。 */
+  rootSeq: number
+  turn: number
+  tags: RTags
+}
+
+export interface InvertedStat {
+  rootSeqs: number[]
+  count: number
+  lastSeenTurn: number
+}
+
+export interface StickyTrack {
+  /** `${documentKey}|${errorcode}`（交集区键，§2.2）。 */
+  key: string
+  file: string
+  errorcode: string
+  state: StickyState
+  failCount: number
+  firstFailTurn: number
+  lastFailTurn: number
+  /** 相邻两次失败之间出现过对该文件的成功写（修复宣称）——sticky 触发条件。 */
+  fixClaimedBetween: boolean
+  /** 出现过的 tool 类（闭集论证用；闭集判据不依赖它，见 sweepClosed）。 */
+  toolClasses: Set<string>
+}
+
+export interface StickyView {
+  key: string
+  file: string
+  errorcode: string
+  state: StickyState
+  failCount: number
+  firstFailTurn: number
+  lastFailTurn: number
+  fixClaimedBetween: boolean
+}
+
+export interface PrunedQuery {
+  /** 全键形标签（`document:c:/x`、`command:npm`、`errorcode:ERESOLVE`）。 */
+  labels: string[]
+  limit: number
+  /** 分页游标 = 上一次结果的 nextCursor；与 epoch 配套才有效。 */
+  cursor?: number
+  /** 快照 epoch：与账本当前值不符 ⇒ 期间有剪枝入账，排序已漂移。 */
+  epoch?: number
+}
+
+export interface PrunedQueryResult {
+  rows: Array<{ rootSeq: number; turn: number; hitLabels: string[] }>
+  nextCursor: number | null
+  epoch: number
+  /** 传入 epoch 与当前不符：游标失效，调用方须从头重查（不假装稳定分页）。 */
+  epochStale: boolean
+}
+
+export class FactorLedger {
+  private entries = new Map<number, LedgerEntry>()
+  private inverted = new Map<string, Set<number>>()
+  /** sticky 通道独立去重：观察流含存活 R，与剪枝通道互不污染。 */
+  private observed = new Set<number>()
+  private sticky = new Map<string, StickyTrack>()
+  private _epoch = 0
+
+  get epoch(): number {
+    return this._epoch
+  }
+
+  get prunedCount(): number {
+    return this.entries.size
+  }
+
+  /**
+   * 剪枝入账。rootSeq 重复（replace 链 / 重放双计）⇒ 返回 false，绝不双计。
+   * 不合文法的标签照单入索引（§1.3：留索引），出口渲染处拦截。
+   */
+  addPruned(entry: LedgerEntry): boolean {
+    if (this.entries.has(entry.rootSeq)) return false
+    this.entries.set(entry.rootSeq, entry)
+    for (const key of indexKeys(entry.tags)) {
+      const set = this.inverted.get(key)
+      if (set === undefined) this.inverted.set(key, new Set([entry.rootSeq]))
+      else set.add(entry.rootSeq)
+    }
+    this._epoch += 1
+    return true
+  }
+
+  /**
+   * sticky 状态机进料：**全部** R 事件（含存活者——"两次失败夹成功写"的观察
+   * 面本来就在存活区）。rootSeq 去重与 addPruned 独立。
+   */
+  observeR(rootSeq: number, turn: number, tags: RTags): void {
+    if (this.observed.has(rootSeq)) return
+    this.observed.add(rootSeq)
+    if (tags.errorish && tags.errorcodes.length > 0 && tags.files.length > 0) {
+      for (const file of tags.files) {
+        for (const code of tags.errorcodes) {
+          const key = file + '|' + code
+          const t = this.sticky.get(key)
+          if (t === undefined) {
+            this.sticky.set(key, {
+              key, file, errorcode: code, state: 'open', failCount: 1,
+              firstFailTurn: turn, lastFailTurn: turn, fixClaimedBetween: false,
+              toolClasses: new Set([tags.tool]),
+            })
+          } else {
+            // 复发夹修复宣称 ⇒ sticky（保护向：宣称不实、错误再现）。
+            // closed 非终态：同键复发必须复活重观察（闭集判据重新起算）。
+            if (t.fixClaimedBetween) t.state = 'sticky'
+            else if (t.state === 'closed') t.state = 'open'
+            t.failCount += 1
+            t.lastFailTurn = turn
+            t.fixClaimedBetween = false
+            t.toolClasses.add(tags.tool)
+          }
+        }
+      }
+      this._epoch += 1
+      return
+    }
+    if (tags.writeish && !tags.errorish && tags.files.length > 0) {
+      // 成功写 = 对在场文件的"修复宣称"，只挂到该文件已有的 open/sticky 失败上。
+      for (const file of tags.files) {
+        for (const t of this.sticky.values()) {
+          if (t.file === file && t.state !== 'closed') t.fixClaimedBetween = true
+        }
+      }
+    }
+  }
+
+  /**
+   * 闭集扫描（引擎每轮调用）。I-DIR 严口径：窗内**任何** tool 类复发都重置
+   * 观察窗（三条件交集版更松，弃用）；只有 sticky 且窗内零复发才 closed。
+   */
+  sweepClosed(currentTurn: number, windowTurns: number): void {
+    for (const t of this.sticky.values()) {
+      if (t.state === 'sticky' && currentTurn - t.lastFailTurn >= windowTurns) t.state = 'closed'
+    }
+  }
+
+  /** open/sticky 全量视图（引擎排序硬保护 + 词表标注行消费）。 */
+  stickyActive(): StickyView[] {
+    const out: StickyView[] = []
+    for (const t of this.sticky.values()) {
+      if (t.state === 'closed') continue
+      out.push({
+        key: t.key, file: t.file, errorcode: t.errorcode, state: t.state,
+        failCount: t.failCount, firstFailTurn: t.firstFailTurn,
+        lastFailTurn: t.lastFailTurn, fixClaimedBetween: t.fixClaimedBetween,
+      })
+    }
+    return out.sort((a, b) => b.failCount - a.failCount || b.lastFailTurn - a.lastFailTurn)
+  }
+
+  stat(key: string): InvertedStat | null {
+    const set = this.inverted.get(key)
+    if (set === undefined || set.size === 0) return null
+    let last = -1
+    for (const seq of set) {
+      const e = this.entries.get(seq)
+      if (e !== undefined && e.turn > last) last = e.turn
+    }
+    return { rootSeqs: [...set].sort((a, b) => a - b), count: set.size, lastSeenTurn: last }
+  }
+
+  /**
+   * 标签交集召回（§1.4 需求驱动通道；工具接线在 P2，本函数是查询内核）。
+   * 排序：命中标签数降序（交集优先）→ turn 降序（order=fresh）→ rootSeq 降序。
+   * 未命中的查询标签如实剔除并回显（droppedLabels），不静默。
+   */
+  queryPruned(q: PrunedQuery): PrunedQueryResult {
+    const hits = new Map<number, string[]>()
+    const dropped: string[] = []
+    for (const label of q.labels) {
+      const set = this.inverted.get(label)
+      if (set === undefined || set.size === 0) {
+        dropped.push(label)
+        continue
+      }
+      for (const seq of set) {
+        const arr = hits.get(seq)
+        if (arr === undefined) hits.set(seq, [label])
+        else arr.push(label)
+      }
+    }
+    const sorted = [...hits.entries()]
+      .map(([seq, hitLabels]) => ({ seq, hitLabels, e: this.entries.get(seq) }))
+      .filter((x): x is { seq: number; hitLabels: string[]; e: LedgerEntry } => x.e !== undefined)
+      .sort((a, b) =>
+        b.hitLabels.length - a.hitLabels.length
+        || b.e.turn - a.e.turn
+        || b.seq - a.seq)
+    const start = q.cursor ?? 0
+    const page = sorted.slice(start, start + q.limit)
+    return {
+      rows: page.map(x => ({ rootSeq: x.seq, turn: x.e.turn, hitLabels: x.hitLabels })),
+      nextCursor: start + page.length < sorted.length ? start + page.length : null,
+      epoch: this._epoch,
+      epochStale: q.epoch !== undefined && q.epoch !== this._epoch,
+    }
+  }
+
+  /** queryPruned 的 droppedLabels（组合根转发用，免调用方摸索引）。 */
+  droppedLabels(labels: string[]): string[] {
+    return labels.filter(l => {
+      const set = this.inverted.get(l)
+      return set === undefined || set.size === 0
+    })
+  }
+
+  /**
+   * 词表行（每类 topN，数量降序 → 新鲜度降序）。**只从被剪账本派生**。
+   * 出口 fail-closed：不合当前文法的键（文法表改版/历史污染）剔除并计数。
+   */
+  vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number }>; omitted: number; rejected: number } {
+    const prefix = facet + ':'
+    const candidates: Array<{ key: string; count: number; lastSeenTurn: number }> = []
+    let rejected = 0
+    for (const key of this.inverted.keys()) {
+      if (!key.startsWith(prefix)) continue
+      if (labelAllowed(key) !== null) {
+        rejected += 1
+        continue
+      }
+      const st = this.stat(key)
+      if (st !== null) candidates.push({ key, count: st.count, lastSeenTurn: st.lastSeenTurn })
+    }
+    candidates.sort((a, b) => b.count - a.count || b.lastSeenTurn - a.lastSeenTurn)
+    return { rows: candidates.slice(0, topN), omitted: Math.max(0, candidates.length - topN), rejected }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 词表渲染（聚合桩 + 触发钩子，§1.4；locale 文案 P2 接 ui-locale）
+// ---------------------------------------------------------------------------
+
+export interface RenderVocabularyOptions {
+  ledger: FactorLedger
+  topNPerFacet?: number
+  budgetChars?: number
+  /** 触发钩子文案：默认中文，preset 双语在 P2 接。 */
+  recallHook?: (key: string) => string
+  stickyHook?: (v: StickyView) => string
+}
+
+export interface RenderVocabularyResult {
+  text: string
+  /** 各类被 topN 裁掉的数量（>0 时尾部有 list_labels 下钻提示）。 */
+  omitted: Partial<Record<VocabFacet, number>>
+  /** 预算截断：后续类别整类未渲染（诚实标记，不静默丢）。 */
+  truncated: boolean
+  rejectedLabels: number
+}
+
+const DEFAULT_HOOK = (key: string): string => `需要历史细节时 recall_history(${key})`
+
+export function renderVocabulary(o: RenderVocabularyOptions): RenderVocabularyResult {
+  const topN = o.topNPerFacet ?? 10
+  const budget = o.budgetChars ?? 4000
+  const hook = o.recallHook ?? DEFAULT_HOOK
+  const omitted: Partial<Record<VocabFacet, number>> = {}
+  const lines: string[] = []
+  let rejected = 0
+  let used = 0
+  let truncated = false
+
+  const push = (line: string): boolean => {
+    if (used + line.length + 1 > budget) {
+      truncated = true
+      return false
+    }
+    used += line.length + 1
+    lines.push(line)
+    return true
+  }
+
+  // 词表标注行只列 sticky（§2.2）；open 是候选、仅进引擎排序硬保护位，
+  // 未定型的问题不配占用 prompt 行。
+  for (const t of o.ledger.stickyActive()) {
+    if (t.state !== 'sticky') continue
+    const mark = o.stickyHook !== undefined
+      ? o.stickyHook(t)
+      : `⚠ ${t.file} + ${t.errorcode}：修复宣称后仍失败 ×${t.failCount}——按未解决特例对待，动手前先 recall_history(document:${t.file})`
+    if (!push(mark)) break
+  }
+
+  for (const facet of VOCAB_FACETS) {
+    const v = o.ledger.vocabularyRows(facet, topN)
+    rejected += v.rejected
+    if (v.rows.length === 0) continue
+    if (v.omitted > 0) omitted[facet] = v.omitted
+    const header = `${facet}（历史已清空项，recall_history 可取回）：`
+    if (!push(header)) {
+      truncated = true
+      break
+    }
+    let anyRow = false
+    for (const r of v.rows) {
+      if (!push(`- ${r.key} ×${r.count}（${hook(r.key)}）`)) {
+        truncated = true
+        break
+      }
+      anyRow = true
+    }
+    // 诚实渲染：标题不得单独入文——承诺"可取回"却零条目是假通道，空标题回滚。
+    if (!anyRow) {
+      lines.pop()
+      used -= header.length + 1
+    }
+    if (truncated) break
+  }
+
+  const omittedFacets = Object.keys(omitted) as VocabFacet[]
+  if (!truncated && omittedFacets.length > 0) {
+    const hint = `其余低频标签未列：list_labels(${omittedFacets.join('|')}) 下钻`
+    if (used + hint.length + 1 > budget) truncated = true
+    else lines.push(hint)
+  }
+
+  return { text: lines.join('\n'), omitted, truncated, rejectedLabels: rejected }
+}
