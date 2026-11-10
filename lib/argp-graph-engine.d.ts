@@ -232,6 +232,12 @@ export interface ArgpGraphConfig {
      * 边消费，引擎侧 flush 剥离恒开。
      */
     citesObligation?: boolean;
+    /** 2.0 判别式（§3.2）：'factor' ⇒ 三管线不挂、cites 硬关、R 贴标剪枝 + 词表。缺省 'graph'。 */
+    engine?: 'graph' | 'factor';
+    /** 焦点轮数（§2.5，factor 臂）。 */
+    focalTurns?: number;
+    /** 词表每类 topN（§1.4，factor 臂）。 */
+    vocabTopN?: number;
     /**
      * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
      * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -285,6 +291,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         minSpanChars: z<number, number, "volatile-defined">;
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
+        engine: z<string, string, "defined">;
+        focalTurns: z<number, number, "defined">;
+        vocabTopN: z<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         windowRatio: z<number, number, "volatile-defined">;
         retainRatio: z<number, number, "volatile-defined">;
@@ -294,10 +303,15 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         minSpanChars: z<number, number, "volatile-defined">;
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
+        engine: z<string, string, "defined">;
+        focalTurns: z<number, number, "defined">;
+        vocabTopN: z<number, number, "defined">;
     }>>, "plain">;
     static inject: string[];
     /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
     private readonly args;
+    /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
+    private readonly factor;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
@@ -722,6 +736,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     incomingTokens?: number): Promise<CompactionResult | null>;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
+    /** factor 臂轮内压力剪（pre-step 用）；与 compactIfNeeded 同决策入口。 */
+    private factorPressure;
     /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
      *
      *  入选判据（与旧版一致，仅去掉"遇阻即停"）：段内原子必须

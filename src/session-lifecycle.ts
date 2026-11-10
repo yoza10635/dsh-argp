@@ -68,6 +68,12 @@ export const ArgpUserSettingsSchema = z.object({
   minSpanChars: z.number().step(1).min(0).default(0),
   sortMode: z.string().default('density'),
   charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN),
+  // 2.0 因子臂键（design-2.0 §3.2）：设置卡 UI 接线在 P2，此处先让 profile 层
+  // 写值可过校验（整块替换语义下缺键=回默认，写错=拒收，两者都要如实）。
+  // schema 层 string + 构造期 violations 严拒（同 sortMode 先例；schemastery 无 enum）
+  engine: z.string().default('graph'),
+  focalTurns: z.number().step(1).min(0).default(1),
+  vocabTopN: z.number().step(1).min(1).default(10),
 }) as z<ArgpUserSettings>
 
 /**
@@ -179,6 +185,11 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   checkNum(config.maxOverflowRetries, 'maxOverflowRetries', { min: 0 })
   checkNum(config.midTurnTurnGuard, 'midTurnTurnGuard', { min: 0 })
   checkNum(config.reactiveRetries, 'reactiveRetries', { min: 0 })
+  checkNum(config.focalTurns, 'focalTurns', { min: 0 })
+  checkNum(config.vocabTopN, 'vocabTopN', { min: 1 })
+  if (config.engine !== undefined && config.engine !== 'graph' && config.engine !== 'factor') {
+    violations.push('engine: expected "graph" | "factor", got ' + JSON.stringify(config.engine))
+  }
   if (config.skipPresets !== undefined
     && (!Array.isArray(config.skipPresets) || config.skipPresets.some(p => typeof p !== 'string'))) {
     violations.push('skipPresets: expected string[], got ' + JSON.stringify(config.skipPresets))
@@ -281,6 +292,15 @@ export function registerSettings(ctx: Context, _host: LifecycleHost, _config: Ar
  * 挂载，故一并收在本函数内（保持原构造器 line 617-662 的相对次序）。
  */
 export function mountPeratomStack(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void {
+  // 因子臂挂载策略（design-2.0 §3.2）：compressor/declarer/zoom 三管线**缺省全不挂**
+  // ——堵住"opt-out 缺省挂载"把 G7（0-LLM）口径破产的路。engine 键不可运行时改
+  // （static Config 非 volatile），本早退在构造期一次性生效。
+  if (config.engine === 'factor') {
+    host.log.info('[argp-factor] peratom 三管线（compressor/declarer/zoom）不挂载（factor 臂）')
+    host.citesObligation = false
+    host.citesObligationAuto = false
+    return
+  }
   // 显式关停（YAML 关停写法）：false / null。
   const peratomOff = config.peratom === false || config.peratom === null
   // 显式开启：给了 peratom 且非关停（对象或 true）。

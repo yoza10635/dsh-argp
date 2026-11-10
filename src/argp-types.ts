@@ -59,4 +59,10 @@ export interface ArgpUserSettings {
   minSpanChars: number
   sortMode: 'legacy' | 'density' | 'density-chain'
   charsPerToken: number
+  /** 2.0 判别式（design-2.0 §3.2）：会话内不可变——设置卡 P2 前 profile-only 写值。 */
+  engine: 'graph' | 'factor'
+  /** factor 臂焦点轮数（§2.5）。 */
+  focalTurns: number
+  /** factor 臂词表每类 topN（§1.4）。 */
+  vocabTopN: number
 }

@@ -46,6 +46,7 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
+import { FactorEngine, type FactorEngineHost } from './factor/engine.ts'
 export { scaleBudgets } from './budget.js'
 // 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
 // recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
@@ -268,6 +269,12 @@ export interface ArgpGraphConfig {
    * 边消费，引擎侧 flush 剥离恒开。
    */
   citesObligation?: boolean
+  /** 2.0 判别式（§3.2）：'factor' ⇒ 三管线不挂、cites 硬关、R 贴标剪枝 + 词表。缺省 'graph'。 */
+  engine?: 'graph' | 'factor'
+  /** 焦点轮数（§2.5，factor 臂）。 */
+  focalTurns?: number
+  /** 词表每类 topN（§1.4，factor 臂）。 */
+  vocabTopN?: number
   /**
    * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
    * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -354,12 +361,20 @@ export class ArgpGraphEngine extends CompactionEngine {
     minSpanChars: z.number().step(1).min(0).default(0).volatile(),
     sortMode: z.string().default('density').volatile(),
     charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
+    // 2.0 因子臂判别式（design-2.0 §3.2）：**非 volatile**——engine 键会话内不可变
+    // （§1.5-9 防配置漂移），focalTurns/vocabTopN 随臂固定于构造期。
+    engine: z.string().default('graph'),
+    focalTurns: z.number().step(1).min(0).default(1),
+    vocabTopN: z.number().step(1).min(1).default(10),
   })
 
   static inject = ['tools', 'systemPrompt']
 
   /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
   private readonly args!: ArgpLiveConfig
+
+  /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
+  private readonly factor: FactorEngine | null = null
 
   readonly windowTokens!: number
   readonly retainTokens!: number
@@ -571,6 +586,16 @@ export class ArgpGraphEngine extends CompactionEngine {
     normalizeConfig(ctx, this as unknown as LifecycleHost, config)
     registerSettings(ctx, this as unknown as LifecycleHost, config)
     mountPeratomStack(ctx, this as unknown as LifecycleHost, config)
+    // 因子臂装配（§3.2）：三管线挂载已在 mountPeratomStack 内早退；本类宿主面
+    // （bindSession/atomize/stateOf/log/…）以 PruneTxHost 兼容形态注入。
+    if (config.engine === 'factor') {
+      this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
+        focalTurns: config.focalTurns,
+        vocabTopN: config.vocabTopN,
+      })
+      this.log.info('[argp] engine=factor（P1-d 臂）：三管线不挂、cites 硬关、R 贴标剪枝；'
+        + 'recall_history/词表注入与摘要在 P2 接线')
+    }
 
     // 三个召回工具经 recall-tools.registerRecallTools 注册，调用次序 recall_pruned → list_pruned → recall。
     registerRecallTools(ctx, this as unknown as RecallToolsHost)
@@ -828,6 +853,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.on('agent/pre-step', async ({ agent, messages, step, signal }, next): Promise<PreStepDecision> => {
       this.bindSession(agent.session) // A7（问题 3）：生产 resume 点，账目缺失时自动重建
+      // factor 臂分发（§2.3 难点 1 的答案）：轮内压力即时释放可再生 R，
+      // 不进三级触发/墓碑归并/reactive 的图臂逻辑。吞错隔离照本钩子惯例。
+      if (this.factor !== null) {
+        if (!signal.aborted) {
+          try {
+            await this.factorPressure(agent, this.incomingTokens(messages))
+          } catch (e) {
+            this.log.warn('[argp-factor] pre-step 压力剪失败（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
+          }
+        }
+        return next()
+      }
       if (!signal.aborted) {
         const session = agent.session
         // ── 三级触发的判定窗口（v1.5.0）────────────────────────────────────────
@@ -1413,6 +1450,15 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
     const measurement = this.measureTokens(session, incomingTokens)
+    // ── factor 臂分发（design-2.0 §3.2）：压力口径 = contextTokens 超 retain 下限即剪，
+    // 不套图臂的多 pass/阈值阶梯。0-LLM 纯决策 + prune-tx 成对发射。
+    if (this.factor !== null) {
+      if (trigger === 'context-overflow' || declaredKnown) {
+        const deficit = measurement.contextTokens - retainTokens
+        if (deficit > 0) return this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+      }
+      return null
+    }
     // 声明窗口未知时的早检跳过：物理口径宁可不用（宁缺勿错）；
     // context-overflow 触发除外——那是 provider 确认的真实溢出，必须处置。
     if (trigger !== 'context-overflow' && !declaredKnown) {
@@ -1766,6 +1812,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
     if (this.skipIfPreset(agent.session)) return null
+    // factor 臂：手动压缩走 A/R 段图选段判据会误剪 A（factor 语义 A 恒留）——
+    // 手动摘要面 P2 随 ua-summarizer 提供，此处诚实拒绝。
+    if (this.factor !== null) {
+      this.log.warn('[argp-factor] /compact 手动压缩在 factor 臂待 P2 随摘要提供，本轮未动作')
+      return null
+    }
     return compactNow(this as unknown as LifecycleHost, agent, signal, sourceCommandId)
   }
 
@@ -1775,7 +1827,20 @@ export class ArgpGraphEngine extends CompactionEngine {
     agent: CompactionAgentContext,
     signal?: AbortSignal,
   ): Promise<CompactionResult> {
+    if (this.factor !== null) {
+      throw new Error('[argp-factor] 手动区间剪在 factor 臂待 P2 随摘要提供（factor 臂不剪 A）')
+    }
     return compactRegion(this as unknown as PruneTxHost, start, end, agent, signal)
+  }
+
+  /** factor 臂轮内压力剪（pre-step 用）；与 compactIfNeeded 同决策入口。 */
+  private async factorPressure(agent: CompactionAgentContext, incomingTokens = 0): Promise<void> {
+    if (this.factor === null) return
+    const { retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+    if (!declaredKnown) return
+    const m = this.measureTokens(agent.session, incomingTokens)
+    const deficit = m.contextTokens - retainTokens
+    if (deficit > 0) this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
   }
 
   /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
