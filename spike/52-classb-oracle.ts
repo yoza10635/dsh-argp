@@ -110,6 +110,12 @@ let recallCalls = 0
 
 const details: Array<{ key: string; facet: Facet; group: string; treatSeq: number | null; tail: number; recall: boolean; dup: boolean; subj: boolean; reRead: boolean; reerror: boolean; errFile: boolean }> = []
 const treatedTails: number[] = []
+
+// errorcode 共现先验（用户 2026-11-10 假设：code 单因子无鉴别力（§9.8 实锤 2），
+// 价值在 code×共现因子——同 tool=工具损坏、同 command=环境事实、同 file=幻觉记忆）
+interface ErrItem { slug: string; code: string; tool: string; hasCmd: boolean; hasFile: boolean; group: string; reRead: boolean; reerror: boolean; errFile: boolean; any: boolean }
+const errItems: ErrItem[] = []
+const toolTally = new Map<string, { n: number; errN: number }>()
 let archivesDone = 0
 let foldThrows = 0
 const repHist: Record<string, number> = {}
@@ -222,6 +228,16 @@ for (const arc of collectArchives(ROOTS)) {
     const reerror = input.tags.errorcodes.length > 0 && laterRs.some(x => x.rawSeq > windowStart
       && x.errorcodes.some(c => input.tags.errorcodes.includes(c)))
     const errFile = files.length > 0 && errFileIdx.some(x => x.rawSeq > windowStart && files.some(f => mentionsFile(x.text, f)))
+    const tl = toolTally.get(input.tool) ?? { n: 0, errN: 0 }
+    tl.n++
+    if (input.tags.errorcodes.length > 0) {
+      tl.errN++
+      for (const code of input.tags.errorcodes) {
+        errItems.push({ slug: arc.slug, code, tool: input.tool, hasCmd: input.tags.commands.length > 0, hasFile: files.length > 0, group,
+          reRead, reerror, errFile, any: recall || dup || subj || reRead || reerror || errFile })
+      }
+    }
+    toolTally.set(input.tool, tl)
     const b = bump(facet, group)
     b.n++
     if (recall) b.recall++
@@ -281,6 +297,50 @@ console.log('判读：首选 **facet 横向比**（同 group 行之间）+ **rec
   + '特有的付账通道，哪列高哪 facet 被压后真被再次需要；Δ(early−kept)>0 只是加分项，'
   + 'Δ≤0 是剪枝选择性的预期形态（头注"选择偏差登记"）。'
   + '\n因果裁决仍需 T-3——本表是在线 graph 时代 argp 处理轨迹的相关证据（头注①②）。')
+
+// ---------------------------------------------------------------------------
+// errorcode 共现先验表（用户假设检验）
+// ---------------------------------------------------------------------------
+
+console.log('\n=== errorcode 共现先验（code×共现因子；条目=带 code 的 R，多 code 计多次）===')
+console.log('带 code 的 R = ' + errItems.length + ' / 全部 R = ' + [...toolTally.values()].reduce((s, t) => s + t.n, 0))
+const rate = (xs: ErrItem[], pick: (x: ErrItem) => boolean): string =>
+  pct(xs.filter(pick).length, xs.length)
+const profRows: string[] = ['共现形态        组      n     reRead  reerror  errFile  anyCost']
+for (const [pname, test] of [['+file', (x: ErrItem) => x.hasFile], ['+cmd(无file)', (x: ErrItem) => !x.hasFile && x.hasCmd], ['裸code', (x: ErrItem) => !x.hasFile && !x.hasCmd]] as Array<[string, (x: ErrItem) => boolean]>) {
+  for (const [gname, gtest] of [['argp-e', (x: ErrItem) => x.group === 'argp-e'], ['kept', (x: ErrItem) => x.group === 'kept']] as Array<[string, (x: ErrItem) => boolean]>) {
+    const xs = errItems.filter(x => test(x) && gtest(x))
+    if (xs.length === 0) continue
+    profRows.push(pname.padEnd(15) + gname.padEnd(7) + String(xs.length).padEnd(5)
+      + ' ' + rate(xs, x => x.reRead).padEnd(7) + ' ' + rate(xs, x => x.reerror).padEnd(8)
+      + ' ' + rate(xs, x => x.errFile).padEnd(8) + rate(xs, x => x.any))
+  }
+}
+console.log(profRows.join('\n'))
+
+const byCode = new Map<string, { n: number; tools: Map<string, number>; cmd: number; file: number }>()
+for (const x of errItems) {
+  let c = byCode.get(x.code)
+  if (c === undefined) { c = { n: 0, tools: new Map(), cmd: 0, file: 0 }; byCode.set(x.code, c) }
+  c.n++
+  c.tools.set(x.tool, (c.tools.get(x.tool) ?? 0) + 1)
+  if (x.hasCmd) c.cmd++
+  if (x.hasFile) c.file++
+}
+const topCodes = [...byCode.entries()].sort((a, b) => b[1].n - a[1].n).slice(0, 12)
+console.log('top codes（topTool 占比=共现集中度；≥60% 即用户假设的"捆绑因子"）:')
+for (const [code, c] of topCodes) {
+  const [tTool, tN] = [...c.tools.entries()].sort((a, b) => b[1] - a[1])[0] ?? ['-', 0]
+  console.log('  ' + code.slice(0, 30).padEnd(31) + ' n=' + String(c.n).padEnd(6)
+    + ' topTool=' + tTool + '(' + pct(tN, c.n) + ')  +cmd=' + pct(c.cmd, c.n) + '  +file=' + pct(c.file, c.n))
+}
+const allN = [...toolTally.values()].reduce((s, t) => s + t.n, 0)
+const allErr = [...toolTally.values()].reduce((s, t) => s + t.errN, 0)
+const avgRate = allN > 0 ? allErr / allN : 0
+const hot = [...toolTally.entries()].filter(([, t]) => t.n >= 20 && t.errN / t.n > avgRate * 2)
+  .sort((a, b) => b[1].errN / b[1].n - a[1].errN / a[1].n)
+console.log('工具错误率扫描（语料均=' + pct(allErr, allN) + '）：异常工具(n≥20 且 >2×均) = '
+  + (hot.length === 0 ? '无' : hot.map(([t, x]) => t + ' ' + pct(x.errN, x.n) + '(n=' + x.n + ')').join(', ')))
 
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true })
 fs.writeFileSync(path.join(OUT_DIR, 'details.jsonl'), details.map(d => JSON.stringify(d)).join('\n') + '\n')
