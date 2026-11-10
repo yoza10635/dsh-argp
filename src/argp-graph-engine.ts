@@ -47,6 +47,7 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
 import { FactorEngine, type FactorEngineHost } from './factor/engine.ts'
+import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 export { scaleBudgets } from './budget.js'
 // 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
 // recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
@@ -345,6 +346,17 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
 /** 默认在这些 preset 下不生效（极简 preset 保留原生态）。 */
 const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
 
+/**
+ * factor 臂压缩契约（design-2.0 §1.6/§3.2）：召回面只有 recall_history/list_labels
+ * （标签制，无 seq 通道），退役工具名一字不提。纯静态——臂在构造期定，
+ * section 求值不引用运行时状态（前缀缓存纪律与 graph 侧同源）。
+ */
+const FACTOR_CONTRACT_TEXT = 'Context compression (ARGP factor engine):\n'
+  + 'Your visible context is a pruned view of the full conversation. Older tool results may have been replaced by minimal stubs of the form [已剪·因子 <tool> → <label>（需要原文时 recall_history(<label>)）]: the full original left the visible context but remains in the append-only log. A vocabulary section elsewhere lists what was pruned overall. Absence from the visible context never means it was never said.\n'
+  + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
+  + '- When your answer depends on content behind a stub (or anything else no longer visible), recover it before answering — never reconstruct missing facts from memory. Call recall_history with the label(s) the stub or vocabulary shows verbatim (document:<path> / command:<family> / errorcode:<CODE>); intersecting several labels narrows the result. There is no seq-based recall in this engine — labels are the only address.\n'
+  + '- When you cannot remember the exact label, call list_labels(category) to see the real vocabulary instead of guessing one.\n'
+
 export class ArgpGraphEngine extends CompactionEngine {
   /**
    * UI 设置页可调旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
@@ -593,12 +605,17 @@ export class ArgpGraphEngine extends CompactionEngine {
         focalTurns: config.focalTurns,
         vocabTopN: config.vocabTopN,
       })
-      this.log.info('[argp] engine=factor（P1-d 臂）：三管线不挂、cites 硬关、R 贴标剪枝；'
-        + 'recall_history/词表注入与摘要在 P2 接线')
+      // 因子臂召回面 = 恰好这两个工具（§3.2）：recall_history（标签交集 → 日志原文，
+      // cursor/epoch 续读）+ list_labels（词表下钻）。老三件套在本臂**不挂**——
+      // factor 桩/词表只给标签不给 seq，seq 通道在 factor 臂是假通道。
+      registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
+      this.log.info('[argp] engine=factor（P2 臂）：三管线不挂、cites 硬关、R 贴标剪枝；'
+        + '召回面 = recall_history/list_labels；词表注入与摘要在 P2 后续批接线')
+    } else {
+      // graph 臂三个召回工具经 recall-tools.registerRecallTools 注册，
+      // 调用次序 recall_pruned → list_pruned → recall。factor 臂不挂（上方分支）。
+      registerRecallTools(ctx, this as unknown as RecallToolsHost)
     }
-
-    // 三个召回工具经 recall-tools.registerRecallTools 注册，调用次序 recall_pruned → list_pruned → recall。
-    registerRecallTools(ctx, this as unknown as RecallToolsHost)
     // /argp 状态命令：只读出口，放在工具注册之后（与 settings/peratom 同批的 ctx 副作用，
     // 但它依赖 commands 服务，缺失时 inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
     registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
@@ -609,7 +626,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
-      text: () => 'Context compression (ARGP):\n'
+      // 双臂分流：factor 臂的召回面是 recall_history/list_labels（标签制），契约若
+      // 继续指 recall_pruned/list_pruned 就是承诺不存在的工具（假通道）。两侧文案
+      // 均为纯静态（臂在构造期定），缓存语义不变。
+      text: () => this.factor !== null ? FACTOR_CONTRACT_TEXT : 'Context compression (ARGP):\n'
         + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders of the form [elided seq=N..M; recall_pruned(N) for detail] (the placeholder carries its own recall instruction), or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
         + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
         + '- When your answer depends on content that is no longer in visible context, recover it before answering — never reconstruct missing facts from memory. Start with recall(query) (a few distinctive keywords are enough); if a placeholder names a seq, call recall_pruned(seq) directly; use list_pruned when you neither remember keywords nor have a seq.\n'

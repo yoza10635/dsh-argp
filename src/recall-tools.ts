@@ -3,6 +3,9 @@
  * 重定向）/ `list_pruned`（pruned 列表 + 区间模式原始日志扫描）/ `recall`（内容查询
  * 召回）。闭包经窄接口 RecallToolsHost 触达引擎（`this as unknown as
  * RecallToolsHost`，运行时同一实例，方法引用派发回 class 薄编排方法，this 绑定语义不变）。
+ *
+ * `sessionOfToolCall` 与 `RECALL_CALLS_PER_TURN_LIMIT` 同时是 factor 臂召回面
+ * （factor/recall-labels.ts）的单点复用——会话解析与防循环安全阀双臂不得各写一份。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -40,7 +43,7 @@ export interface RecallToolsHost {
  * 单会话宿主与无 agent 上下文的测试路径不受影响）。ToolRunContext.agent 是
  * dsh-agent-loop 的运行时 Agent（带 live session）；类型上经窄 cast 读取。
  */
-function sessionOfToolCall(exec: unknown, host: RecallToolsHost): Session | null {
+export function sessionOfToolCall(exec: unknown, host: RecallToolsHost): Session | null {
   const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
   if (agent?.session !== undefined) return agent.session
   return host.sessionCount() <= 1 ? host.session : null
@@ -59,7 +62,7 @@ function sessionOfToolCall(exec: unknown, host: RecallToolsHost): Session | null
  * 只拦"模型陷入召回循环"这种病态行为，不参与"要不要多取几次"的正常决策。
  * 取值参考：本档 493 次工具调用 / 15 轮 ≈ 33 次/轮 ⇒ 20 次/轮 仍是合理上限。
  */
-const RECALL_CALLS_PER_TURN_LIMIT = 20
+export const RECALL_CALLS_PER_TURN_LIMIT = 20
 
 /**
  * 注册三个召回工具到 ctx.tools；register 顺序即工具在 ctx.tools 中的列出次序。
