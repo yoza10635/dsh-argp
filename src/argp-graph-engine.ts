@@ -90,6 +90,12 @@ export interface ArgpLiveConfig {
   minSpanChars: Volatile<number>
   sortMode: Volatile<string>
   charsPerToken: Volatile<number>
+  // 2.0 设置卡旋钮（design-2.0 §3.4 名册）：引擎侧一律 getter 活读（宿主实测：
+  // configForms.set 对非 volatile 键直接 throw「not volatile」⇒ 卡片可写=volatile）。
+  focalTurns: Volatile<number>
+  vocabTopN: Volatile<number>
+  uaSummaryThreshold: Volatile<number>
+  recallLimit: Volatile<number>
 }
 
 export interface ArgpGraphConfig {
@@ -279,6 +285,9 @@ export interface ArgpGraphConfig {
   vocabTopN?: number
   /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
   uaSummaryThreshold?: number
+  /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径，
+   *  20 一线留给 P3 裁决包按数据调——登记于 design-2.0 §9.5）。 */
+  recallLimit?: number
   /**
    * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
    * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -376,12 +385,17 @@ export class ArgpGraphEngine extends CompactionEngine {
     minSpanChars: z.number().step(1).min(0).default(0).volatile(),
     sortMode: z.string().default('density').volatile(),
     charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
-    // 2.0 因子臂判别式（design-2.0 §3.2）：**非 volatile**——engine 键会话内不可变
-    // （§1.5-9 防配置漂移），focalTurns/vocabTopN 随臂固定于构造期。
+    // 2.0 判别式（design-2.0 §3.2）：**非 volatile**——engine 键会话内不可变（§1.5-9
+    // 防配置漂移）；宿主实测非 volatile 键经设置写入直接 throw「not volatile」，
+    // 拒写语义由宿主天然把守（设置卡因此不渲染 engine 行）。
+    // 其余四枚 = §3.4 旋钮名册的 factor 键：必须 volatile 才可被设置卡写入
+    // （宿主 settings/schema.ts volatileForm 只投影 volatile 字段），引擎侧全部
+    // 决策点 getter 活读（FactorEngine/UaSummarizer/recall-labels 构造期收 getter）。
     engine: z.string().default('graph'),
-    focalTurns: z.number().step(1).min(0).default(1),
-    vocabTopN: z.number().step(1).min(1).default(10),
-    uaSummaryThreshold: z.number().min(1000).default(40000),
+    focalTurns: z.number().step(1).min(0).default(1).volatile(),
+    vocabTopN: z.number().step(1).min(1).default(10).volatile(),
+    uaSummaryThreshold: z.number().min(1000).default(40000).volatile(),
+    recallLimit: z.number().step(1).min(1).default(5).volatile(),
   })
 
   static inject = ['tools', 'systemPrompt']
@@ -426,6 +440,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   get turnGuard(): number { return this.guardOverride?.turnGuard ?? this.args.turnGuard.get() }
   get minSpanChars(): number { return this.args.minSpanChars.get() }
   get charsPerToken(): number { return this.args.charsPerToken.get() }
+  /** recallLimit 旋钮活读（RecallLabelsHost 接线；缺省 5 = P2-1 已测口径）。 */
+  recallLimitOf(): number { return this.args.recallLimit.get() }
   get maxPasses(): number { return this.args.maxPasses.get() }
   get sortMode(): 'legacy' | 'density' | 'density-chain' {
     // 0-8（1.10.2）：volatile 源的值经 settings 页写回（z.string() 无枚举约束），此处
@@ -608,13 +624,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 因子臂装配（§3.2）：三管线挂载已在 mountPeratomStack 内早退；本类宿主面
     // （bindSession/atomize/stateOf/log/…）以 PruneTxHost 兼容形态注入。
     if (config.engine === 'factor') {
+      // 旋钮经 getter 活读（args 里这四枚已被 static Config 标 volatile，见 §3.4 注释）：
+      // 设置页改动免重挂即生效（宿主 loader 对纯 volatile 变化走 _commitVolatile）。
       this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
-        focalTurns: config.focalTurns,
-        vocabTopN: config.vocabTopN,
+        focalTurns: () => this.args.focalTurns.get(),
+        vocabTopN: () => this.args.vocabTopN.get(),
       })
       this.ua = new UaSummarizer(ctx, this as unknown as PruneTxHost, {
-        uaSummaryThreshold: config.uaSummaryThreshold,
-        focalTurns: config.focalTurns,
+        uaSummaryThreshold: () => this.args.uaSummaryThreshold.get(),
+        focalTurns: () => this.args.focalTurns.get(),
       })
       // 因子臂召回面 = 恰好这两个工具（§3.2）：recall_history（标签交集 → 日志原文，
       // cursor/epoch 续读）+ list_labels（词表下钻）。老三件套在本臂**不挂**——

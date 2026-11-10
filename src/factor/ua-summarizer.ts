@@ -25,16 +25,16 @@ import { autoDshLlmSpec, completeViaDshLlm } from '../peratom/llm-adapter.ts'
 import { planUaSpans, type UaEventProbe, type UaSpan } from './ua-input.ts'
 
 export interface UaSummarizerConfig {
-  /** U+A 池字符阈值（缺省 40K，§2.4）。 */
-  uaSummaryThreshold?: number
+  /** U+A 池字符阈值（缺省 40K，§2.4）。设置卡旋钮 → 引擎侧传 getter 活读（volatile 语义）。 */
+  uaSummaryThreshold?: number | (() => number)
   /** 单次最多摘几段（缺省 3，防一笔事务吞掉全场）。 */
   maxSpansPerCall?: number
   /** 每段摘要正文目标上限（缺省 1200 字符）。 */
   summaryMaxChars?: number
   /** LLM 超时（缺省 180s，照 DEFAULT_LLM_TIMEOUT_MS）。 */
   llmTimeoutMs?: number
-  /** 焦点轮数（焦点轮不入摘要池；同 FactorEngine 口径）。 */
-  focalTurns?: number
+  /** 焦点轮数（焦点轮不入摘要池；同 FactorEngine 口径）。设置卡旋钮 → getter 活读。 */
+  focalTurns?: number | (() => number)
   /** 测试注入：替代 dsh-llm 的补全函数（缺省走 ctx.llm + autoDshLlmSpec）。 */
   complete?: (spec: { provider: string; model: string }, prompt: string, timeoutMs: number) => Promise<string>
 }
@@ -49,20 +49,23 @@ export class UaSummarizer {
   private readonly ctx: Context
   private readonly host: PruneTxHost
   private readonly cfg: {
-    uaSummaryThreshold: number; maxSpansPerCall: number; summaryMaxChars: number
-    llmTimeoutMs: number; focalTurns: number
+    uaSummaryThreshold: () => number; maxSpansPerCall: number; summaryMaxChars: number
+    llmTimeoutMs: number; focalTurns: () => number
     complete?: UaSummarizerConfig['complete']
   }
 
   constructor(ctx: Context, host: PruneTxHost, config: UaSummarizerConfig = {}) {
     this.ctx = ctx
     this.host = host
+    // 裸值/getter 双形归一（FactorEngine 同法）：引擎侧传 getter = 活读 volatile 旋钮。
+    const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
+      typeof v === 'function' ? v : () => v ?? d
     this.cfg = {
-      uaSummaryThreshold: config.uaSummaryThreshold ?? 40_000,
+      uaSummaryThreshold: asGetter(config.uaSummaryThreshold, 40_000),
       maxSpansPerCall: config.maxSpansPerCall ?? 3,
       summaryMaxChars: config.summaryMaxChars ?? 1200,
       llmTimeoutMs: config.llmTimeoutMs ?? 180_000,
-      focalTurns: config.focalTurns ?? 1,
+      focalTurns: asGetter(config.focalTurns, 1),
       complete: config.complete,
     }
   }
@@ -94,18 +97,21 @@ export class UaSummarizer {
     const atoms = this.host.atomize(session)
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const openTurn = detectOpenTurn(session)
+    const focal = this.cfg.focalTurns()
     const plan = planUaSpans(atoms, {
       probe,
       openTurn,
-      protectFromTurn: this.cfg.focalTurns > 0 ? latestTurn - this.cfg.focalTurns + 1 : null,
+      protectFromTurn: focal > 0 ? latestTurn - focal + 1 : null,
       watermark: session.seq,
     })
-    if (plan.poolChars <= this.cfg.uaSummaryThreshold) {
-      this.host.log.info('[argp-factor-ua] 池 ' + plan.poolChars + ' ≤ 阈值 ' + this.cfg.uaSummaryThreshold + '：不摘')
+    // 阈值单次活读（volatile 旋钮）：判定与日志用同一个值，不撕裂。
+    const threshold = this.cfg.uaSummaryThreshold()
+    if (plan.poolChars <= threshold) {
+      this.host.log.info('[argp-factor-ua] 池 ' + plan.poolChars + ' ≤ 阈值 ' + threshold + '：不摘')
       return null
     }
     // 最旧段先吃，吃到剩余池回到阈值下（或 maxSpans 封顶）。
-    const need = plan.poolChars - this.cfg.uaSummaryThreshold
+    const need = plan.poolChars - threshold
     const chosen: UaSpan[] = []
     let acc = 0
     for (const s of plan.spans) {

@@ -52,6 +52,10 @@ export interface ArgpLiveConfig {
     minSpanChars: Volatile<number>;
     sortMode: Volatile<string>;
     charsPerToken: Volatile<number>;
+    focalTurns: Volatile<number>;
+    vocabTopN: Volatile<number>;
+    uaSummaryThreshold: Volatile<number>;
+    recallLimit: Volatile<number>;
 }
 export interface ArgpGraphConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
@@ -240,6 +244,9 @@ export interface ArgpGraphConfig {
     vocabTopN?: number;
     /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
     uaSummaryThreshold?: number;
+    /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径，
+     *  20 一线留给 P3 裁决包按数据调——登记于 design-2.0 §9.5）。 */
+    recallLimit?: number;
     /**
      * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
      * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -294,9 +301,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
         engine: z<string, string, "defined">;
-        focalTurns: z<number, number, "defined">;
-        vocabTopN: z<number, number, "defined">;
-        uaSummaryThreshold: z<number, number, "defined">;
+        focalTurns: z<number, number, "volatile-defined">;
+        vocabTopN: z<number, number, "volatile-defined">;
+        uaSummaryThreshold: z<number, number, "volatile-defined">;
+        recallLimit: z<number, number, "volatile-defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         windowRatio: z<number, number, "volatile-defined">;
         retainRatio: z<number, number, "volatile-defined">;
@@ -307,9 +315,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         sortMode: z<string, string, "volatile-defined">;
         charsPerToken: z<number, number, "volatile-defined">;
         engine: z<string, string, "defined">;
-        focalTurns: z<number, number, "defined">;
-        vocabTopN: z<number, number, "defined">;
-        uaSummaryThreshold: z<number, number, "defined">;
+        focalTurns: z<number, number, "volatile-defined">;
+        vocabTopN: z<number, number, "volatile-defined">;
+        uaSummaryThreshold: z<number, number, "volatile-defined">;
+        recallLimit: z<number, number, "volatile-defined">;
     }>>, "plain">;
     static inject: string[];
     /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
@@ -358,6 +367,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     get turnGuard(): number;
     get minSpanChars(): number;
     get charsPerToken(): number;
+    /** recallLimit 旋钮活读（RecallLabelsHost 接线；缺省 5 = P2-1 已测口径）。 */
+    recallLimitOf(): number;
     get maxPasses(): number;
     get sortMode(): 'legacy' | 'density' | 'density-chain';
     readonly maxOverflowRetries: number;

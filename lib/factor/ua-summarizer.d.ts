@@ -20,16 +20,16 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { type PruneTxHost } from '../prune-tx.ts';
 export interface UaSummarizerConfig {
-    /** U+A 池字符阈值（缺省 40K，§2.4）。 */
-    uaSummaryThreshold?: number;
+    /** U+A 池字符阈值（缺省 40K，§2.4）。设置卡旋钮 → 引擎侧传 getter 活读（volatile 语义）。 */
+    uaSummaryThreshold?: number | (() => number);
     /** 单次最多摘几段（缺省 3，防一笔事务吞掉全场）。 */
     maxSpansPerCall?: number;
     /** 每段摘要正文目标上限（缺省 1200 字符）。 */
     summaryMaxChars?: number;
     /** LLM 超时（缺省 180s，照 DEFAULT_LLM_TIMEOUT_MS）。 */
     llmTimeoutMs?: number;
-    /** 焦点轮数（焦点轮不入摘要池；同 FactorEngine 口径）。 */
-    focalTurns?: number;
+    /** 焦点轮数（焦点轮不入摘要池；同 FactorEngine 口径）。设置卡旋钮 → getter 活读。 */
+    focalTurns?: number | (() => number);
     /** 测试注入：替代 dsh-llm 的补全函数（缺省走 ctx.llm + autoDshLlmSpec）。 */
     complete?: (spec: {
         provider: string;

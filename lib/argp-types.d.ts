@@ -48,21 +48,22 @@ export interface DeterministicEdge {
 export declare const EDGE_WEIGHTS: Record<EdgeLevel, number>;
 export declare const LEVEL_ORDER: Record<string, number>;
 /**
- * UI 设置页可调旋钮（Settings → Plugins → Configurable → ARGP）。
- * 服务端经 ctx.inject(['settings']) → settings.register('dsh-argp', schema, { base })
- * 注册 namespace，base=引擎 cordis 配置；客户端 ArgpConfigCard 经 ctx.settingsScope.bind 读写。
- * 字段即引擎构造期读取的顶层旋钮。
+ * UI 设置页旋钮名册（design-2.0 §3.4，2.0 起 **7 枚**）：Settings → Plugins →
+ * ARGP 卡片读写的面。真实校验/表单源是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫
+ * static Config 的 volatile 字段；settings.register 已随 #4587 移除），本类型与
+ * `ArgpUserSettingsSchema` 保持同键集（公共 API 与文档口径）。
+ *
+ * 旧五键 maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode 已退位（factor 臂
+ * 不消费；graph 臂仍从 cordis config 读，宽容读+告警见 normalizeConfig）。
  */
 export interface ArgpUserSettings {
+    /** 触发线 = contextWindow × windowRatio（两臂共用）。 */
     windowRatio: number;
+    /** 压缩保留目标 = 触发线 × retainRatio（两臂共用）。 */
     retainRatio: number;
-    maxPasses: number;
-    recencyGuard: number;
-    turnGuard: number;
-    minSpanChars: number;
-    sortMode: 'legacy' | 'density' | 'density-chain';
+    /** 字符/token 估算比（两臂共用；provider usage 锚点在位时以其为准）。 */
     charsPerToken: number;
-    /** 2.0 判别式（design-2.0 §3.2）：会话内不可变——设置卡 P2 前 profile-only 写值。 */
+    /** 2.0 判别式（§3.2）：会话内不可变（非 volatile，宿主拒 form 写）——卡不渲染，仅 profile 写值。 */
     engine: 'graph' | 'factor';
     /** factor 臂焦点轮数（§2.5）。 */
     focalTurns: number;
@@ -70,4 +71,6 @@ export interface ArgpUserSettings {
     vocabTopN: number;
     /** factor 臂 U/A 摘要池阈值，字符（§2.4）。 */
     uaSummaryThreshold: number;
+    /** factor 臂 recall_history 缺省 limit（§P0 宽度实测；现默认 5，上限 20）。 */
+    recallLimit: number;
 }

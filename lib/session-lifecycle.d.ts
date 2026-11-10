@@ -36,7 +36,22 @@ import { type GraphPruneRecord } from './prune-tx.js';
 import type { ArgpGraphConfig } from './argp-graph-engine.js';
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
-/** 引擎设置 schema（schemastery）：校验 UI 写入 + 提供 describe 视图。默认值=引擎既有默认。 */
+/**
+ * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **7 枚**（windowRatio/
+ * retainRatio/charsPerToken + uaSummaryThreshold/focalTurns/vocabTopN/recallLimit）
+ * ＋ engine 判别式随行。
+ *
+ * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成 volatile
+ * form；settings.register 已随 #4587 移除，本 schema 经 hub re-export 维持公共 API
+ * 与文档口径）。两面键集必须一致。
+ *
+ * 旧五键（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）已退出名册：
+ * schemastery 非 strict 解析（宿主实测未声明键原样透传）⇒ 老 profile 宽容读不炸；
+ * graph 臂照旧消费它们（逐字不变契约），factor 臂构造期对非缺省值告警忽略
+ * （normalizeConfig 内，焦点保护由 focalTurns 接管）。
+ * engine 保留在 schema 但**卡不渲染**：非 volatile 键经 form 写被宿主 throw（实测），
+ * 判别式只由 profile/patch 层写值。
+ */
 export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;
 /**
  * 窄宿主接口：本模块函数实际触达的引擎成员（字段 + 方法引用）。

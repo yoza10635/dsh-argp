@@ -30,10 +30,10 @@ import { READ_TOOLS } from './tag-extract.ts'
 import type { FileSnapshot } from './types.ts'
 
 export interface FactorEngineConfig {
-  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。 */
-  focalTurns?: number
-  /** 词表每类 topN（§1.4）。 */
-  vocabTopN?: number
+  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。设置卡旋钮 → 引擎侧传 getter 活读（volatile 语义）。 */
+  focalTurns?: number | (() => number)
+  /** 词表每类 topN（§1.4）。设置卡旋钮 → 引擎侧传 getter 活读。 */
+  vocabTopN?: number | (() => number)
   /** sticky 闭集观察窗（轮）。 */
   stickyWindowTurns?: number
   /** 词表渲染预算（字符）。 */
@@ -76,14 +76,20 @@ export class FactorEngine {
   private states = new WeakMap<Session, SessionFactorState>()
   private readonly host: FactorEngineHost
   private readonly cfg: {
-    focalTurns: number; vocabTopN: number; stickyWindowTurns: number; vocabBudgetChars: number
+    focalTurns: () => number; vocabTopN: () => number
+    stickyWindowTurns: number; vocabBudgetChars: number
   }
 
   constructor(host: FactorEngineHost, config: FactorEngineConfig = {}) {
     this.host = host
+    // 裸值/getter 双形归一（同 PruneTxHost 方法引用惯例）：引擎侧传 getter = 活读
+    // volatile 旋钮（P2-4 设置卡，宿主实测写非 volatile 键会被拒 ⇒ 可写键必须 getter
+    // 化）；测试传裸值 = 固定值。
+    const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
+      typeof v === 'function' ? v : () => v ?? d
     this.cfg = {
-      focalTurns: config.focalTurns ?? 1,
-      vocabTopN: config.vocabTopN ?? 10,
+      focalTurns: asGetter(config.focalTurns, 1),
+      vocabTopN: asGetter(config.vocabTopN, 10),
       stickyWindowTurns: config.stickyWindowTurns ?? 8,
       vocabBudgetChars: config.vocabBudgetChars ?? 4000,
     }
@@ -140,7 +146,7 @@ export class FactorEngine {
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const openTurn = detectOpenTurn(session)
     const shadowed = scanShadowedSeqs(session)
-    const focal = focalLabels(atoms as AtomLike[], latestTurn, this.cfg.focalTurns, cwd)
+    const focal = focalLabels(atoms as AtomLike[], latestTurn, this.cfg.focalTurns(), cwd)
     const superseded = supersededMarks(tagsBySeq)
     const st = this.stateOf(session)
     const sticky = this.ledger.stickyActive()
@@ -255,7 +261,7 @@ export class FactorEngine {
     this.observe(session)
     return renderVocabulary({
       ledger: this.ledger,
-      topNPerFacet: this.cfg.vocabTopN,
+      topNPerFacet: this.cfg.vocabTopN(),
       budgetChars: this.cfg.vocabBudgetChars,
     })
   }

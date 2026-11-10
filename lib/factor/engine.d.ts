@@ -6,10 +6,10 @@ import { FactorLedger, type RenderVocabularyResult } from './factor-ledger.ts';
 import { type PrunePlan } from './retention-score.ts';
 import type { FileSnapshot } from './types.ts';
 export interface FactorEngineConfig {
-    /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。 */
-    focalTurns?: number;
-    /** 词表每类 topN（§1.4）。 */
-    vocabTopN?: number;
+    /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。设置卡旋钮 → 引擎侧传 getter 活读（volatile 语义）。 */
+    focalTurns?: number | (() => number);
+    /** 词表每类 topN（§1.4）。设置卡旋钮 → 引擎侧传 getter 活读。 */
+    vocabTopN?: number | (() => number);
     /** sticky 闭集观察窗（轮）。 */
     stickyWindowTurns?: number;
     /** 词表渲染预算（字符）。 */

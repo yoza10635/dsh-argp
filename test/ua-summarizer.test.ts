@@ -123,6 +123,19 @@ test('池门控：阈值下不摘、零 LLM 调用（US1 锁）', async () => {
   assert.equal(calls, 0)
 })
 
+test('阈值 getter 活读：两次调用间翻转即改判摘/不摘（CR2 锁，P2-4 volatile 语义）', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('ua-threshold-live')
+  internals.bindSession(session)
+  buildHistory(session)
+  let threshold = 40_000
+  const ua = makeSummarizer(ctx, internals, { uaSummaryThreshold: () => threshold, complete: obedientLlm })
+  assert.equal(await ua.summarize(session, { provider: 'p', model: 'm' }), null, '高阈值轮：池未过阈值不摘')
+  threshold = 40
+  const r = await ua.summarize(session, { provider: 'p', model: 'm' })
+  assert.ok(r !== null, '低阈值轮：同会话第二次调用即生效（构造期烘焙裸值必失配）')
+})
+
 test('发射路径：成对事务+因子摘要文案如实标 LLM+surface 配对地板不破（US6 锁）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('ua-emit')

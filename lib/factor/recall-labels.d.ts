@@ -27,6 +27,8 @@ export interface RecallLabelsHost {
     stateOf: (session: Session) => SessionRuntimeState;
     shadowedSeqsOf: (session: Session) => Set<number>;
     budgetRecallText: (session: Session, text: string) => string;
+    /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */
+    recallLimitOf?: () => number;
 }
 /**
  * 注册因子臂召回两工具。`factor` 闭包捕获引擎的**同一个** FactorEngine 实例

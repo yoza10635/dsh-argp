@@ -32,6 +32,8 @@ export interface RecallLabelsHost {
   stateOf: (session: Session) => SessionRuntimeState
   shadowedSeqsOf: (session: Session) => Set<number>
   budgetRecallText: (session: Session, text: string) => string
+  /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */
+  recallLimitOf?: () => number
 }
 
 /** 裸标签（无 facet 前缀）的展开候选——查询向宽容，词表向 fail-closed 不冲突：
@@ -51,7 +53,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
     description: 'Retrieve the original text of tool results that were pruned from your visible context, addressed by ENTITY LABEL instead of seq. Pass labels exactly as shown in a [已剪·因子 ...] stub or the vocabulary section: document:<path>, command:<family>, errorcode:<CODE> (a bare name without prefix is matched against all facets). Items matching several labels come first; within a tie, newest first. Returns originals verbatim from the append-only log under a recall budget; when more matches exist the reply ends with cursor/epoch values to pass back for the next page. This is your FIRST recall attempt in this engine — pruned content is keyed by entity, there is no seq-based recall. Use list_labels(category) to discover labels you cannot recall.',
     parameters: {
       labels: { type: 'array', items: { type: 'string' }, description: 'one or more labels to intersect, verbatim from a stub or the vocabulary (e.g. ["document:c:/proj/a.ts","errorcode:ERESOLVE"])' },
-      limit: { type: 'integer', description: 'optional maximum items to return (default 5, cap 20)' },
+      limit: { type: 'integer', description: 'optional maximum items to return (engine-configured default when omitted, cap 20)' },
       cursor: { type: 'integer', description: 'optional continuation cursor from a previous reply (must be paired with its epoch)' },
       epoch: { type: 'integer', description: 'optional ledger epoch from a previous reply; mismatch = the ledger changed, results are re-sorted from scratch and the reply says so' },
     },
@@ -97,7 +99,8 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         if (hits.length === 0) unknown.push(w)
         else for (const k of hits) keys.add(k)
       }
-      const limit = Math.max(1, Math.min(20, a.limit ?? 5))
+      // 默认档 = recallLimit 旋钮（活读，volatile）；未接线时保持 P2-1 固定默认 5。
+      const limit = Math.max(1, Math.min(20, a.limit ?? host.recallLimitOf?.() ?? 5))
       const q = ledger.queryPruned({ labels: [...keys], limit, cursor: a.cursor, epoch: a.epoch })
       if (q.rows.length === 0) {
         return 'recall_history: no pruned item matches (' + wanted.join(', ') + ')'
