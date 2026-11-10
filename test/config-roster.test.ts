@@ -23,6 +23,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { ArgpUserSettingsSchema } from '../src/session-lifecycle.ts'
+import { ArgpConfigController, en, zh, type ArgpLocaleKey } from '../src/client/argp-config-controller.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
 
@@ -164,6 +165,26 @@ test('CR4 旧 graph 键：factor 臂非缺省⇒告警忽略；graph 臂静默',
 async function ctxPlugin(ctx: Context, cfg: Record<string, unknown>): Promise<void> {
   await ctx.plugin(ArgpGraphEngine, cfg as never)
 }
+
+test('CR6 卡片对账：渲染行 = 名册（7）= en/zh 键集；旧键文案清零', () => {
+  const scope = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ status: 'ready', writable: true, value: {}, base: {}, user: undefined }),
+    set: async () => {}, unset: async () => {},
+  }
+  const state = new ArgpConfigController(scope as never).inject().hooks.argpConfig.getSnapshot()
+  const shellKeys = new Set(['available', 'writable', 'dirty', 'invalid', 'saving', 'failed'])
+  const rows = Object.keys(state).filter(k => !shellKeys.has(k)).sort()
+  assert.deepEqual(rows, ['charsPerToken', 'focalTurns', 'recallLimit', 'retainRatio', 'uaSummaryThreshold', 'vocabTopN', 'windowRatio'],
+    '控制器投影行必须与 §3.4 名册一一对应（加/减行不联动即红）')
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort(), 'en/zh 键集必须一致')
+  for (const r of rows) {
+    assert.ok(en[r as ArgpLocaleKey] !== undefined && zh[r as ArgpLocaleKey] !== undefined, r + ' 缺标题文案')
+    assert.ok(en[(r + 'Hint') as ArgpLocaleKey] !== undefined && zh[(r + 'Hint') as ArgpLocaleKey] !== undefined, r + ' 缺提示文案')
+  }
+  const stale = Object.keys(en).filter(k => /^(maxPasses|recencyGuard|turnGuard|minSpanChars|sortMode)/.test(k))
+  assert.deepEqual(stale, [], '退位旋钮的文案必须清零（残留=渲染不到的死字典项）')
+})
 
 test('CR5 schema 名册 = 7 + engine；旧五键无缺省但 validate 宽容透传', () => {
   // 宿主 resolveConfig 经 ~standard.validate（vendor/cordis fiber.ts:50）；非 strict，

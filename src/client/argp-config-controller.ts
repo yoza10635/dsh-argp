@@ -17,27 +17,31 @@
  */
 
 /**
- * The engine knobs the `dsh-argp` namespace holds (mirrors the server schema).
- * The card surfaces all eight — two core (windowRatio/retainRatio) plus six
- * advanced (maxPasses/recencyGuard/turnGuard/minSpanChars/charsPerToken/sortMode).
+ * The 2.0 settings roster (design-2.0 §3.4): SEVEN knobs — three engine-agnostic
+ * (windowRatio/retainRatio/charsPerToken) plus four factor-arm (focalTurns/vocabTopN/
+ * uaSummaryThreshold/recallLimit). The retired graph knobs (maxPasses/recencyGuard/
+ * turnGuard/minSpanChars/sortMode) are gone from the card; the graph arm keeps
+ * consuming them from cordis config (tolerated-read, see server normalizeConfig).
+ * The `engine` discriminator is NOT here on purpose: it is non-volatile, and the
+ * host's volatile form never carries non-volatile keys (settings/schema.ts
+ * volatileForm — verified against the host checkout), so the card could neither
+ * read nor write it. Profile/patch layers own that key.
  */
 export interface ArgpUserSettings {
-  /** Compaction window as a fraction of the context budget. */
+  /** Compaction window as a fraction of the context budget (both arms). */
   windowRatio: number
-  /** Tokens retained after compaction, as a fraction of the window. */
+  /** Tokens retained after compaction, as a fraction of the window (both arms). */
   retainRatio: number
-  /** Max graph-pruning passes per compaction. */
-  maxPasses: number
-  /** Recency guard: newest N turns never pruned. */
-  recencyGuard: number
-  /** Turn guard: keep at least this many turns. */
-  turnGuard: number
-  /** Minimum span length (chars) worth keeping. */
-  minSpanChars: number
-  /** Eviction ordering strategy. */
-  sortMode: 'legacy' | 'density' | 'density-chain'
-  /** Characters-per-token heuristic for budget math. */
+  /** Characters-per-token heuristic for budget math (both arms). */
   charsPerToken: number
+  /** Focal turns kept verbatim — never pruned, never summarized (factor arm). */
+  focalTurns: number
+  /** Vocabulary note entries per category (factor arm). */
+  vocabTopN: number
+  /** U+A pool size (chars) before batch LLM summarization may start (factor arm). */
+  uaSummaryThreshold: number
+  /** Default items recall_history returns when no limit is given (factor arm). */
+  recallLimit: number
 }
 
 /** Settings namespace this card owns (must equal the server-registered one). */
@@ -45,18 +49,16 @@ export const ARG_SETTINGS_KEY = 'dsh-argp'
 
 // ── Locale ──────────────────────────────────────────────────────────────────
 
-/** Locale keys the ARGP card renders. */
+/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 5 advanced rows). */
 export type ArgpLocaleKey =
   | 'argpTitle' | 'argpDescription'
   | 'windowRatio' | 'windowRatioHint'
   | 'retainRatio' | 'retainRatioHint'
-  | 'maxPasses' | 'maxPassesHint'
-  | 'recencyGuard' | 'recencyGuardHint'
-  | 'turnGuard' | 'turnGuardHint'
-  | 'minSpanChars' | 'minSpanCharsHint'
   | 'charsPerToken' | 'charsPerTokenHint'
-  | 'sortMode' | 'sortModeHint'
-  | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain'
+  | 'focalTurns' | 'focalTurnsHint'
+  | 'vocabTopN' | 'vocabTopNHint'
+  | 'uaSummaryThreshold' | 'uaSummaryThresholdHint'
+  | 'recallLimit' | 'recallLimitHint'
   | 'advanced'
   | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse'
   | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber'
@@ -69,21 +71,16 @@ export const en: Record<ArgpLocaleKey, string> = {
   windowRatioHint: 'Ratio of the context limit',
   retainRatio: 'Compression rate',
   retainRatioHint: 'Ratio of the conversation window',
-  maxPasses: 'Prune pass limit',
-  maxPassesHint: 'Safety cap on the prune loop; it normally stops at the compression target, when nothing is left to prune, or on a no-progress pass — this only bounds extreme spin',
-  recencyGuard: 'Recent protection (messages)',
-  recencyGuardHint: 'Newest N messages are never pruned',
-  turnGuard: 'Recent protection (turns)',
-  turnGuardHint: 'Last N turns are never pruned',
-  minSpanChars: 'Min span chars',
-  minSpanCharsHint: 'Intervals shorter than this many characters are left in place (safety floor against fragmenting the surface)',
   charsPerToken: 'Chars per token',
   charsPerTokenHint: 'Character-to-token ratio used by the character-based estimates; the real usage anchor from the provider takes precedence',
-  sortMode: 'Prune priority',
-  sortModeHint: 'Density = drop big, low-info spans first (recommended); +chain = repeated versions pruned sooner; In order = legacy',
-  sortModeDensity: 'By information density (recommended)',
-  sortModeLegacy: 'In order of appearance',
-  sortModeChain: 'Density + version chaining',
+  focalTurns: 'Focal turns',
+  focalTurnsHint: 'The newest N turns stay verbatim — never pruned and never summarized (factor engine)',
+  vocabTopN: 'Vocabulary entries per category',
+  vocabTopNHint: 'How many labels each category shows in the vocabulary note; the rest stay reachable through list_labels (factor engine)',
+  uaSummaryThreshold: 'Summary pool threshold (chars)',
+  uaSummaryThresholdHint: 'Batch LLM summarization of the user/assistant text pool starts only under context pressure and only above this size; below it everything stays verbatim (factor engine)',
+  recallLimit: 'Recall default items',
+  recallLimitHint: 'Items recall_history returns when it is called without a limit (cap 20; factor engine)',
   advanced: 'Advanced',
   overridden: 'Changed',
   reset: 'Reset to default',
@@ -106,21 +103,16 @@ export const zh: Record<ArgpLocaleKey, string> = {
   windowRatioHint: '相较于上下文上限的比例',
   retainRatio: '压缩率',
   retainRatioHint: '相较于对话消息窗口的比例',
-  maxPasses: '剪枝轮数上限',
-  maxPassesHint: '剪枝循环的安全上限；正常到压缩率达标、无可剪或一轮无进展就停，此值只防极端空转',
-  recencyGuard: '最近保护条数',
-  recencyGuardHint: '最近 N 条消息不参与压缩',
-  turnGuard: '最近保护轮数',
-  turnGuardHint: '最近 N 轮对话不参与压缩',
-  minSpanChars: '最小剪枝段字符数',
-  minSpanCharsHint: '短于此字符数的区间不剪（防 surface 碎片化的安全下限）',
   charsPerToken: '字符/Token 比',
   charsPerTokenHint: '字符口径估算用的比值；真实估算以 provider usage 锚点为准',
-  sortMode: '剪枝优先级',
-  sortModeHint: '密度＝先删又大又冗余的段（推荐）；密度+版本链＝重复版本越多越先删；按出现顺序＝旧行为',
-  sortModeDensity: '信息密度优先（推荐）',
-  sortModeLegacy: '按出现顺序',
-  sortModeChain: '密度优先 + 版本链',
+  focalTurns: '焦点轮数',
+  focalTurnsHint: '最近 N 轮保持逐字，不剪枝也不摘要（因子引擎）',
+  vocabTopN: '词表每类条数',
+  vocabTopNHint: '词表 note 每类最多列出的标签数，其余经 list_labels 下钻（因子引擎）',
+  uaSummaryThreshold: '摘要池阈值（字符）',
+  uaSummaryThresholdHint: '仅在上下文压力下、且 U+A 文本池超过该字符量才启动 LLM 批次摘要；低于阈值一律逐字保留（因子引擎）',
+  recallLimit: '召回默认条数',
+  recallLimitHint: 'recall_history 未指定 limit 时的默认返回条数（上限 20；因子引擎）',
   advanced: '高级设置',
   overridden: '已修改',
   reset: '恢复默认',
@@ -291,7 +283,8 @@ export interface TextFieldSpec {
 }
 
 /**
- * A text field with an optional enum constraint (used for the sortMode enum).
+ * A text field with an optional enum constraint (generic card-form primitive;
+ * the roster has no enum row since 2.0, tests keep the shape under lock).
  * Empty clears; a value outside the enum is invalid (never silently stored).
  */
 export function textField(field: string, spec?: TextFieldSpec): CardFieldSpec {
@@ -504,16 +497,15 @@ export class CardForm<T> {
 
 // ── ARGP card controller ─────────────────────────────────────────────────────
 
-/** The card's full render state. */
+/** The card's full render state (§3.4 roster: seven fields, one per rendered row). */
 export interface ArgpConfigState extends CardShell {
   windowRatio: CardFieldState
   retainRatio: CardFieldState
-  maxPasses: CardFieldState
-  recencyGuard: CardFieldState
-  turnGuard: CardFieldState
-  minSpanChars: CardFieldState
   charsPerToken: CardFieldState
-  sortMode: CardFieldState
+  focalTurns: CardFieldState
+  vocabTopN: CardFieldState
+  uaSummaryThreshold: CardFieldState
+  recallLimit: CardFieldState
 }
 
 /** The registration-side face the slot entry injects. */
@@ -528,19 +520,18 @@ export class ArgpConfigController {
 
   /** @param scope - the bound settings scope for the `dsh-argp` namespace. */
   constructor(scope: SettingsScopeLike<ArgpUserSettings>) {
-    // Bounds mirror the server-side ArgpUserSettingsSchema (argp-graph-engine.ts):
-    // the client must reject out-of-spec drafts before they are ever staged for
-    // a write, so an out-of-range value can never silently land in the namespace.
-    // The eight fields must stay 1:1 with the card's eight rows (knob parity).
+    // Bounds mirror `ArgpGraphEngine.Config` (the host-validated source; the client
+    // must reject out-of-spec drafts before they are staged, since a rejected host
+    // write would surface as an opaque save failure). The seven fields stay 1:1
+    // with the card's rendered rows (knob parity, §3.4 roster).
     this.form = new CardForm(scope, [
       numberField('windowRatio', { min: 0.1, max: 1 }),
       numberField('retainRatio', { min: 0.05, max: 1 }),
-      numberField('maxPasses', { min: 1, integer: true }),
-      numberField('recencyGuard', { min: 0, integer: true }),
-      numberField('turnGuard', { min: 0, integer: true }),
-      numberField('minSpanChars', { min: 0, integer: true }),
       numberField('charsPerToken', { min: 0.5, max: 8 }),
-      textField('sortMode', { enum: ['legacy', 'density', 'density-chain'] }),
+      numberField('focalTurns', { min: 0, integer: true }),
+      numberField('vocabTopN', { min: 1, integer: true }),
+      numberField('uaSummaryThreshold', { min: 1000, integer: true }),
+      numberField('recallLimit', { min: 1, integer: true }),
     ])
     this.store = this.form.bind(() => this.projection())
   }
@@ -550,12 +541,11 @@ export class ArgpConfigController {
       ...this.form.shell(),
       windowRatio: this.form.field('windowRatio'),
       retainRatio: this.form.field('retainRatio'),
-      maxPasses: this.form.field('maxPasses'),
-      recencyGuard: this.form.field('recencyGuard'),
-      turnGuard: this.form.field('turnGuard'),
-      minSpanChars: this.form.field('minSpanChars'),
       charsPerToken: this.form.field('charsPerToken'),
-      sortMode: this.form.field('sortMode'),
+      focalTurns: this.form.field('focalTurns'),
+      vocabTopN: this.form.field('vocabTopN'),
+      uaSummaryThreshold: this.form.field('uaSummaryThreshold'),
+      recallLimit: this.form.field('recallLimit'),
     }
   }
 

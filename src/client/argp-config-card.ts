@@ -1,6 +1,8 @@
 /**
  * ARGP settings card: one collapsible card in Settings → Plugins →
- * Plugin configuration, editing the nine `dsh-argp` engine knobs.
+ * Plugin configuration, editing the seven `dsh-argp` knobs (design-2.0 §3.4
+ * roster: windowRatio/retainRatio core; charsPerToken + the four factor-arm
+ * knobs under Advanced).
  *
  * Self-contained port of the host `ui-settings-plugins` `BashCard` /
  * `PluginCard` / `ValueField` trio. Written with `React.createElement` (no JSX
@@ -248,47 +250,6 @@ function BoolField(props: {
   )
 }
 
-/** The sortMode enum rendered as a select. */
-function SelectField(props: {
-  id: string
-  label: string
-  hint: string
-  state: CardFieldState
-  t: T
-  onEdit: (text: string) => void
-  onReset: () => void
-}): React.ReactElement {
-  const { id, label, hint, state, t, onEdit, onReset } = props
-  const options: string[] = ['density', 'density-chain', 'legacy']
-  const labels: Record<string, string> = {
-    density: t('sortModeDensity'),
-    'density-chain': t('sortModeChain'),
-    legacy: t('sortModeLegacy'),
-  }
-  return h('div', { style: fieldStyle },
-    h('div', { style: fieldHeadStyle },
-      h('label', { htmlFor: id, style: labelStyle }, label),
-      state.overridden
-        ? h('span', { style: badgeStyle }, t('overridden'),
-            ' ',
-            h('button', {
-              type: 'button',
-              style: resetStyle,
-              disabled: false,
-              onClick: onReset,
-            }, t('reset')))
-        : null,
-    ),
-    h('select', {
-      id,
-      style: inputStyle,
-      value: state.text,
-      onChange: (e: any) => { onEdit(e.target.value) },
-    }, ...options.map(opt => h('option', { value: opt, key: opt }, labels[opt] ?? opt))),
-    h('p', { style: hintStyle }, hint),
-  )
-}
-
 /**
  * Render the ARGP card.
  * @param props - locale copy, the card snapshot, and its form actions.
@@ -379,46 +340,6 @@ export function ArgpConfigCard(props: ArgpCardProps): React.ReactElement | null 
           advOpen
             ? h('div', { style: { paddingLeft: 16, borderLeft: '2px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1))' } },
                 h(TextField, {
-                  id: 'argp-maxPasses',
-                  label: t('maxPasses'),
-                  hint: t('maxPassesHint'),
-                  state: state.maxPasses,
-                  numeric: true,
-                  t,
-                  onEdit: (text: string) => { props.edit('maxPasses', text) },
-                  onReset: () => { props.resetField('maxPasses') },
-                }),
-                h(TextField, {
-                  id: 'argp-recencyGuard',
-                  label: t('recencyGuard'),
-                  hint: t('recencyGuardHint'),
-                  state: state.recencyGuard,
-                  numeric: true,
-                  t,
-                  onEdit: (text: string) => { props.edit('recencyGuard', text) },
-                  onReset: () => { props.resetField('recencyGuard') },
-                }),
-                h(TextField, {
-                  id: 'argp-turnGuard',
-                  label: t('turnGuard'),
-                  hint: t('turnGuardHint'),
-                  state: state.turnGuard,
-                  numeric: true,
-                  t,
-                  onEdit: (text: string) => { props.edit('turnGuard', text) },
-                  onReset: () => { props.resetField('turnGuard') },
-                }),
-                h(TextField, {
-                  id: 'argp-minSpanChars',
-                  label: t('minSpanChars'),
-                  hint: t('minSpanCharsHint'),
-                  state: state.minSpanChars,
-                  numeric: true,
-                  t,
-                  onEdit: (text: string) => { props.edit('minSpanChars', text) },
-                  onReset: () => { props.resetField('minSpanChars') },
-                }),
-                h(TextField, {
                   id: 'argp-charsPerToken',
                   label: t('charsPerToken'),
                   hint: t('charsPerTokenHint'),
@@ -428,14 +349,45 @@ export function ArgpConfigCard(props: ArgpCardProps): React.ReactElement | null 
                   onEdit: (text: string) => { props.edit('charsPerToken', text) },
                   onReset: () => { props.resetField('charsPerToken') },
                 }),
-                h(SelectField, {
-                  id: 'argp-sortMode',
-                  label: t('sortMode'),
-                  hint: t('sortModeHint'),
-                  state: state.sortMode,
+                h(TextField, {
+                  id: 'argp-focalTurns',
+                  label: t('focalTurns'),
+                  hint: t('focalTurnsHint'),
+                  state: state.focalTurns,
+                  numeric: true,
                   t,
-                  onEdit: (text: string) => { props.edit('sortMode', text) },
-                  onReset: () => { props.resetField('sortMode') },
+                  onEdit: (text: string) => { props.edit('focalTurns', text) },
+                  onReset: () => { props.resetField('focalTurns') },
+                }),
+                h(TextField, {
+                  id: 'argp-vocabTopN',
+                  label: t('vocabTopN'),
+                  hint: t('vocabTopNHint'),
+                  state: state.vocabTopN,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('vocabTopN', text) },
+                  onReset: () => { props.resetField('vocabTopN') },
+                }),
+                h(TextField, {
+                  id: 'argp-uaSummaryThreshold',
+                  label: t('uaSummaryThreshold'),
+                  hint: t('uaSummaryThresholdHint'),
+                  state: state.uaSummaryThreshold,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('uaSummaryThreshold', text) },
+                  onReset: () => { props.resetField('uaSummaryThreshold') },
+                }),
+                h(TextField, {
+                  id: 'argp-recallLimit',
+                  label: t('recallLimit'),
+                  hint: t('recallLimitHint'),
+                  state: state.recallLimit,
+                  numeric: true,
+                  t,
+                  onEdit: (text: string) => { props.edit('recallLimit', text) },
+                  onReset: () => { props.resetField('recallLimit') },
                 }),
               )
             : null,

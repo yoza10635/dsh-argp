@@ -13,12 +13,14 @@
  *    message.
  *
  * 2. Contributes a dedicated ARGP card to the Plugins settings page, editing
- *    the nine `dsh-argp` engine knobs live.
+ *    the seven `dsh-argp` knobs (design-2.0 §3.4 roster) live.
  *
- *    dsh 0.1.7+ 的接线方式：服务端在插件上声明 `static Config`（schema 里九个旋钮
- *    标 `.volatile()`），宿主 Settings 扫描该 schema 生成表单并把读写句柄暴露为
+ *    dsh 0.1.7+ 的接线方式：服务端在插件上声明 `static Config`（§3.4 名册的旋钮标
+ *    `.volatile()`；engine 判别式刻意非 volatile——宿主 volatile form 不携带非
+ *    volatile 键，写则 throw，卡片因此既读不到也写不了它），宿主把读写句柄暴露为
  *    `ctx.configForms.get('dsh-argp')`；客户端把该句柄适配成卡片模型所需的 scope 接口，
- *    注册进 `settings.plugins.tab`。
+ *    注册进 `settings.plugins.tab`（宿主实测：auto 生成表单**没有渲染器**，
+ *    settings README「no shipped client does so yet」——本卡是唯一渲染面）。
  *
  *    0.1.7 之前的旧机制（`settingsScope.bind({ namespace })` + `settings.plugin.item`
  *    slot，配合服务端 `settings.register(ns, schema, { base })`）已随 #4587

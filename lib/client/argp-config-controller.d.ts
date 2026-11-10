@@ -16,32 +16,36 @@
  * change underneath; every projection is rebuilt from the two together.
  */
 /**
- * The engine knobs the `dsh-argp` namespace holds (mirrors the server schema).
- * The card surfaces all eight — two core (windowRatio/retainRatio) plus six
- * advanced (maxPasses/recencyGuard/turnGuard/minSpanChars/charsPerToken/sortMode).
+ * The 2.0 settings roster (design-2.0 §3.4): SEVEN knobs — three engine-agnostic
+ * (windowRatio/retainRatio/charsPerToken) plus four factor-arm (focalTurns/vocabTopN/
+ * uaSummaryThreshold/recallLimit). The retired graph knobs (maxPasses/recencyGuard/
+ * turnGuard/minSpanChars/sortMode) are gone from the card; the graph arm keeps
+ * consuming them from cordis config (tolerated-read, see server normalizeConfig).
+ * The `engine` discriminator is NOT here on purpose: it is non-volatile, and the
+ * host's volatile form never carries non-volatile keys (settings/schema.ts
+ * volatileForm — verified against the host checkout), so the card could neither
+ * read nor write it. Profile/patch layers own that key.
  */
 export interface ArgpUserSettings {
-    /** Compaction window as a fraction of the context budget. */
+    /** Compaction window as a fraction of the context budget (both arms). */
     windowRatio: number;
-    /** Tokens retained after compaction, as a fraction of the window. */
+    /** Tokens retained after compaction, as a fraction of the window (both arms). */
     retainRatio: number;
-    /** Max graph-pruning passes per compaction. */
-    maxPasses: number;
-    /** Recency guard: newest N turns never pruned. */
-    recencyGuard: number;
-    /** Turn guard: keep at least this many turns. */
-    turnGuard: number;
-    /** Minimum span length (chars) worth keeping. */
-    minSpanChars: number;
-    /** Eviction ordering strategy. */
-    sortMode: 'legacy' | 'density' | 'density-chain';
-    /** Characters-per-token heuristic for budget math. */
+    /** Characters-per-token heuristic for budget math (both arms). */
     charsPerToken: number;
+    /** Focal turns kept verbatim — never pruned, never summarized (factor arm). */
+    focalTurns: number;
+    /** Vocabulary note entries per category (factor arm). */
+    vocabTopN: number;
+    /** U+A pool size (chars) before batch LLM summarization may start (factor arm). */
+    uaSummaryThreshold: number;
+    /** Default items recall_history returns when no limit is given (factor arm). */
+    recallLimit: number;
 }
 /** Settings namespace this card owns (must equal the server-registered one). */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
-/** Locale keys the ARGP card renders. */
-export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'maxPasses' | 'maxPassesHint' | 'recencyGuard' | 'recencyGuardHint' | 'turnGuard' | 'turnGuardHint' | 'minSpanChars' | 'minSpanCharsHint' | 'charsPerToken' | 'charsPerTokenHint' | 'sortMode' | 'sortModeHint' | 'sortModeDensity' | 'sortModeLegacy' | 'sortModeChain' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
+/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 5 advanced rows). */
+export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'charsPerToken' | 'charsPerTokenHint' | 'focalTurns' | 'focalTurnsHint' | 'vocabTopN' | 'vocabTopNHint' | 'uaSummaryThreshold' | 'uaSummaryThresholdHint' | 'recallLimit' | 'recallLimitHint' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
 /** English copy. */
 export declare const en: Record<ArgpLocaleKey, string>;
 /** Simplified Chinese copy. */
@@ -158,7 +162,8 @@ export interface TextFieldSpec {
     enum?: readonly string[];
 }
 /**
- * A text field with an optional enum constraint (used for the sortMode enum).
+ * A text field with an optional enum constraint (generic card-form primitive;
+ * the roster has no enum row since 2.0, tests keep the shape under lock).
  * Empty clears; a value outside the enum is invalid (never silently stored).
  */
 export declare function textField(field: string, spec?: TextFieldSpec): CardFieldSpec;
@@ -201,16 +206,15 @@ export declare class CardForm<T> {
     private stored;
     private publish;
 }
-/** The card's full render state. */
+/** The card's full render state (§3.4 roster: seven fields, one per rendered row). */
 export interface ArgpConfigState extends CardShell {
     windowRatio: CardFieldState;
     retainRatio: CardFieldState;
-    maxPasses: CardFieldState;
-    recencyGuard: CardFieldState;
-    turnGuard: CardFieldState;
-    minSpanChars: CardFieldState;
     charsPerToken: CardFieldState;
-    sortMode: CardFieldState;
+    focalTurns: CardFieldState;
+    vocabTopN: CardFieldState;
+    uaSummaryThreshold: CardFieldState;
+    recallLimit: CardFieldState;
 }
 /** The registration-side face the slot entry injects. */
 export interface ArgpConfigFace extends CardActions {

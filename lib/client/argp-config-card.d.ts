@@ -1,6 +1,8 @@
 /**
  * ARGP settings card: one collapsible card in Settings → Plugins →
- * Plugin configuration, editing the nine `dsh-argp` engine knobs.
+ * Plugin configuration, editing the seven `dsh-argp` knobs (design-2.0 §3.4
+ * roster: windowRatio/retainRatio core; charsPerToken + the four factor-arm
+ * knobs under Advanced).
  *
  * Self-contained port of the host `ui-settings-plugins` `BashCard` /
  * `PluginCard` / `ValueField` trio. Written with `React.createElement` (no JSX

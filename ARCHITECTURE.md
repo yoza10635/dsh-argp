@@ -171,7 +171,7 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 | `peratom/mount.ts` | 测试/三臂挂载工厂（与生产自挂同拓扑；非生产路径） | argp-graph-engine, compressor, cite-declarer, recall-zoom |
 | `client/index.ts` | 客户端：隐藏 cites 尾块（chat 渲染）+ 注册设置卡片（settings.plugin.item slot） | cites-strip, argp-config-controller |
 | `client/argp-config-controller.ts` | 客户端设置卡片控制器：settings 命名空间上的暂存表单 + locale 包 + 字段校验 | — |
-| `client/argp-config-card.ts` | 客户端设置卡片 UI（Settings → Plugins → Plugin configuration，九个引擎旋钮） | argp-config-controller |
+| `client/argp-config-card.ts` | 客户端设置卡片 UI（Settings → Plugins → Plugin configuration，2.0 名册七枚旋钮，design-2.0 §3.4） | argp-config-controller |
 | `index.ts` | 公共导出 | — |
 
 ## 9. 关键不变式清单
