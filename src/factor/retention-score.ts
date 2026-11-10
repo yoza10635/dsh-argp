@@ -28,6 +28,12 @@ export interface HardFlags {
   attachment?: boolean
   /** 焦点轮非再生 R*（条件保护：焦点 ∧ containment<满覆盖，离开焦点即入排序）。 */
   focalNonRegenerable?: boolean
+  /**
+   * tiered 模式焦点文档全枚 hard（§2.5 用户裁定"本轮涉及 document ⇒ 含该因子原子
+   * 全部保留"；spike52 处理感知重读 50.0% vs 8.4% 背书）。与 focalNonRegenerable
+   * 互斥使用：flat 只设后者，tiered 只设前者（裸 errorcode 焦点已按 v1.2 降出 hard）。
+   */
+  focalDocStrong?: boolean
   /** node 0（宿主保护）。 */
   node0?: boolean
 }

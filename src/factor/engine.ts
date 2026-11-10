@@ -21,6 +21,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { detectOpenTurn, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
+import { FOCAL_DOC_HARD_WIDTH_RATIO } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalLabels, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
@@ -38,6 +39,14 @@ export interface FactorEngineConfig {
   stickyWindowTurns?: number
   /** 词表渲染预算（字符）。 */
   vocabBudgetChars?: number
+  /**
+   * 焦点分级策略档（§2.5 提案栈 v1.1/v1.4）。**内部裸项，严禁进 static Config
+   * schema**（设置卡零新键由 CR5/CR6/preset 精确键锁机器化保证）：
+   *  - 'flat'（缺省）：现行为字节级不变；
+   *  - 'tiered'：焦点文档全枚 hard（宽度熔断兜底 FOCAL_DOC_HARD_WIDTH_RATIO）
+   *    + superseded 焦点豁免（v1.4）+ 裸 errorcode 焦点降出 hard（v1.2 路由）。
+   */
+  focalTiered?: 'flat' | 'tiered'
 }
 
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
@@ -55,6 +64,12 @@ export interface FactorDecision {
   stickyActive: number
   /** §2.3 降级链上报量（>0 时调用方必须可见，不静默）。 */
   shortfallChars: number
+  /** 本次决策所用策略档（遥测：评测/日志要能区分臂）。 */
+  focalTiered: 'flat' | 'tiered'
+  /** tiered：焦点文档 hard 的字节量（flat 恒 0）。 */
+  focalDocHardChars: number
+  /** tiered：宽度熔断是否触发（触发 ⇒ 每文档只保最新一枚）。 */
+  focalDocFuse: boolean
 }
 
 interface SessionFactorState {
@@ -78,6 +93,7 @@ export class FactorEngine {
   private readonly cfg: {
     focalTurns: () => number; vocabTopN: () => number
     stickyWindowTurns: number; vocabBudgetChars: number
+    focalTiered: 'flat' | 'tiered'
   }
 
   constructor(host: FactorEngineHost, config: FactorEngineConfig = {}) {
@@ -92,6 +108,7 @@ export class FactorEngine {
       vocabTopN: asGetter(config.vocabTopN, 10),
       stickyWindowTurns: config.stickyWindowTurns ?? 8,
       vocabBudgetChars: config.vocabBudgetChars ?? 4000,
+      focalTiered: config.focalTiered ?? 'flat',
     }
   }
 
@@ -147,11 +164,15 @@ export class FactorEngine {
     const openTurn = detectOpenTurn(session)
     const shadowed = scanShadowedSeqs(session)
     const focal = focalLabels(atoms as AtomLike[], latestTurn, this.cfg.focalTurns(), cwd)
+    const tiered = this.cfg.focalTiered === 'tiered'
+    const focalDocSet = new Set([...focal].filter(k => k.startsWith('document:')))
     const superseded = supersededMarks(tagsBySeq)
     const st = this.stateOf(session)
     const sticky = this.ledger.stickyActive()
-    const entries: ScoredEntry[] = []
     const candidates = new Map<number, RTagInput>()
+    // 第一段：逐候选收集事实（tiered 的熔断要全局占比，hard 判定必须二段化）
+    interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[] }
+    const facts: Fact[] = []
     for (const a of atoms) {
       if (a.type !== 'R') continue
       if (shadowed.has(a.seq)) continue
@@ -173,19 +194,48 @@ export class FactorEngine {
       // 文本信号的一切误报升级为硬保护（实测：正常输出挂 ALL_CAPS 候选码即成轨）。
       const stickyMember = input.tags.errorcodes.length > 0 && input.tags.files.some(f =>
         sticky.some(t => t.state === 'sticky' && t.file === f && input.tags.errorcodes.includes(t.errorcode)))
+      facts.push({
+        seq: a.seq, turn: a.turn, input, inOpenTurn, regenerable, stickyMember, focalMatch,
+        focalDocHit: tiered ? [...keys].filter(k => focalDocSet.has(k)) : [],
+      })
+    }
+    // 宽度熔断（§2.5 v1.1 护栏）：焦点文档 hard 候选字节占比超阈 ⇒ 每文档只保最新一枚
+    let fuseActive = false
+    const docLatest = new Map<string, number>()
+    if (tiered) {
+      let totalChars = 0
+      let docChars = 0
+      for (const f of facts) {
+        totalChars += f.input.tags.sizeChars
+        if (f.focalDocHit.length > 0) docChars += f.input.tags.sizeChars
+        for (const lbl of f.focalDocHit) docLatest.set(lbl, Math.max(docLatest.get(lbl) ?? 0, f.seq))
+      }
+      fuseActive = totalChars > 0 && docChars > totalChars * FOCAL_DOC_HARD_WIDTH_RATIO
+    }
+    const entries: ScoredEntry[] = []
+    let focalDocHardChars = 0
+    for (const f of facts) {
+      const focalDocStrong = tiered && f.focalDocHit.length > 0
+        && (!fuseActive || f.focalDocHit.some(lbl => docLatest.get(lbl) === f.seq))
+      if (focalDocStrong) focalDocHardChars += f.input.tags.sizeChars
       entries.push({
-        rootSeq: a.seq,
+        rootSeq: f.seq,
         score: computeScore({
-          rootSeq: a.seq, turn: a.turn, currentTurn: latestTurn, tags: input.tags,
+          rootSeq: f.seq, turn: f.turn, currentTurn: latestTurn, tags: f.input.tags,
           hard: {
-            failureNoFollowR: inOpenTurn,
-            stickyMember,
-            attachment: input.resultText.length === 0,
-            focalNonRegenerable: focalMatch && regenerable !== true,
+            failureNoFollowR: f.inOpenTurn,
+            stickyMember: f.stickyMember,
+            attachment: f.input.resultText.length === 0,
+            // flat：现行为；tiered：焦点 hard 只认 document facet（v1.2 裸码降出），
+            // 且经 focalDocStrong 连可再生枚一并保住。
+            focalNonRegenerable: !tiered && f.focalMatch && f.regenerable !== true,
+            focalDocStrong,
           },
-          regenerable,
-          superseded: superseded.get(a.seq) === true ? true : undefined,
-          focal: focalMatch,
+          regenerable: f.regenerable,
+          // v1.4 superseded 焦点豁免：命中焦点的枚不按"被新版覆盖"插队先剪
+          // （spike54 冲突面 90 枚/211KB；spike55 定案：非焦点释放阀保留）。
+          superseded: tiered && f.focalMatch ? undefined : superseded.get(f.seq) === true ? true : undefined,
+          focal: f.focalMatch,
         }),
       })
     }
@@ -193,6 +243,7 @@ export class FactorEngine {
     return {
       plan, candidates, tagsBySeq, latestTurn,
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
+      focalTiered: this.cfg.focalTiered, focalDocHardChars, focalDocFuse: fuseActive,
     }
   }
 
