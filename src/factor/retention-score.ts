@@ -34,6 +34,12 @@ export interface HardFlags {
    * 互斥使用：flat 只设后者，tiered 只设前者（裸 errorcode 焦点已按 v1.2 降出 hard）。
    */
   focalDocStrong?: boolean
+  /**
+   * tiered v1.3：err 签名 exemplar hard——会话内同签名（code×file|cmd，v1.2 路由：
+   * 仅 tool 的裸码走词表）复发 ≥2（n=1=100% 假捆绑，用户裁定）⇒ **只保最新一枚**；
+   * 同因子后续成功 R ⇒ 释放（spike53：29% 组已 superseded）。flat 恒 false（逐枚 sticky 现行为）。
+   */
+  errSignatureHard?: boolean
   /** node 0（宿主保护）。 */
   node0?: boolean
 }

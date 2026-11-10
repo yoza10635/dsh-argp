@@ -21,6 +21,7 @@ import type { Atom } from '../../src/argp-types.ts'
 import { ArgpGraphEngine } from '../../src/argp-graph-engine.ts'
 import { FactorEngine } from '../../src/factor/engine.ts'
 import { indexKeys } from '../../src/factor/factor-ledger.ts'
+import { FOCAL_DOC_HARD_WIDTH_RATIO } from '../../src/constants.ts'
 import type { RTagInput } from '../../src/factor/factor-atoms.ts'
 import type { RawSessionEvent } from './session-corpus.ts'
 
@@ -133,7 +134,7 @@ export function toPristineSession(events: readonly RawSessionEvent[], slug: stri
 
 export interface Mounted { factor: FactorEngine; atomize(session: Session): Atom[]; bind(session: Session): void }
 
-export async function mountVariant(knobs: Record<string, number>): Promise<Mounted> {
+export async function mountVariant(knobs: Record<string, number | string>): Promise<Mounted> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 't2 replay persona' } })
   await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50 } as never)
@@ -164,9 +165,12 @@ export interface CrossCheck {
 }
 
 /**
- * 独立复算逐条对齐 engine.ts decide() 的 hard 面（178-188）：openTurn / 附件空 R /
+ * 独立复算逐条对齐 engine.ts decide() 的 hard 面。flat：openTurn / 附件空 R /
  * focal（重放 ⇒ regenerable 恒 undefined ⇒ focalMatch 即硬）/ 已定型 sticky。
- * 判卷以引擎真值为准，两集不等即漂移。
+ * tiered（§2.5 提案栈）：焦点 hard 只认 **focalDocStrong**（document 交集 + 宽度熔断
+ * 每文档最新一枚）、sticky **归因一枚化**、**errSig exemplar**（n≥2 且非裸码），
+ * 且 exemplar 共用的**成功后失效**释放阀——全部按 src 侧同语义独立重写（镜像版价值
+ * 恰在各自独立实现，共享的只有语义与常量）。判卷以引擎真值为准，两集不等即漂移。
  */
 export function crossCheck(
   atoms: readonly Atom[],
@@ -176,19 +180,82 @@ export function crossCheck(
   sticky: ReadonlyArray<{ state: string; file: string; errorcode: string }>,
   pruneOrder: readonly number[],
   hardProtected: readonly number[],
+  tiered = false,
 ): CrossCheck {
   const independent = new Map<number, string>()
-  for (const a of atoms) {
-    if (a.type !== 'R') continue
-    const input = tagsBySeq.get(a.seq)
-    if (input === undefined) continue
+  const entries = atoms
+    .filter(a => a.type === 'R' && tagsBySeq.get(a.seq) !== undefined)
+    .map(a => ({ seq: a.seq, turn: a.turn, input: tagsBySeq.get(a.seq) as RTagInput }))
+  let docStrongSeqs: ReadonlySet<number> = new Set()
+  let stickyExemplarSeqs: ReadonlySet<number> = new Set()
+  let errSigHardSeqs: ReadonlySet<number> = new Set()
+  if (tiered) {
+    const focalDocSet = new Set([...focalSet].filter(k => k.startsWith('document:')))
+    const hits = entries.map(e => ({ seq: e.seq, hit: [...indexKeys(e.input.tags)].filter(k => focalDocSet.has(k)) }))
+    let totalChars = 0
+    let docChars = 0
+    const docLatest = new Map<string, number>()
+    for (let i = 0; i < entries.length; i++) {
+      totalChars += entries[i].input.tags.sizeChars
+      if (hits[i].hit.length > 0) docChars += entries[i].input.tags.sizeChars
+      for (const lbl of hits[i].hit) docLatest.set(lbl, Math.max(docLatest.get(lbl) ?? 0, entries[i].seq))
+    }
+    const fuse = totalChars > 0 && docChars > totalChars * FOCAL_DOC_HARD_WIDTH_RATIO
+    docStrongSeqs = new Set(hits
+      .filter(h => h.hit.length > 0 && (!fuse || h.hit.some(lbl => docLatest.get(lbl) === h.seq)))
+      .map(h => h.seq))
+    const successAfter = (seq: number, factor: string | null): boolean => factor !== null && entries.some(r =>
+      r.seq > seq && r.input.tags.errorcodes.length === 0
+      && (r.input.tags.files.includes(factor) || r.input.tags.commands.includes(factor)))
+    const groups = new Map<string, Array<{ seq: number; factor: string | null; files: string[]; cmds: string[] }>>()
+    for (const e of entries) {
+      const t = e.input.tags
+      if (t.errorcodes.length === 0) continue
+      const factor = t.files[0] ?? t.commands[0] ?? null
+      const sigFactor = t.files[0] !== undefined ? 'f:' + t.files[0]
+        : t.commands[0] !== undefined ? 'c:' + t.commands[0] : 't:' + e.input.tool
+      for (const code of t.errorcodes) {
+        const key = code + '|' + sigFactor
+        const item = { seq: e.seq, factor, files: t.files, cmds: t.commands }
+        const g = groups.get(key)
+        if (g === undefined) groups.set(key, [item])
+        else g.push(item)
+      }
+    }
+    const errSigs = new Set<number>()
+    for (const g of groups.values()) {
+      if (g.length < 2) continue
+      const ex = g.reduce((m, x) => (x.seq > m.seq ? x : m))
+      if (ex.factor === null || successAfter(ex.seq, ex.factor)) continue
+      errSigs.add(ex.seq)
+    }
+    errSigHardSeqs = errSigs
+    const stickyEx = new Set<number>()
+    for (const t of sticky) {
+      if (t.state !== 'sticky') continue
+      let exemplar = -1
+      for (const e of entries) {
+        if (e.input.tags.errorcodes.includes(t.errorcode) && e.input.tags.files.includes(t.file) && e.seq > exemplar) exemplar = e.seq
+      }
+      if (exemplar >= 0 && !successAfter(exemplar, t.file)) stickyEx.add(exemplar)
+    }
+    stickyExemplarSeqs = stickyEx
+  }
+  for (const { seq, turn, input } of entries) {
     const why: string[] = []
-    if (openTurn !== null && a.turn >= openTurn) why.push('openTurn')
+    if (openTurn !== null && turn >= openTurn) why.push('openTurn')
     if (input.resultText.length === 0) why.push('attachment')
-    if (indexKeys(input.tags).some(k => focalSet.has(k))) why.push('focal')
-    if (input.tags.errorcodes.length > 0 && input.tags.files.some(f =>
-      sticky.some(t => t.state === 'sticky' && t.file === f && input.tags.errorcodes.includes(t.errorcode)))) why.push('sticky')
-    if (why.length > 0) independent.set(a.seq, why.join('+'))
+    if (tiered) {
+      if (docStrongSeqs.has(seq)) why.push('focalDoc')
+      if (sticky.some(t => t.state === 'sticky' && input.tags.errorcodes.length > 0
+        && input.tags.files.includes(t.file) && input.tags.errorcodes.includes(t.errorcode)) && stickyExemplarSeqs.has(seq)) why.push('sticky')
+      if (errSigHardSeqs.has(seq)) why.push('errSig')
+    } else {
+      if (indexKeys(input.tags).some(k => focalSet.has(k))) why.push('focal')
+      if (input.tags.errorcodes.length > 0 && input.tags.files.some(f =>
+        sticky.some(t => t.state === 'sticky' && t.file === f && input.tags.errorcodes.includes(t.errorcode)))) why.push('sticky')
+    }
+    if (why.length > 0) independent.set(seq, why.join('+'))
   }
   const engineHard = new Set(hardProtected)
   const violations: Array<{ seq: number; why: string }> = []

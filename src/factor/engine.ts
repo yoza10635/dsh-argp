@@ -70,6 +70,8 @@ export interface FactorDecision {
   focalDocHardChars: number
   /** tiered：宽度熔断是否触发（触发 ⇒ 每文档只保最新一枚）。 */
   focalDocFuse: boolean
+  /** tiered：err 签名 exemplar hard 枚数（flat 恒 0；遥测/宽度账用）。 */
+  errSigHardCount: number
 }
 
 interface SessionFactorState {
@@ -212,6 +214,49 @@ export class FactorEngine {
       }
       fuseActive = totalChars > 0 && docChars > totalChars * FOCAL_DOC_HARD_WIDTH_RATIO
     }
+    // v1.2 路由 + v1.3 exemplar（tiered-only；spike52 共现账 / spike53 去重账 / spike54 errHard2sup 零成本列）：
+    // 签名 = code × 共现因子（file 优先、command 次之；仅 tool ⇒ 裸码走词表，永不进 hard）。
+    // hard 准入线 = 会话内同签名复发 ≥2（n=1 ⇒ 100% 假捆绑，用户裁定），且**只保 exemplar 一枚**；
+    // 成功后失效：同因子后续无码 R 出现 ⇒ 释放（spike53 实测 29% 组落此）。
+    const errSigHardSeqs = new Set<number>()
+    const stickyExemplarSeqs = new Set<number>()
+    if (tiered) {
+      interface SigItem { seq: number; factor: string | null; files: string[]; cmds: string[] }
+      const groups = new Map<string, SigItem[]>()
+      for (const f of facts) {
+        const t = f.input.tags
+        if (t.errorcodes.length === 0) continue
+        const factor = t.files[0] ?? t.commands[0] ?? null
+        const sigFactor = t.files[0] !== undefined ? 'f:' + t.files[0]
+          : t.commands[0] !== undefined ? 'c:' + t.commands[0] : 't:' + f.input.tool
+        for (const code of t.errorcodes) {
+          const key = code + '|' + sigFactor
+          const item: SigItem = { seq: f.seq, factor, files: t.files, cmds: t.commands }
+          const g = groups.get(key)
+          if (g === undefined) groups.set(key, [item])
+          else g.push(item)
+        }
+      }
+      const successAfter = (seq: number, factor: string | null): boolean => factor !== null && facts.some(r =>
+        r.seq > seq && r.input.tags.errorcodes.length === 0
+        && (r.input.tags.files.includes(factor) || r.input.tags.commands.includes(factor)))
+      for (const g of groups.values()) {
+        if (g.length < 2) continue // n=1 假捆绑门槛（变异锁：摘此门槛测"n=1 豁免"必须红）
+        const ex = g.reduce((m, x) => (x.seq > m.seq ? x : m))
+        if (ex.factor === null || successAfter(ex.seq, ex.factor)) continue // 裸码走词表；成功后失效
+        errSigHardSeqs.add(ex.seq)
+      }
+      // sticky 归因一枚化（spike53：67 枚/249KB 正被逐枚硬保白烧）：每 (file×code) 对只保最新一枚，
+      // 同一释放阀（成功后失效）；flat 保持逐枚硬保现行为。
+      for (const t of sticky) {
+        if (t.state !== 'sticky') continue
+        let exemplar = -1
+        for (const f of facts) {
+          if (f.input.tags.errorcodes.includes(t.errorcode) && f.input.tags.files.includes(t.file) && f.seq > exemplar) exemplar = f.seq
+        }
+        if (exemplar >= 0 && !successAfter(exemplar, t.file)) stickyExemplarSeqs.add(exemplar)
+      }
+    }
     const entries: ScoredEntry[] = []
     let focalDocHardChars = 0
     for (const f of facts) {
@@ -224,12 +269,14 @@ export class FactorEngine {
           rootSeq: f.seq, turn: f.turn, currentTurn: latestTurn, tags: f.input.tags,
           hard: {
             failureNoFollowR: f.inOpenTurn,
-            stickyMember: f.stickyMember,
+            // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
+            stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
             attachment: f.input.resultText.length === 0,
             // flat：现行为；tiered：焦点 hard 只认 document facet（v1.2 裸码降出），
             // 且经 focalDocStrong 连可再生枚一并保住。
             focalNonRegenerable: !tiered && f.focalMatch && f.regenerable !== true,
             focalDocStrong,
+            errSignatureHard: tiered && errSigHardSeqs.has(f.seq),
           },
           regenerable: f.regenerable,
           // v1.4 superseded 焦点豁免：命中焦点的枚不按"被新版覆盖"插队先剪
@@ -244,6 +291,7 @@ export class FactorEngine {
       plan, candidates, tagsBySeq, latestTurn,
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
       focalTiered: this.cfg.focalTiered, focalDocHardChars, focalDocFuse: fuseActive,
+      errSigHardCount: errSigHardSeqs.size,
     }
   }
 

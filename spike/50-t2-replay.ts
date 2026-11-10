@@ -112,12 +112,13 @@ function cutAtBudget(order: readonly number[], charsBySeq: ReadonlyMap<number, n
 // 主流程
 // ---------------------------------------------------------------------------
 
-interface VariantSpec { name: string; knobs: Record<string, number> }
+interface VariantSpec { name: string; knobs: Record<string, number | string> }
 const VARIANTS: VariantSpec[] = [
   { name: 'base', knobs: {} },
   { name: 'focal0', knobs: { focalTurns: 0 } },
   { name: 'focal2', knobs: { focalTurns: 2 } },
   { name: 'sticky0', knobs: { stickyWindowTurns: 0 } },
+  { name: 'tiered', knobs: { focalTiered: 'tiered' } },
 ]
 
 interface VariantRecord {
@@ -241,9 +242,9 @@ async function main(): Promise<void> {
       if (v.name === 'base') {
         for (const input of decision.candidates.values()) rec.rChars += input.tags.sizeChars
       }
-      const focalSet = focalLabels(baseAtoms as unknown as AtomLike[], latestTurn, v.knobs['focalTurns'] ?? 1, cwd)
+      const focalSet = focalLabels(baseAtoms as unknown as AtomLike[], latestTurn, Number(v.knobs['focalTurns'] ?? 1), cwd)
       const cc = crossCheck(baseAtoms, decision.tagsBySeq, focalSet, openTurn,
-        mounted.factor.ledger.stickyActive(), decision.plan.pruneOrder, decision.plan.hardProtected)
+        mounted.factor.ledger.stickyActive(), decision.plan.pruneOrder, decision.plan.hardProtected, v.knobs['focalTiered'] === 'tiered')
       violationsTotal += cc.violations.length
       if (cc.onlyIndependent.length + cc.onlyEngine.length > 0) {
         drift = true
