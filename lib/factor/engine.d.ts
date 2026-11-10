@@ -67,7 +67,8 @@ export declare class FactorEngine {
      * content-only 桩 replace，宿主契约由 prune-tx 保证）。目标不达不放宽。
      */
     compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null;
-    /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。 */
+    /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
+     *  tagRsFromLog 的桩排除判据——单点引用，改文案不得动前缀。 */
     private stubText;
     /** 词表段（surface 剪枝区头部注入位在 P2 接线；本函数是渲染出口）。 */
     vocabulary(session: Session): RenderVocabularyResult;

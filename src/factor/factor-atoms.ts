@@ -18,6 +18,7 @@ export interface EventLike {
   seq: number
   type: string
   data?: Record<string, unknown>
+  surfaceOp?: unknown
 }
 
 /** Atom 的读侧投影（argp-types.Atom 的字段子集）。 */
@@ -115,35 +116,47 @@ export interface RTagInput {
   tags: RTags
 }
 
+/** 桩 R 文本前缀（engine.stubText 产出）：日志驱动贴标的排除判据。 */
+export const STUB_PREFIX = '[已剪·因子]'
+
 /**
- * 对全部 R 原子贴标（seq → 输入+结果）。issuer 缺失（悬挂/损坏事件）不丢弃：
- * tool=''/args=null 走文本兜底通道，贴不出的标签由覆盖率口径如实登记。
+ * **日志根事件驱动**贴标（resume 重放的正解）：遍历日志 tool/result 事件，
+ * replace 副本经 `resolveRootSeqs`（log-access.ts:280）折回原 seq——被剪 R 的
+ * 原事件离场 surface 后仍可入账（"账本 = shadowed 投影"在 resume 下建得起来）。
+ *
+ * 排除项：① replace 副本（root≠自身 seq，原文账记在原 seq 上）；② 桩事件
+ * （STUB_PREFIX 文本——桩不是新 R，进 sticky/candidates 都是污染）。
+ * turn 取事件 data.turn（缺 0，与 atomize 口径一致）。
  */
-export function tagRs(
+export function tagRsFromLog(
   events: readonly EventLike[],
-  atoms: readonly AtomLike[],
   sessionCwd: string | undefined,
+  resolveRoot: (seq: number) => number[],
 ): Map<number, RTagInput> {
-  const bySeq = new Map<number, EventLike>()
-  for (const e of events) if (!bySeq.has(e.seq)) bySeq.set(e.seq, e)
   const calls = indexCalls(events)
   const out = new Map<number, RTagInput>()
-  for (const a of atoms) {
-    if (a.type !== 'R') continue
-    const ev = bySeq.get(a.seq)
-    if (ev === undefined) continue
-    const callId = a.toolCallIds[0]
-    const call = callId !== undefined ? calls.get(callId) : undefined
-    const resultText = resultTextOf(ev)
-    const isError = isErrorOf(ev)
+  for (const e of events) {
+    if (e.type !== 'tool/result') continue
+    const root = resolveRoot(e.seq)[0]
+    if (root !== undefined && root !== e.seq) continue
+    const resultText = resultTextOf(e)
+    if (resultText.startsWith(STUB_PREFIX)) continue
+    const msg = (e.data ?? {})['message'] as { content?: Array<{ toolCallId?: string }> } | undefined
+    const callId = msg?.content?.[0]?.toolCallId
+    const call = typeof callId === 'string' ? calls.get(callId) : undefined
+    const turnRaw = e.data?.['turn']
     const tags = extractTags({
       tool: call?.name ?? '',
       rawArgs: call?.args,
       resultText,
       sessionCwd,
-      isError,
+      isError: isErrorOf(e),
     })
-    out.set(a.seq, { seq: a.seq, turn: a.turn, callId, tool: call?.name ?? '', resultText, tags })
+    out.set(e.seq, {
+      seq: e.seq, turn: typeof turnRaw === 'number' ? turnRaw : 0,
+      callId: typeof callId === 'string' ? callId : undefined,
+      tool: call?.name ?? '', resultText, tags,
+    })
   }
   return out
 }

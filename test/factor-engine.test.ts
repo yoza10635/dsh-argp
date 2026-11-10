@@ -133,6 +133,27 @@ test('硬保护：sticky 交集成员不落剪（同文件×错误码复发夹�
   assert.ok(vocab.text.includes('ERESOLVE'), 'sticky 标注行进词表')
 })
 
+test('resume 重放：新引擎实例从日志重建被剪账本与词表；桩不冒充 R', async () => {
+  const { host, factor } = await makeFactorEngine()
+  const session = makeSession('factor-resume')
+  host.bindSession(session)
+  appendUser(session, '开始任务')
+  appendGroup(session, 1, 'c1', 'read', READ_ARGS, 'OLD'.repeat(100))
+  appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'focus elsewhere')
+  const r = factor.compactIfNeeded(session, 1000)
+  assert.ok(r !== null)
+  const n = factor.ledger.prunedCount
+  // 模拟 resume：同 session 全新 FactorEngine（§1.5-9 无版本 pin 的续跑断言）
+  const { FactorEngine: FE } = await import('../src/factor/engine.ts')
+  const resumed = new FE(host)
+  const vocab = resumed.vocabulary(session)
+  assert.ok(vocab.text.includes('document:c:/proj/a.ts'), '被剪标签经日志重放重建（原 R 已离场 surface）')
+  assert.equal(resumed.ledger.prunedCount, n, '重放账本与在线一致')
+  const d = resumed.decide(session, 10)
+  assert.ok(![...d.candidates.values()].some(x => x.resultText.startsWith('[已剪·因子]')),
+    '桩不是新 R：不得入候选/sticky 通道（resolveRootSeqs 折链 + STUB_PREFIX 排除）')
+})
+
 test('open 轨不硬保护：单次失败（无宣称无复发）的 R 离开焦点后照常可剪', async () => {
   const { host, factor } = await makeFactorEngine()
   const session = makeSession('factor-open-track')
