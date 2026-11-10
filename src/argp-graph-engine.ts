@@ -48,6 +48,7 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
 import { FactorEngine, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
+import { UaSummarizer } from './factor/ua-summarizer.ts'
 export { scaleBudgets } from './budget.js'
 // 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
 // recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
@@ -276,6 +277,8 @@ export interface ArgpGraphConfig {
   focalTurns?: number
   /** 词表每类 topN（§1.4，factor 臂）。 */
   vocabTopN?: number
+  /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
+  uaSummaryThreshold?: number
   /**
    * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
    * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -378,6 +381,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     engine: z.string().default('graph'),
     focalTurns: z.number().step(1).min(0).default(1),
     vocabTopN: z.number().step(1).min(1).default(10),
+    uaSummaryThreshold: z.number().min(1000).default(40000),
   })
 
   static inject = ['tools', 'systemPrompt']
@@ -387,6 +391,9 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
   private readonly factor: FactorEngine | null = null
+
+  /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
+  private readonly ua: UaSummarizer | null = null
 
   readonly windowTokens!: number
   readonly retainTokens!: number
@@ -604,6 +611,10 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
         focalTurns: config.focalTurns,
         vocabTopN: config.vocabTopN,
+      })
+      this.ua = new UaSummarizer(ctx, this as unknown as PruneTxHost, {
+        uaSummaryThreshold: config.uaSummaryThreshold,
+        focalTurns: config.focalTurns,
       })
       // 因子臂召回面 = 恰好这两个工具（§3.2）：recall_history（标签交集 → 日志原文，
       // cursor/epoch 续读）+ list_labels（词表下钻）。老三件套在本臂**不挂**——
@@ -1471,11 +1482,22 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const measurement = this.measureTokens(session, incomingTokens)
     // ── factor 臂分发（design-2.0 §3.2）：压力口径 = contextTokens 超 retain 下限即剪，
-    // 不套图臂的多 pass/阈值阶梯。0-LLM 纯决策 + prune-tx 成对发射。
+    // 不套图臂的多 pass/阈值阶梯。R 剪 0-LLM 在前；U/A 批次摘要（因子臂唯一 LLM 通路）
+    // 只在 R 剪清不动缺口时兜底（可剪面被硬保护占满 = §2.3 降级链的摘要出口）。
     if (this.factor !== null) {
       if (trigger === 'context-overflow' || declaredKnown) {
         const deficit = measurement.contextTokens - retainTokens
-        if (deficit > 0) return this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+        if (deficit > 0) {
+          const pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+          if (pruned !== null) return pruned
+          if (this.ua !== null) {
+            try {
+              return await this.ua.summarize(session, agent.options, signal)
+            } catch (e) {
+              this.log.warn('[argp-factor-ua] 摘要兜底异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
+            }
+          }
+        }
       }
       return null
     }
@@ -1878,7 +1900,15 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (!declaredKnown) return
     const m = this.measureTokens(agent.session, incomingTokens)
     const deficit = m.contextTokens - retainTokens
-    if (deficit > 0) this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
+    if (deficit <= 0) return
+    const pruned = this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
+    if (pruned !== null || this.ua === null) return
+    // R 剪清不动（可剪面被硬保护占满）→ U/A 批次摘要兜底；吞错隔离同词表 note。
+    try {
+      await this.ua.summarize(agent.session, agent.options)
+    } catch (e) {
+      this.log.warn('[argp-factor-ua] pre-step 摘要异常（本轮跳过）：' + (e instanceof Error ? e.message : String(e)))
+    }
   }
 
   /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。

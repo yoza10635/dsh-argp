@@ -68,4 +68,6 @@ export interface ArgpUserSettings {
     focalTurns: number;
     /** factor 臂词表每类 topN（§1.4）。 */
     vocabTopN: number;
+    /** factor 臂 U/A 摘要池阈值，字符（§2.4）。 */
+    uaSummaryThreshold: number;
 }

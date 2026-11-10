@@ -6,7 +6,9 @@
  *  - 分类器四类（+rPair 随行料）：`textA | toolCallA（含配对 R）| excluded
  *    （relay/notice、X、已浓缩副本）| barrier（附件）`——relay/notice 与 U-info 聚合
  *    副本都是**已浓缩产物**（DEFAULT_SKIP_CONTEXT_FORMS 教训），二次摘要禁入；
- *  - span 是**连续 surface 切片**（prune-tx replace 的硬前提）：excluded/barrier/
+ *  - span 是**连续 surface 切片**（prune-tx replace 的硬前提；"连续"按 surface 序列
+ *    论——tool/call 占 log 格不进 surface，A/R 之间的洞合法，closeRun 注释有实测）：
+ *    excluded/barrier/
  *    孤儿 R/不可参摘原子一律切段（它们绝不能被摘要副本吞掉）；协议组不劈——
  *    段尾未闭合的 toolCallA 弹出（连同其后内容弃入下批重规划）；
  *  - 约束带逐字：命中约束词法的 **U 句**取原文子串进带，不参与生成；

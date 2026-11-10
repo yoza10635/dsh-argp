@@ -140,7 +140,7 @@ export function pruneIntervals(
   candidateCount: number,
   forced: boolean,
   tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string })[],
-  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune',
+  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-ua',
 ): CompactionResult | null {
   // P1.2（2026-09-21）：事务开始前预校验 tool 占位墓碑的可克隆性。带 tool 墓碑的单 R 区间
   // 必须克隆原 R data（只改 inner text）以配对 issuer A 的 tool_calls；若原事件
@@ -248,13 +248,16 @@ export function pruneIntervals(
           ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
           : summaryKind === 'factor-prune'
             ? `ARGP 因子剪：${prunedCount} R 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性贴标排序，0-LLM；原文保留在 append-only 日志，recall_history(labels) 可取回`
-            : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+            : summaryKind === 'factor-ua'
+              // LLM 参与如实标注（G7 口径限剪枝链不限摘要链）；model 字段同步改记。
+              ? `ARGP 因子摘要：${prunedCount} 原子 / ${useIntervals.length} 段（约 ${shadowedTokensOf(charsBefore0)} tok）；LLM 批次摘要 + 约束带逐字转写（fidelityGuard 必要条件，失败保原文）；被吞 R 的标签见词表 note，原文 recall_history(labels) 可取回`
+              : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
       }],
       shadowedRange: { start: first, end: last },
       shadowedSeqs: rangeSeqs,
       shadowedTokenCount: shadowedTokensOf(charsBefore0),
       provider: 'argp',
-      model: 'deterministic-guards',
+      model: summaryKind === 'factor-ua' ? 'llm-batch-summary' : 'deterministic-guards',
     } as never)
     const resolvedTombstones = useTombstones !== undefined && useTombstones.length === useIntervals.length
       ? useTombstones

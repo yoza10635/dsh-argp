@@ -238,6 +238,8 @@ export interface ArgpGraphConfig {
     focalTurns?: number;
     /** 词表每类 topN（§1.4，factor 臂）。 */
     vocabTopN?: number;
+    /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
+    uaSummaryThreshold?: number;
     /**
      * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
      * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
@@ -294,6 +296,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         engine: z<string, string, "defined">;
         focalTurns: z<number, number, "defined">;
         vocabTopN: z<number, number, "defined">;
+        uaSummaryThreshold: z<number, number, "defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         windowRatio: z<number, number, "volatile-defined">;
         retainRatio: z<number, number, "volatile-defined">;
@@ -306,12 +309,15 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         engine: z<string, string, "defined">;
         focalTurns: z<number, number, "defined">;
         vocabTopN: z<number, number, "defined">;
+        uaSummaryThreshold: z<number, number, "defined">;
     }>>, "plain">;
     static inject: string[];
     /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
     private readonly args;
     /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
     private readonly factor;
+    /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
+    private readonly ua;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */

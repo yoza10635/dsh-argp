@@ -74,6 +74,7 @@ export const ArgpUserSettingsSchema = z.object({
   engine: z.string().default('graph'),
   focalTurns: z.number().step(1).min(0).default(1),
   vocabTopN: z.number().step(1).min(1).default(10),
+  uaSummaryThreshold: z.number().step(1).min(1000).default(40000),
 }) as z<ArgpUserSettings>
 
 /**
@@ -187,6 +188,7 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   checkNum(config.reactiveRetries, 'reactiveRetries', { min: 0 })
   checkNum(config.focalTurns, 'focalTurns', { min: 0 })
   checkNum(config.vocabTopN, 'vocabTopN', { min: 1 })
+  checkNum(config.uaSummaryThreshold, 'uaSummaryThreshold', { min: 1000 })
   if (config.engine !== undefined && config.engine !== 'graph' && config.engine !== 'factor') {
     violations.push('engine: expected "graph" | "factor", got ' + JSON.stringify(config.engine))
   }

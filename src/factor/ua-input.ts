@@ -6,7 +6,9 @@
  *  - 分类器四类（+rPair 随行料）：`textA | toolCallA（含配对 R）| excluded
  *    （relay/notice、X、已浓缩副本）| barrier（附件）`——relay/notice 与 U-info 聚合
  *    副本都是**已浓缩产物**（DEFAULT_SKIP_CONTEXT_FORMS 教训），二次摘要禁入；
- *  - span 是**连续 surface 切片**（prune-tx replace 的硬前提）：excluded/barrier/
+ *  - span 是**连续 surface 切片**（prune-tx replace 的硬前提；"连续"按 surface 序列
+ *    论——tool/call 占 log 格不进 surface，A/R 之间的洞合法，closeRun 注释有实测）：
+ *    excluded/barrier/
  *    孤儿 R/不可参摘原子一律切段（它们绝不能被摘要副本吞掉）；协议组不劈——
  *    段尾未闭合的 toolCallA 弹出（连同其后内容弃入下批重规划）；
  *  - 约束带逐字：命中约束词法的 **U 句**取原文子串进带，不参与生成；
@@ -103,6 +105,8 @@ export interface UaPlanOptions {
 export function planUaSpans(atoms: readonly Atom[], opts: UaPlanOptions): UaPlanResult {
   const spans: UaSpan[] = []
   let run: Atom[] = []
+  /** run 各成员在输入 atoms 数组中的下标（索引邻接自检用，见 closeRun）。 */
+  let runAt: number[] = []
   /** 段内未闭合协议组：callId → 其 issuer A 在 run 中的下标。 */
   let pending = new Map<string, number>()
 
@@ -111,13 +115,21 @@ export function planUaSpans(atoms: readonly Atom[], opts: UaPlanOptions): UaPlan
     let cut = run.length
     for (const idx of pending.values()) cut = Math.min(cut, idx)
     const kept = run.slice(0, cut)
+    const keptAt = runAt.slice(0, cut)
     run = []
+    runAt = []
     pending = new Map()
     if (kept.length === 0) return
     const seqs = kept.map(a => a.seq)
-    // 连续性自检（replace 区间必须逐格连续；断档 = 数据异常，宁弃不发非法区间）。
-    for (let i = 1; i < seqs.length; i += 1) {
-      if ((seqs[i] as number) !== (seqs[i - 1] as number) + 1) return
+    // 连续性自检（replace 区间必须是 surface 序列的连续切片，禁吞无账 surface 节点）。
+    // 判据 = **输入 atoms 数组的下标邻接**，不是 seq+1 算术：atomize 是 surface 的 1:1
+    // 投影，而 tool/call 占 log 格却不进 surface（graph-build.ts §4.1 原子化注释；本仓
+    // 实测 appendGroup 后 surface=[0,1,2,4]——A(seq2) 与 R(seq4) 之间恒有洞）。replace
+    // 范围 [first..last] 里的洞只可来自这类非 surface 事件——host 的 surface fold 对
+    // 它们本就无投影，prune-tx 的 summary span 自检（prune-tx.ts surfaceNodes.slice）
+    // 与逐区间 shadow-price 同样按 surface 取证，洞合法。
+    for (let i = 1; i < keptAt.length; i += 1) {
+      if (keptAt[i] !== (keptAt[i - 1] as number) + 1) return
     }
     const constraintLines: string[] = []
     for (const a of kept) {
@@ -134,7 +146,8 @@ export function planUaSpans(atoms: readonly Atom[], opts: UaPlanOptions): UaPlan
     })
   }
 
-  for (const a of atoms) {
+  for (let i = 0; i < atoms.length; i += 1) {
+    const a = atoms[i] as Atom
     const ineligible = (opts.openTurn !== null && a.turn >= opts.openTurn)
       || (opts.protectFromTurn !== null && a.turn >= opts.protectFromTurn)
     if (ineligible) { closeRun(); continue }
@@ -145,6 +158,7 @@ export function planUaSpans(atoms: readonly Atom[], opts: UaPlanOptions): UaPlan
       if (callId !== undefined && pending.has(callId)) {
         pending.delete(callId)
         run.push(a)
+        runAt.push(i)
         continue
       }
       // 孤儿 R（issuer A 不在本段）：切段，不吃它。
@@ -153,11 +167,13 @@ export function planUaSpans(atoms: readonly Atom[], opts: UaPlanOptions): UaPlan
     }
     if (cls === 'toolCallA') {
       run.push(a)
+      runAt.push(i)
       const idx = run.length - 1
       for (const id of a.toolCallIds) pending.set(id, idx)
       continue
     }
     run.push(a)
+    runAt.push(i)
   }
   closeRun()
 
