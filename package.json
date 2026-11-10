@@ -99,6 +99,7 @@
     "classb": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/52-classb-oracle.ts",
     "errdedup": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/53-error-dedup.ts",
     "policy": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/54-policy-width.ts",
+    "vercmp": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/55-version-compare.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "overrides": {
