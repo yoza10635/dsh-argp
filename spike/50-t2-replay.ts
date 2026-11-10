@@ -46,23 +46,20 @@
  * 退出码：1 = 不剪集违例或交叉校验漂移；0 = 全绿。
  */
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
-import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import type { Atom } from '../src/argp-types.ts'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { detectOpenTurn, sessionEvents } from '../src/log-access.ts'
 import {
-  focalLabels, sessionCwdFromEvents, tagRsFromLog,
+  focalLabels, sessionCwdFromEvents,
   type AtomLike, type EventLike, type RTagInput,
 } from '../src/factor/factor-atoms.ts'
-import { FactorEngine } from '../src/factor/engine.ts'
 import { indexKeys } from '../src/factor/factor-ledger.ts'
 import { labelAllowed } from '../src/factor/tag-canonical.ts'
 import { classifyUaAtom, planUaSpans, type UaEventProbe } from '../src/factor/ua-input.ts'
 import { loadSessionEvents, type RawSessionEvent } from './lib/session-corpus.ts'
+import {
+  collectArchives, crossCheck, defaultRoots, mountVariant, toPristineSession,
+  type Mounted,
+} from './lib/t2-replay-core.ts'
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -81,180 +78,9 @@ const MIN_TURNS = Number(flagOf('min-turns') ?? '4')
 const BUDGETS = (flagOf('budgets') ?? '8000,30000,100000').split(',').map(Number)
 const OUT_DIR = flagOf('out') ?? path.join('spike', 'out', 't2')
 const VERBOSE = argv.includes('--verbose')
-const ROOTS = (flagOf('roots') ?? [
-  path.join(os.homedir(), '.dsh', 'sessions'),
-  path.join(os.homedir(), '.dsh', 'sessions-corpus'),
-].join(path.delimiter)).split(path.delimiter).filter(r => r !== '')
+const ROOTS = (flagOf('roots') ?? defaultRoots().join(path.delimiter)).split(path.delimiter).filter(r => r !== '')
 
-// ---------------------------------------------------------------------------
-// 语料收集：每会话目录取最高版本存档
-// ---------------------------------------------------------------------------
-
-interface Archive { file: string; slug: string }
-
-function collectArchives(): Archive[] {
-  const best = new Map<string, { file: string; v: number }>()
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 6) return
-    let entries: fs.Dirent[]
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
-    for (const e of entries) {
-      const full = path.join(dir, e.name)
-      if (e.isDirectory()) { walk(full, depth + 1); continue }
-      const m = /^session\.v(\d+)\.jsonl(\.zstd)?$/.exec(e.name)
-      if (m === null) continue
-      const dirKey = path.dirname(full)
-      const v = Number(m[1])
-      const prev = best.get(dirKey)
-      if (prev === undefined || v > prev.v) best.set(dirKey, { file: full, v })
-    }
-  }
-  for (const root of ROOTS) walk(root, 0)
-  return [...best.entries()]
-    .map(([dirKey, x]) => ({
-      file: x.file,
-      slug: path.basename(dirKey).replace(/^--+|--+$/g, '').slice(0, 48),
-    }))
-    .sort((a, b) => a.file.localeCompare(b.file))
-}
-
-// ---------------------------------------------------------------------------
-// pristine 重建（剥 A 引擎痕迹，见文件头）
-// ---------------------------------------------------------------------------
-
-const KEEP_TYPES = new Set(['system/message', 'user/message', 'assistant/message', 'tool/call', 'tool/result'])
-
-/** argp 自产条目（notice/摘要/U-info 副本/词表 note）——原始流里没有它们。 */
-function isArgpGenerated(e: RawSessionEvent): boolean {
-  const d = e.data as Record<string, unknown> | undefined
-  if (d === undefined) return false
-  const sources = [d['source'], (d['message'] as Record<string, unknown> | undefined)?.['source']]
-  return sources.some(s => s !== undefined && (s as { kind?: string }).kind === 'argp')
-}
-
-function toPristineSession(events: readonly RawSessionEvent[], slug: string): { session: Session; skipped: Map<string, number> } {
-  const session = Session.create(SessionId('t2-' + slug.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 24)))
-  const skipped = new Map<string, number>()
-  for (const e of events) {
-    let why: string | null = null
-    if (!KEEP_TYPES.has(e.type)) why = 'type:' + e.type
-    else if (e.surfaceOp !== undefined && e.surfaceOp !== 'append') why = 'replace-copy'
-    else if (isArgpGenerated(e)) why = 'argp-generated'
-    if (why !== null) {
-      skipped.set(why, (skipped.get(why) ?? 0) + 1)
-      continue
-    }
-    // surfaceOp 照归档原样回灌：'append' 显式给；缺省（tool/call 的 log-only 形态）不给。
-    let data = e.data as Record<string, unknown>
-    // 旧宿主错误结果形态补形（归档实测）：`data.error` 在场但 message 缺 isError——
-    // 现宿主 validateSessionEventData 要求 error ⇒ message.isError===true。补齐即
-    // 现宿主对同一逻辑事件的写入形态；message 非记录形则回灌不进，计数剥除。
-    if (e.type === 'tool/result' && data['error'] !== undefined) {
-      const msg = data['message']
-      if (msg === undefined || typeof msg !== 'object') {
-        skipped.set('broken-error-result', (skipped.get('broken-error-result') ?? 0) + 1)
-        continue
-      }
-      if ((msg as { isError?: boolean }).isError !== true) {
-        data = { ...data, message: { ...msg as object, isError: true } }
-        skipped.set('repair:isError', (skipped.get('repair:isError') ?? 0) + 1)
-      }
-    }
-    try {
-      session.append(e.type, data as never,
-        e.surfaceOp === 'append' ? ({ surfaceOp: 'append' } as never) : {})
-    } catch (err) {
-      // 其余校验拒收：计数剥除继续（不中断整档重放）；量大时聚合面可见。
-      const key = 'append-reject:' + e.type + ':' + String((err as Error).message).slice(0, 40)
-      skipped.set(key, (skipped.get(key) ?? 0) + 1)
-    }
-  }
-  return { session, skipped }
-}
-
-// ---------------------------------------------------------------------------
-// 变体挂载（测试挂法与 test/config-roster.test.ts 同源）
-// ---------------------------------------------------------------------------
-
-interface Mounted { factor: FactorEngine; atomize(session: Session): Atom[]; bind(session: Session): void }
-
-/**
- * 变体引擎**直接构造组合根**（new FactorEngine(host, knobs)），不借道 plugin config：
- * stickyWindowTurns/vocabBudgetChars 不在 static Config 名册（§3.4 设计如此），
- * resolveConfig 对未知键静默透传 ⇒ 经 ctx.plugin 传这两键永远到不了引擎（实测
- * sticky0 与 base 决策全等）。ArgpGraphEngine 本体即 PruneTxHost（装配点同源注入面，
- * argp-graph-engine.ts:625 注释），直接把 internals 当 host 喂组合根。
- */
-async function mountVariant(knobs: Record<string, number>): Promise<Mounted> {
-  const ctx = new Context()
-  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 't2 replay persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50 } as never)
-  const internals = ctx.compaction as unknown as {
-    atomize(session: Session): Atom[]
-    bindSession(session: Session): void
-  }
-  const factor = new FactorEngine(internals as never, knobs as never)
-  return {
-    factor,
-    atomize: session => internals.atomize(session),
-    bind: session => internals.bindSession(session),
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 独立不剪集复算 × 引擎真值交叉校验
-// ---------------------------------------------------------------------------
-
-interface CrossCheck {
-  violations: Array<{ seq: number; why: string }>
-  onlyIndependent: number[]
-  onlyEngine: number[]
-  /** 保护因由组合计数（'focal+openTurn' 等）：保护面归因分解用。 */
-  reasonHist: Record<string, number>
-}
-
-/**
- * 独立复算的判据逐条对齐 engine.ts decide() 的 hard 面（178-188）：openTurn / 附件空 R /
- * focal（重放 ⇒ regenerable 恒 undefined ⇒ focalMatch 即硬）/ 已定型 sticky。
- * 这是**解释性复算**——判卷以引擎真值为准，两集不等即漂移。
- */
-function crossCheck(
-  atoms: readonly Atom[],
-  tagsBySeq: ReadonlyMap<number, RTagInput>,
-  focalSet: ReadonlySet<string>,
-  openTurn: number | null,
-  sticky: ReadonlyArray<{ state: string; file: string; errorcode: string }>,
-  pruneOrder: readonly number[],
-  hardProtected: readonly number[],
-): CrossCheck {
-  const independent = new Map<number, string>()
-  for (const a of atoms) {
-    if (a.type !== 'R') continue
-    const input = tagsBySeq.get(a.seq)
-    if (input === undefined) continue
-    const why: string[] = []
-    if (openTurn !== null && a.turn >= openTurn) why.push('openTurn')
-    if (input.resultText.length === 0) why.push('attachment')
-    if (indexKeys(input.tags).some(k => focalSet.has(k))) why.push('focal')
-    if (input.tags.errorcodes.length > 0 && input.tags.files.some(f =>
-      sticky.some(t => t.state === 'sticky' && t.file === f && input.tags.errorcodes.includes(t.errorcode)))) why.push('sticky')
-    if (why.length > 0) independent.set(a.seq, why.join('+'))
-  }
-  const engineHard = new Set(hardProtected)
-  const violations: Array<{ seq: number; why: string }> = []
-  for (const seq of pruneOrder) {
-    const w = independent.get(seq)
-    if (w !== undefined) violations.push({ seq, why: w })
-  }
-  const reasonHist: Record<string, number> = {}
-  for (const why of independent.values()) reasonHist[why] = (reasonHist[why] ?? 0) + 1
-  return {
-    violations,
-    onlyIndependent: [...independent.keys()].filter(s => !engineHard.has(s)).sort((a, b) => a - b),
-    onlyEngine: [...engineHard].filter(s => !independent.has(s)).sort((a, b) => a - b),
-    reasonHist,
-  }
-}
+// 语料收集 / pristine 重建 / 变体挂载 / 交叉校验 → ./lib/t2-replay-core.ts（spike51 共用）
 
 // ---------------------------------------------------------------------------
 // 指标工具
@@ -343,7 +169,7 @@ function describeSeq(seq: number, inputs: ReadonlyMap<number, RTagInput>): { seq
 }
 
 async function main(): Promise<void> {
-  const archives = collectArchives()
+  const archives = collectArchives(ROOTS)
   if (archives.length === 0) {
     console.log('无语料（roots 均缺失/无 session.vN 存档）：' + ROOTS.join(', '))
     return

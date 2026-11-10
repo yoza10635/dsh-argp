@@ -95,6 +95,7 @@
     "spike48": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/48-tag-extract-audit.ts",
     "spike49": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/49-recall-attribution.ts",
     "t2": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts",
+    "oracle": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/51-oracle-judge.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "overrides": {
