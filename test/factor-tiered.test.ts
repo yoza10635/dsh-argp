@@ -16,7 +16,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
-import { FactorEngine, type FactorEngineHost } from '../src/factor/engine.ts'
+import { FactorEngine, resolveFocalTiered, type FactorEngineHost } from '../src/factor/engine.ts'
 import { sessionEvents } from '../src/log-access.ts'
 
 async function makeTiered(tiered: 'flat' | 'tiered'): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
@@ -250,4 +250,45 @@ test('tiered 豁免排序翻转：焦点命中的 superseded 旧版从"插队先
   // tiered：豁免只禁插队——c1 不再占 superseded=0 位，与 cy 同批按体积（cy 400B 先剪）。
   // （band 语义下 errorcode 命中的焦点带位=0 是 v1.2 裁定的本意，沉底由三值带测单锁。）
   assert.ok(tiered[0] > tiered[2], 'tiered：豁免生效——焦点命中的旧版不再插队')
+})
+
+// ---------------------------------------------------------------------------
+// env 逃生口（T-3 两臂实跑唯一 tiered 触达通道；生产装配缺省 flat 是地基锁）
+// 变异纪律：装配点摘除 focalTiered: resolveFocalTiered() ⇒ 测2 红；
+// 纯函数恒 flat ⇒ 测1/测2 红；env 名拼错 ⇒ 测1/测2 红。
+// ---------------------------------------------------------------------------
+
+test('resolveFocalTiered 纯函数：仅精确 \'tiered\' 生效（缺省/非法 ⇒ flat 保守）', () => {
+  assert.equal(resolveFocalTiered({}), 'flat')
+  assert.equal(resolveFocalTiered({ ARGP_FACTOR_TIER: 'tiered' }), 'tiered')
+  assert.equal(resolveFocalTiered({ ARGP_FACTOR_TIER: 'TIERED' }), 'flat', '大小写敏感：非法值走保守档')
+  assert.equal(resolveFocalTiered({ ARGP_FACTOR_TIER: '1' }), 'flat')
+})
+
+async function bootFactorArm(): Promise<FactorEngine> {
+  const ctx = new Context()
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'escape hatch persona' } })
+  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  return (ctx.compaction as unknown as { factor: FactorEngine }).factor
+}
+
+function withTieredEnv<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+  const saved = process.env['ARGP_FACTOR_TIER']
+  if (value === undefined) delete process.env['ARGP_FACTOR_TIER']
+  else process.env['ARGP_FACTOR_TIER'] = value
+  return run().finally(() => {
+    if (saved === undefined) delete process.env['ARGP_FACTOR_TIER']
+    else process.env['ARGP_FACTOR_TIER'] = saved
+  })
+}
+
+test('装配链：ARGP_FACTOR_TIER=tiered ⇒ 生产 FactorEngine 构造即 tiered（env 快照）', async () => {
+  const factor = await withTieredEnv('tiered', bootFactorArm)
+  assert.equal((factor as unknown as { cfg: { focalTiered: string } }).cfg.focalTiered, 'tiered',
+    '逃生口是生产触达 tiered 的唯一通道（禁入 static Config），装配点漏接=两臂实跑全跑成 flat')
+})
+
+test('装配链地基锁：env 未设 ⇒ 生产构造恒 flat（现行为零影响）', async () => {
+  const factor = await withTieredEnv(undefined, bootFactorArm)
+  assert.equal((factor as unknown as { cfg: { focalTiered: string } }).cfg.focalTiered, 'flat')
 })

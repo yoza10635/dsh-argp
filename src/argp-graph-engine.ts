@@ -46,7 +46,7 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
-import { FactorEngine, type FactorEngineHost } from './factor/engine.ts'
+import { FactorEngine, resolveFocalTiered, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { UaSummarizer } from './factor/ua-summarizer.ts'
 export { scaleBudgets } from './budget.js'
@@ -629,6 +629,9 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
         focalTurns: () => this.args.focalTurns.get(),
         vocabTopN: () => this.args.vocabTopN.get(),
+        // 策略档 env 逃生口（T-3 两臂实跑）：缺省 flat=现行为字节不变，
+        // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
+        focalTiered: resolveFocalTiered(),
       })
       this.ua = new UaSummarizer(ctx, this as unknown as PruneTxHost, {
         uaSummaryThreshold: () => this.args.uaSummaryThreshold.get(),

@@ -49,6 +49,16 @@ export interface FactorEngineConfig {
   focalTiered?: 'flat' | 'tiered'
 }
 
+/**
+ * focalTiered 的 env 逃生口（T-3 两臂实跑唯一触达通道）：tiered 是策略档，
+ * 禁入 static Config/设置卡（P5-b 裁定，CR5/CR6/preset 键锁不变），生产装配路径
+ * 缺省恒 flat——要跑 tiered 臂只能经此 env。非法值 ⇒ flat（缺省安全）；
+ * 生效=构造快照（档切换=策略文档换版，须重挂引擎，不做活读）。
+ */
+export function resolveFocalTiered(env: NodeJS.ProcessEnv = process.env): 'flat' | 'tiered' {
+  return env['ARGP_FACTOR_TIER'] === 'tiered' ? 'tiered' : 'flat'
+}
+
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
   fileSnapshot?: (canonicalKey: string) => FileSnapshot | null
