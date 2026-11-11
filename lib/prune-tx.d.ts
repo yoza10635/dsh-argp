@@ -101,6 +101,15 @@ export interface PruneTxHost {
     tombstoneMergeMinRun: number;
     recencyGuard: number;
     turnGuard: number;
+    /**
+     * P6 note 施工①（catalog 快照域"进程"升格"压缩事务"）：事务尾取一次 catalog 快照——
+     * 写入 compaction/end 持久（跨进程 resume 回放同值，headless 回合制不再每进程重拍）
+     * + 冻结域刷新（进程内后续请求回放该值）。缺省（undefined）= 不落账不刷新（测试替身免装配）。
+     */
+    catalogDomain?: {
+        snapshot: () => string;
+        freeze: (text: string) => void;
+    };
 }
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
@@ -120,7 +129,7 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
     seq: number;
     callId: string;
     text?: string;
-})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-ua'): CompactionResult | null;
+})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-ua' | 'factor-prose'): CompactionResult | null;
 /**
  * tombstone 归并。扫描 surface，找**连续**的「可合并墓碑」X 段
  * （user/message + isMergeableTombstone 文本），段长 ≥ tombstoneMergeMinRun 时一笔事务

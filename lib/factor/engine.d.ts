@@ -30,6 +30,14 @@ export interface FactorEngineConfig {
  * 生效=构造快照（档切换=策略文档换版，须重挂引擎，不做活读）。
  */
 export declare function resolveFocalTiered(env?: NodeJS.ProcessEnv): 'flat' | 'tiered';
+/**
+ * P6-④ 触发收敛的评测逃生口（focalTiered 同款纪律：禁入 static Config，env 是唯一通道）：
+ * 缺省 = 估算驱动退役（只认手动 compact + context 报错两信号，估算永不触发破坏性改写）；
+ * env 置 1 恢复旧 pre-step 估算驱动路径（压力剪 + 缺口摘要 + note 每 pre-step 刷新，
+ * 旧世界字节级复现，供修前/修后对照臂）。非法值 ⇒ 缺省（退役生效，安全方向）。
+ * 生效 = 构造期快照（档切换须重挂引擎，不做活读）。
+ */
+export declare function resolvePressureTriggerEnabled(env?: NodeJS.ProcessEnv): boolean;
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
     fileSnapshot?: (canonicalKey: string) => FileSnapshot | null;
@@ -58,6 +66,8 @@ export interface FactorDecision {
     mediumBandChars: number;
     /** 逐候选焦点带（flat 语义：命中=1 未命中=0；tiered：三值）。 */
     focalBandBySeq: ReadonlyMap<number, 0 | 1 | 2>;
+    /** P6-③ 裁定 3：强制先行段（中断轮半截 A + 孤儿工具对；已含在 plan.pruneOrder 头部）。 */
+    interruptedForcedSeqs: number[];
 }
 /** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
 export declare const VOCAB_NOTE_MARKER = "[argp-factor \u8BCD\u8868]";

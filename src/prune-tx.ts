@@ -124,6 +124,12 @@ export interface PruneTxHost {
   tombstoneMergeMinRun: number
   recencyGuard: number
   turnGuard: number
+  /**
+   * P6 note 施工①（catalog 快照域"进程"升格"压缩事务"）：事务尾取一次 catalog 快照——
+   * 写入 compaction/end 持久（跨进程 resume 回放同值，headless 回合制不再每进程重拍）
+   * + 冻结域刷新（进程内后续请求回放该值）。缺省（undefined）= 不落账不刷新（测试替身免装配）。
+   */
+  catalogDomain?: { snapshot: () => string; freeze: (text: string) => void }
 }
 
 /**
@@ -140,7 +146,7 @@ export function pruneIntervals(
   candidateCount: number,
   forced: boolean,
   tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string })[],
-  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-ua',
+  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-ua' | 'factor-prose',
 ): CompactionResult | null {
   // P1.2（2026-09-21）：事务开始前预校验 tool 占位墓碑的可克隆性。带 tool 墓碑的单 R 区间
   // 必须克隆原 R data（只改 inner text）以配对 issuer A 的 tool_calls；若原事件
@@ -274,13 +280,17 @@ export function pruneIntervals(
             : summaryKind === 'factor-ua'
               // LLM 参与如实标注（G7 口径限剪枝链不限摘要链）；model 字段同步改记。
               ? `ARGP 因子摘要：${prunedCount} 原子 / ${useIntervals.length} 段（约 ${shadowedTokensOf(charsBefore0)} tok）；LLM 批次摘要 + 约束带逐字转写（fidelityGuard 必要条件，失败保原文）；被吞 R 的标签见词表 note，原文 recall_history(labels) 可取回`
-              : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+              : summaryKind === 'factor-prose'
+                ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；轮级贪心驱逐 + one-shot 原生式 LLM 浓缩（输入仅 sys+散文，无工具原子）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
+                : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
       }],
       shadowedRange: { start: first, end: last },
       shadowedSeqs: rangeSeqs,
       shadowedTokenCount: shadowedTokensOf(charsBefore0),
       provider: 'argp',
-      model: summaryKind === 'factor-ua' ? 'llm-batch-summary' : 'deterministic-guards',
+      model: summaryKind === 'factor-ua' ? 'llm-batch-summary'
+        : summaryKind === 'factor-prose' ? 'llm-prose-checkpoint'
+          : 'deterministic-guards',
     } as never)
     const resolvedTombstones = useTombstones !== undefined && useTombstones.length === useIntervals.length
       ? useTombstones
@@ -360,7 +370,16 @@ export function pruneIntervals(
       })
       intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
     }
-    const endEvent = session.append('compaction/end', { ...lifecycle, ...sourceCommandIdField })
+    // P6 note 施工①（catalog 快照域升格）：事务尾取一次快照——先算（surface 已 replace
+    // 完毕、快照即剪后真实目录），随 end 事件落账，再刷冻结域。剪枝本身已改动可见上下文，
+    // 这一步的缓存失效是必然代价（旧"落剪刷新"批注同口径）；跨进程字节稳定由 end 事件回放保证。
+    const catalogText = host.catalogDomain !== undefined ? host.catalogDomain.snapshot() : undefined
+    const endEvent = session.append('compaction/end', {
+      ...lifecycle,
+      ...sourceCommandIdField,
+      ...(catalogText !== undefined ? { catalogText } : {}),
+    })
+    if (catalogText !== undefined) host.catalogDomain?.freeze(catalogText)
     ended = true
     // 批次 3-5（beta.1）：事务后 tool-pairing 不变量审计——自动图剪路径此前无校验（手动
     // compactRegions / 墓碑归并在区间选择期各有前校验；per-atom 墓碑保配对是设计保证，

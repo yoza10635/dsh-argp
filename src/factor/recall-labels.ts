@@ -41,6 +41,12 @@ export interface RecallLabelsHost {
 const FACET_PREFIXES = ['document:', 'command:', 'errorcode:', 'scope:'] as const
 
 /**
+ * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
+ * P6-③ 裁定 2：召回对（call+result）无条件进剪序（可再生=再召回一次），识别按本名单。
+ */
+export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_labels']
+
+/**
  * 注册因子臂召回两工具。`factor` 闭包捕获引擎的**同一个** FactorEngine 实例
  * （账本/epoch 与发射侧共享，构造期装配一次）。
  */

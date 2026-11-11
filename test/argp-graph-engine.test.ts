@@ -6,7 +6,7 @@ import { createAssistantMessage, createDeveloperMessage, createSystemMessage, cr
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { CompactionId, compactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import z from '@deepseek-ai/schemastery'
-import { asSeq, asSeqs, logRowType } from '../src/log-access.ts'
+import { asSeq, asSeqs, logRowType, sessionEvents } from '../src/log-access.ts'
 import { ArgpGraphEngine, EDGE_WEIGHTS, buildTombstones, eventText, extractCites, isMergeableTombstone, looksAskText, type Atom } from '../src/argp-graph-engine.ts'
 
 async function makeEngine(config: Record<string, unknown> = {}): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
@@ -548,7 +548,7 @@ test('argp-catalog is frozen: section text does not re-evaluate live when a prun
   }
 })
 
-test('argp-catalog stays frozen across a real prune (permanent freeze, no KV invalidation)', async () => {
+test('argp-catalog 快照域=压缩事务（P6 note 施工①）：事务尾刷新一次，事务间字节恒定', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('frozen-catalog-refresh'))
@@ -558,15 +558,20 @@ test('argp-catalog stays frozen across a real prune (permanent freeze, no KV inv
     appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
     engine.setSession(session)
     const before = await catalogTextOf(ctx)
-    assert.equal(before, '', 'no catalog before prune (frozen empty at first bind)')
+    assert.equal(before, '', 'no catalog before any compaction (first bind, no snapshot in log)')
     const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
     assert.ok(result !== null, 'a prune should occur under pressure')
     const after = await catalogTextOf(ctx)
-    // 永久冻结：即便真实落剪，catalog 段也绝不改写（system 块字节恒定，前缀缓存不失效）。
-    // 旧实现（每步 bindSession 重冻 / pruneIntervals 刷新）会在此让 catalog 凭空变化 → 缓存击穿。
-    assert.equal(after, before, 'argp-catalog section must stay frozen (unchanged) even after a real prune')
-    // 再次 assemble 仍稳定
-    assert.equal(await catalogTextOf(ctx), after, 'frozen catalog stays stable after the prune')
+    // 快照域升格（T-3 note 前缀炸弹案施工①）：事务尾刷新一次（剪后真实目录进冻结域）——
+    // 旧语义（落剪永不刷新）作废：旧冻结值是剪前目录，剪后每步回放陈旧目录 = 发现能力失真；
+    // 剪枝本身已让可见上下文换代，这一步缓存失效是必然代价。非事务时刻（assemble/重绑）仍字节恒定。
+    assert.notEqual(after, '', 'transaction tail refreshes the frozen catalog once')
+    assert.equal(await catalogTextOf(ctx), after, 'frozen catalog stays byte-stable between compactions')
+    // end 事件落账：catalogText 与冻结域同值（resume 回放源，字节一致）。
+    const events = sessionEvents(session) as unknown as Array<{ type: string; data?: { catalogText?: string } }>
+    const end = [...events].reverse().find(e => e.type === 'compaction/end')
+    assert.ok(end !== undefined, 'compaction/end must be present')
+    assert.equal(end.data?.catalogText, engine.frozenCatalog, 'end event persists the exact frozen snapshot')
   } finally {
     await ctx.fiber.dispose()
   }
@@ -1874,7 +1879,7 @@ test('批次 3-5: shadowedSeqs 账本核验——恰为真被替换集，整段 
   }
 })
 
-test('批次 3-1: frozenCatalog 非死段——新会话空目录，resume 首绑拍到真实目录', async () => {
+test('批次 3-1: catalog 快照域升格——resume 首绑从日志回放事务快照（非 live 重拍）', async () => {
   const { ctx, engine } = await makeEngine()
   try {
     const session = Session.create(SessionId('catalog-resume'))
@@ -1882,16 +1887,21 @@ test('批次 3-1: frozenCatalog 非死段——新会话空目录，resume 首�
     appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
     appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
     engine.setSession(session)
-    assert.equal(engine.frozenCatalog, '', '新会话：首绑先于任何剪枝 ⇒ 空目录（per-design，发现走 tombstone 指针）')
+    assert.equal(engine.frozenCatalog, '', '新会话：首绑无在案快照 ⇒ 活拍（空目录）')
     await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
-    assert.equal(engine.frozenCatalog, '', '落剪不刷新 catalog（KV 恒定性）')
-
-    // 模拟重启 resume：新引擎实例对同一日志会话首绑——账本先建、快照拍到真实目录
+    assert.ok(engine.frozenCatalog !== null && engine.frozenCatalog !== '',
+      '事务尾快照拍到剪后目录（快照域已从"进程"升格"压缩事务"）')
+    // 手工落一笔"历史事务账目"（模拟旧版本/外部产物）：end 事件带在案快照。
+    // 回放值（落账字符串）与 live 重拍（catalogText 现算）必然不同 ⇒ 两路可区分。
+    session.append('compaction/prune', { shadowedSeqs: asSeqs([1]) } as never)
+    session.append('compaction/end', { compactionId: CompactionId('legacy-tx'), catalogText: 'MANUAL-SNAPSHOT-FROM-LOG' } as never)
+    // 模拟重启 resume：新引擎实例对同一日志会话首绑——快照必须从 end 事件回放。
     const { ctx: ctx2, engine: engine2 } = await makeEngine()
     try {
       engine2.setSession(session)
-      const cat = engine2.frozenCatalog
-      assert.ok(cat !== null && cat.includes('Compression removed'), 'resume 首绑拍到真实目录（机制非死段）: ' + (cat ?? '').slice(0, 60))
+      assert.equal(engine2.frozenCatalog, 'MANUAL-SNAPSHOT-FROM-LOG', 'resume 首绑回放 end 事件在案快照（非 live 重拍）')
+      assert.notEqual(engine2.frozenCatalog, engine2.catalogText(20, 70),
+        '回放值 ≠ live 重拍（快照域=压缩事务；headless 每进程换快照旧病灶锁死）')
     } finally {
       await ctx2.fiber.dispose()
     }

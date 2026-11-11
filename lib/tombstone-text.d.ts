@@ -88,6 +88,12 @@ export declare function closureTombstone(closureId: string, start: number, end: 
 /** 聚合墓碑（tombstone-merge：多条墓碑归并为一条）。 */
 export declare function consolidatedTombstone(count: number, start: number, end: number): string;
 /**
+ * factor 臂中断轮半截 A 的 user 墓碑（P6-③ 裁定 3）。不引 `recall_pruned`——factor 臂
+ * 无该通道（假通道纪律同 factor 桩"禁引退役工具名"）；原文在 append-only 日志按 seq 检索。
+ * 非可并族（无 recall_pruned 指引）——罕见的协议残渣节点，不值得为它们扩可并文法。
+ */
+export declare function factorAssistantTombstone(seq: number): string;
+/**
  * `CompactionResult.summary` 里的 tool 墓碑渲染文本。
  *
  * 不进 prompt（`compaction/summary` 是 off-surface 日志事件，UI 展示用），故不带 seq

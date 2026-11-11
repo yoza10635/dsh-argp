@@ -25,8 +25,10 @@ import { FOCAL_DOC_HARD_WIDTH_RATIO } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalCommandLabels, focalLabels, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
+import { RECALL_TOOL_NAMES } from './recall-labels.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
 import { computeScore, planPrune, type PrunePlan, type ScoredEntry } from './retention-score.ts'
+import { factorAssistantTombstone } from '../tombstone-text.js'
 import { READ_TOOLS } from './tag-extract.ts'
 import type { FileSnapshot } from './types.ts'
 
@@ -59,6 +61,17 @@ export function resolveFocalTiered(env: NodeJS.ProcessEnv = process.env): 'flat'
   return env['ARGP_FACTOR_TIER'] === 'tiered' ? 'tiered' : 'flat'
 }
 
+/**
+ * P6-④ 触发收敛的评测逃生口（focalTiered 同款纪律：禁入 static Config，env 是唯一通道）：
+ * 缺省 = 估算驱动退役（只认手动 compact + context 报错两信号，估算永不触发破坏性改写）；
+ * env 置 1 恢复旧 pre-step 估算驱动路径（压力剪 + 缺口摘要 + note 每 pre-step 刷新，
+ * 旧世界字节级复现，供修前/修后对照臂）。非法值 ⇒ 缺省（退役生效，安全方向）。
+ * 生效 = 构造期快照（档切换须重挂引擎，不做活读）。
+ */
+export function resolvePressureTriggerEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['ARGP_FACTOR_PRESSURE'] === '1'
+}
+
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
   fileSnapshot?: (canonicalKey: string) => FileSnapshot | null
@@ -88,6 +101,8 @@ export interface FactorDecision {
   mediumBandChars: number
   /** 逐候选焦点带（flat 语义：命中=1 未命中=0；tiered：三值）。 */
   focalBandBySeq: ReadonlyMap<number, 0 | 1 | 2>
+  /** P6-③ 裁定 3：强制先行段（中断轮半截 A + 孤儿工具对；已含在 plan.pruneOrder 头部）。 */
+  interruptedForcedSeqs: number[]
 }
 
 interface SessionFactorState {
@@ -201,7 +216,7 @@ export class FactorEngine {
     const sticky = this.ledger.stickyActive()
     const candidates = new Map<number, RTagInput>()
     // 第一段：逐候选收集事实（tiered 的熔断要全局占比，hard 判定必须二段化）
-    interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[]; mediumHit: boolean }
+    interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[]; mediumHit: boolean; isRecall: boolean }
     const facts: Fact[] = []
     for (const a of atoms) {
       if (a.type !== 'R') continue
@@ -209,6 +224,8 @@ export class FactorEngine {
       const input = tagsBySeq.get(a.seq)
       if (input === undefined) continue
       candidates.set(a.seq, input)
+      // P6-③ 裁定 2：召回对（recall_history/list_labels 的 result）可再生=再召回一次，
+      // 全部硬保护位失效（无条件进剪序）；排序照常走 freshness（刚引用=新鲜，迟剪）。
       // 未闭合轮的 R：本轮协议现场（模型可能尚未消化），硬保护不进排序
       const inOpenTurn = openTurn !== null && a.turn >= openTurn
       const keys = indexKeys(input.tags)
@@ -228,6 +245,7 @@ export class FactorEngine {
         seq: a.seq, turn: a.turn, input, inOpenTurn, regenerable, stickyMember, focalMatch,
         focalDocHit: tiered ? [...keys].filter(k => focalDocSet.has(k)) : [],
         mediumHit: tiered ? keys.some(k => focalMedium.has(k)) : false,
+        isRecall: RECALL_TOOL_NAMES.includes(input.tool),
       })
     }
     // 宽度熔断（§2.5 v1.1 护栏）：焦点文档 hard 候选字节占比超阈 ⇒ 每文档只保最新一枚
@@ -303,7 +321,8 @@ export class FactorEngine {
         rootSeq: f.seq,
         score: computeScore({
           rootSeq: f.seq, turn: f.turn, currentTurn: latestTurn, tags: f.input.tags,
-          hard: {
+          // P6-③ 裁定 2：召回对全部硬保护位失效（无条件进剪序；可再生=再召回一次）。
+          hard: f.isRecall ? {} : {
             failureNoFollowR: f.inOpenTurn,
             // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
             stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
@@ -323,13 +342,46 @@ export class FactorEngine {
         }),
       })
     }
-    const plan = planPrune(entries, { targetReleaseChars })
+    // P6-③ 裁定 3：中断轮驱逐（closed 轮）——半截 A（有 tool-call 却有未应答 call）+
+    // 孤儿 R（callId 无在世 issuer A， issuer 已被先行事务带走）无条件强制先行，"驱逐时机
+    // =下次压缩"，无视目标量；该轮 user 消息保留（U 恒不在 factor 剪序）。半截 A 的已应答
+    // R 同行入序——user 墓碑替 A 会让它们孤儿化（provider 400 同级形态），必须同事务同去。
+    const issuerAlive = new Set<string>()
+    const answered = new Set<string>()
+    const rByCall = new Map<string, Atom>()
+    for (const a of atoms) {
+      if (a.type === 'A') for (const cid of a.toolCallIds) issuerAlive.add(cid)
+      if (a.type === 'R' && a.toolCallIds[0] !== undefined) {
+        answered.add(a.toolCallIds[0] as string)
+        rByCall.set(a.toolCallIds[0] as string, a)
+      }
+    }
+    const forcedFirst: number[] = []
+    const forcedSeen = new Set<number>()
+    const pushForced = (seq: number): void => {
+      if (!forcedSeen.has(seq)) { forcedSeen.add(seq); forcedFirst.push(seq) }
+    }
+    for (const a of atoms) {
+      if (openTurn !== null && a.turn >= openTurn) continue // open 轮 = 本轮协议现场，不驱逐
+      if (a.type === 'A' && a.toolCallIds.length > 0 && a.toolCallIds.some(cid => !answered.has(cid))) {
+        pushForced(a.seq)
+        for (const cid of a.toolCallIds) {
+          const r = rByCall.get(cid)
+          if (r !== undefined) pushForced(r.seq)
+        }
+      }
+      if (a.type === 'R' && a.toolCallIds[0] !== undefined && !issuerAlive.has(a.toolCallIds[0] as string)) {
+        pushForced(a.seq)
+      }
+    }
+    const plan = planPrune(entries, { targetReleaseChars, forcedFirstSeqs: forcedFirst })
     return {
       plan, candidates, tagsBySeq, latestTurn,
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
       focalTiered: this.cfg.focalTiered, focalDocHardChars, focalDocFuse: fuseActive,
       errSigHardCount: errSigHardSeqs.size,
       focalMediumSize: focalMedium.size, mediumBandChars, focalBandBySeq,
+      interruptedForcedSeqs: forcedFirst,
     }
   }
 
@@ -350,14 +402,35 @@ export class FactorEngine {
     }
     const atomsBySeq = new Map<number, Atom>()
     for (const a of this.host.atomize(session)) atomsBySeq.set(a.seq, a)
-    const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
-    const tombstones: { type: 'tool'; seq: number; callId: string; text: string }[] = []
+    // 本事务被驱逐 A 的 callId 集：其 R 不得落 tool 桩（桩保留 callId，issuer 已离场 =
+    // 悬空 tool_call → provider 400）——改走 user 指针墓碑（配对整体离场）。
+    const callsOfEvictedA = new Set<string>()
     for (const seq of plan.pruneOrder) {
       const atom = atomsBySeq.get(seq)
+      if (atom?.type === 'A') for (const cid of atom.toolCallIds) callsOfEvictedA.add(cid)
+    }
+    const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
+    const tombstones: ({ type: 'tool'; seq: number; callId: string; text: string } | { type: 'user'; text: string })[] = []
+    const seen = new Set<number>()
+    for (const seq of plan.pruneOrder) {
+      if (seen.has(seq)) continue
+      const atom = atomsBySeq.get(seq)
+      if (atom === undefined) continue
+      // 中断轮半截 A（裁定 3）：user 墓碑整节点替换——未应答 tool_call 随 A 离场；
+      // 已应答 R 由 decide 的强制先行段同行入序（seen 去重，同一事务同去）。
+      if (atom.type === 'A') {
+        seen.add(seq)
+        intervals.push({ seqs: [seq], chars: atom.text.length, atoms: [atom] })
+        tombstones.push({ type: 'user', text: factorAssistantTombstone(seq) })
+        continue
+      }
       const input = tagsBySeq.get(seq)
-      if (atom === undefined || input === undefined || input.callId === undefined) continue
+      if (input === undefined || input.callId === undefined) continue
+      seen.add(seq)
       intervals.push({ seqs: [seq], chars: input.tags.sizeChars, atoms: [atom] })
-      tombstones.push({ type: 'tool', seq, callId: input.callId, text: this.stubText(input) })
+      tombstones.push(callsOfEvictedA.has(input.callId)
+        ? { type: 'user', text: factorAssistantTombstone(seq) }
+        : { type: 'tool', seq, callId: input.callId, text: this.stubText(input) })
     }
     if (intervals.length === 0) return null
     const result = pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')

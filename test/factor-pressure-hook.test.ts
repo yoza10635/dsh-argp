@@ -1,5 +1,6 @@
 /**
- * factorPressure 钩子链契约测试（design-2.0 §5.3 T-1 欠账清偿：pre-step 压力剪的
+ * factorPressure 钩子链契约测试（design-2.0 §5.3 T-1 欠账清偿；P6-④ 触发收敛后本组测试锁的是
+ * ARGP_FACTOR_PRESSURE=1 逃生口的旧世界接线——缺省路径零估算驱动，见文件尾两测）。pre-step 压力剪的
  * 链级锁——组件级（factor-engine/factor-vocab/factor-dispatch）各自绿过，但
  * "吞错隔离→deficit 门槛→UA 兜底"的**接线序**从未被整链断言过）。
  *
@@ -16,6 +17,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 
@@ -26,13 +28,13 @@ interface EngineInternals {
   bindSession(session: Session): void
 }
 
-async function bootFactor(): Promise<{ engine: ArgpGraphEngine; internals: EngineInternals; factor: FactorEngine }> {
+async function bootFactor(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'pressure hook persona' } })
   await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
   const engine = ctx.compaction as ArgpGraphEngine
   const internals = engine as unknown as EngineInternals
-  return { engine, internals, factor: internals.factor as FactorEngine }
+  return { ctx, engine, internals, factor: internals.factor as FactorEngine }
 }
 
 function makeSession(id: string): Session {
@@ -147,4 +149,56 @@ test('UA summarize 抛错 ⇒ 吞错隔离不阻断本步', async () => {
   appendGroup(session, 2, 'c1', '{"file_path":"C:/Proj/a.ts"}', '') // attachment 硬保 ⇒ pruned=null 走 UA
   internals.ua = { summarize: async () => { throw new Error('ua boom') } }
   await internals.factorPressure(makeAgent(session), 20000) // 不得 reject
+})
+
+// ---------------------------------------------------------------------------
+// P6-④ 触发收敛（2026-11-11 裁定）：缺省 pre-step 零估算驱动；env 逃生口恢复旧世界。
+//  变异台账：TC1 缺省门控摘除（pressureTriggerEnabled 恒 true）⇒ TC-A 红；
+//  TC2 逃生口摘除（env 置 1 也不进 factorPressure）⇒ TC-B 红。
+// ---------------------------------------------------------------------------
+
+function emitPreStep(ctx: Context, agent: unknown, messages: unknown[] = []): Promise<unknown> {
+  return agentEvents(ctx, agent as Agent).waterfall(
+    'agent/pre-step',
+    { agent, messages, turn: 9, step: 1, signal: new AbortController().signal } as never,
+    (() => Promise.resolve(undefined)) as never,
+  )
+}
+
+test('TC-A 缺省触发收敛：pre-step 巨额 deficit 也不进 compactIfNeeded（TC1 锁）', async () => {
+  const { ctx, internals, factor } = await bootFactor()
+  const session = heavySession('tc-default')
+  internals.bindSession(session)
+  const spy = spyCompact(factor)
+  try {
+    await emitPreStep(ctx, makeAgent(session))
+    assert.deepEqual(spy.targets, [], '★缺省 pre-step 零估算驱动（只认手动 compact + context 报错两信号）')
+  } finally {
+    spy.restore()
+  }
+})
+
+test('TC-B env 逃生口：ARGP_FACTOR_PRESSURE=1 恢复旧估算驱动路径（TC2 锁）', async () => {
+  const saved = process.env['ARGP_FACTOR_PRESSURE']
+  process.env['ARGP_FACTOR_PRESSURE'] = '1'
+  try {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'pressure hook persona' } })
+    await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+    const internals = ctx.compaction as unknown as EngineInternals & { factor: FactorEngine | null }
+    const factor = internals.factor as FactorEngine
+    const session = heavySession('tc-hatch')
+    internals.bindSession(session)
+    const spy = spyCompact(factor)
+    try {
+      await emitPreStep(ctx, makeAgent(session))
+      assert.ok(spy.targets.length >= 1, '★逃生口路径旧世界照旧（pre-step 估算驱动压力剪接线通）')
+      assert.ok((spy.targets[0] ?? 0) > 0, 'target = deficit 字符下界（正数）')
+    } finally {
+      spy.restore()
+    }
+  } finally {
+    if (saved === undefined) delete process.env['ARGP_FACTOR_PRESSURE']
+    else process.env['ARGP_FACTOR_PRESSURE'] = saved
+  }
 })

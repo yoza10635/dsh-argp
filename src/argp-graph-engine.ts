@@ -18,7 +18,7 @@ import type {
   CompactionTrigger,
   ManualCompactAgentContext,
 } from '@deepseek-ai/dsh-compaction'
-import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
@@ -46,9 +46,10 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
-import { FactorEngine, resolveFocalTiered, type FactorEngineHost } from './factor/engine.ts'
+import { FactorEngine, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { UaSummarizer } from './factor/ua-summarizer.ts'
+import { ProseCondenser } from './factor/prose-condenser.ts'
 export { scaleBudgets } from './budget.js'
 // 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
 // recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
@@ -408,6 +409,10 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
   private readonly ua: UaSummarizer | null = null
+  /** P6-④ 散文浓缩链（取代 ua 缺口兜底成为 factor 臂唯一 LLM 摘要通路；见 prose-condenser.ts）。 */
+  private readonly prose: ProseCondenser | null = null
+  /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
+  private readonly pressureTriggerEnabled: boolean = false
 
   readonly windowTokens!: number
   readonly retainTokens!: number
@@ -533,6 +538,10 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   get frozenCatalog(): string | null { return this.rt.frozenCatalog }
   set frozenCatalog(v: string | null) { this.rt.frozenCatalog = v }
+  /** P6 note 施工①：catalog 快照域（事务尾取快照随 compaction/end 落账 + 冻结刷新；跨进程 resume 回放同值）。 */
+  get catalogDomain(): { snapshot: () => string; freeze: (text: string) => void } {
+    return { snapshot: () => this.catalogText(), freeze: text => { this.frozenCatalog = text } }
+  }
   /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
   private readonly overflowRetries = new WeakMap<Agent, number>()
   /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
@@ -637,6 +646,13 @@ export class ArgpGraphEngine extends CompactionEngine {
         uaSummaryThreshold: () => this.args.uaSummaryThreshold.get(),
         focalTurns: () => this.args.focalTurns.get(),
       })
+      // P6-④ 散文浓缩链（取代 ua.summarize 缺口兜底）：ua 仅在 ARGP_FACTOR_PRESSURE=1
+      // 逃生口路径（旧世界复现）仍被调用，缺省路径零触达。
+      this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
+        focalTurns: () => this.args.focalTurns.get(),
+      })
+      // 触发收敛逃生口：构造期快照 env（档位语义同 resolveFocalTiered——策略切换须重挂引擎）。
+      this.pressureTriggerEnabled = resolvePressureTriggerEnabled()
       // 因子臂召回面 = 恰好这两个工具（§3.2）：recall_history（标签交集 → 日志原文，
       // cursor/epoch 续读）+ list_labels（词表下钻）。老三件套在本臂**不挂**——
       // factor 桩/词表只给标签不给 seq，seq 通道在 factor 臂是假通道。
@@ -836,7 +852,17 @@ export class ArgpGraphEngine extends CompactionEngine {
       { agent, failure, signal },
       next,
     ): Promise<RequestErrorAction> => {
-      if (failure.code !== CONTEXT_WINDOW_EXCEEDED_CODE || signal.aborted) return next()
+      // P6-④ 报错事件核验补强（2026-11-12，17+20 真实样本核验结论）：两报错类在生产
+      // 已归一 CONTEXT_WINDOW_EXCEEDED——t24v 21 死轮实锤走 pi-ai usage-based
+      // isContextOverflow 分支（模板消息 "pi-ai detected context overflow" 本身不过
+      // isContextWindowExceededError 文本分类器，但 code 已是稳定码，钩子按 code 路由 ✓）。
+      // 残余缺口 = pi-ai 通用适配器对**非词语化** 400（裸 exceed_context_size_error type、
+      // 无词语文本）落 PI_AI_ERROR（classifyPiAiError 词面全不中）——加文本回兜：
+      // message 命中 isContextWindowExceededError 同样进拦截；rate-limit/网络/余额词面
+      // 判假已核（本地对照 5 例全过），回兜不误伤非溢出类。
+      const overflowLike = failure.code === CONTEXT_WINDOW_EXCEEDED_CODE
+        || isContextWindowExceededError(failure.message ?? '')
+      if (!overflowLike || signal.aborted) return next()
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= this.maxOverflowRetries) return next()
@@ -905,10 +931,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.on('agent/pre-step', async ({ agent, messages, step, signal }, next): Promise<PreStepDecision> => {
       this.bindSession(agent.session) // A7（问题 3）：生产 resume 点，账目缺失时自动重建
-      // factor 臂分发（§2.3 难点 1 的答案）：轮内压力即时释放可再生 R，
-      // 不进三级触发/墓碑归并/reactive 的图臂逻辑。吞错隔离照本钩子惯例。
+      // factor 臂分发（P6-④ 触发收敛）：pre-step 零破坏性改写——估算驱动退役，只认两信号
+      // （手动 compact + context 报错，见 compactIfNeeded factor 分发）。词表 note 同步迁出
+      // pre-step（变化时机 = 压缩时机，事务收尾统一写）。ARGP_FACTOR_PRESSURE=1 = 评测逃生口，
+      // 恢复旧估算驱动路径（压力剪 + 缺口摘要 + note 每 pre-step 刷新，旧世界字节级复现）。
       if (this.factor !== null) {
-        if (!signal.aborted) {
+        if (!signal.aborted && this.pressureTriggerEnabled) {
           try {
             await this.factorPressure(agent, this.incomingTokens(messages))
           } catch (e) {
@@ -1502,23 +1530,29 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
     const measurement = this.measureTokens(session, incomingTokens)
-    // ── factor 臂分发（design-2.0 §3.2）：压力口径 = contextTokens 超 retain 下限即剪，
-    // 不套图臂的多 pass/阈值阶梯。R 剪 0-LLM 在前；U/A 批次摘要（因子臂唯一 LLM 通路）
-    // 只在 R 剪清不动缺口时兜底（可剪面被硬保护占满 = §2.3 降级链的摘要出口）。
+    // ── factor 臂分发（design-2.0 §3.2，P6-④ 触发收敛后口径）：本方法只被两信号驱进
+    // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
+    // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：
+    // R 剪 0-LLM 在前（deficit = 真实口径 − retain）→ 散文浓缩（(sys+散文)÷声明窗 > 50%
+    // 才动，one-shot 原生式，取代旧 ua.summarize 缺口兜底）→ 词表 note 事务收尾
+    // （P6-② 违规点整改：note 变化时机 = 压缩时机，note 前缀炸弹案施工①）。
     if (this.factor !== null) {
       if (trigger === 'context-overflow' || declaredKnown) {
+        let pruned: CompactionResult | null = null
         const deficit = measurement.contextTokens - retainTokens
         if (deficit > 0) {
-          const pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
-          if (pruned !== null) return pruned
-          if (this.ua !== null) {
-            try {
-              return await this.ua.summarize(session, agent.options, signal)
-            } catch (e) {
-              this.log.warn('[argp-factor-ua] 摘要兜底异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
-            }
+          pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+        }
+        let proseResult: CompactionResult | null = null
+        if (this.prose !== null && declaredKnown) {
+          try {
+            proseResult = await this.prose.condense(session, agent.options, windowTokens, signal)
+          } catch (e) {
+            this.log.warn('[argp-factor-prose] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
           }
         }
+        await this.refreshFactorNoteSafe(agent)
+        return proseResult ?? pruned
       }
       return null
     }
@@ -1875,11 +1909,31 @@ export class ArgpGraphEngine extends CompactionEngine {
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
     if (this.skipIfPreset(agent.session)) return null
-    // factor 臂：手动压缩走 A/R 段图选段判据会误剪 A（factor 语义 A 恒留）——
-    // 手动摘要面 P2 随 ua-summarizer 提供，此处诚实拒绝。
+    // factor 臂手动压缩（P6-④：手动 compact 是两信号之一，"待 P2"拒绝随之解除）：
+    // 全量剪（能剪多少剪多少——目标 = 全部可剪面，硬保护自然兜底）→ 散文浓缩 → 词表 note
+    // 事务收尾。与 compactIfNeeded factor 分发同一动作序；sourceCommandId 经 host 透传
+    // 三事件（prune-tx 契约），事务后复位防串账。
     if (this.factor !== null) {
-      this.log.warn('[argp-factor] /compact 手动压缩在 factor 臂待 P2 随摘要提供，本轮未动作')
-      return null
+      if (signal.aborted) return null
+      this.bindSession(agent.session)
+      this.compactSourceCommandId = sourceCommandId
+      try {
+        const pruned = this.factor.compactIfNeeded(agent.session, Number.MAX_SAFE_INTEGER)
+        let proseResult: CompactionResult | null = null
+        const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+        this.bindSession(agent.session) // D2：await 窗口内焦点可能换装——回绑再写 surface
+        if (this.prose !== null && declaredKnown) {
+          try {
+            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, signal)
+          } catch (e) {
+            this.log.warn('[argp-factor-prose] 手动散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
+          }
+        }
+        await this.refreshFactorNoteSafe(agent)
+        return proseResult ?? pruned
+      } finally {
+        this.compactSourceCommandId = undefined
+      }
     }
     return compactNow(this as unknown as LifecycleHost, agent, signal, sourceCommandId)
   }
@@ -1897,10 +1951,32 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * factor 臂轮内维护（pre-step 用）：先词表 note（§1.4 注入位=会话流 notice，不进
-   * system 前缀），后压力剪（与 compactIfNeeded 同决策入口）。词表先于压力判定——
-   * 账本 epoch 不因缺压而静止（sticky 观察也动 epoch），且 declaredKnown=false 的
-   * 早退不得连带饿死词表。
+   * 词表 note 迁入压缩事务收尾（P6-② 违规点整改，note 前缀炸弹案施工①）：note 变化时机
+   * = 压缩时机——"缓存断点频率=压缩频率"不变量的 note 特化（T-3 定量证实每步一改一炸）。
+   * steer 仅首注需要（更新走单节点 replace，指针以标记回溯为准）；本入口拿不到 steer
+   * （CompactionAgentContext 无该成员）时首注跳过——下个有 steer 的压缩机会自然重试。
+   */
+  private async refreshFactorNoteSafe(agent: CompactionAgentContext): Promise<void> {
+    if (this.factor === null) return
+    const steerFn = (agent as unknown as { steer?: (message: unknown) => unknown }).steer
+    try {
+      await this.factor.refreshVocabularyNote(agent.session, text => {
+        if (steerFn === undefined) throw new Error('steer unavailable at this compaction entry')
+        return steerFn(createUserMessage({
+          content: [{ type: 'text', text }],
+          // auto-continue 同款 notice 形态：宿主按 X 归类（进请求、不参剪、UI 渲染 notice）。
+          source: { kind: 'argp', form: 'notice', summary: 'factor vocabulary (pruned labels; recall_history keys)' },
+        }))
+      })
+    } catch (e) {
+      this.log.warn('[argp-factor] 词表 note 刷新失败（压缩事务收尾，本轮跳过）：' + (e instanceof Error ? e.message : String(e)))
+    }
+  }
+
+  /**
+   * factor 臂轮内维护（**仅 ARGP_FACTOR_PRESSURE=1 逃生口**，P6-④ 前旧世界复现）：
+   * 先词表 note（旧时机 = 每 pre-step），后压力剪（估算驱动）。缺省路径（收敛后）不进本函数
+   * ——压力剪退役、note 迁压缩事务收尾（refreshFactorNoteSafe）。
    */
   private async factorPressure(
     agent: CompactionAgentContext & { steer(message: unknown): unknown },

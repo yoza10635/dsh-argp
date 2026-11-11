@@ -145,6 +145,15 @@ export function consolidatedTombstone(count: number, start: number, end: number)
 }
 
 /**
+ * factor 臂中断轮半截 A 的 user 墓碑（P6-③ 裁定 3）。不引 `recall_pruned`——factor 臂
+ * 无该通道（假通道纪律同 factor 桩"禁引退役工具名"）；原文在 append-only 日志按 seq 检索。
+ * 非可并族（无 recall_pruned 指引）——罕见的协议残渣节点，不值得为它们扩可并文法。
+ */
+export function factorAssistantTombstone(seq: number): string {
+  return TOMBSTONE_PREFIX + ' seq=' + seq + '; 原文在 append-only 日志]'
+}
+
+/**
  * `CompactionResult.summary` 里的 tool 墓碑渲染文本。
  *
  * 不进 prompt（`compaction/summary` 是 off-surface 日志事件，UI 展示用），故不带 seq
@@ -183,6 +192,8 @@ const TOMBSTONE_GRAMMARS: readonly RegExp[] = [
   /^\[elided consolidated ×\d+ seqs=\d+(?:\.\.\d+)?; recall_pruned\(\d+\) for detail\]$/,
   // off-surface 摘要形态（CompactionResult.summary 渲染，永不进 surface；入表保持"族完整"）
   /^\[elided: tool result compressed\]$/,
+  // factor 臂中断轮半截 A（P6-③ 裁定 3；factorAssistantTombstone 逐字对应）
+  /^\[elided seq=\d+; 原文在 append-only 日志\]$/,
   // 历史文法（git v1.3.0 / v1.5.0 / v1.7.0 生成器逐字核对；存量会话重放时仍需识别）
   /^\[elided: 旧版本结果已压缩；recall_pruned\(seq\) 找回原值\]$/,
   /^\[elided tool result; recall_pruned\(seq\) retrieves original\]$/,

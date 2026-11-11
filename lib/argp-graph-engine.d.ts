@@ -327,6 +327,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly factor;
     /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
     private readonly ua;
+    /** P6-④ 散文浓缩链（取代 ua 缺口兜底成为 factor 臂唯一 LLM 摘要通路；见 prose-condenser.ts）。 */
+    private readonly prose;
+    /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
+    private readonly pressureTriggerEnabled;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
@@ -459,6 +463,11 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     get frozenCatalog(): string | null;
     set frozenCatalog(v: string | null);
+    /** P6 note 施工①：catalog 快照域（事务尾取快照随 compaction/end 落账 + 冻结刷新；跨进程 resume 回放同值）。 */
+    get catalogDomain(): {
+        snapshot: () => string;
+        freeze: (text: string) => void;
+    };
     /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
     private readonly overflowRetries;
     /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
@@ -754,10 +763,16 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(start: number, end: number, agent: CompactionAgentContext, signal?: AbortSignal): Promise<CompactionResult>;
     /**
-     * factor 臂轮内维护（pre-step 用）：先词表 note（§1.4 注入位=会话流 notice，不进
-     * system 前缀），后压力剪（与 compactIfNeeded 同决策入口）。词表先于压力判定——
-     * 账本 epoch 不因缺压而静止（sticky 观察也动 epoch），且 declaredKnown=false 的
-     * 早退不得连带饿死词表。
+     * 词表 note 迁入压缩事务收尾（P6-② 违规点整改，note 前缀炸弹案施工①）：note 变化时机
+     * = 压缩时机——"缓存断点频率=压缩频率"不变量的 note 特化（T-3 定量证实每步一改一炸）。
+     * steer 仅首注需要（更新走单节点 replace，指针以标记回溯为准）；本入口拿不到 steer
+     * （CompactionAgentContext 无该成员）时首注跳过——下个有 steer 的压缩机会自然重试。
+     */
+    private refreshFactorNoteSafe;
+    /**
+     * factor 臂轮内维护（**仅 ARGP_FACTOR_PRESSURE=1 逃生口**，P6-④ 前旧世界复现）：
+     * 先词表 note（旧时机 = 每 pre-step），后压力剪（估算驱动）。缺省路径（收敛后）不进本函数
+     * ——压力剪退役、note 迁压缩事务收尾（refreshFactorNoteSafe）。
      */
     private factorPressure;
     /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。

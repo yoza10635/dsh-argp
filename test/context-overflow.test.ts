@@ -143,3 +143,39 @@ test('context-overflow trigger 跳过 pressure 门槛（估算低于触发线也
     await ctx.fiber.dispose()
   }
 })
+
+test('PI_AI_ERROR + 词语化溢出文本 → 文本回兜拦截（P6-④ 核验补强）', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = buildBigSession()
+    engine.setSession(session)
+    const agent = stubAgent(session)
+    const generationBefore = session.surface.replaceGeneration
+    // pi-ai 通用适配器实锤形：classifyPiAiError 词面全不中 ⇒ 落 PI_AI_ERROR，
+    // 但 message 携带词语化溢出文本（vLLM/OpenAI 措辞）——文本回兜必须接住。
+    const action = await emitRequestError(ctx, agent, {
+      message: "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens",
+      code: 'PI_AI_ERROR',
+    })
+    assert.equal(action?.kind, 'retry', 'text-backstop must intercept non-canonical-code overflow')
+    assert.ok(session.surface.replaceGeneration > generationBefore, 'surface must be regenerated')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})
+
+test('PI_AI_ERROR + 非溢出文本 → 不拦截（判别纪律：不误伤）', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = buildBigSession()
+    engine.setSession(session)
+    const agent = stubAgent(session)
+    const generationBefore = session.surface.replaceGeneration
+    const action = await emitRequestError(ctx, agent, { message: 'upstream timeout while streaming', code: 'PI_AI_ERROR' })
+    assert.equal(action, undefined, 'non-overflow PI_AI_ERROR must pass through (original error preserved)')
+    assert.equal(session.surface.replaceGeneration, generationBefore, 'surface must be untouched')
+    assert.equal(engine.records.length, 0, 'no transaction recorded')
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

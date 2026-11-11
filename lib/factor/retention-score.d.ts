@@ -64,7 +64,11 @@ export interface PrunePlan {
  * 则爆窗），按序取到累计 ≥ 目标即止（含首个越界项——不回头少剪）。
  * 全取仍不可达 ⇒ 如实给 shortfallChars（§2.3 降级链：少剪 + 告警），
  * 硬保护成员**任何压力下都不入 pruneOrder**。
+ *
+ * `forcedFirstSeqs`（P6-③ 裁定 3）：强制先行段——中断轮半截 A + 孤儿工具对等协议残渣，
+ * 无视目标量下次压缩必驱逐（"驱逐时机=下次压缩"）。与 soft 求交去重（同一 seq 不两段入账）。
  */
 export declare function planPrune(entries: ScoredEntry[], opts?: {
     targetReleaseChars?: number;
+    forcedFirstSeqs?: number[];
 }): PrunePlan;
