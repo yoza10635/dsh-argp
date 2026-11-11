@@ -14,7 +14,22 @@ export interface FactorEngineConfig {
     stickyWindowTurns?: number;
     /** 词表渲染预算（字符）。 */
     vocabBudgetChars?: number;
+    /**
+     * 焦点分级策略档（§2.5 提案栈 v1.1/v1.4）。**内部裸项，严禁进 static Config
+     * schema**（设置卡零新键由 CR5/CR6/preset 精确键锁机器化保证）：
+     *  - 'flat'（缺省）：现行为字节级不变；
+     *  - 'tiered'：焦点文档全枚 hard（宽度熔断兜底 FOCAL_DOC_HARD_WIDTH_RATIO）
+     *    + superseded 焦点豁免（v1.4）+ 裸 errorcode 焦点降出 hard（v1.2 路由）。
+     */
+    focalTiered?: 'flat' | 'tiered';
 }
+/**
+ * focalTiered 的 env 逃生口（T-3 两臂实跑唯一触达通道）：tiered 是策略档，
+ * 禁入 static Config/设置卡（P5-b 裁定，CR5/CR6/preset 键锁不变），生产装配路径
+ * 缺省恒 flat——要跑 tiered 臂只能经此 env。非法值 ⇒ flat（缺省安全）；
+ * 生效=构造快照（档切换=策略文档换版，须重挂引擎，不做活读）。
+ */
+export declare function resolveFocalTiered(env?: NodeJS.ProcessEnv): 'flat' | 'tiered';
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
     fileSnapshot?: (canonicalKey: string) => FileSnapshot | null;
@@ -29,6 +44,20 @@ export interface FactorDecision {
     stickyActive: number;
     /** §2.3 降级链上报量（>0 时调用方必须可见，不静默）。 */
     shortfallChars: number;
+    /** 本次决策所用策略档（遥测：评测/日志要能区分臂）。 */
+    focalTiered: 'flat' | 'tiered';
+    /** tiered：焦点文档 hard 的字节量（flat 恒 0）。 */
+    focalDocHardChars: number;
+    /** tiered：宽度熔断是否触发（触发 ⇒ 每文档只保最新一枚）。 */
+    focalDocFuse: boolean;
+    /** tiered：err 签名 exemplar hard 枚数（flat 恒 0；遥测/宽度账用）。 */
+    errSigHardCount: number;
+    /** tiered：medium 焦点标签数（focalSize 拆强/中两报，§2.5 遥测歧义账）。 */
+    focalMediumSize: number;
+    /** tiered：medium 带（排序位）字节量——T-2 medium 面占比闸原料。 */
+    mediumBandChars: number;
+    /** 逐候选焦点带（flat 语义：命中=1 未命中=0；tiered：三值）。 */
+    focalBandBySeq: ReadonlyMap<number, 0 | 1 | 2>;
 }
 /** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
 export declare const VOCAB_NOTE_MARKER = "[argp-factor \u8BCD\u8868]";

@@ -69,3 +69,10 @@ export declare const DEFAULT_SKIP_CONTEXT_FORMS: readonly string[];
  *  2026-09-22：由 16 提到 10000——剪枝循环正常靠「压缩率达标 / 全保护 / 无进展」自然终止，
  *  此值退化为纯安全上限（防极端空转），不再作为「每次压缩只剪 16 组」的增量节流阀。 */
 export declare const DEFAULT_MAX_PASSES = 10000;
+/**
+ * 焦点文档 hard 宽度熔断阈值（design-2.0 §2.5 v1.1 用户裁定 + spike54 宽度账）：
+ * tiered 模式下焦点文档全枚 hard，但若其 hard 候选字节占比超过本阈值，说明焦点
+ * 面过宽（实测语料 8.3%，留足余量），退化为**每文档最新一枚**——保险不反噬预算。
+ * 内部常量，不进设置卡（preset/CR 键集锁零新键）。
+ */
+export declare const FOCAL_DOC_HARD_WIDTH_RATIO = 0.15;

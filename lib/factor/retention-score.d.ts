@@ -11,6 +11,18 @@ export interface HardFlags {
     attachment?: boolean;
     /** 焦点轮非再生 R*（条件保护：焦点 ∧ containment<满覆盖，离开焦点即入排序）。 */
     focalNonRegenerable?: boolean;
+    /**
+     * tiered 模式焦点文档全枚 hard（§2.5 用户裁定"本轮涉及 document ⇒ 含该因子原子
+     * 全部保留"；spike52 处理感知重读 50.0% vs 8.4% 背书）。与 focalNonRegenerable
+     * 互斥使用：flat 只设后者，tiered 只设前者（裸 errorcode 焦点已按 v1.2 降出 hard）。
+     */
+    focalDocStrong?: boolean;
+    /**
+     * tiered v1.3：err 签名 exemplar hard——会话内同签名（code×file|cmd，v1.2 路由：
+     * 仅 tool 的裸码走词表）复发 ≥2（n=1=100% 假捆绑，用户裁定）⇒ **只保最新一枚**；
+     * 同因子后续成功 R ⇒ 释放（spike53：29% 组已 superseded）。flat 恒 false（逐枚 sticky 现行为）。
+     */
+    errSignatureHard?: boolean;
     /** node 0（宿主保护）。 */
     node0?: boolean;
 }
@@ -24,8 +36,13 @@ export interface ScoreInput {
     regenerable?: boolean;
     /** staleness 覆盖证明（后续全量读 ⊇ 本读范围；部分读永不覆盖——引擎侧配反例）。 */
     superseded?: boolean;
-    /** 焦点（标签 ∈ 焦点标签集；undefined=保守按焦点）。 */
+    /** 焦点（标签 ∈ 焦点标签集；undefined=保守按焦点）。flat 布尔通道。 */
     focal?: boolean;
+    /**
+     * 三值焦点带（§2.5 v1.1：0 none / 1 medium 命令面 / 2 strong 文档面；tiered 通道）。
+     * 给了就优先于 focal 布尔。★ `focal === false ? 0 : 1` 的严格相等回退只适用于布尔。
+     */
+    focalBand?: 0 | 1 | 2;
 }
 export interface ScoredEntry {
     rootSeq: number;

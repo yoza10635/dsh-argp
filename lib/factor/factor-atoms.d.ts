@@ -56,6 +56,17 @@ export declare function tagRsFromLog(events: readonly EventLike[], sessionCwd: s
  * U/A 是 cue 链载体，A 恒留正是前提；R 的键要成为焦点须经 U/A 叙事引用。
  */
 export declare function focalLabels(atoms: readonly AtomLike[], latestTurn: number, focalTurns: number, sessionCwd: string | undefined): Set<string>;
+/**
+ * 焦点命令标签（medium 带，§2.5 v1.1：命令只参与排序、永不进 hard）。
+ * 命令**实际发生过**（焦点窗内 tool/call 事件的 args）才算焦点——U/A 文本通道恒缺
+ * args（focalCmd 构造级恒空的病灶，spike51）；族名过 COMMAND_MEDIUM_FAMILY_WHITELIST
+ * （首 token 太粗：cd 族爆炸半径/伪家族，实测定谳）。
+ */
+export declare function focalCommandLabels(calls: readonly {
+    turn: number;
+    name: string;
+    args: unknown;
+}[], latestTurn: number, focalTurns: number): Set<string>;
 /** old ⊆ new（同为对该文件的成功 read；new 更新）。 */
 export declare function rangeCovered(old: RTags['readRange'], next: RTags['readRange']): boolean;
 /**

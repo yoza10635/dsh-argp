@@ -17,7 +17,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { FactorEngine, type FactorEngineHost } from '../src/factor/engine.ts'
-import { tagRsFromLog } from '../src/factor/factor-atoms.ts'
+import { tagRsFromLog, type EventLike } from '../src/factor/factor-atoms.ts'
 import { sessionEvents, resolveRootSeqs } from '../src/log-access.ts'
 
 /** npm headless 实测形（session.v4.jsonl.zstd 原样）：message 顶层挂 toolCallId/isError。 */
@@ -66,7 +66,9 @@ test('tagRsFromLog V4 形：顶层 toolCallId 提取 callId + 经 tool/call 归�
   const session = makeSession('v4-atoms')
   appendUser(session, 1, '看两个文件')
   appendGroupV4(session, 1, 'c1', 'read', '{"file_path":"C:/Proj/a.ts"}', 'V4 CONTENT ' + 'A'.repeat(300))
-  const events = sessionEvents(session)
+  // SessionEvent 各变体的 data 是具体消息类型（无索引签名）；tagRsFromLog 的门面类型
+  // EventLike.data 走 Record——运行时无差，类型层桥一下（8de0927 存量裂口，typecheck 门修）。
+  const events = sessionEvents(session) as readonly EventLike[]
   const tags = tagRsFromLog(events, undefined, seq => resolveRootSeqs(events, seq))
   assert.equal(tags.size, 1, 'V4 形 R 必须入贴标')
   const r = [...tags.values()][0] as { callId: string | undefined; tool: string }
