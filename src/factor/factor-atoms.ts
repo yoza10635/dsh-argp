@@ -141,8 +141,12 @@ export function tagRsFromLog(
     if (root !== undefined && root !== e.seq) continue
     const resultText = resultTextOf(e)
     if (resultText.startsWith(STUB_PREFIX)) continue
-    const msg = (e.data ?? {})['message'] as { content?: Array<{ toolCallId?: string }> } | undefined
-    const callId = msg?.content?.[0]?.toolCallId
+    // callId 双形：V3=content[0].toolCallId（AI SDK 标准块，testkit fixture 形）；
+    // **V4（宿主 0.1.7+/npm headless 实测）= message.toolCallId 顶层 + role:'tool' +
+    // content 单 text 块**。只认前者 ⇒ V4 会话全部 callId undefined ⇒ compactIfNeeded
+    // 发射循环逐条 continue ⇒ 剪枝决策正确但 replace 永不落盘（2026-11-11 ai-server 实锤）。
+    const msg = (e.data ?? {})['message'] as { content?: Array<{ toolCallId?: string }>; toolCallId?: unknown } | undefined
+    const callId = msg?.content?.[0]?.toolCallId ?? msg?.toolCallId
     const call = typeof callId === 'string' ? calls.get(callId) : undefined
     const turnRaw = e.data?.['turn']
     const tags = extractTags({
