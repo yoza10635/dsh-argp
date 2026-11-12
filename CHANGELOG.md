@@ -4,6 +4,8 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
+> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。主干缺省仍 graph 引擎（判别式缺省关），故 1.x 稳定行为停在 **1.11.2**；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.0`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+
 ## [1.11.2] - 2026-11-09（hotfix：preset 死子路径条目炸新建会话，issue #3）
 
 > **发行说明**：P0 可用性热修（release-cadence 的 hotfix 例外）。三个 preset 的 delegation 组各有一条 `tool-subagent-list-agents` 指向 `@deepseek-ai/dsh-tool-subagent-control/list-agents`——该子路径在当前宿主包线（0.2.0-rc.1 起）的 `exports` 中**不存在**，凡装树里有此包者 preset 组装即抛 `agent-preset/invalid … never started`，**新建会话整体失败**（已有会话不受影响）。条目在 1.7.0 引入时对当时宿主正确，上游后来收掉该 export，1.11.1 时代在 0.2.2 线环境引爆。外部报告者（Maco0829，issue #3）与本机真机双向实证：删除前"新建会话失败"必现，删除后正常。
