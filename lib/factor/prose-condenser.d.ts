@@ -80,6 +80,6 @@ export declare class ProseCondenser {
     /** 被驱逐散文 → replay messages（U→user、A→assistant 纯文本；按 surface 位置序）。 */
     private buildProseMessages;
     private callLlm;
-    /** spec 解析同 UaSummarizer：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
+    /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
     private resolveSpec;
 }

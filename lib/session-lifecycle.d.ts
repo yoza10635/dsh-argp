@@ -37,8 +37,8 @@ import type { ArgpGraphConfig } from './argp-graph-engine.js';
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /**
- * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **7 枚**（windowRatio/
- * retainRatio/charsPerToken + uaSummaryThreshold/focalTurns/vocabTopN/recallLimit）
+ * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **6 枚**（windowRatio/
+ * retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
  * ＋ engine 判别式随行。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成 volatile

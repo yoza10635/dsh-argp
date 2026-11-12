@@ -16,9 +16,9 @@
  * change underneath; every projection is rebuilt from the two together.
  */
 /**
- * The 2.0 settings roster (design-2.0 §3.4): SEVEN knobs — three engine-agnostic
- * (windowRatio/retainRatio/charsPerToken) plus four factor-arm (focalTurns/vocabTopN/
- * uaSummaryThreshold/recallLimit). The retired graph knobs (maxPasses/recencyGuard/
+ * The 2.0 settings roster (design-2.0 §3.4): SIX knobs — three engine-agnostic
+ * (windowRatio/retainRatio/charsPerToken) plus three factor-arm (focalTurns/vocabTopN/
+ * recallLimit). The retired graph knobs (maxPasses/recencyGuard/
  * turnGuard/minSpanChars/sortMode) are gone from the card; the graph arm keeps
  * consuming them from cordis config (tolerated-read, see server normalizeConfig).
  * The `engine` discriminator is NOT here on purpose: it is non-volatile, and the
@@ -37,15 +37,13 @@ export interface ArgpUserSettings {
     focalTurns: number;
     /** Vocabulary note entries per category (factor arm). */
     vocabTopN: number;
-    /** U+A pool size (chars) before batch LLM summarization may start (factor arm). */
-    uaSummaryThreshold: number;
     /** Default items recall_history returns when no limit is given (factor arm). */
     recallLimit: number;
 }
 /** Settings namespace this card owns (must equal the server-registered one). */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
-/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 5 advanced rows). */
-export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'charsPerToken' | 'charsPerTokenHint' | 'focalTurns' | 'focalTurnsHint' | 'vocabTopN' | 'vocabTopNHint' | 'uaSummaryThreshold' | 'uaSummaryThresholdHint' | 'recallLimit' | 'recallLimitHint' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
+/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 4 advanced rows). */
+export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'windowRatio' | 'windowRatioHint' | 'retainRatio' | 'retainRatioHint' | 'charsPerToken' | 'charsPerTokenHint' | 'focalTurns' | 'focalTurnsHint' | 'vocabTopN' | 'vocabTopNHint' | 'recallLimit' | 'recallLimitHint' | 'advanced' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
 /** English copy. */
 export declare const en: Record<ArgpLocaleKey, string>;
 /** Simplified Chinese copy. */
@@ -206,14 +204,13 @@ export declare class CardForm<T> {
     private stored;
     private publish;
 }
-/** The card's full render state (§3.4 roster: seven fields, one per rendered row). */
+/** The card's full render state (§3.4 roster: six fields, one per rendered row). */
 export interface ArgpConfigState extends CardShell {
     windowRatio: CardFieldState;
     retainRatio: CardFieldState;
     charsPerToken: CardFieldState;
     focalTurns: CardFieldState;
     vocabTopN: CardFieldState;
-    uaSummaryThreshold: CardFieldState;
     recallLimit: CardFieldState;
 }
 /** The registration-side face the slot entry injects. */

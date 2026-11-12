@@ -48,7 +48,6 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
 import { FactorEngine, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
-import { UaSummarizer } from './factor/ua-summarizer.ts'
 import { ProseCondenser } from './factor/prose-condenser.ts'
 export { scaleBudgets } from './budget.js'
 // 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
@@ -95,7 +94,6 @@ export interface ArgpLiveConfig {
   // configForms.set 对非 volatile 键直接 throw「not volatile」⇒ 卡片可写=volatile）。
   focalTurns: Volatile<number>
   vocabTopN: Volatile<number>
-  uaSummaryThreshold: Volatile<number>
   recallLimit: Volatile<number>
 }
 
@@ -284,8 +282,6 @@ export interface ArgpGraphConfig {
   focalTurns?: number
   /** 词表每类 topN（§1.4，factor 臂）。 */
   vocabTopN?: number
-  /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
-  uaSummaryThreshold?: number
   /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径，
    *  20 一线留给 P3 裁决包按数据调——登记于 design-2.0 §9.5）。 */
   recallLimit?: number
@@ -389,13 +385,12 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 2.0 判别式（design-2.0 §3.2）：**非 volatile**——engine 键会话内不可变（§1.5-9
     // 防配置漂移）；宿主实测非 volatile 键经设置写入直接 throw「not volatile」，
     // 拒写语义由宿主天然把守（设置卡因此不渲染 engine 行）。
-    // 其余四枚 = §3.4 旋钮名册的 factor 键：必须 volatile 才可被设置卡写入
+    // 其余三枚 = §3.4 旋钮名册的 factor 键：必须 volatile 才可被设置卡写入
     // （宿主 settings/schema.ts volatileForm 只投影 volatile 字段），引擎侧全部
-    // 决策点 getter 活读（FactorEngine/UaSummarizer/recall-labels 构造期收 getter）。
+    // 决策点 getter 活读（FactorEngine/ProseCondenser/recall-labels 构造期收 getter）。
     engine: z.string().default('graph'),
     focalTurns: z.number().step(1).min(0).default(1).volatile(),
     vocabTopN: z.number().step(1).min(1).default(10).volatile(),
-    uaSummaryThreshold: z.number().min(1000).default(40000).volatile(),
     recallLimit: z.number().step(1).min(1).default(5).volatile(),
   })
 
@@ -407,9 +402,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
   private readonly factor: FactorEngine | null = null
 
-  /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
-  private readonly ua: UaSummarizer | null = null
-  /** P6-④ 散文浓缩链（取代 ua 缺口兜底成为 factor 臂唯一 LLM 摘要通路；见 prose-condenser.ts）。 */
+  /** P6-④ 散文浓缩链（factor 臂唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
   private readonly prose: ProseCondenser | null = null
   /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
   private readonly pressureTriggerEnabled: boolean = false
@@ -642,12 +635,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
         focalTiered: resolveFocalTiered(),
       })
-      this.ua = new UaSummarizer(ctx, this as unknown as PruneTxHost, {
-        uaSummaryThreshold: () => this.args.uaSummaryThreshold.get(),
-        focalTurns: () => this.args.focalTurns.get(),
-      })
-      // P6-④ 散文浓缩链（取代 ua.summarize 缺口兜底）：ua 仅在 ARGP_FACTOR_PRESSURE=1
-      // 逃生口路径（旧世界复现）仍被调用，缺省路径零触达。
+      // P6-④ 散文浓缩链：factor 臂唯一 LLM 摘要通路，只在压缩事务内被调
+      // （compactIfNeeded factor 分发 / compactNow；pre-step 零估算驱动零触达）。
       this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
         focalTurns: () => this.args.focalTurns.get(),
       })
@@ -1534,7 +1523,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
     // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：
     // R 剪 0-LLM 在前（deficit = 真实口径 − retain）→ 散文浓缩（(sys+散文)÷声明窗 > 50%
-    // 才动，one-shot 原生式，取代旧 ua.summarize 缺口兜底）→ 词表 note 事务收尾
+    // 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→ 词表 note 事务收尾
     // （P6-② 违规点整改：note 变化时机 = 压缩时机，note 前缀炸弹案施工①）。
     if (this.factor !== null) {
       if (trigger === 'context-overflow' || declaredKnown) {
@@ -1998,14 +1987,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     const m = this.measureTokens(agent.session, incomingTokens)
     const deficit = m.contextTokens - retainTokens
     if (deficit <= 0) return
-    const pruned = this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
-    if (pruned !== null || this.ua === null) return
-    // R 剪清不动（可剪面被硬保护占满）→ U/A 批次摘要兜底；吞错隔离同词表 note。
-    try {
-      await this.ua.summarize(agent.session, agent.options)
-    } catch (e) {
-      this.log.warn('[argp-factor-ua] pre-step 摘要异常（本轮跳过）：' + (e instanceof Error ? e.message : String(e)))
-    }
+    // R 剪清不动（可剪面被硬保护占满）即本轮终态：无摘要兜底——factor 臂唯一 LLM
+    // 摘要通路是散文浓缩链（prose-condenser），只在压缩事务内被调（触发收敛口径）。
+    this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
   }
 
   /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。

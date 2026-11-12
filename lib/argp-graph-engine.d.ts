@@ -54,7 +54,6 @@ export interface ArgpLiveConfig {
     charsPerToken: Volatile<number>;
     focalTurns: Volatile<number>;
     vocabTopN: Volatile<number>;
-    uaSummaryThreshold: Volatile<number>;
     recallLimit: Volatile<number>;
 }
 export interface ArgpGraphConfig {
@@ -242,8 +241,6 @@ export interface ArgpGraphConfig {
     focalTurns?: number;
     /** 词表每类 topN（§1.4，factor 臂）。 */
     vocabTopN?: number;
-    /** U/A 摘要池阈值（字符，§2.4，factor 臂）。 */
-    uaSummaryThreshold?: number;
     /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径，
      *  20 一线留给 P3 裁决包按数据调——登记于 design-2.0 §9.5）。 */
     recallLimit?: number;
@@ -303,7 +300,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         engine: z<string, string, "defined">;
         focalTurns: z<number, number, "volatile-defined">;
         vocabTopN: z<number, number, "volatile-defined">;
-        uaSummaryThreshold: z<number, number, "volatile-defined">;
         recallLimit: z<number, number, "volatile-defined">;
     }>>, Schemastery.ObjectT<NoInfer<{
         windowRatio: z<number, number, "volatile-defined">;
@@ -317,7 +313,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
         engine: z<string, string, "defined">;
         focalTurns: z<number, number, "volatile-defined">;
         vocabTopN: z<number, number, "volatile-defined">;
-        uaSummaryThreshold: z<number, number, "volatile-defined">;
         recallLimit: z<number, number, "volatile-defined">;
     }>>, "plain">;
     static inject: string[];
@@ -325,9 +320,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly args;
     /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
     private readonly factor;
-    /** 2.0 U/A 批次摘要编排（§2.4；因子臂唯一 LLM 通路），随 factor 臂同挂。 */
-    private readonly ua;
-    /** P6-④ 散文浓缩链（取代 ua 缺口兜底成为 factor 臂唯一 LLM 摘要通路；见 prose-condenser.ts）。 */
+    /** P6-④ 散文浓缩链（factor 臂唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
     private readonly prose;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;

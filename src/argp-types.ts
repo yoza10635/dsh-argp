@@ -66,8 +66,6 @@ export interface ArgpUserSettings {
   focalTurns: number
   /** factor 臂词表每类 topN（§1.4）。 */
   vocabTopN: number
-  /** factor 臂 U/A 摘要池阈值，字符（§2.4）。 */
-  uaSummaryThreshold: number
   /** factor 臂 recall_history 缺省 limit（§P0 宽度实测；现默认 5，上限 20）。 */
   recallLimit: number
 }

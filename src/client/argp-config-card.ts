@@ -370,16 +370,6 @@ export function ArgpConfigCard(props: ArgpCardProps): React.ReactElement | null 
                   onReset: () => { props.resetField('vocabTopN') },
                 }),
                 h(TextField, {
-                  id: 'argp-uaSummaryThreshold',
-                  label: t('uaSummaryThreshold'),
-                  hint: t('uaSummaryThresholdHint'),
-                  state: state.uaSummaryThreshold,
-                  numeric: true,
-                  t,
-                  onEdit: (text: string) => { props.edit('uaSummaryThreshold', text) },
-                  onReset: () => { props.resetField('uaSummaryThreshold') },
-                }),
-                h(TextField, {
                   id: 'argp-recallLimit',
                   label: t('recallLimit'),
                   hint: t('recallLimitHint'),

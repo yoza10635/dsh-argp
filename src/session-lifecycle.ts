@@ -59,8 +59,8 @@ import type { ArgpGraphConfig } from './argp-graph-engine.js' // type-only：编
 export const ARG_SETTINGS_KEY = 'dsh-argp'
 
 /**
- * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **7 枚**（windowRatio/
- * retainRatio/charsPerToken + uaSummaryThreshold/focalTurns/vocabTopN/recallLimit）
+ * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **6 枚**（windowRatio/
+ * retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
  * ＋ engine 判别式随行。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成 volatile
@@ -82,7 +82,6 @@ export const ArgpUserSettingsSchema = z.object({
   engine: z.string().default('graph'),
   focalTurns: z.number().step(1).min(0).default(1),
   vocabTopN: z.number().step(1).min(1).default(10),
-  uaSummaryThreshold: z.number().step(1).min(1000).default(40000),
   recallLimit: z.number().step(1).min(1).default(5),
 }) as z<ArgpUserSettings>
 
@@ -195,7 +194,7 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   checkNum(config.maxOverflowRetries, 'maxOverflowRetries', { min: 0 })
   checkNum(config.midTurnTurnGuard, 'midTurnTurnGuard', { min: 0 })
   checkNum(config.reactiveRetries, 'reactiveRetries', { min: 0 })
-  // focalTurns/vocabTopN/uaSummaryThreshold/recallLimit：**裸值校验在此必误报**——
+  // focalTurns/vocabTopN/recallLimit：**裸值校验在此必误报**——
   // P2-4 起它们标了 volatile，到达时是 Volatile 包装对象（与八枚旧旋钮同一坑，
   // 见函数头注释）。约束在 static Config schema（min/step）与运行时 getter 兜底。
   if (config.engine !== undefined && config.engine !== 'graph' && config.engine !== 'factor') {

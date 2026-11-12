@@ -13,8 +13,7 @@
  *    tool_call——连续整轮段一笔 replace 落**单条浓缩节点**（无逐原子墓碑）；首个不可整轮的
  *    轮（含不可吞 X/附件/U-info 副本）只做逐原子散文驱逐（标准 seqRangeTombstone 指针），
  *    贪心在此停（不跨洞续段，保"单浓缩节点"形状）；
- *  - **无逐字转写带、无保真守卫**：原始信息有 recall 兜底（用户裁定），逐字精确性不进本链
- *    ——与 UaSummarizer（fidelityGuard+约束带）的根本分野；
+ *  - **无逐字转写带、无保真守卫**：原始信息有 recall 兜底（用户裁定），逐字精确性不进本链；
  *  - **浓缩节点带结构化 kind**：source=compact-checkpoint（宿主结构化源，prune-tx 统一写）
  *    + 文本标记 PROSE_CHECKPOINT_PREFIX（resume 找回/统计识别，VOCAB_NOTE_MARKER 同款
  *    判据纪律）；节点归 X ⇒ 不参与下轮散文统计（天然出池，不自我滚雪球）。
@@ -24,8 +23,6 @@
  * "turn 0 伪轮"。故分组按 **surface 连续 run**（相邻同 turn 号归一段，无原子节点断段），
  * open turn 用**位置**守卫（run 起点 ≥ open turn 首节点位置即停），焦点窗用 turn 号守卫
  * （turn=0 伪轮天然在焦点号之下，位置上若落在 open 区已被位置守卫拦住）。
- *
- * factor-ua（UaSummarizer 缺口兜底）被本链取代（退役，装配注见 argp-graph-engine）。
  */
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Message } from '@deepseek-ai/dsh-llm'
@@ -48,7 +45,7 @@ export const PROSE_CHECKPOINT_PREFIX = '[散文压缩]'
 /** 摘要调用输出预算（maxTokens 三易其值终定 8192 的同源口径；思考型模型防烧穿）。 */
 export const PROSE_SUMMARY_MAX_TOKENS = 8192
 
-/** LLM 超时（照 UaSummarizer/DEFAULT_LLM_TIMEOUT_MS 口径）。 */
+/** LLM 超时（DEFAULT_LLM_TIMEOUT_MS 同源口径）。 */
 const PROSE_LLM_TIMEOUT_MS = 180_000
 
 /**
@@ -254,7 +251,7 @@ export class ProseCondenser {
   constructor(ctx: Context, host: PruneTxHost, config: ProseCondenserConfig = {}) {
     this.ctx = ctx
     this.host = host
-    // 裸值/getter 双形归一（FactorEngine/UaSummarizer 同法）：引擎侧传 getter = 活读 volatile 旋钮。
+    // 裸值/getter 双形归一（FactorEngine 同法）：引擎侧传 getter = 活读 volatile 旋钮。
     const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
       typeof v === 'function' ? v : () => v ?? d
     this.cfg = {
@@ -441,7 +438,7 @@ export class ProseCondenser {
     return (await completeViaDshLlm(this.ctx, spec, PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs, proseMessages, undefined, signal, PROSE_SUMMARY_MAX_TOKENS)).text
   }
 
-  /** spec 解析同 UaSummarizer：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
+  /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
   private resolveSpec(route: AgentRouteHint): { provider: string; model: string } | null {
     if (this.cfg.complete !== undefined) {
       const provider = route.provider

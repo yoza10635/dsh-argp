@@ -12,7 +12,8 @@
  *      = P2-1 口径逐字保持）→ 变异「recall-labels 的 host.recallLimitOf?.() 摘除恒 5」= T2 红；
  *  CR4 旧 graph 五键：factor 臂对非缺省值告警忽略、graph 臂静默（宽容读=resolve 透传，
  *      见 T4 的 schema 面）→ 变异「normalizeConfig 告警块删」= T3 红；
- *  CR5 ArgpUserSettingsSchema 名册 = 7 枚 + engine；旧五键不在默认集、但 resolve 宽容
+ *  CR5 ArgpUserSettingsSchema 名册 = 6 枚 + engine；旧五键与退役 uaSummaryThreshold
+ *      （factor-ua 退役随之除名）不在默认集、但 resolve 宽容
  *      透传不炸（宿主 cordis 非 strict 同构）→ 变异「schema 回加任一旧键」= T4 红。
  */
 import test from 'node:test'
@@ -91,29 +92,6 @@ test('CR1 vocabTopN 装配 getter 活读：mount=1 ⇒ 词表每类至多 1 行'
   assert.equal(docLines.length, 1, 'topN=1 ⇒ 词表 document 类恰 1 行（装配处写死/裸值即失配）')
 })
 
-test('CR1b uaSummaryThreshold 装配 getter：mount=1000 摘、缺省 mount 不摘（同池）', async () => {
-  const obedient = async (_s: unknown, prompt: string): Promise<string> => {
-    const m = prompt.match(/必须逐字出现的 token：([^\n]*)\n/)
-    return '摘要正文。' + ((m?.[1] ?? '（无）') === '（无）' ? '' : m![1])
-  }
-  const mk = async (extra: Record<string, unknown>): Promise<boolean> => {
-    const { internals } = await bootFactor(extra)
-    const session = makeSession('roster-ua-' + JSON.stringify(extra))
-    internals.bindSession(session)
-    appendUser(session, 'x'.repeat(1200))
-    appendGroup(session, 1, 'c1', 'bash', '{"command":"ls"}', 'R1 CODE_ROSTER_A')
-    appendGroup(session, 2, 'c2', 'bash', '{"command":"pwd"}', 'R2 CODE_ROSTER_B')
-    appendGroup(session, 3, 'c3', 'bash', '{"command":"whoami"}', '焦点轮活体')
-    const ua = (internals as unknown as {
-      ua: { summarize(s: Session, r: { provider?: string; model?: string }): Promise<unknown>; cfg: { complete?: unknown } }
-    }).ua
-    ua.cfg.complete = obedient // 后端注入（挂载期无 llm 服务，摘要链会 disabled 自静默）
-    return (await ua.summarize(session, { provider: 'p', model: 'm' })) !== null
-  }
-  assert.equal(await mk({ uaSummaryThreshold: 1000 }), true, 'mount 阈值 1000 < 池 ⇒ 摘')
-  assert.equal(await mk({}), false, '缺省阈值 40000 > 同一池 ⇒ 不摘（装配线裸值/包装漏拆必失配）')
-})
-
 test('CR3 recallLimit 驱动 recall_history 缺省 limit（7 ⇒ 7 行；缺省 mount ⇒ 5）', async () => {
   for (const [limitKey, expected] of [[7, 7], [undefined, 5]] as const) {
     const { ctx, internals } = await bootFactor(limitKey === undefined ? {} : { recallLimit: limitKey })
@@ -166,7 +144,7 @@ async function ctxPlugin(ctx: Context, cfg: Record<string, unknown>): Promise<vo
   await ctx.plugin(ArgpGraphEngine, cfg as never)
 }
 
-test('CR6 卡片对账：渲染行 = 名册（7）= en/zh 键集；旧键文案清零', () => {
+test('CR6 卡片对账：渲染行 = 名册（6）= en/zh 键集；旧键文案清零', () => {
   const scope = {
     subscribe: () => () => {},
     getSnapshot: () => ({ status: 'ready', writable: true, value: {}, base: {}, user: undefined }),
@@ -175,18 +153,18 @@ test('CR6 卡片对账：渲染行 = 名册（7）= en/zh 键集；旧键文案�
   const state = new ArgpConfigController(scope as never).inject().hooks.argpConfig.getSnapshot()
   const shellKeys = new Set(['available', 'writable', 'dirty', 'invalid', 'saving', 'failed'])
   const rows = Object.keys(state).filter(k => !shellKeys.has(k)).sort()
-  assert.deepEqual(rows, ['charsPerToken', 'focalTurns', 'recallLimit', 'retainRatio', 'uaSummaryThreshold', 'vocabTopN', 'windowRatio'],
+  assert.deepEqual(rows, ['charsPerToken', 'focalTurns', 'recallLimit', 'retainRatio', 'vocabTopN', 'windowRatio'],
     '控制器投影行必须与 §3.4 名册一一对应（加/减行不联动即红）')
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort(), 'en/zh 键集必须一致')
   for (const r of rows) {
     assert.ok(en[r as ArgpLocaleKey] !== undefined && zh[r as ArgpLocaleKey] !== undefined, r + ' 缺标题文案')
     assert.ok(en[(r + 'Hint') as ArgpLocaleKey] !== undefined && zh[(r + 'Hint') as ArgpLocaleKey] !== undefined, r + ' 缺提示文案')
   }
-  const stale = Object.keys(en).filter(k => /^(maxPasses|recencyGuard|turnGuard|minSpanChars|sortMode)/.test(k))
+  const stale = Object.keys(en).filter(k => /^(maxPasses|recencyGuard|turnGuard|minSpanChars|sortMode|uaSummaryThreshold)/.test(k))
   assert.deepEqual(stale, [], '退位旋钮的文案必须清零（残留=渲染不到的死字典项）')
 })
 
-test('CR5 schema 名册 = 7 + engine；旧五键无缺省但 validate 宽容透传', () => {
+test('CR5 schema 名册 = 6 + engine；旧五键无缺省但 validate 宽容透传', () => {
   // 宿主 resolveConfig 经 ~standard.validate（vendor/cordis fiber.ts:50）；非 strict，
   // 未声明键原样透传（vendor/schemastery index.ts:821 merge）——"宽容读"正是这条路。
   const validate = (v: unknown): Record<string, unknown> => {
@@ -198,9 +176,11 @@ test('CR5 schema 名册 = 7 + engine；旧五键无缺省但 validate 宽容透�
   }
   const keys = Object.keys(validate({})).sort()
   assert.deepEqual(keys, [
-    'charsPerToken', 'engine', 'focalTurns', 'recallLimit', 'retainRatio', 'uaSummaryThreshold', 'vocabTopN', 'windowRatio',
-  ].sort(), '名册恰 7 枚 + engine（旧五键不得回进默认集）')
+    'charsPerToken', 'engine', 'focalTurns', 'recallLimit', 'retainRatio', 'vocabTopN', 'windowRatio',
+  ].sort(), '名册恰 6 枚 + engine（旧五键与退役 uaSummaryThreshold 均不得回进默认集）')
   const tolerant = validate({ maxPasses: 3, sortMode: 'legacy' })
   assert.equal(tolerant.maxPasses, 3, '老键宽容读：validate 不拒、原样透传（factor 臂据此告警忽略）')
   assert.equal(tolerant.sortMode, 'legacy')
+  const retired = validate({ uaSummaryThreshold: 12345 })
+  assert.equal(retired.uaSummaryThreshold, 12345, '退役 ua 键宽容透传：老 profile 带该键不炸')
 })

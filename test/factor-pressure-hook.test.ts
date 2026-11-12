@@ -6,10 +6,9 @@
  *
  * 变异纪律（每条摘除必须变红）：
  *  - deficit≤0 门槛摘除 ⇒ 无压力也调 compactIfNeeded（测1）；
- *  - 词表 note 吞错隔离摘除 ⇒ steer 抛错连带掐死压力剪（测2）；
- *  - pruned!==null 早退摘除 ⇒ 剪成功仍烧 UA 摘要（测3 右半）；
- *  - UA 兜底缺失 ⇒ 可剪面占满时无人接手（测3 左半）；
- *  - UA 吞错隔离摘除 ⇒ summarize 抛错炸穿 pre-step（测4）。
+ *  - 词表 note 吞错隔离摘除 ⇒ steer 抛错连带掐死压力剪（测2）。
+ *  （UA 兜底三锁随 factor-ua 退役一并删除——该通路已不存在，缺口兜底语义由
+ *   prose-condenser 承担，见 test/prose-condenser.test.ts。）
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -23,7 +22,6 @@ import type { FactorEngine } from '../src/factor/engine.ts'
 
 interface EngineInternals {
   factor: FactorEngine | null
-  ua: { summarize(session: Session, options: unknown): Promise<unknown> } | null
   factorPressure(agent: unknown, incomingTokens?: number): Promise<void>
   bindSession(session: Session): void
 }
@@ -119,36 +117,19 @@ test('词表 note steer 抛错 ⇒ 吞错隔离，同钩子压力剪照常执行
   spy.restore()
 })
 
-test('R 剪不动（pruned=null）⇒ UA 摘要兜底接手；剪成功 ⇒ UA 不烧', async () => {
-  // 兜底半：只剩焦点轮 R（协议未闭合被硬保）→ compactIfNeeded 返回 null → ua.summarize 接手。
+test('R 剪不动（pruned=null）⇒ 无摘要兜底即本轮终态（factor-ua 退役）', async () => {
+  // 可剪面占满（只剩焦点轮 R，协议未闭合被硬保）→ compactIfNeeded 返回 null：
+  // 退役后没有 UA 兜底，factorPressure 必须平静返回，且不发射第二笔。
   const { internals, factor } = await bootFactor()
-  const session = makeSession('ua-fallback')
+  const session = makeSession('no-fallback')
   internals.bindSession(session)
   session.append('user/message', { ...createUserMessage({ content: [{ type: 'text', text: '只看这个文件' }], source: { kind: 'user' } }), turn: 1 } as never, { surfaceOp: 'append' })
   appendGroup(session, 2, 'c1', '{"file_path":"C:/Proj/a.ts"}', '') // 空结果=attachment 硬保 ⇒ 可剪面占满
-  let uaCalls = 0
-  internals.ua = { summarize: async () => { uaCalls += 1 } }
-  await internals.factorPressure(makeAgent(session), 20000) // incoming 拉满 deficit
-  assert.equal(uaCalls, 1, '可剪面占满 ⇒ UA 兜底必须接手')
-  // 不烧半：重负载可剪 ⇒ pruned 非 null ⇒ UA 静默。
-  const { internals: internals2 } = await bootFactor()
-  const heavy = heavySession('ua-silent')
-  internals2.bindSession(heavy)
-  let ua2 = 0
-  internals2.ua = { summarize: async () => { ua2 += 1 } }
-  await internals2.factorPressure(makeAgent(heavy), 0)
-  assert.equal(ua2, 0, '剪成功不得再烧 UA 摘要')
-  void factor
-})
-
-test('UA summarize 抛错 ⇒ 吞错隔离不阻断本步', async () => {
-  const { internals } = await bootFactor()
-  const session = makeSession('ua-boom')
-  internals.bindSession(session)
-  session.append('user/message', { ...createUserMessage({ content: [{ type: 'text', text: '只看这个文件' }], source: { kind: 'user' } }), turn: 1 } as never, { surfaceOp: 'append' })
-  appendGroup(session, 2, 'c1', '{"file_path":"C:/Proj/a.ts"}', '') // attachment 硬保 ⇒ pruned=null 走 UA
-  internals.ua = { summarize: async () => { throw new Error('ua boom') } }
-  await internals.factorPressure(makeAgent(session), 20000) // 不得 reject
+  const spy = spyCompact(factor)
+  await internals.factorPressure(makeAgent(session), 20000) // incoming 拉满 deficit；不得 reject
+  assert.ok((spy.targets[0] ?? 0) > 0, 'deficit>0 必须进一次压力剪')
+  assert.equal(spy.targets.length, 1, '剪不动即终态：无兜底第二笔（factor-ua 已退役）')
+  spy.restore()
 })
 
 // ---------------------------------------------------------------------------

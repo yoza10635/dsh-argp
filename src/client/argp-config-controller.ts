@@ -17,9 +17,9 @@
  */
 
 /**
- * The 2.0 settings roster (design-2.0 §3.4): SEVEN knobs — three engine-agnostic
- * (windowRatio/retainRatio/charsPerToken) plus four factor-arm (focalTurns/vocabTopN/
- * uaSummaryThreshold/recallLimit). The retired graph knobs (maxPasses/recencyGuard/
+ * The 2.0 settings roster (design-2.0 §3.4): SIX knobs — three engine-agnostic
+ * (windowRatio/retainRatio/charsPerToken) plus three factor-arm (focalTurns/vocabTopN/
+ * recallLimit). The retired graph knobs (maxPasses/recencyGuard/
  * turnGuard/minSpanChars/sortMode) are gone from the card; the graph arm keeps
  * consuming them from cordis config (tolerated-read, see server normalizeConfig).
  * The `engine` discriminator is NOT here on purpose: it is non-volatile, and the
@@ -38,8 +38,6 @@ export interface ArgpUserSettings {
   focalTurns: number
   /** Vocabulary note entries per category (factor arm). */
   vocabTopN: number
-  /** U+A pool size (chars) before batch LLM summarization may start (factor arm). */
-  uaSummaryThreshold: number
   /** Default items recall_history returns when no limit is given (factor arm). */
   recallLimit: number
 }
@@ -49,7 +47,7 @@ export const ARG_SETTINGS_KEY = 'dsh-argp'
 
 // ── Locale ──────────────────────────────────────────────────────────────────
 
-/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 5 advanced rows). */
+/** Locale keys the ARGP card renders (§3.4 roster: 2 core + 4 advanced rows). */
 export type ArgpLocaleKey =
   | 'argpTitle' | 'argpDescription'
   | 'windowRatio' | 'windowRatioHint'
@@ -57,7 +55,6 @@ export type ArgpLocaleKey =
   | 'charsPerToken' | 'charsPerTokenHint'
   | 'focalTurns' | 'focalTurnsHint'
   | 'vocabTopN' | 'vocabTopNHint'
-  | 'uaSummaryThreshold' | 'uaSummaryThresholdHint'
   | 'recallLimit' | 'recallLimitHint'
   | 'advanced'
   | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse'
@@ -77,8 +74,6 @@ export const en: Record<ArgpLocaleKey, string> = {
   focalTurnsHint: 'The newest N turns stay verbatim — never pruned and never summarized (factor engine)',
   vocabTopN: 'Vocabulary entries per category',
   vocabTopNHint: 'How many labels each category shows in the vocabulary note; the rest stay reachable through list_labels (factor engine)',
-  uaSummaryThreshold: 'Summary pool threshold (chars)',
-  uaSummaryThresholdHint: 'Batch LLM summarization of the user/assistant text pool starts only under context pressure and only above this size; below it everything stays verbatim (factor engine)',
   recallLimit: 'Recall default items',
   recallLimitHint: 'Items recall_history returns when it is called without a limit (cap 20; factor engine)',
   advanced: 'Advanced',
@@ -109,8 +104,6 @@ export const zh: Record<ArgpLocaleKey, string> = {
   focalTurnsHint: '最近 N 轮保持逐字，不剪枝也不摘要（因子引擎）',
   vocabTopN: '词表每类条数',
   vocabTopNHint: '词表 note 每类最多列出的标签数，其余经 list_labels 下钻（因子引擎）',
-  uaSummaryThreshold: '摘要池阈值（字符）',
-  uaSummaryThresholdHint: '仅在上下文压力下、且 U+A 文本池超过该字符量才启动 LLM 批次摘要；低于阈值一律逐字保留（因子引擎）',
   recallLimit: '召回默认条数',
   recallLimitHint: 'recall_history 未指定 limit 时的默认返回条数（上限 20；因子引擎）',
   advanced: '高级设置',
@@ -497,14 +490,13 @@ export class CardForm<T> {
 
 // ── ARGP card controller ─────────────────────────────────────────────────────
 
-/** The card's full render state (§3.4 roster: seven fields, one per rendered row). */
+/** The card's full render state (§3.4 roster: six fields, one per rendered row). */
 export interface ArgpConfigState extends CardShell {
   windowRatio: CardFieldState
   retainRatio: CardFieldState
   charsPerToken: CardFieldState
   focalTurns: CardFieldState
   vocabTopN: CardFieldState
-  uaSummaryThreshold: CardFieldState
   recallLimit: CardFieldState
 }
 
@@ -522,7 +514,7 @@ export class ArgpConfigController {
   constructor(scope: SettingsScopeLike<ArgpUserSettings>) {
     // Bounds mirror `ArgpGraphEngine.Config` (the host-validated source; the client
     // must reject out-of-spec drafts before they are staged, since a rejected host
-    // write would surface as an opaque save failure). The seven fields stay 1:1
+    // write would surface as an opaque save failure). The six fields stay 1:1
     // with the card's rendered rows (knob parity, §3.4 roster).
     this.form = new CardForm(scope, [
       numberField('windowRatio', { min: 0.1, max: 1 }),
@@ -530,7 +522,6 @@ export class ArgpConfigController {
       numberField('charsPerToken', { min: 0.5, max: 8 }),
       numberField('focalTurns', { min: 0, integer: true }),
       numberField('vocabTopN', { min: 1, integer: true }),
-      numberField('uaSummaryThreshold', { min: 1000, integer: true }),
       numberField('recallLimit', { min: 1, integer: true }),
     ])
     this.store = this.form.bind(() => this.projection())
@@ -544,7 +535,6 @@ export class ArgpConfigController {
       charsPerToken: this.form.field('charsPerToken'),
       focalTurns: this.form.field('focalTurns'),
       vocabTopN: this.form.field('vocabTopN'),
-      uaSummaryThreshold: this.form.field('uaSummaryThreshold'),
       recallLimit: this.form.field('recallLimit'),
     }
   }
