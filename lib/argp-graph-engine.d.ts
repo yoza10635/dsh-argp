@@ -551,6 +551,16 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * （日志 append-only，最后一条 usage 恒 ≥ 内存锚点），故重复执行不会回退。
      */
     private restoreUsageAnchor;
+    /**
+     * 声明窗锚点回填（2026-11-13，R2 修后世界实锤）：`declaredContextWindows` 原先**只**
+     * 由活 `session/event` 的 `request/context` 写入。headless 驱动每轮新起一个 dsh 子进程
+     * （`--session-id` resume），历史 `request/context` 不会重放到新进程的 WeakMap ⇒
+     * `egressGate` 读到 `declaredWindow=0` 直接 `return false`，§9.37 出口闸在 T02 起就死了，
+     * 400→剪→重试→全量重灌链原样复活（cand-shadow-fix T13/T18/T2x 共 4 笔死流实锤）。
+     * 与 `restoreUsageAnchor` 同模式：反向扫日志取最后一条声明值；每 session/进程只扫一次
+     * （WeakMap 已有值即早退；活事件更新不受影响）。
+     */
+    private restoreDeclaredWindow;
     /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
      */
     catalogText(maxItems?: number, snippetChars?: number, tokenBudget?: number): string;

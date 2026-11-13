@@ -1111,6 +1111,9 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   private bindSession(session: Session): void {
     bindSession(this as unknown as LifecycleHost, session)
+    // 2026-11-13 R2 实锤：headless 每轮新起 dsh 进程 resume，历史 request/context 不在
+    // 活事件流里——只靠 session/event 写 WeakMap 会让 §9.37 出口闸读到 0 直接放行。
+    this.restoreDeclaredWindow(session)
   }
 
   setSession(session: Session): void {
@@ -1165,6 +1168,34 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     this.log.info('[argp-graph] usage anchor restored from log: real prompt='
       + this.lastRealPromptTokens + ' tok at seq=' + this.lastRealAnchorSeq)
+  }
+
+  /**
+   * 声明窗锚点回填（2026-11-13，R2 修后世界实锤）：`declaredContextWindows` 原先**只**
+   * 由活 `session/event` 的 `request/context` 写入。headless 驱动每轮新起一个 dsh 子进程
+   * （`--session-id` resume），历史 `request/context` 不会重放到新进程的 WeakMap ⇒
+   * `egressGate` 读到 `declaredWindow=0` 直接 `return false`，§9.37 出口闸在 T02 起就死了，
+   * 400→剪→重试→全量重灌链原样复活（cand-shadow-fix T13/T18/T2x 共 4 笔死流实锤）。
+   * 与 `restoreUsageAnchor` 同模式：反向扫日志取最后一条声明值；每 session/进程只扫一次
+   * （WeakMap 已有值即早退；活事件更新不受影响）。
+   */
+  private restoreDeclaredWindow(session: Session): void {
+    if ((this.declaredContextWindows.get(session) ?? 0) > 0) return
+    try {
+      const events = sessionEvents(session)
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const event = events[i]
+        if (event?.type !== 'request/context') continue
+        const declared = (event.data as { contextWindow?: unknown } | undefined)?.contextWindow
+        if (typeof declared === 'number' && declared > 0) {
+          this.declaredContextWindows.set(session, declared)
+          this.log.info('[argp-graph] declared contextWindow restored from log: ' + declared)
+          return
+        }
+      }
+    } catch {
+      // 日志不可读：保持未知，宁缺勿错交给 400 兜底网（与 resolveScaledBudgets 同纪律）。
+    }
   }
 
   /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
@@ -1593,7 +1624,16 @@ export class ArgpGraphEngine extends CompactionEngine {
     const session = agent.session
     if (signal.aborted) return false
     this.bindSession(session) // D2：同钩子内 factorPressure（逃生口开时）的 await 窗口可能已换桶——回绑再测量
-    const declaredWindow = this.declaredContextWindows.get(session) ?? 0
+    let declaredWindow = this.declaredContextWindows.get(session) ?? 0
+    if (declaredWindow <= 0) {
+      // 冷 resume 第二道兜底（2026-11-13 R2 实锤）：历史日志缺失/裁剪时，宿主
+      // requestContext() 仍持有权威声明值；拿到即回填，避免闸再次失明。
+      const reqCtx = (session as unknown as { requestContext?: () => { contextWindow?: number } | undefined }).requestContext?.()
+      if (reqCtx?.contextWindow !== undefined && reqCtx.contextWindow > 0) {
+        declaredWindow = reqCtx.contextWindow
+        this.declaredContextWindows.set(session, declaredWindow)
+      }
+    }
     if (declaredWindow <= 0) return false // 声明窗未知：宁缺勿错，交给 400 兜底网
     const measurement = this.measureTokens(session, incomingTokens)
     if (measurement.source !== 'anchored') return false

@@ -12,7 +12,12 @@
  *  M3 摘 `!egressPruned` ⇒ EG-6 红；M4 摘 egressEnabled 门 ⇒ EG-6b 红；
  *  M5 输出预算忽略 requestMaxTokens ⇒ EG-4 红；M6 摘 options.maxTokens 档 ⇒ EG-8 红；
  *  M7 摘 modelDefaultMaxTokens 探测档 ⇒ EG-9 红；M8 摘浓缩闸二补检 ⇒ EG-12 红；
- *  M9 预算档改 options 优先（非 max）⇒ EG-10 红；M10 摘逃生口互斥 ⇒ EG-11 红。
+ *  M9 预算档改 options 优先（非 max）⇒ EG-10 红；M10 摘逃生口互斥 ⇒ EG-11 红；
+ *  M11 摘 bind 时的 request/context 回填 ⇒ EG-13 红（冷 resume 闸失明）；
+ *  M12 摘 egressGate 的 requestContext() 兜底 ⇒ EG-13b 红。
+ *  2026-11-13 R2 修后世界实锤：headless 每轮新进程 resume 时历史 request/context 不在
+ *  活事件流里，只靠 session/event 写 WeakMap ⇒ declaredWindow=0 ⇒ 出口闸全程放行
+ *  （cand-shadow-fix T13/T18/T2x 4 笔 400 死流）。EG-13/13b 即该病灶的回归锁。
  *  对抗审查（2026-11-13）F1/F2/F5/F6 的修复各配专锁（EG-9/F2 闸二/EG-11/EG-10）。
  */
 import test from 'node:test'
@@ -327,4 +332,31 @@ test('EG-7 resolveEgressEnabled：缺省开，唯一关档=字面 0', () => {
   assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '0' }), false)
   assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: 'false' }), true, '档位语义同 resolveClipEnabled：只认 0')
   assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '1' }), true)
+})
+
+// EG-13/13b：冷 resume（2026-11-13 R2 实锤）——headless 每轮新进程 resume 时，历史
+// request/context 不在活事件流里；出口闸必须在 bind 时从日志回填，否则 declaredWindow=0
+// 直接放行（cand-shadow-fix T13/T18/T2x 400 死流根因）。13b 锁 requestContext() 第二道兜底。
+test('EG-13 冷 resume：历史 request/context 在 bind 时回填 ⇒ 闸照常过线（M11 锁）', async () => {
+  const { internals, factor } = await bootFactor()
+  const session = heavyAnchoredSession('eg-cold-resume', 900) // 900 ≥ 730
+  session.append('request/context', { contextWindow: 1000 } as never) // 只落日志，不回放活事件
+  // 关掉宿主 requestContext() 兜底面：本测只准 bind 的日志回填救场（M11 隔离）。
+  Object.defineProperty(session, 'requestContext', { value: () => undefined, configurable: true })
+  internals.bindSession(session) // 模拟新进程首绑（无 live session/event）
+  const spy = spyCompact(factor)
+  const fired = await internals.egressGate(makeAgent(session), sig(), 0)
+  assert.equal(fired, true, '冷 resume 必须从日志回填声明窗，不得让出口闸失明')
+  assert.equal(spy.targets.length, 1)
+})
+
+test('EG-13b 日志无 request/context 时走 requestContext() 兜底（M12 锁）', async () => {
+  const { internals, factor } = await bootFactor()
+  const session = heavyAnchoredSession('eg-request-context', 900)
+  Object.defineProperty(session, 'requestContext', { value: () => ({ contextWindow: 1000 }), configurable: true })
+  internals.bindSession(session)
+  const spy = spyCompact(factor)
+  const fired = await internals.egressGate(makeAgent(session), sig(), 0)
+  assert.equal(fired, true, '宿主 requestContext() 是权威声明面，日志缺失时也不得放行')
+  assert.equal(spy.targets.length, 1)
 })
