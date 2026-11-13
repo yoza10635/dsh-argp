@@ -3,7 +3,7 @@
  * engine:'factor' 全链路（插件构造 → ctx.tools → 真 Session 剪枝 → 取回）。
  *
  * 锁面：
- *  - 按臂摘挂：factor 臂 = 恰好两工具、老三件套缺席；graph 臂逐字不变（含契约文案）；
+ *  - factor-only：恰好两工具、老三件套缺席（假通道不挂）；
  *  - 标签 → 日志原文：state/hit 标记齐、返回 append 根源原文（不是桩）；
  *  - 查询宽容（裸标签展开）与未命中如实回显（半空想查询必须可见）；
  *  - cursor/epoch 续读 + 漂移重排告警（不假装稳定分页）；
@@ -16,7 +16,7 @@
  *  ML3 删 nextCursor 续读提示 → T5 红（第二页无从取得，两页内容重合）；
  *  ML4 删裸标签前缀展开 → T3 红；
  *  ML5 queryPruned 入参 cursor/epoch 改缺省 → T5 红（两页同内容）；
- *  ML6 构造期无条件 registerRecallTools（撤销按臂分流）→ T1 红。
+ *  ML6 构造期重新挂回 recall_pruned 三件套 → T1 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -64,12 +64,10 @@ interface EngineInternals {
   stateOf(session: Session): { recallCallsThisTurn: number; resolvedWindowTokens: number }
 }
 
-async function boot(engine: 'factor' | 'graph'): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals }> {
+async function boot(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'recall labels persona' } })
-  await ctx.plugin(ArgpGraphEngine, engine === 'factor'
-    ? { engine, windowTokens: 100, retainTokens: 50, recencyGuard: 0 }
-    : { windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
   return { ctx, engine: ctx.compaction as ArgpGraphEngine, internals: ctx.compaction as unknown as EngineInternals }
 }
 
@@ -92,17 +90,13 @@ function prunedReadPair(session: Session, factor: FactorEngine): void {
   assert.ok(r !== null, '前置剪枝必须发射')
 }
 
-test('按臂摘挂 + 契约双臂分流：factor=恰好两新工具（契约无退役名），graph=老三件套逐字不变', async () => {
-  const f = await boot('factor')
+test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）', async () => {
+  const f = await boot()
   assert.ok(hasTool(f.ctx, 'recall_history'), 'recall_history 挂载')
   assert.ok(hasTool(f.ctx, 'list_labels'), 'list_labels 挂载')
-  assert.ok(!hasTool(f.ctx, 'recall_pruned'), '老 seq 通道在 factor 臂是假通道——不挂')
+  assert.ok(!hasTool(f.ctx, 'recall_pruned'), '老 seq 通道在 factor-only 是假通道——不挂')
   assert.ok(!hasTool(f.ctx, 'list_pruned'))
   assert.ok(!hasTool(f.ctx, 'recall'))
-  const g = await boot('graph')
-  assert.ok(hasTool(g.ctx, 'recall_pruned'), 'graph 臂老三件套不得因判别式引入漂移')
-  assert.ok(hasTool(g.ctx, 'list_pruned'))
-  assert.ok(!hasTool(g.ctx, 'recall_history'), '新工具不进 graph 臂（评测期隔离）')
   const sectionsOf = async (ctx: Context): Promise<Map<string, string>> => {
     const sp = (ctx as unknown as { systemPrompt: { assemble(): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
     const out = new Map<string, string>()
@@ -113,13 +107,11 @@ test('按臂摘挂 + 契约双臂分流：factor=恰好两新工具（契约无�
   const contract = fs.get('argp-contract') ?? ''
   assert.ok(contract.includes('recall_history') && contract.includes('已剪·因子'), 'factor 契约指新通道')
   assert.ok(!contract.includes('recall_pruned') && !contract.includes('list_pruned'), '契约禁引退役工具名（假通道）')
-  assert.ok(!fs.has('argp-cites'), 'factor 臂 cites 契约整段不注册')
-  const gs = await sectionsOf(g.ctx)
-  assert.ok((gs.get('argp-contract') ?? '').includes('recall_pruned'), 'graph 契约文案不变')
+  assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
 })
 
 test('recall_history：标签交集 → 日志 append 根源原文；state/hit 标记齐、桩文本不冒充', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('recall-basic')
   internals.bindSession(session)
@@ -137,7 +129,7 @@ test('recall_history：标签交集 → 日志 append 根源原文；state/hit �
 })
 
 test('裸标签查询宽容；未命中标签如实回显（ML1/ML4 锁）', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('recall-bare')
   internals.bindSession(session)
@@ -157,7 +149,7 @@ test('裸标签查询宽容；未命中标签如实回显（ML1/ML4 锁）', asy
 })
 
 test('查询无命中：如实说明 + 账本总量 + list_labels 指路（不静默空串）', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('recall-empty')
   internals.bindSession(session)
@@ -172,7 +164,7 @@ test('查询无命中：如实说明 + 账本总量 + list_labels 指路（不�
 })
 
 test('分页续读：limit=1 → cursor/epoch 提示；翻页取次新；epoch 漂移告警（ML2/ML3/ML5 锁）', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('recall-page')
   internals.bindSession(session)
@@ -203,7 +195,7 @@ test('分页续读：limit=1 → cursor/epoch 提示；翻页取次新；epoch �
 })
 
 test('list_labels：词表下钻（键×数量）；未知类别严拒；空 facet 如实', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('labels-vocab')
   internals.bindSession(session)
@@ -220,7 +212,7 @@ test('list_labels：词表下钻（键×数量）；未知类别严拒；空 fac
 })
 
 test('每轮防循环安全阀双臂同阀；预算截断与耗尽显式（budgetRecallText 契约复用）', async () => {
-  const { ctx, internals } = await boot('factor')
+  const { ctx, internals } = await boot()
   const factor = internals.factor as FactorEngine
   const session = makeSession('recall-guards')
   internals.bindSession(session)

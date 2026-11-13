@@ -622,48 +622,34 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.log = ctx.logger
     // 在这些 preset 下不生效（构造期定；默认 ['minimal']）。
     this.skipPresets = [...(config.skipPresets ?? DEFAULT_SKIP_PRESETS)]
-    // 构造期装配四函数：session-lifecycle.normalizeConfig（字段归一，纯）/
-    // registerSettings（UI 设置页 ctx.inject）/ mountPeratomStack（peratom 三管线自挂载 + 派生赋值）/
-    // recall-tools.registerRecallTools（下方）。副作用次序：字段归一 → settings 注册 →
-    // peratom 自挂载 → 召回工具注册（字段赋值与 ctx 副作用无交互，settings 回调不读归一字段）。
+    // 2.0 factor-only：peratom 三管线已退役（不再 mountPeratomStack）；本类宿主面
+    // （bindSession/atomize/stateOf/log/…）以 PruneTxHost 兼容形态注入。
     normalizeConfig(ctx, this as unknown as LifecycleHost, config)
     registerSettings(ctx, this as unknown as LifecycleHost, config)
-    mountPeratomStack(ctx, this as unknown as LifecycleHost, config)
-    // 因子臂装配（§3.2）：三管线挂载已在 mountPeratomStack 内早退；本类宿主面
-    // （bindSession/atomize/stateOf/log/…）以 PruneTxHost 兼容形态注入。
-    if (config.engine === 'factor') {
-      // 旋钮经 getter 活读（args 里这四枚已被 static Config 标 volatile，见 §3.4 注释）：
-      // 设置页改动免重挂即生效（宿主 loader 对纯 volatile 变化走 _commitVolatile）。
-      this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
-        focalTurns: () => this.args.focalTurns.get(),
-        vocabTopN: () => this.args.vocabTopN.get(),
-        // 策略档 env 逃生口（T-3 两臂实跑）：缺省 flat=现行为字节不变，
-        // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
-        focalTiered: resolveFocalTiered(),
-        // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
-        clipEnabled: resolveClipEnabled(),
-      })
-      // P6-④ 散文浓缩链：factor 臂唯一 LLM 摘要通路，只在压缩事务内被调
-      // （compactIfNeeded factor 分发——overflow 或出口闸驱进的 'pressure' 且闸二
-      // ctx 线补检通过 / compactNow 免闸二；估算驱动零触达）。
-      this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
-        focalTurns: () => this.args.focalTurns.get(),
-      })
-      // 触发收敛逃生口：构造期快照 env（档位语义同 resolveFocalTiered——策略切换须重挂引擎）。
-      this.pressureTriggerEnabled = resolvePressureTriggerEnabled()
-      // §9.37 出口闸：缺省开（撞墙重试重灌链根除），ARGP_FACTOR_EGRESS=0 仅关给对照臂。
-      this.egressEnabled = resolveEgressEnabled()
-      // 因子臂召回面 = 恰好这两个工具（§3.2）：recall_history（标签交集 → 日志原文，
-      // cursor/epoch 续读）+ list_labels（词表下钻）。老三件套在本臂**不挂**——
-      // factor 桩/词表只给标签不给 seq，seq 通道在 factor 臂是假通道。
-      registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
-      this.log.info('[argp] engine=factor（P2 臂）：三管线不挂、cites 硬关、R 贴标剪枝；'
-        + '召回面 = recall_history/list_labels；词表注入与摘要在 P2 后续批接线')
-    } else {
-      // graph 臂三个召回工具经 recall-tools.registerRecallTools 注册，
-      // 调用次序 recall_pruned → list_pruned → recall。factor 臂不挂（上方分支）。
-      registerRecallTools(ctx, this as unknown as RecallToolsHost)
-    }
+    // 旋钮经 getter 活读（args 里这四枚已被 static Config 标 volatile，见 §3.4 注释）：
+    // 设置页改动免重挂即生效（宿主 loader 对纯 volatile 变化走 _commitVolatile）。
+    this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
+      focalTurns: () => this.args.focalTurns.get(),
+      vocabTopN: () => this.args.vocabTopN.get(),
+      // 策略档 env 逃生口（T-3 两臂实跑）：缺省 flat=现行为字节不变，
+      // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
+      focalTiered: resolveFocalTiered(),
+      // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
+      clipEnabled: resolveClipEnabled(),
+    })
+    // P6-④ 散文浓缩链：factor 臂唯一 LLM 摘要通路，只在压缩事务内被调
+    // （compactIfNeeded——overflow 或出口闸驱进的 'pressure' 且闸二 ctx 线补检通过 /
+    // compactNow 免闸二；估算驱动零触达）。
+    this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
+      focalTurns: () => this.args.focalTurns.get(),
+    })
+    // 触发收敛逃生口：构造期快照 env（档位语义同 resolveFocalTiered——策略切换须重挂引擎）。
+    this.pressureTriggerEnabled = resolvePressureTriggerEnabled()
+    // §9.37 出口闸：缺省开（撞墙重试重灌链根除），ARGP_FACTOR_EGRESS=0 仅关给对照臂。
+    this.egressEnabled = resolveEgressEnabled()
+    // 2.0 召回面 = recall_history / list_labels（标签制）；图时代三件套已退役。
+    registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
+    this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩 + 出口闸；召回面 = recall_history/list_labels')
     // /argp 状态命令：只读出口，放在工具注册之后（与 settings/peratom 同批的 ctx 副作用，
     // 但它依赖 commands 服务，缺失时 inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
     registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
@@ -688,111 +674,9 @@ export class ArgpGraphEngine extends CompactionEngine {
         + '- A tool result may also have been replaced by a shorter compressed copy. Such a copy is marked at its top with [已压缩-摘取 seq=N] (a verbatim extract — a subset of the original, not the whole output) or [已压缩-摘要 seq=N] (a paraphrase — its wording is NOT the original). It is never the complete original: call recall_detail(N) or recall_pruned(N) for the verbatim text before you quote it or rely on exact strings.',
     })
 
-    // 被剪目录：沉到 system message 尾部（order 9999），使 persona + argp-contract 正文 +
-    // argp-cites 等静态 section 构成稳定前缀。
-    // 根因修复：原实现把动态 catalog 拼进 order:150 的契约段，导致 system message 前缀每轮变、
-    // 缓存从 catalog 处断开（2026-08-22 发现，A 臂测试缓存零命中）。recall 协议不依赖其在 system 靠前。
-    // 位置说明：新会话首绑先于任何剪枝 ⇒ 快照为 ''（空目录 per-design：发现能力由 tombstone
-    // 指针承担，G2/0-6）；resume 会话首绑回放 compaction/end 在案快照 ⇒ "重启后模型还能看到
-    // 曾有内容被剪"的唯一 system 提示。order 9999 仅为保守排布（10000+ 段均在其后）。
-    //
-    // 内容侧闸门（2026-11-13 T24-J R2 头翻转税定谳，用户裁定"闸门放内容侧"）：正文=冻结域
-    // 快照（快照域=压缩事务，P6 note 施工①；跨进程字节稳定，test 批次 3-1 锁）。但宿主
-    // preStep()（agent-loop/agent.ts：claim→assemble→派发 agent/pre-step 的固定顺序）里
-    // assemble() 先于 pre-step 瀑布，headless 回合制
-    // 每轮新进程 ⇒ 首绑若只挂在 pre-step，本轮 step1 的装配必渲染无目录版，宿主合流支
-    // （SystemPromptProjection：rendered≠头即 replace node 0）把头换成无目录版、step2 又换回
-    // ⇒ 每轮两次头翻转、前缀缓存拆成 base/aug 两链（R2 实锤：压缩后该臂 44-46 万 miss/轮）。
-    // 闸门=求值时先经装配上下文的 agent.session 早绑（A7 统一绑定点，幂等），使"任何装配
-    // 都渲染当前事务快照"⇒ 头只在事务尾变一次（唯一故意的失效点），事务间/跨进程零改写。
-    // 绝不 live 重算（08-27 账本权威域教训）；无 agent 会话的装配走冻结域初值或空串。
-    ctx.systemPrompt.section({
-      name: 'argp-catalog',
-      order: 9999,
-      text: (assemblyContext: unknown) => {
-        const session = (assemblyContext as { agent?: { session?: Session } }).agent?.session
-        if (session !== undefined) this.bindSession(session)
-        return this.frozenCatalog ?? ''
-      },
-    })
 
-    // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
-    // 挂载受 citesObligation 门控（auto：declarer 已武装即不注册——边声明走结构化旁路，
-    // 回复不再携带 cites 尾，源头消灭 UI 显示泄漏）。协议关闭不影响引擎侧剥离与
-    // buildGraph 解析：模型偶发残留的 cites 尾仍被剥离并作为加菜边消费。
-    // 2026-09-21 时序修复（autoLlm）：auto 兜底的 declarer 构造期未武装、会话中期
-    // 才经 agent/status → rememberRoute 武装，构造期布尔无法预判——auto 口径下
-    // section 恒注册，text 回调在 armed 翻转后动态返回 ''；renderPrompt 过滤空
-    // section ⇒ system 块不再含协议。armed 单调递增（autoLlm 只赋值不清除）⇒
-    // 至多翻转一次，代价 = 一次 system 块 KV 失效（通常发生在首个请求之前，可忽略）。
-    // 始终未武装时保持全文（两种边来源不能同时归零）。显式覆盖保持静态语义。
-    // V4 措辞（实测，spike 脚本已精简移除）：明示"读了工具结果并作答 = 必须引用该结果"，
-    // 比旧版"if used ... append"的被动式显著提升 t-long 类任务下的声明率。
-    // V5 措辞（2026-08 修 UI 残留）：空引用时"完全不输出 block"而非写 {"cites":[]}。
-    // 原因：dsh 核心的人类转录固定取 append 起源事件（replace 副本 model-only，
-    // 见 core session surface.ts "replacement copies stay model-only"），surface
-    // 剥离永远改不到 UI 显示；空块对引用图零信息（无入边），只能在源头不产出。
-    // 引擎侧对"无块"本就是常态（§4.7），citeStats 对空/无块均不计 declared。
-    if (this.citesObligation || this.citesObligationAuto) {
-      ctx.systemPrompt.section({
-        name: 'argp-cites',
-        order: 151,
-        text: () => {
-          if (this.citesObligationAuto && this.peratomStack?.declarer?.armed === true) return ''
-          return 'Citation declaration (ARGP):\n'
-            + 'In this session you frequently read files with read_file and answer from their content. EVERY time your final reply is based on a tool result you read, you MUST cite it.\n'
-            + 'When your reply depends on at least one earlier item, append ONE JSON block to the end of your final reply:\n'
-            + '{"cites":[...]}\n'
-            + '- When you answered from a file you read, cite that file\'s tool result: copy verbatim the first 10-20 words of its content.\n'
-            + '- Cite user instructions you followed and earlier assistant claims you built upon too.\n'
-            + '- If your reply used nothing from earlier items, output no block at all — never an empty {"cites":[]} block.\n'
-            + '- Grading (V6): by default a citation is supporting. When the cited item is load-bearing for a chain of decisions (a critical fact your whole answer stands on), you may declare it as: {"cites":[{"t":"<verbatim prefix>","l":"c"}]} — use "s" for supporting and "x" for contextual. Bare strings are treated as supporting.\n'
-            + '- The block goes in the final reply body, never in reasoning. Output nothing after it.'
-        },
-      })
-    }
 
     ctx.on('session/event', (session, event) => {
-      if (event.type === 'turn/start') {
-        this.stateOf(session).recallCallsThisTurn = 0
-        // 续写阶梯按 turn 重置：**同一 turn 内**的连续被钳逐级放宽守卫（第 2 次起 recency/turn
-        // guard 归零），turn 一换就重新拿到完整额度——既保证"连续被钳能升级"，又不会把整条
-        // 会话的额度耗在一次事故上，也天然封住"每步都被钳 → 每步白压"的循环。
-        this.reactiveRescues.delete(session)
-      }
-      // L2/L3 反应式信号（1.4.0 引入，1.5.0 扩展到续写）："输出被**外部**钳制"的真信号。
-      // `assistant/message.data.stream` 末项 = finish chunk（全 session 实测词表：
-      // tool-calls / stop / max-tokens）；`data.usage.outputTokens` 是本步实际输出。
-      // 判据：kind === 'max-tokens' **且** outputTokens < 本次请求声明的 maxTokens
-      //   ⇒ 输出预算被宿主/适配器啃小（实测 1,911 / 1 / 4,714 vs 请求 32,768）= 容量压力
-      //     ⇒ 置位；pre-step 会强制剪（turn 还在跑），turn-stopping 会剪 + steer 续写（本轮要收）；
-      //   ⇒ outputTokens ≈ maxTokens 则是模型自己写满预算，不构成上下文压力，不触发。
-      // 正常输出（非钳制）⇒ 清零本 episode 的续写阶梯（见 reactiveRescues），
-      // 使"连续被钳才升级"成立，而长会话中的偶发钳制各自都能拿到完整的重试额度。
-      if (event.type === 'assistant/message') {
-        const data = event.data as {
-          stream?: readonly { chunk?: { type?: string; reason?: { kind?: string } } }[]
-          usage?: { outputTokens?: number }
-        } | undefined
-        const tail = Array.isArray(data?.stream) ? data.stream[data.stream.length - 1] : undefined
-        const finish = tail?.chunk
-        const output = data?.usage?.outputTokens
-        const budget = this.requestMaxTokens.get(session)
-        const clamped = finish?.type === 'finish' && finish.reason?.kind === 'max-tokens'
-          && typeof output === 'number' && typeof budget === 'number' && output < budget
-        if (clamped) {
-          this.reactivePending.set(session, true)
-          this.log.warn('[argp-graph] output clamped by the host: finish=max-tokens with output='
-            + output + ' < requested ' + budget + ' ⇒ prune + continue the same turn')
-        } else if (finish?.type === 'finish' && this.reactivePending.has(session)) {
-          // 2-3（1.11.0-beta.1）：陈旧 pending 清理——pending 置位后若下一响应**正常收尾**
-          //（自然完成/stop，非钳制），旧实现让 pending 跨响应存活，下个 pre-step 会把一次
-          // 过期信号当成"本轮被钳"误触发 reactive 剪枝 + 续写（白压 + 幻觉续写）。正常
-          // finish = 钳制事故已自然解除，pending 作废。
-          this.reactivePending.delete(session)
-          this.log.info('[argp-graph] stale reactive pending cleared: response finished normally (no clamping)')
-        }
-      }
       // 声明窗口缓存（真环境联调实证）：request/context 事件携带适配器声明的
       // contextWindow（settings 模型条目），是权威口径。pre-step 压力检查可能早于首个
       // request/context 事件落账（新会话 turn-1），此缓存使后续检查/重启会话立即拿到
@@ -975,133 +859,9 @@ export class ArgpGraphEngine extends CompactionEngine {
         }
         return next()
       }
-      if (!signal.aborted) {
-        const session = agent.session
-        // ── 三级触发的判定窗口（v1.5.0）────────────────────────────────────────
-        // pre-step 载荷自带 `{ messages, turn, step }`：宿主 `agent.ts:244` 先 claim
-        // （把本步要发的 user 消息取出，落一条 inbox/spliced），`:250` 才 dispatch 本
-        // 钩子 ⇒ **轮初（step===1）时 `messages` 就是本轮新 user 消息的精确内容**，而它
-        // 此刻尚未进 surface。故轮初估值既不需要"预测"，也不会漏掉用户的大段粘贴。
-        //   · step === 1 → L1 轮初主动：per-atom LLM pass（原子降熵）+ 图剪，阈值沿用
-        //     windowRatio；估值含本步已 claim 未落盘的 user 消息。
-        //   · step  > 1 → L1' 轮中压力剪：**只做 0-LLM 图剪**，且放宽 `turnGuard`
-        //     （`midTurnTurnGuard`，默认 0）。真会话存档实证：超额的来源恰恰是上一批
-        //     tool result（轮中），而 turnGuard=1 把整轮保护起来——这正是 1.3.x 轮中剪
-        //     "只剪 1 原子/154 tok、却每次断一次前缀缓存"的根因。轮中不跑 per-atom pass：
-        //     那是 79s–3min 的阻塞，轮内不划算（轮初/轮末另有专门通道）。
-        // 两种时机都落在**本 pre-step**：剪完同一个 step 的请求即已瘦身 ⇒ 天然自动继续本 turn。
-        // 回调失败隔离：吞错后照常走图剪。
-        const turnStart = step === 1
-        if (turnStart || this.midTurnPruneEnabled) {
-          const incoming = this.incomingTokens(messages)
-          // per-atom 压缩：轮初必跑；轮中只在 `midTurnActive: true`（1.3.x 对照档）下跑——
-          // 它需要 open turn 的原子，且是一次 79s–3min 的阻塞，新默认档的轮中剪刻意不带它。
-          if ((turnStart || this.midTurnLegacyGuard)
-            && this.onPrePressureCompress !== undefined && detectOpenTurn(session) !== null) {
-            if (await this.isPressureExceeded(agent, incoming)) {
-              try {
-                await this.onPrePressureCompress(session, signal)
-              } catch (error: unknown) {
-                const message = error instanceof Error ? error.message : String(error)
-                this.log.error('[argp-graph] pre-pressure peratom compress FAILED: ' + message)
-                this.log.warn(`[argp-graph] pre-pressure compress failed: ${message}; proceeding to graph prune`)
-              }
-            }
-      }
-      // D2：上方 peratom 压缩的 await 窗口内焦点可能已换装他桶——回绑后再捕获/恢复
-      // guardOverride，否则 A 会话的轮中放宽守卫会写进 B 的桶（B 下一次图剪被莫名放宽）。
-      this.bindSession(agent.session)
-      const previousOverride = this.guardOverride
-      if (!turnStart) {
-            // 轮中剪：只放宽 turnGuard；recencyGuard 照旧保护最新节点（刚收到的 tool result 不动）。
-            this.guardOverride = {
-              recencyGuard: this.args.recencyGuard.get(),
-              turnGuard: this.midTurnLegacyGuard ? this.args.turnGuard.get() : this.midTurnTurnGuard,
-            }
-          }
-          try {
-            await this.compactIfNeeded(agent, 'pressure', signal, incoming)
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error)
-            this.log.error('[argp-graph] pressure prune FAILED: ' + message + (error instanceof Error && error.stack ? '\n' + error.stack.split('\n').slice(0, 6).join('\n') : ''))
-            this.log.warn(`[argp-graph] pressure prune failed: ${message}; continuing the turn`)
-          } finally {
-            this.guardOverride = previousOverride
-          }
-        }
-        // turn 仍在跑时的收紧剪（被 turn-stopping 消费过的不再重复）。
-        await this.runReactivePrune(agent, signal, ctx)
-      }
       return next()
     })
 
-    // ── L3 截断续写（v1.5.0 核心）──────────────────────────────────────────────
-    // 把"输出被外部钳制 ⇒ 本 turn 被 max-tokens 终结 ⇒ 任务半途而废"改写成
-    // "剪掉超额 + steer 一条续写消息 ⇒ **同一个 turn** 继续推进当前任务"。
-    //
-    // 为什么必须挂在这里：宿主 `agent-loop/src/agent.ts:483` 在 `finish.kind === 'max-tokens'`
-    // 时**直接 return**（先于 `executeToolCalls` ⇒ 那一步的 tool calls 被丢弃），`turn()` 随即因
-    // `turnEnds && inbox.nextStep.length === 0` 收轮 ⇒ agent 回 idle 等用户。真会话存档实证：
-    // 全库 5/5 次钳制后面紧跟的都是 `step/end > turn/end`，没有一次续跑。
-    // `agent/turn-stopping` 是本轮最后一个可干预点（turn/end 尚未落账 ⇒ 编号 bracket 仍属本 turn），
-    // 且 harness 自带契约测试锁定 *"steer() from an agent/turn-stopping listener continues the
-    // same turn"*（`packages/core/agent-loop/tests/contract-regressions.spec.ts:323`）：steer 进
-    // next-step 后循环以 `target='next-step'` 续跑，用户无需再发"继续"。
-    ctx.on('agent/turn-stopping', async ({ agent, signal }) => {
-      const session = agent.session
-      if (!this.reactivePending.has(session)) return
-      this.reactivePending.delete(session)
-      if (signal.aborted) return
-      this.bindSession(session) // D2：入点补绑——下方 guardOverride 的捕获/放宽/恢复不得落进他桶
-      const used = this.reactiveRescues.get(session) ?? 0
-      if (used >= this.reactiveRetries) {
-        this.log.warn('[argp-graph] auto-continue: limit reached (' + used + '/' + this.reactiveRetries
-          + '); letting the turn end — the task needs a new user message')
-        return
-      }
-      this.reactiveRescues.set(session, used + 1)
-      const relax = used + 1 > 1
-      const previousOverride = this.guardOverride
-      if (relax) {
-        this.guardOverride = { recencyGuard: 0, turnGuard: 0 }
-        this.log.warn('[argp-graph] auto-continue attempt ' + (used + 1) + ': relaxing recency/turn guards')
-      }
-      let result: CompactionResult | null = null
-      try {
-        result = await this.compactIfNeeded(agent, 'context-overflow', signal)
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.log.error('[argp-graph] auto-continue prune FAILED: ' + message)
-      } finally {
-        this.guardOverride = previousOverride
-      }
-      if (result === null || result.shadowedSeqs.length === 0) {
-        // 本轮剪不动 ⇒ 把信号留到下一次机会（通常是用户开口后的那一轮 pre-step，那时阶梯已 +1、
-        // 守卫放宽）。不 steer：零腾空还续写，只会立刻再被钳一次。
-        this.rearmReactive(session, used + 1)
-        this.log.warn('[argp-graph] auto-continue: nothing prunable; letting the turn end')
-        return
-      }
-      this.log.warn('[argp-graph] output was clamped by the host: pruned ' + result.shadowedSeqs.length
-        + ' nodes (~' + result.shadowedTokenCount + ' tokens) at turn-stopping; steering a continuation'
-        + ' so the same turn keeps advancing the task')
-      if (this.continuationNotice.length === 0) return
-      try {
-        agent.steer(createUserMessage({
-          content: [{ type: 'text', text: this.continuationNotice }],
-          // 宿主/本引擎都把非 `user` 源归为 X（可见、不参剪）⇒ 这条提示既进请求又不会被剪掉，
-          // 且 UI 侧按 notice 渲染，不会伪装成用户输入。
-          source: {
-            kind: 'argp',
-            form: 'notice',
-            summary: 'output clamped; context pruned — continuing the same turn',
-          },
-        }))
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.log.error('[argp-graph] auto-continue steer FAILED: ' + message)
-      }
-    })
   }
 
   /**
