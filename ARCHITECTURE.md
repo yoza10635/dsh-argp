@@ -219,27 +219,27 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | 嵌套深度 | ≤ 4 | 参数数量 | ≤ 5 |
 | 函数长度 | ≤ 80 行 | | |
 
-### 2026-11-13 快照（2.0.0-alpha.0，base commit `dd9199c`；单函数 max；超预算项加粗）
+### 2026-11-13 快照（2.0.0-alpha.0 + 逻辑审查修复；单函数 max；超预算项加粗）
 
 度量工具：TypeScript 编译器 API（`scripts/analysis-extract.mjs` + `analysis-metrics.mjs`，
 口径同下表注）。"文件代码行"不含空行与纯注释；"总行"接近编辑器所见。
 
 | 文件 | 圈 | 认知 | 嵌套 | 函数代码行 | 文件代码行/总行 |
 |---|---|---|---|---|---|
-| `src/factor/engine.ts` | **95** | **219** | **5** | **171** | **432**/611 |
-| `src/prune-tx.ts` | **65** | **126** | **5** | **235** | **434**/631 |
-| `src/argp-graph-engine.ts` | **52** | **95** | **5** | **137** | **593**/1012 |
-| `src/factor/recall-labels.ts` | **37** | **81** | **5** | **128** | 153/210 |
-| `src/session-lifecycle.ts` | **37** | **86** | **6** | **95** | 220/364 |
-| `src/factor/prose-condenser.ts` | **35** | **87** | **5** | **86** | 385/540 |
-| `src/factor/tag-extract.ts` | **33** | **76** | **6** | **81** | 157/210 |
-| `src/argp-command.ts` | **32** | **50** | 4 | 58 | 152/251 |
+| `src/factor/engine.ts` | **96** | **220** | **5** | **171** | **453**/650 |
+| `src/prune-tx.ts` | **60** | **116** | **5** | **230** | **430**/631 |
+| `src/argp-graph-engine.ts` | **53** | **97** | **5** | **138** | **606**/1040 |
+| `src/factor/recall-labels.ts` | **38** | **83** | **5** | **132** | 177/242 |
+| `src/session-lifecycle.ts` | **37** | **86** | **6** | **95** | 219/365 |
+| `src/factor/prose-condenser.ts` | **42** | **100** | **5** | **92** | 390/555 |
+| `src/factor/tag-extract.ts` | **33** | **76** | **6** | **82** | 166/221 |
+| `src/argp-command.ts` | **30** | **45** | 3 | 54 | 148/250 |
 | `src/graph-build.ts` | **28** | **110** | **7** | 64 | 98/178 |
 | `src/preset-cleaner.ts` | **21** | **81** | **7** | 62 | 186/311 |
 | `src/factor/factor-ledger.ts` | **20** | **49** | **7** | 57 | 273/373 |
 | `src/log-access.ts` | **20** | **54** | **7** | 40 | 289/471 |
 | `src/peratom/llm-adapter.ts` | **20** | **51** | **5** | 57 | 173/299 |
-| `src/budget.ts` | **17** | **29** | **5** | 54 | 141/226 |
+| `src/budget.ts` | **19** | **32** | **5** | 57 | 143/231 |
 | `src/client/argp-config-card.ts` | **15** | 24 | 2 | **144** | 365/405 |
 | `src/factor/factor-atoms.ts` | **15** | **36** | 4 | 32 | 183/254 |
 | `src/factor/retention-score.ts` | **14** | **26** | 4 | 50 | 110/182 |

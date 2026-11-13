@@ -120,14 +120,16 @@ export interface PruneTxHost {
   charsPerToken: number
   telemetryCap: number
   tombstoneMergeMinRun: number
+}
+
+/**
+ * 手动区间压缩（图时代的极大连续段选择）额外需要的守卫刻度。2.0 factor-only 引擎
+ * 不再提供这些字段（它只剪 R、不按区间剪），故单列接口——活路径 pruneIntervals
+ * 只要求 PruneTxHost，不再被死路径的必填字段绑架。
+ */
+export interface ManualRangeHost extends PruneTxHost {
   recencyGuard: number
   turnGuard: number
-  /**
-   * P6 note 施工①（catalog 快照域"进程"升格"压缩事务"）：事务尾取一次 catalog 快照——
-   * 写入 compaction/end 持久（跨进程 resume 回放同值，headless 回合制不再每进程重拍）
-   * + 冻结域刷新（进程内后续请求回放该值）。缺省（undefined）= 不落账不刷新（测试替身免装配）。
-   */
-  catalogDomain?: { snapshot: () => string; freeze: (text: string) => void }
 }
 
 /**
@@ -363,16 +365,12 @@ export function pruneIntervals(
       })
       intervalRecords.push({ start, end, tombstoneSeq: tombstone.seq })
     }
-    // P6 note 施工①（catalog 快照域升格）：事务尾取一次快照——先算（surface 已 replace
-    // 完毕、快照即剪后真实目录），随 end 事件落账，再刷冻结域。剪枝本身已改动可见上下文，
-    // 这一步的缓存失效是必然代价（旧"落剪刷新"批注同口径）；跨进程字节稳定由 end 事件回放保证。
-    const catalogText = host.catalogDomain !== undefined ? host.catalogDomain.snapshot() : undefined
+    // 2.0：catalog 快照域随图臂退役，compaction/end 不再携带 catalogText
+    // （旧日志里的该字段仍原样保留，只是没有读者）。
     const endEvent = session.append('compaction/end', {
       ...lifecycle,
       ...sourceCommandIdField,
-      ...(catalogText !== undefined ? { catalogText } : {}),
     })
-    if (catalogText !== undefined) host.catalogDomain?.freeze(catalogText)
     ended = true
     // 批次 3-5（beta.1）：事务后 tool-pairing 不变量审计——自动图剪路径此前无校验（手动
     // compactRegions / 墓碑归并在区间选择期各有前校验；per-atom 墓碑保配对是设计保证，
@@ -415,10 +413,12 @@ export function pruneIntervals(
     // 2026-08-23：压缩换代 surface——旧真实锚点（压缩前的 provider usage）失效，
     // 若保留会用大锚点 + 增量导致压缩后立即误触发。用压缩后 surface 估算重置锚点
     // （压缩后 surface 小、估算误差影响小；下一次请求的 usage 会再次精确锚定）。
-    const nodes = session.surface.nodes
-    const tailSeq = nodes.length > 0 ? nodes[nodes.length - 1] : -1
+    // 锚点语义（budget.measureTokens 同口径）：lastRealPromptTokens 覆盖 seq < anchor
+    // 的事件，增量按 seq >= anchor 计。这里 promptTokens 是**当前 surface 全量估算**
+    // （已含刚落的墓碑/检查点），故 anchor 必须取 log 尾后的下一个 seq（session.seq），
+    // 否则中间位置的替换副本会被 delta 二次计入（prose 检查点可达 20K tok）。
     st.lastRealPromptTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
-    st.lastRealAnchorSeq = typeof tailSeq === 'number' ? tailSeq : st.lastRealAnchorSeq
+    st.lastRealAnchorSeq = session.seq
     // 永久冻结：落剪不再刷新 frozenCatalog（见 bindSession 注释）。剪枝本身已让可见上下文换代，
     // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。
     return {
@@ -554,7 +554,7 @@ export function compactRegions(
  *  用户消息切成「U A R A R U A R …」多段结构，早停会让手动 /compact 永远只剪最老
  *  一小段，表现为"图剪压不动"），交给一笔 pruneIntervals 事务剪除。
  */
-export function selectManualRanges(host: PruneTxHost, session: Session): { start: number; end: number }[] {
+export function selectManualRanges(host: ManualRangeHost, session: Session): { start: number; end: number }[] {
   const surfaceSeqs = session.surface.nodes
   const atoms = host.atomize(session)
   const bySeq = new Map(atoms.map(a => [a.seq, a]))

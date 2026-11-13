@@ -31,6 +31,13 @@ test('read: offset/limit → readRange（部分读，staleness 永不主张覆�
   assert.deepEqual(t.readRange, { offset: 200, limit: 20 })
 })
 
+test('read: start_line/end_line 闭区间 → limit（end 不是条数）', () => {
+  const t = extractTags({ tool: 'read', rawArgs: { start_line: 10, end_line: 20 }, resultText: 'x', sessionCwd: CWD })
+  assert.deepEqual(t.readRange, { offset: 10, limit: 11 }, '10..20 含端点 = 11 行；当 limit 会读成 [10,30)')
+  const onlyEnd = extractTags({ tool: 'read', rawArgs: { end_line: 5 }, resultText: 'x', sessionCwd: CWD })
+  assert.deepEqual(onlyEnd.readRange, { offset: 0, limit: 6 })
+})
+
 test('grep: path 进 scope 不进 document；edit: writeish + document', () => {
   const g = extractTags({ tool: 'grep', rawArgs: { path: 'src', pattern: 'foo' }, resultText: 'no match', sessionCwd: CWD })
   assert.deepEqual(g.files, [])

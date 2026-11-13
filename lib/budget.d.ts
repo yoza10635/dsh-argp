@@ -73,14 +73,15 @@ export interface BudgetHost {
     };
     windowRatio: number;
     retainRatio: number;
-    /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens 落到**调用方会话**的桶——
-     *  await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段重赋值会写错桶。 */
+    /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens / usage 锚点都落到
+     *  **调用方会话**的桶——await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段
+     *  读/写会串台（/argp 曾用焦点锚点测非焦点会话）。 */
     stateOf: (session: Session) => {
         resolvedWindowTokens: number;
+        lastRealAnchorSeq: number;
+        lastRealPromptTokens: number;
     };
     charsPerToken: number;
-    lastRealAnchorSeq: number;
-    lastRealPromptTokens: number;
     tokenMeter: TokenMeter | undefined;
     tokenMeterFn?: (session: Session) => {
         contextTokens: number;

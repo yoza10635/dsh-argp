@@ -35,9 +35,9 @@ import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
-import { isMergeableTombstoneText } from '../tombstone-text.js'
+import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
 import { classifyUaAtom, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
-import { STUB_PREFIX } from './factor-atoms.ts'
+import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
 import { autoDshLlmSpec, completeViaDshLlm, type AgentRouteHint } from '../peratom/llm-adapter.ts'
 
 /** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
@@ -157,6 +157,7 @@ export function planProseEviction(
     // system-reminder 等 excluded-X 永不吞。
     const swallowableX = cls === 'excluded' && atom.type === 'X'
       && (isMergeableTombstoneText(atom.text)
+        || isFactorTombstoneText(atom.text)
         || atom.text.trimStart().startsWith(PROSE_CHECKPOINT_PREFIX)
         || atom.text.trimStart().startsWith(STUB_PREFIX))
     return { cls, swallowableX }
@@ -175,13 +176,20 @@ export function planProseEviction(
   interface Run { turn: number; seqs: number[]; startPos: number }
   const runs: Run[] = []
   let cur: Run | null = null
+  let holePos = -1
+  let sawAtom = false
   for (let pos = 0; pos < surfaceSeqs.length; pos += 1) {
     const seq = surfaceSeqs[pos] as number
     const atom = atomsBySeq.get(seq)
     if (atom === undefined) {
       cur = null
+      // 非原子表面节点（system/message 等）是**硬洞**：span 作为单区间 replace 必须
+      // 覆盖区间内全部 surface 节点，而这些节点没有原子 ⇒ sourceEventSeqs 缺项，
+      // 宿主 assert 直接 throw（LLM 已经付过费）。首个洞之前可以正常规划；跨洞即停。
+      if (sawAtom && holePos < 0) holePos = pos
       continue
     }
+    sawAtom = true
     if (cur !== null && cur.turn === atom.turn) {
       cur.seqs.push(seq)
       continue
@@ -195,6 +203,7 @@ export function planProseEviction(
   let evicted = 0
   let stopped = false
   for (const run of runs) {
+    if (holePos >= 0 && run.startPos > holePos && (spanSeqs.length > 0 || partialSeqs.length > 0)) { stopped = true; break }
     if (options.openTurnFromPos !== null && run.startPos >= options.openTurnFromPos) { stopped = true; break }
     if (run.turn >= options.protectFromTurn) { stopped = true; break }
     // 整轮可驱逐判定：段内无 barrier、无不可吞 excluded、无 U-info 副本（excluded-X 可吞例外）。
@@ -316,8 +325,12 @@ export class ProseCondenser {
     if (headEvent !== undefined && headEvent.type === 'system/message') {
       sysChars = eventText(session, headSeq as number).length
     }
-    // 需释放量 =（sys+散文）− 触发线字符数；>0 才动作。
-    const windowChars = windowTokens * this.host.charsPerToken
+    // 需释放量 =（sys+散文）− 声明窗×50%；>0 才动作。
+    // 分母必须是**声明窗**（§9.36 闸一原义），不是缩放后的触发线：windowTokens =
+    // 声明窗×windowRatio（缺省 0.8），用它会让 50% 线实际降到 40% 声明窗、浓缩提前
+    // 触发（windowRatio 调小则更早）。声明值未知时才退回触发线（保守近似）。
+    const gateWindow = declaredWindow > 0 ? declaredWindow : windowTokens
+    const windowChars = gateWindow * this.host.charsPerToken
     const lineChars = Math.floor(windowChars * PROSE_TRIGGER_RATIO)
     const pre = planProseEviction(atoms, probes, [], {
       needChars: 0, protectFromTurn: Number.POSITIVE_INFINITY, openTurnFromPos: null,
@@ -343,6 +356,12 @@ export class ProseCondenser {
     })
     if (plan.stopReason === 'no-candidate') {
       this.host.log.info('[argp-factor-prose] 无可驱逐散文段（全部受保护/含 barrier）：不浓缩')
+      return null
+    }
+    // 仅散点（无整轮段）：partial A 的指针在 2.0 不可召回（无 seq 通道、A 无标签），
+    // 蒸发即模型侧数据丢失；且没有检查点承载 LLM 摘要（白付一次调用）。不动作。
+    if (plan.spanSeqs.length === 0) {
+      this.host.log.info('[argp-factor-prose] 仅散点（无整轮段）：不动作（指针不可召回，保原文）')
       return null
     }
     // 摘要输入 = span 全栈原文（§9.36：U/A + CALL/RESULT，日志原文；按 surface 位置序 replay）。
@@ -403,13 +422,9 @@ export class ProseCondenser {
       const data = events[seq]?.data
       if (data === undefined) continue
       const src = (data['source'] ?? (data['message'] as { source?: unknown } | undefined)?.source) as { form?: string } | undefined
-      const raw = Array.isArray(data['content']) ? data['content']
-        : Array.isArray((data['message'] as { content?: unknown } | undefined)?.content)
-          ? (data['message'] as { content: unknown[] }).content : []
-      const attachment = raw.some(b => {
-        const t = (b as { type?: string })?.type
-        return t === 'image' || t === 'file'
-      })
+      // 附件判据与 factor 硬保护同源：递归 tool-result 嵌套 content（顶层扫会漏掉
+      // R 里的 image/file，浓缩时附件被摘要吞掉）。
+      const attachment = hasAttachmentBlocks(data)
       probes.set(seq, { form: typeof src?.form === 'string' ? src.form : undefined, attachment })
     }
     return probes
@@ -477,7 +492,7 @@ export class ProseCondenser {
       const text = faces.map(f => f.text).join('\n')
       if (text.length === 0) return
       const trimmed = text.trimStart()
-      const stubLike = (trimmed.startsWith(STUB_PREFIX) || isMergeableTombstoneText(text))
+      const stubLike = (trimmed.startsWith(STUB_PREFIX) || isMergeableTombstoneText(text) || isFactorTombstoneText(text))
         && !trimmed.startsWith(PROSE_CHECKPOINT_PREFIX) // 滚动合并豁免（见头注）
       const srcs = Array.isArray(ev.sourceEventSeqs) ? ev.sourceEventSeqs as readonly number[] : []
       if (stubLike && srcs.length > 0 && depth < 6 && !visiting.has(seq)) {
@@ -531,9 +546,9 @@ export function summaryMaxTokensOut(declaredWindow: number): number {
   return Math.max(1024, Math.min(PROSE_SUMMARY_MAX_TOKENS, Math.floor(declaredWindow * 0.2) - PROSE_INSTRUCTION_TOKEN_RESERVE))
 }
 
-/** partial 散点的指针墓碑（标准 [elided] 文法：可并、后续贪心可吞；原文在日志 seq）。 */
+/** partial 散点的指针墓碑：与 factor 指针同族（无工具名，原文在日志；可被后续清扫吞并）。 */
 function seqRangePointer(seq: number): string {
-  // tombstone-text 的 seqRangeTombstone 是图臂文法出口；此处内联同文法单节点形，
+  // tombstone-text 的 seqRangeTombstone 是图臂文法出口；此处内联 factor 指针单节点形，
   // 避免给零依赖叶模块引入反向 import（叶纪律见 tombstone-text.ts 头注）。
-  return '[elided seq=' + seq + '; recall_pruned(' + seq + ') for detail]'
+  return '[elided seq=' + seq + '; 原文在 append-only 日志]'
 }

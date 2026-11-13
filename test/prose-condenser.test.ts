@@ -445,3 +445,50 @@ test('T12 ctx 闸（PC9 锁，§9.36 闸二 + H6 锚点前提）：anchored ≥ 
   // ④ 未发射不写 note 的守卫生效路径：condense 返回 null ⇒ 无浓缩节点落面
   assert.ok(!surfTextsOf(session).some(t => t.startsWith(PROSE_CHECKPOINT_PREFIX)), 'disabled 路径零改写')
 })
+
+test('T1b 闸一分母=声明窗：40% 声明窗不触发（旧 windowTokens 分母会误开）', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('prose-gate-denom')
+  internals.bindSession(session)
+  // 散文合计 ≈1460 字（persona 13 + turn1 1450 + turn2 10）：占声明 1000 的 42%
+  // （>40% 旧 windowTokens 分母线，<50% 声明窗新线）。turn2 是焦点轮（不驱逐），
+  // turn1 可整轮驱逐——旧分母下门会开且真会发浓缩（mutation 必红）。
+  appendUser(session, 'x'.repeat(1450), 1)
+  appendUser(session, 'focus task', 2)
+  let calls = 0
+  const prose = new ProseCondenser(ctx, internals as never, {
+    focalTurns: 1,
+    complete: async () => { calls += 1; return '摘要' },
+  })
+  // windowTokens=800（=1000×0.8 触发线），declaredWindow=1000
+  const result = await prose.condense(session, { provider: 't', model: 'm' }, 800, undefined, 1000)
+  assert.equal(result, null, '43% < 50% 声明窗：不动作')
+  assert.equal(calls, 0, '零 LLM 调用')
+})
+
+test('planProseEviction ⑥：非原子表面节点是硬洞——span 不得跨洞（否则宿主 replace throw）', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'A', 'A1-'.padEnd(60, '答')),
+    // seq=3 是 system/message（atomize 不产出）
+    atom(4, 2, 'U', 'U2-'.padEnd(60, '文')),
+  ]
+  const plan = planProseEviction(atoms, noProbe, [1, 2, 3, 4], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.deepStrictEqual(plan.spanSeqs, [1, 2], '洞后 turn2 不得并入同一区间')
+  assert.ok(!plan.spanSeqs.includes(4))
+})
+
+test('planProseEviction ⑦：factor 指针墓碑（无 recall_pruned）可吞——否则中断轮永久卡住清扫', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'X', '[elided seq=9; 原文在 append-only 日志]'),
+    atom(3, 1, 'A', 'A1-'.padEnd(60, '答')),
+  ]
+  const plan = planProseEviction(atoms, noProbe, [1, 2, 3], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.ok(plan.spanSeqs.includes(2), 'factor 墓碑必须可吞')
+  assert.ok(plan.spanSeqs.includes(3), '墓碑后的 A 同段')
+})

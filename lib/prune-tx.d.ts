@@ -97,17 +97,15 @@ export interface PruneTxHost {
     charsPerToken: number;
     telemetryCap: number;
     tombstoneMergeMinRun: number;
+}
+/**
+ * 手动区间压缩（图时代的极大连续段选择）额外需要的守卫刻度。2.0 factor-only 引擎
+ * 不再提供这些字段（它只剪 R、不按区间剪），故单列接口——活路径 pruneIntervals
+ * 只要求 PruneTxHost，不再被死路径的必填字段绑架。
+ */
+export interface ManualRangeHost extends PruneTxHost {
     recencyGuard: number;
     turnGuard: number;
-    /**
-     * P6 note 施工①（catalog 快照域"进程"升格"压缩事务"）：事务尾取一次 catalog 快照——
-     * 写入 compaction/end 持久（跨进程 resume 回放同值，headless 回合制不再每进程重拍）
-     * + 冻结域刷新（进程内后续请求回放该值）。缺省（undefined）= 不落账不刷新（测试替身免装配）。
-     */
-    catalogDomain?: {
-        snapshot: () => string;
-        freeze: (text: string) => void;
-    };
 }
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
@@ -157,7 +155,7 @@ export declare function compactRegions(host: PruneTxHost, ranges: {
  *  用户消息切成「U A R A R U A R …」多段结构，早停会让手动 /compact 永远只剪最老
  *  一小段，表现为"图剪压不动"），交给一笔 pruneIntervals 事务剪除。
  */
-export declare function selectManualRanges(host: PruneTxHost, session: Session): {
+export declare function selectManualRanges(host: ManualRangeHost, session: Session): {
     start: number;
     end: number;
 }[];

@@ -93,11 +93,22 @@ export interface FactorDecision {
 /** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
 export declare const VOCAB_NOTE_MARKER = "[argp-factor \u8BCD\u8868]";
 export declare class FactorEngine {
-    readonly ledger: FactorLedger;
+    /**
+     * 被剪账本**按会话分桶**：账本键是 rootSeq（会话内 seq），引擎却是宿主进程级单例。
+     * 共享一份 = A 会话的 seq 被 B 会话的 recall_history 取到 B 的无关事件（静默串台），
+     * 且 addPruned 的 rootSeq 去重会让第二个会话的同 seq 条目被丢弃。
+     * `ledger` 兼容读 = 最近一次被 observe/decide/vocabulary 触达的桶（单会话测试/诊断）。
+     */
+    private readonly ledgers;
+    private lastLedger;
     private states;
     private readonly host;
     private readonly cfg;
     constructor(host: FactorEngineHost, config?: FactorEngineConfig);
+    /** 会话账本（懒建；见 ledgers 字段注释）。public：召回工具按执行会话取桶。 */
+    ledgerOf(session: Session): FactorLedger;
+    /** 兼容读：最近一次被 observe/decide/vocabulary 触达的会话账本（诊断/单会话测试）。 */
+    get ledger(): FactorLedger;
     private stateOf;
     /**
      * 观察路（sticky 通道 + 被剪账本 + 在线文件快照）。幂等：ledger rootSeq 去重。
@@ -119,7 +130,9 @@ export declare class FactorEngine {
     /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
      *  tagRsFromLog 的桩排除判据（夹剪文本同带此前缀，同受排除）——单点引用，改文案不得动前缀。 */
     private stubText;
-    /** 实体标签选择序：document → command → errorcode（stubText 与 clip 首行共用）。 */
+    /** 实体标签选择序：document → command → errorcode → scope（stubText 与 clip 首行共用）。
+     *  scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R 被标
+     *  "无实体标签"，而模型其实可以 recall_history(scope:…)。 */
     private stubKey;
     /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;

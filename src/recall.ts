@@ -35,6 +35,7 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
     st.shadowedSession = session
     st.shadowedSet = new Set()
     st.shadowedScanned = 0
+    st.shadowedPending = null
   }
   for (let index = st.shadowedScanned; index < session.seq; index += 1) {
     const event = sessionEvents(session)[index]
@@ -49,11 +50,18 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
     //      system 前缀逐轮变、跨轮缓存全断（60 轮 A 臂实证）。
     // 只读 compaction/prune.shadowedSeqs 后，per-atom 原地压缩天然不在账本内，根因消除；
     // 且不再把 compaction/start、compaction/prune 这两个 off-surface 事务 seq 误收进集合。
+    if (event.type === 'compaction/start') { st.shadowedPending = []; continue }
     if (event.type === 'compaction/prune') {
       const shadowed = (event.data as { shadowedSeqs?: number[] }).shadowedSeqs
-      if (Array.isArray(shadowed)) {
-        for (const seq of shadowed) st.shadowedSet.add(seq)
-      }
+      if (!Array.isArray(shadowed)) continue
+      if (st.shadowedPending === null) for (const seq of shadowed) st.shadowedSet.add(seq)
+      else st.shadowedPending.push(...shadowed)
+      continue
+    }
+    if (event.type === 'compaction/end' && st.shadowedPending !== null) {
+      const errored = (event.data as { error?: unknown }).error !== undefined
+      if (!errored) for (const seq of st.shadowedPending) st.shadowedSet.add(seq)
+      st.shadowedPending = null
     }
   }
   st.shadowedScanned = session.seq

@@ -83,6 +83,8 @@ export declare function consolidatedTombstone(count: number, start: number, end:
  * 非可并族（无 recall_pruned 指引）——罕见的协议残渣节点，不值得为它们扩可并文法。
  */
 export declare function factorAssistantTombstone(seq: number): string;
+/** factor 指针墓碑（A 半截/孤儿 R）：不带取回工具名——2.0 只有标签召回，A 无标签。 */
+export declare function isFactorTombstoneText(text: string): boolean;
 /**
  * `CompactionResult.summary` 里的 tool 墓碑渲染文本。
  *

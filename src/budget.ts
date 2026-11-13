@@ -95,12 +95,11 @@ export interface BudgetHost {
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
   windowRatio: number
   retainRatio: number
-  /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens 落到**调用方会话**的桶——
-   *  await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段重赋值会写错桶。 */
-  stateOf: (session: Session) => { resolvedWindowTokens: number }
+  /** 会话分桶访问（D2，beta.1 评审）：resolvedWindowTokens / usage 锚点都落到
+   *  **调用方会话**的桶——await 探测窗口内焦点桶可能已被其他会话换装，经 host 字段
+   *  读/写会串台（/argp 曾用焦点锚点测非焦点会话）。 */
+  stateOf: (session: Session) => { resolvedWindowTokens: number; lastRealAnchorSeq: number; lastRealPromptTokens: number }
   charsPerToken: number
-  lastRealAnchorSeq: number
-  lastRealPromptTokens: number
   tokenMeter: TokenMeter | undefined
   tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   ctx: Context
@@ -168,6 +167,12 @@ export async function resolveScaledBudgets(
   // 7×+，形同禁用。显式配置 windowTokens 的场景不依赖声明值，不受影响。
   const declaredKnown = explicitWindow !== undefined
     || (contextWindow !== undefined && contextWindow > 0)
+  // 解析出的声明窗回填会话缓存：散文输出预算 / 出口闸 / 日志都读同一个 WeakMap。
+  // 只靠活 request/context 写入会在 resolveModelInfo / requestContext 路径上留空档
+  // （小窗模型拿到 20480 常数输出预算）。
+  if (contextWindow !== undefined && contextWindow > 0) {
+    host.declaredContextWindows.set(agent.session, contextWindow)
+  }
   if (!declaredKnown) {
     host.log.info('[argp-graph] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
   }
@@ -194,19 +199,19 @@ export async function resolveScaledBudgets(
  */
 export function measureTokens(host: BudgetHost, session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
   const surfaceTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
-  if (host.lastRealAnchorSeq >= 0 && host.lastRealPromptTokens > 0) {
-    // 真实锚点（上轮 provider usage）只覆盖锚点 seq 之前的内容；其后 surface 新增
-    // 节点（user/assistant/tool 事件）按字符估算增量。增量通常远小于全量，估算偏差
-    // 只作用于增量 → 总误差从 ±30% 降到几个百分点。已知局限（均为保守或单步窗口）：
-    // ① peratom 替换旧节点（seq ≤ 锚点）减量不计 → 高估 → 剪早（保守方向）；
-    // ② 压缩换代后锚点重置为纯 surface 估算（不含 system+tools）→ 低估一个 step，
-    //    下一次 assistant/message usage 回到精确锚定。
+  const st = host.stateOf(session)
+  if (st.lastRealAnchorSeq >= 0 && st.lastRealPromptTokens > 0) {
+    // 真实锚点（上轮 provider usage）覆盖的是**锚点事件之前**的 prompt；锚点事件
+    // 本身（assistant/message）属于下一请求，必须计入增量——故比较用 `>=`。
+    // 增量通常远小于全量，估算偏差只作用于增量 → 总误差从 ±30% 降到几个百分点。
+    // 已知局限（保守或单步窗口）：压缩换代后锚点重置为纯 surface 估算（不含
+    // system+tools）→ 低估一个 step，下一次 assistant/message usage 回到精确锚定。
     let deltaChars = 0
     for (const seq of session.surface.nodes) {
-      if (seq > host.lastRealAnchorSeq) deltaChars += eventText(session, seq).length
+      if (seq >= st.lastRealAnchorSeq) deltaChars += eventText(session, seq).length
     }
     const deltaTokens = Math.ceil(deltaChars / host.charsPerToken)
-    return { contextTokens: host.lastRealPromptTokens + deltaTokens + extraTokens, surfaceTokens, source: 'anchored' }
+    return { contextTokens: st.lastRealPromptTokens + deltaTokens + extraTokens, surfaceTokens, source: 'anchored' }
   }
   if (host.tokenMeter !== undefined) {
     try {

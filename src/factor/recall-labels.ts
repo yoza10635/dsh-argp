@@ -20,7 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionRuntimeState } from '../session-state.ts'
-import { nodeStateOf, rawEventText } from '../log-access.ts'
+import { nodeStateOf, rawEventText, sessionEvents } from '../log-access.ts'
 import { pushBounded } from '../telemetry.ts'
 import { VOCAB_FACETS, facetOfKey, type VocabFacet } from './factor-ledger.ts'
 import type { FactorEngine } from './engine.ts'
@@ -57,6 +57,30 @@ function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | nul
  */
 const RECALL_CALLS_PER_TURN_LIMIT = 20
 
+/** 当前轮号（日志尾向前找最近 turn/start；找不到 = 0）——与事件投递无关，headless 同径。 */
+function currentTurnOf(session: Session): number {
+  const events = sessionEvents(session)
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const e = events[i]
+    if (e === undefined || e.type !== 'turn/start') continue
+    const t = (e.data as { turn?: unknown } | undefined)?.turn
+    return typeof t === 'number' ? t : 0
+  }
+  return 0
+}
+
+/** per-turn 安全阀（两工具共用）：轮变归零 → 判上限 → 计数。返回 true = 已拒绝。 */
+function recallCallBlocked(st: SessionRuntimeState, session: Session): boolean {
+  const turn = currentTurnOf(session)
+  if (st.recallTurn !== turn) {
+    st.recallTurn = turn
+    st.recallCallsThisTurn = 0
+  }
+  if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) return true
+  st.recallCallsThisTurn += 1
+  return false
+}
+
 /** 裸标签（无 facet 前缀）的展开候选——查询向宽容，词表向 fail-closed 不冲突：
  *  出口渲染拦的是**进 prompt 的键**，这里放行的是**模型抄错形态的查询**。 */
 const FACET_PREFIXES = ['document:', 'command:', 'errorcode:', 'scope:'] as const
@@ -91,12 +115,11 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
       const session = resolveSession(exec)
       if (session === null) return 'recall_history: no session bound (multi-session host: recall requires agent context; single-session hosts bind implicitly)'
       const st = host.stateOf(session)
-      if (st.recallCallsThisTurn >= RECALL_CALLS_PER_TURN_LIMIT) {
+      if (recallCallBlocked(st, session)) {
         return 'recall_history: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
           + ' calls). This is a loop guard, not a content limit — retrieved text is capped by a separate '
           + 'character budget. Intersect more labels to get several items per call, or retry next turn.'
       }
-      st.recallCallsThisTurn += 1
       const a = (args ?? {}) as { labels?: string[]; limit?: number; cursor?: number; epoch?: number }
       const wanted = [...new Set((Array.isArray(a.labels) ? a.labels : [])
         .map(l => (typeof l === 'string' ? l.trim() : '')).filter(l => l !== ''))]
@@ -105,7 +128,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE>); '
           + 'call list_labels to see the full pruned vocabulary.'
       }
-      const ledger = factor.ledger
+      const ledger = factor.ledgerOf(session)
       const keys = new Set<string>()
       const unknown: string[] = []
       for (const w of wanted) {
@@ -153,10 +176,12 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         }
         lines.push(tag + (raw.reconstructed ? ' [reconstructed: ' + (raw.note ?? '') + ']' : '') + '\n' + raw.text)
       }
-      if (q.nextCursor !== null) {
-        lines.push('[more matches: call recall_history again with cursor=' + q.nextCursor + ' epoch=' + q.epoch + ']')
-      }
-      return host.budgetRecallText(session, lines.join('\n'))
+      // 续读提示**不随正文一起被预算截断**（budgetRecallText 从头部截）：正文单独过
+      // 预算，footer 最后拼；否则预算紧时唯一的分页手段先被吃掉。
+      const footer = q.nextCursor !== null
+        ? '\n[more matches: call recall_history again with cursor=' + q.nextCursor + ' epoch=' + q.epoch + ']'
+        : ''
+      return host.budgetRecallText(session, lines.join('\n')) + footer
     },
   })
   ctx.tools.register(recallHistoryTool)
@@ -175,6 +200,13 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
     execute: async (args, exec): Promise<string> => {
       const session = resolveSession(exec)
       if (session === null) return 'list_labels: no session bound (multi-session host: recall requires agent context)'
+      const st = host.stateOf(session)
+      // 与 recall_history 共用**同一** per-turn 安全阀（文件头契约：两工具共享上限；
+      // 否则字符预算耗尽后 list_labels 可无限空转）。
+      if (recallCallBlocked(st, session)) {
+        return 'list_labels: per-turn call limit reached (' + RECALL_CALLS_PER_TURN_LIMIT
+          + ' calls, shared with recall_history). This is a loop guard, not a content limit; retry next turn.'
+      }
       const a = (args ?? {}) as { category?: string; limit?: number }
       let cats: readonly VocabFacet[]
       if (a.category !== undefined && a.category.trim() !== '') {
@@ -185,7 +217,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         cats = [c]
       } else cats = VOCAB_FACETS
       const limit = Math.max(1, Math.min(200, a.limit ?? 30))
-      const ledger = factor.ledger
+      const ledger = factor.ledgerOf(session)
       const lines: string[] = ['list_labels: vocabulary of the pruned ledger (' + ledger.prunedCount + ' pruned item(s))']
       let rejected = 0
       for (const facet of cats) {

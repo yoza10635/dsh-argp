@@ -37,7 +37,11 @@ export interface RTagInput {
     tool: string;
     resultText: string;
     tags: RTags;
+    /** R 内含 image/file 块（含 tool-result 嵌套 content）：文本桩会丢附件 ⇒ 硬保护。 */
+    hasAttachment?: boolean;
 }
+/** 事件 data 内是否有附件块（image/file，递归 tool-result 的嵌套 content）。 */
+export declare function hasAttachmentBlocks(data: unknown): boolean;
 /** 桩 R 文本前缀（engine.stubText 产出）：日志驱动贴标的排除判据。 */
 export declare const STUB_PREFIX = "[\u5DF2\u526A\u00B7\u56E0\u5B50]";
 /**

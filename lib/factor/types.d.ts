@@ -20,6 +20,9 @@ export interface RTags {
     errorcodes: string[];
     /** 错误信号（exit≠0 / 错误词 / ALL_CAPS 码 / 注入的 isError）。 */
     errorish: boolean;
+    /** 结构化失败（宿主 isError）：read 覆盖证明的排除判据。errorish 是文本信号（日志内容
+     *  里的 ENOENT 也会置真），不能当"这次读失败"用。 */
+    failed?: boolean;
     /** write 家族成功候选（sticky"修复宣称"原料；errorish 的 write 由调用方按语义排除）。 */
     writeish: boolean;
     /** 本事件在场 cwd（bash cwd/dir 参数）。 */

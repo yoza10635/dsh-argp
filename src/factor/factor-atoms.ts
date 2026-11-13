@@ -114,6 +114,24 @@ export interface RTagInput {
   tool: string
   resultText: string
   tags: RTags
+  /** R 内含 image/file 块（含 tool-result 嵌套 content）：文本桩会丢附件 ⇒ 硬保护。 */
+  hasAttachment?: boolean
+}
+
+/** 事件 data 内是否有附件块（image/file，递归 tool-result 的嵌套 content）。 */
+export function hasAttachmentBlocks(data: unknown): boolean {
+  const scan = (blocks: unknown): boolean => {
+    if (!Array.isArray(blocks)) return false
+    for (const b of blocks) {
+      if (b === null || typeof b !== 'object') continue
+      const o = b as { type?: unknown; content?: unknown }
+      if (o.type === 'image' || o.type === 'file') return true
+      if (scan(o.content)) return true
+    }
+    return false
+  }
+  const d = data as { content?: unknown; message?: { content?: unknown } } | undefined
+  return scan(d?.content) || scan(d?.message?.content)
 }
 
 /** 桩 R 文本前缀（engine.stubText 产出）：日志驱动贴标的排除判据。 */
@@ -159,7 +177,7 @@ export function tagRsFromLog(
     out.set(e.seq, {
       seq: e.seq, turn: typeof turnRaw === 'number' ? turnRaw : 0,
       callId: typeof callId === 'string' ? callId : undefined,
-      tool: call?.name ?? '', resultText, tags,
+      tool: call?.name ?? '', resultText, tags, hasAttachment: hasAttachmentBlocks(e.data),
     })
   }
   return out
@@ -239,6 +257,10 @@ export function supersededMarks(tagsBySeq: ReadonlyMap<number, RTagInput>): Map<
     .sort((a, b) => a.seq - b.seq)
   const out = new Map<number, boolean>()
   for (const old of reads) {
+    // 读**失败**（结构化 isError）的 R 不产生可用内容：它的"被覆盖"没有意义，若标
+    // superseded，排序会当"已有新版"先剪——丢的是唯一的错误现场。注意不能用 errorish：
+    // 成功读取的日志内容里出现 ENOENT 也会置真（本测试集 c1 即此形态）。
+    if (old.tags.failed === true) continue
     let covered = false
     for (const next of reads) {
       if (next.seq <= old.seq || next.tags.errorish) continue

@@ -25,11 +25,32 @@
 - **构建**：`npm run build` 先清空 `lib/` 再编译（防止退役模块的陈旧产物随包分发）。
 - **bundle patch**：`insert` 行去掉 `maxPasses`/`recencyGuard`（graph 时代旋钮）。
 
+### Fixed（2026-11-13 整体逻辑审查，13 条变异锁）
+
+- **召回安全阀退化为整会话永久闸**：`recallCallsThisTurn` 自 turn/start 归零分支被删后再无归零，20 次后 `recall_history` 永久拒绝；改为按日志轮号自同步归零（两工具共享），headless 同径。
+- **被剪账本跨会话串台**（P0）：`FactorLedger` 是引擎单例而键是会话内 seq——A 的标签在 B 会话取到 B 的无关事件；改为 `ledgerOf(session)` 按会话分桶（`ledger` getter 仅诊断/单会话测试兼容）。
+- **焦点重绑重放账目**：`bindSession` 清 `rebuiltCompactionIds` 导致 A→B→A 后 records 重复追加；去掉 clear（per-session 桶已结构性隔离）。
+- **事务后锚点被旧 usage 复活**：切回会话时 `restoreUsageAnchor` 用日志里压缩前的 usage 覆盖事务后估算 ⇒ 出口闸误判、整段重剪；内存桶已有锚点即早退。
+- **measureTokens 漏掉锚点事件本身**（assistant 消息属于下一请求）：增量比较改 `>=`；事务后锚点取 `session.seq` 而非末尾 surface 节点（防检查点被二次计入）。
+- **skipPresets 不覆盖 pre-step 通道**：出口闸/浓缩闸二/压力逃生口在钩子内直调事务，minimal preset 仍会被浓缩改写；钩子最先统一退场。
+- **空转也刷新词表 note**：note 的 replace 增长 `replaceGeneration`，被 400 恢复误判"已减量"而重发超窗请求；只在真有事务时刷新。
+- **散文闸一分母错误**：用缩放后触发线（0.8W）当分母，50% 线实际降到 40% 声明窗；改用声明窗。
+- **散文 span 跨非原子表面节点**：`sourceEventSeqs` 缺 system/message 等节点，宿主 replace 直接 throw（LLM 已付费）；非原子节点改为硬洞。
+- **散文 partial-only 白付 LLM + 指针指向退役工具**：仅散点时不再调用 LLM（指针不可召回，保原文）；`seqRangePointer` 去 `recall_pruned`，改 factor 指针族。
+- **factor 指针墓碑不可吞**：中断轮墓碑（无 recall_pruned）永久卡住清扫式浓缩；新增 `isFactorTombstoneText` 并入可吞/原文展开集合。
+- **clip 文案指向退役工具**（`recall_pruned`）：有标签改 `recall_history(label)`，无标签如实说明"不可按标签召回"（CL8 变异锁）。
+- **staleness 误判**：end_line 被当 limit（10..20 读成 [10,30)）；读失败（结构化 isError）不再充当覆盖证据；cwd 改从 `session.header` 取（宿主 header 不进事件日志，相对路径标签不再退化成 `rel:`）。
+- **文本+附件混合 R 被文本桩吞**：附件判据递归 tool-result 嵌套 content，混合 R 硬保护（散文 probe 同源）。
+- **error-end 事务的 prune 声称入 shadowed 账**：replace 中途抛错后 live 节点被谎报已剪、永久跳过；`scanShadowedSeqs` 与增量账本改为事务感知（成功 end 才入账）。
+- **/argp 口径**：retain 改回 `trigger×retainRatio`（不再用 visible×ratio）；measureTokens 改读**命令会话**的锚点桶（不再串焦点会话）。
+- **epoch 漂移游标未归零**：说"re-sorted from scratch"却按旧 offset 切新排序；漂移时从 0 开始（负/越界游标夹取）。
+- **list_labels 白嫖安全阀**：与 recall_history 共用 per-turn 上限；续读 footer 不再被预算截断吃掉。
+
 ### Removed
 
 - **Stage-1 三管线**：`peratom/compressor|cite-declarer|recall-zoom|gate|mount|flush|prompt|collect|compressor-types|decision|split`（保留 `peratom/llm-adapter` 与 `peratom/types`）。
 - **Stage-2 图剪**：`prune-selection`、`token-ontology`、`recall-tools`；`graph-build` 裁到 `atomize`/`classifyUserMessage`/`looksAskText`/`extractCites`；`recall` 裁到 `shadowedSeqsOf`/`budgetRecallText`。
-- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 223 测（221 过 / 0 败 / 2 skip）。
+- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 236 测（234 过 / 0 败 / 2 skip）。
 - **1.x 实验脚本**移入 `spike/retired-1x/`（33–44、47）与 `scripts/retired-1x/`（不参与编译）。
 
 ### 读侧兼容（保留）

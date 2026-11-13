@@ -109,7 +109,7 @@ recall: 12 calls · 9 hits (75%)
 ## 验证
 
 - **T24-J R1（2026-11-13，四臂 × 46 轮，1M 窗）**：四臂全完赛；双连压序（因子剪 → 散文浓缩）下进场散文 53–96% 全部过线；成本干净窗 cand 臂 +41%，归因于该基准的域语料（工具面占比 13.5%），真实域语料工具面 86.5%——**2.0-alpha 就绪后重跑 vs 1.11.2 / 原生摘要的对比**（R2 修复世界的对照在旧世界污染后作废）。
-- **回归**：`npm run check` = typecheck + typecheck:spike + smoke + 单测（223 测，221 过 / 0 败 / 2 skip）+ build；出口闸 EG-1…13b 含冷 resume 回填锁。
+- **回归**：`npm run check` = typecheck + typecheck:spike + smoke + 单测（236 测，234 过 / 0 败 / 2 skip）+ build；出口闸 EG-1…13b 含冷 resume 回填锁。
 - 历史 1.x 图引擎的实测（四臂 7/7 探针、50 轮 t-long 等）见 CHANGELOG 与 git 历史；它们**不是 2.0 的数字**，不可直接引用。
 
 ## 已知限制
@@ -123,7 +123,7 @@ recall: 12 calls · 9 hits (75%)
 
 | 实验 | 命令 | 验证内容 |
 |---|---|---|
-| 全量门 | `npm run check` | typecheck / spike 类型 / smoke / 223 测 / 构建 |
+| 全量门 | `npm run check` | typecheck / spike 类型 / smoke / 236 测 / 构建 |
 | 出口闸单测 | `npm run test -- --test-name-pattern=EG-` | 三源预算、冷 resume、hatch 互斥 |
 | 语料回放 | `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts` | 离线重放（语料目录缺失时优雅跳过） |
 

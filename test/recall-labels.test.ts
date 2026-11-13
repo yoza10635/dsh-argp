@@ -61,7 +61,7 @@ function makeSession(id: string): Session {
 interface EngineInternals {
   factor: FactorEngine | null
   bindSession(session: Session): void
-  stateOf(session: Session): { recallCallsThisTurn: number; resolvedWindowTokens: number }
+  stateOf(session: Session): { recallCallsThisTurn: number; recallTurn: number; resolvedWindowTokens: number }
 }
 
 async function boot(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals }> {
@@ -192,6 +192,7 @@ test('分页续读：limit=1 → cursor/epoch 提示；翻页取次新；epoch �
     args: { labels: ['command:npm'], limit: 1, cursor: Number(m?.[1]), epoch: Number(m?.[2]) + 999 },
   }))
   assert.ok(stale.includes('epoch changed'), 'epoch 漂移必须告警重排（ML2）')
+  assert.ok(stale.includes('turn=2'), '漂移后必须真的从头分页（旧 cursor=1 会跳过最新行，ML2b）')
 })
 
 test('list_labels：词表下钻（键×数量）；未知类别严拒；空 facet 如实', async () => {
@@ -219,11 +220,15 @@ test('每轮防循环安全阀双臂同阀；预算截断与耗尽显式（budge
   prunedReadPair(session, factor)
   const st = internals.stateOf(session)
   st.recallCallsThisTurn = 20
+  st.recallTurn = 0
   const guard = toolText(await execTool(ctx, {
     name: 'recall_history', callId: 'q1', agentSession: session, args: { labels: ['document:c:/proj/a.ts'] },
   }))
   assert.ok(guard.includes('per-turn call limit'), '安全阀复用 recall-tools 单点')
+  const labelsGuard = toolText(await execTool(ctx, { name: 'list_labels', callId: 'lg', agentSession: session, args: {} }))
+  assert.ok(labelsGuard.includes('per-turn call limit'), 'list_labels 共用同一 per-turn 安全阀（不白嫖）')
   st.recallCallsThisTurn = 0
+  st.recallTurn = 0
   st.resolvedWindowTokens = 8 // 极小窗口：5% 单次 ≈ 1 字符
   let sawTruncated = false
   let sawExhausted = false

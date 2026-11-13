@@ -109,7 +109,7 @@ recall: 12 calls · 9 hits (75%)
 ## Verification
 
 - **T24-J R1 (2026-11-13, four arms × 46 turns, 1M window)**: all four arms finished; with the double-compaction order (factor prune → prose condense) 53–96% of entering prose was condensed, all over the line; the clean-window cost of the cand arm was +41%, attributed to that benchmark's domain corpus (tool surface 13.5%) — the real-domain corpus has an 86.5% tool surface. **The 2.0-alpha comparison vs 1.11.2 / native summarizer runs once alpha is ready** (the R2 fixed-world comparison was invalidated by the contaminated old-world run).
-- **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (223 tests, 221 pass / 0 fail / 2 skipped) + build; egress tests EG-1…13b include the cold-resume backfill lock.
+- **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (236 tests, 234 pass / 0 fail / 2 skipped) + build; egress tests EG-1…13b include the cold-resume backfill lock.
 - Historical 1.x graph-engine measurements (four-arm 7/7 probes, 50-turn t-long, etc.) are in the CHANGELOG and git history; they are **not 2.0 numbers** and must not be quoted as such.
 
 ## Known limits
@@ -123,7 +123,7 @@ recall: 12 calls · 9 hits (75%)
 
 | Experiment | Command | What it verifies |
 |---|---|---|
-| Full gate | `npm run check` | typecheck / spike types / smoke / 223 tests / build |
+| Full gate | `npm run check` | typecheck / spike types / smoke / 236 tests / build |
 | Egress unit tests | `npm run test -- --test-name-pattern=EG-` | three-source budget, cold resume, hatch exclusivity |
 | Corpus replay | `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts` | offline replay (skips gracefully when the corpus dir is absent) |
 

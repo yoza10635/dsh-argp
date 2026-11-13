@@ -20,7 +20,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { detectOpenTurn, rawEventText, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
+import { detectOpenTurn, eventText, rawEventText, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
 import { FOCAL_DOC_HARD_WIDTH_RATIO } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
@@ -148,7 +148,14 @@ interface SessionFactorState {
 export const VOCAB_NOTE_MARKER = '[argp-factor 词表]'
 
 export class FactorEngine {
-  readonly ledger = new FactorLedger()
+  /**
+   * 被剪账本**按会话分桶**：账本键是 rootSeq（会话内 seq），引擎却是宿主进程级单例。
+   * 共享一份 = A 会话的 seq 被 B 会话的 recall_history 取到 B 的无关事件（静默串台），
+   * 且 addPruned 的 rootSeq 去重会让第二个会话的同 seq 条目被丢弃。
+   * `ledger` 兼容读 = 最近一次被 observe/decide/vocabulary 触达的桶（单会话测试/诊断）。
+   */
+  private readonly ledgers = new WeakMap<Session, FactorLedger>()
+  private lastLedger: FactorLedger = new FactorLedger()
   private states = new WeakMap<Session, SessionFactorState>()
   private readonly host: FactorEngineHost
   private readonly cfg: {
@@ -175,6 +182,22 @@ export class FactorEngine {
     }
   }
 
+  /** 会话账本（懒建；见 ledgers 字段注释）。public：召回工具按执行会话取桶。 */
+  ledgerOf(session: Session): FactorLedger {
+    let l = this.ledgers.get(session)
+    if (l === undefined) {
+      l = new FactorLedger()
+      this.ledgers.set(session, l)
+    }
+    this.lastLedger = l
+    return l
+  }
+
+  /** 兼容读：最近一次被 observe/decide/vocabulary 触达的会话账本（诊断/单会话测试）。 */
+  get ledger(): FactorLedger {
+    return this.lastLedger
+  }
+
   private stateOf(session: Session): SessionFactorState {
     let st = this.states.get(session)
     if (st === undefined) {
@@ -189,8 +212,12 @@ export class FactorEngine {
    */
   private observe(session: Session): { atoms: Atom[]; tagsBySeq: Map<number, RTagInput>; cwd: string | undefined } {
     const events = sessionEvents(session) as unknown as EventLike[]
+    const ledger = this.ledgerOf(session)
     const atoms = this.host.atomize(session)
-    const cwd = sessionCwdFromEvents(events)
+    // 宿主 0.1.5+ 的 cwd 在 Session.header（creation metadata，**不进事件日志**）；
+    // 旧日志兜底扫 session 事件。取不到就保持 undefined（绝不拿当前进程 cwd 凑）。
+    const cwd = (session as unknown as { header?: { cwd?: string } }).header?.cwd
+      ?? sessionCwdFromEvents(events)
     const st = this.stateOf(session)
     const first = st.observedUpToSeq === -1
     // 日志根事件驱动（resume 正解）：被剪 R 的原事件已离场 surface，只有遍历日志
@@ -198,8 +225,8 @@ export class FactorEngine {
     const tagsBySeq = tagRsFromLog(events, cwd, seq => resolveRootSeqs(events, seq))
     const shadowed = scanShadowedSeqs(session)
     for (const [seq, input] of tagsBySeq) {
-      this.ledger.observeR(seq, input.turn, input.tags)
-      if (shadowed.has(seq)) this.ledger.addPruned({ rootSeq: seq, turn: input.turn, tags: input.tags })
+      ledger.observeR(seq, input.turn, input.tags)
+      if (shadowed.has(seq)) ledger.addPruned({ rootSeq: seq, turn: input.turn, tags: input.tags })
     }
     // 在线快照采样：仅首观察且非重放批的 R
     if (this.host.fileSnapshot !== undefined) {
@@ -216,7 +243,7 @@ export class FactorEngine {
     }
     const tailSeq = events.length > 0 ? (events[events.length - 1]?.seq ?? st.observedUpToSeq) : st.observedUpToSeq
     st.observedUpToSeq = Math.max(st.observedUpToSeq, tailSeq)
-    this.ledger.sweepClosed(atoms.reduce((m, a) => Math.max(m, a.turn), 0), this.cfg.stickyWindowTurns)
+    ledger.sweepClosed(atoms.reduce((m, a) => Math.max(m, a.turn), 0), this.cfg.stickyWindowTurns)
     return { atoms, tagsBySeq, cwd }
   }
 
@@ -243,7 +270,7 @@ export class FactorEngine {
     }
     const superseded = supersededMarks(tagsBySeq)
     const st = this.stateOf(session)
-    const sticky = this.ledger.stickyActive()
+    const sticky = this.ledgerOf(session).stickyActive()
     const candidates = new Map<number, RTagInput>()
     // 第一段：逐候选收集事实（tiered 的熔断要全局占比，hard 判定必须二段化）
     interface Fact { seq: number; turn: number; input: RTagInput; inOpenTurn: boolean; regenerable?: boolean; stickyMember: boolean; focalMatch: boolean; focalDocHit: string[]; mediumHit: boolean; isRecall: boolean }
@@ -356,7 +383,8 @@ export class FactorEngine {
             failureNoFollowR: f.inOpenTurn,
             // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
             stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
-            attachment: f.input.resultText.length === 0,
+            // 附件保护：空文本（纯附件 R）或文本+附件混合——文本桩会把 image/file 一起丢。
+            attachment: f.input.resultText.length === 0 || f.input.hasAttachment === true,
             // flat：现行为；tiered：焦点 hard 只认 document facet（v1.2 裸码降出），
             // 且经 focalDocStrong 连可再生枚一并保住。
             focalNonRegenerable: !tiered && f.focalMatch && f.regenerable !== true,
@@ -489,11 +517,15 @@ export class FactorEngine {
         const atom = atomsBySeq.get(seq)
         const input = tagsBySeq.get(seq)
         if (atom !== undefined && input !== undefined) {
-          this.ledger.addPruned({ rootSeq: seq, turn: atom.turn, tags: input.tags })
+          this.ledgerOf(session).addPruned({ rootSeq: seq, turn: atom.turn, tags: input.tags })
         }
       }
       this.host.log.info('[argp-factor] 剪 ' + intervals.length + ' R / ' + plan.releasedChars
         + ' chars（夹剪 ' + clipEmitted + '）；sticky 活跃 ' + decision.stickyActive + '；焦点标签 ' + decision.focalSize)
+      if (plan.shortfallChars > 0) {
+        this.host.log.warn('[argp-factor] 目标未达：缺口 ' + plan.shortfallChars
+          + ' chars（已剪 ' + intervals.length + ' 区间，硬保护成员未入区；少剪并上报，不放宽判据）')
+      }
     }
     return result
   }
@@ -524,18 +556,21 @@ export class FactorEngine {
       : head + ' → ' + key + '（需要原文时 recall_history(' + key + ')）'
   }
 
-  /** 实体标签选择序：document → command → errorcode（stubText 与 clip 首行共用）。 */
+  /** 实体标签选择序：document → command → errorcode → scope（stubText 与 clip 首行共用）。
+   *  scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R 被标
+   *  "无实体标签"，而模型其实可以 recall_history(scope:…)。 */
   private stubKey(input: RTagInput): string | undefined {
     return input.tags.files[0] !== undefined ? 'document:' + input.tags.files[0]
       : input.tags.commands[0]
-        ?? (input.tags.errorcodes[0] !== undefined ? 'errorcode:' + input.tags.errorcodes[0] : undefined)
+        ?? (input.tags.errorcodes[0] !== undefined ? 'errorcode:' + input.tags.errorcodes[0]
+          : (input.tags.scopes[0] !== undefined ? 'scope:' + input.tags.scopes[0] : undefined))
   }
 
   /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
   vocabulary(session: Session): RenderVocabularyResult {
     this.observe(session)
     return renderVocabulary({
-      ledger: this.ledger,
+      ledger: this.ledgerOf(session),
       topNPerFacet: this.cfg.vocabTopN(),
       budgetChars: this.cfg.vocabBudgetChars,
     })
@@ -558,11 +593,14 @@ export class FactorEngine {
     const { text } = this.vocabulary(session)
     if (text === '') return
     const st = this.stateOf(session)
+    const ledger = this.ledgerOf(session)
     if (st.vocabNoteSeq === null) {
       const found = lastVocabNoteSeq(sessionEvents(session) as unknown as EventLike[])
       if (found !== null) {
         st.vocabNoteSeq = found
-        st.vocabEpoch = this.ledger.epoch
+        // resume 找回指针 ≠ note 内容是最新：与当前渲染逐字比对，一致才认账本版本；
+        // 否则标脏（-1）让本次刷新重写——盲目认 epoch 会把崩溃前漏刷的剪枝当成已渲染。
+        st.vocabEpoch = eventText(session, found) === VOCAB_NOTE_MARKER + '\n' + text ? ledger.epoch : -1
       }
     }
     if (st.vocabNoteSeq === null) {
@@ -575,11 +613,10 @@ export class FactorEngine {
         return
       }
       st.vocabNoteSeq = seq
-      st.vocabEpoch = this.ledger.epoch
+      st.vocabEpoch = ledger.epoch
       return
     }
-    if (st.vocabEpoch === this.ledger.epoch) return
-    st.vocabEpoch = this.ledger.epoch
+    if (st.vocabEpoch === ledger.epoch) return
     const note = VOCAB_NOTE_MARKER + '\n' + text
     // 裸 replace（无相邻 compaction/prune 配对）合法的前提 = 此刻无 armed claim：
     // token-meter 投影只在 claim 悬着且范围不符时 throw（"no adjacent shadow price"），
@@ -592,6 +629,8 @@ export class FactorEngine {
       surfaceOp: { op: 'replace', startSeq: st.vocabNoteSeq as never, endSeq: st.vocabNoteSeq as never },
       sourceEventSeqs: [st.vocabNoteSeq as never],
     })
+    // 落盘成功才认版本：append 抛错时 epoch 不变，下个压缩时机自然重试（否则永久 stale）。
+    st.vocabEpoch = ledger.epoch
   }
 }
 

@@ -56,6 +56,8 @@ export interface SessionRuntimeState {
   prunedNodeIndex: Map<number, PrunedNodeInfo>
   /** 每轮召回调用计数（防循环安全阀）。 */
   recallCallsThisTurn: number
+  /** 计数对应的 turn/start 轮号（-1=尚未同步；轮变即归零，不依赖事件投递）。 */
+  recallTurn: number
   /** 召回字符预算（单窗累计，压缩事务成功时归零——prune-tx）。 */
   recallCharsUsed: number
   /** 最近一次请求的真实 prompt token（provider usage 锚点）。 */
@@ -76,6 +78,8 @@ export interface SessionRuntimeState {
   shadowedSession: Session | null
   shadowedSet: Set<number>
   shadowedScanned: number
+  /** 进行中事务的 prune 声称（compaction/start→end 之间；end 成功才入 shadowedSet）。 */
+  shadowedPending: number[] | null
 }
 
 export function createSessionRuntimeState(): SessionRuntimeState {
@@ -85,6 +89,7 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     citeStats: { aAtoms: 0, declared: 0, resolved: 0, ambiguous: 0, failed: 0 },
     prunedNodeIndex: new Map(),
     recallCallsThisTurn: 0,
+    recallTurn: -1,
     recallCharsUsed: 0,
     lastRealPromptTokens: 0,
     lastRealAnchorSeq: -1,
@@ -94,5 +99,6 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     shadowedSession: null,
     shadowedSet: new Set(),
     shadowedScanned: 0,
+    shadowedPending: null,
   }
 }

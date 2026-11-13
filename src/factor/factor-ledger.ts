@@ -241,13 +241,16 @@ export class FactorLedger {
         b.hitLabels.length - a.hitLabels.length
         || b.e.turn - a.e.turn
         || b.seq - a.seq)
-    const start = q.cursor ?? 0
+    const epochStale = q.epoch !== undefined && q.epoch !== this._epoch
+    // 排序已在上面按当前 epoch 重算：epoch 漂移时旧游标的语义已失效（它指向旧排序的
+    // offset），必须从头开始——文案说"re-sorted from scratch"就必须真的从头。
+    const start = epochStale ? 0 : Math.max(0, Math.min(q.cursor ?? 0, sorted.length))
     const page = sorted.slice(start, start + q.limit)
     return {
       rows: page.map(x => ({ rootSeq: x.seq, turn: x.e.turn, hitLabels: x.hitLabels })),
       nextCursor: start + page.length < sorted.length ? start + page.length : null,
       epoch: this._epoch,
-      epochStale: q.epoch !== undefined && q.epoch !== this._epoch,
+      epochStale,
     }
   }
 
