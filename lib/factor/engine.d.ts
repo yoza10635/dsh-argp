@@ -50,6 +50,13 @@ export declare function resolvePressureTriggerEnabled(env?: NodeJS.ProcessEnv): 
  * 生效=构造快照（层切换=策略文档换版，须重挂引擎）。非法值 ⇒ 关（缺省安全）。
  */
 export declare function resolveClipEnabled(env?: NodeJS.ProcessEnv): boolean;
+/**
+ * §9.37 出口闸（缺省**开**；用户裁定 2026-11-13："什么设计都无法接受反复重试再全量
+ * 重灌的成本"——400 撞墙→剪→重灌链根除：必然超窗的请求根本不得发出）。
+ * env ARGP_FACTOR_EGRESS=0 = 关（仅供修前/修后对照臂复现贴墙世界；缺省与非法值=开，
+ * 安全方向）。生效=构造期快照（focalTiered 同款纪律，须重挂引擎）。
+ */
+export declare function resolveEgressEnabled(env?: NodeJS.ProcessEnv): boolean;
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
     fileSnapshot?: (canonicalKey: string) => FileSnapshot | null;

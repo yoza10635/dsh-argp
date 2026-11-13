@@ -324,6 +324,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly prose;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;
+    /** §9.37 出口闸（构造期快照，缺省开；见 resolveEgressEnabled / egressGate）。 */
+    private readonly egressEnabled;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
@@ -491,6 +493,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly reactivePending;
     /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
     private readonly requestMaxTokens;
+    /** §9.37 出口闸·输出预算档③：llm `resolveModelInfo().defaultMaxTokens` 探测缓存
+     *  （请求缺 maxTokens 时 llm 服务在 agent/request 瀑布**之后**注入它——观测档盲区，
+     *  宿主 llm/src/index.ts resolveCallWithInfo 实证）。0 = 已探无（不重探）；缺键 = 未探。 */
+    private readonly modelDefaultMaxTokensCache;
     /** 三级触发 ①②③ 开关与旋钮（cordis 配置，不进 UI 设置页）。 */
     private readonly midTurnPruneEnabled;
     private readonly midTurnTurnGuard;
@@ -759,6 +765,38 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 0.2×声明窗留给摘要输出（输出预算=summaryMaxTokensOut(声明窗)）。
      */
     private condenseGate;
+    /**
+     * §9.37 出口闸（缺省开；ARGP_FACTOR_EGRESS=0 关=仅修前/修后对照臂）——用户裁定
+     * 2026-11-13："什么设计都无法接受反复重试再全量重灌的成本"。P6-④ 把 400 当触发器的
+     * 贴墙账（T24-J R2 实锤）：贴墙轮先发出**必然超窗**的请求（`400 … request (273639
+     * tokens) exceeds the available context size (262144)`——6 笔零 usage 死流恰每笔事务
+     * 轮一发，这串 prefill 在 usage 账里完全隐形）→ 拒收后剪 → 重试再全量重灌；端点窗边
+     * 行为还分叉：有时静默把 max_tokens 钳到 窗−prompt 再打满（T23 out=1,617，marker 丢轮）。
+     * 出口闸 = pre-step 位（上一请求 usage 已锚、下一请求未发）做确定性容量算术：
+     *   anchored 实测（含本步增量估值）≥ 声明窗 − 输出预算 − 提前量 ⇒ 请求根本不发，
+     *   先走标准压缩事务（compactIfNeeded('pressure') factor 分发：R 剪 0-LLM 在前，
+     *   散文浓缩按 §9.36 双闸跟后）再发。剪的目标位是 retain（既有 deficit 口径）而非
+     *   贴线微剪——首笔过线的驱逐深度=窗×(触发线−retain)量级，账（审查 F3）：方向与
+     *   "多留=早一点剪（可召回）"一致。只认 anchored（断锚禁驱动破坏性改写，P6-④
+     *   "只有确定性的才可以"原样保留）。anchored 标签≠真锚：事务后 prune-tx 把锚重置为
+     *   chars 估算仍标 'anchored'（审查 F4）——敞口有界：事务后上下文已回落 retain 位，
+     *   且下一笔成功请求即重锚真 usage；根治=锚 provenance 位（挂后）。
+     * 输出预算三源取 **max**（保守侧：多留早剪，漏留撞墙）：①`agent.options.maxTokens`
+     * ——宿主 buildRequest 正是拿它发请求（agent-loop agent.ts 组装段实证），headless
+     * 每轮新进程时首轮唯一可得；②requestMaxTokens 观测（agent/request 瀑布，本进程
+     * step≥2 才有）；③`llm.resolveModelInfo().defaultMaxTokens`——请求缺 maxTokens 时
+     * llm 服务在瀑布**之后**注入（resolveCallWithInfo 实证），②对它失明、①会被
+     * adapterDefaults 剥除。三源全缺（注册面不可见的端点缺省 mct——R2 实锤
+     * request=prompt+65,536）才退 DEFAULT_EGRESS_OUTPUT_RATIO×声明窗。
+     * 逃生口互斥（审查 F5）：ARGP_FACTOR_PRESSURE=1 的"旧世界字节级复现"契约要求本闸
+     * 不挂（调用点门控）——两 env 各管各的对照世界，不叠乘。
+     * 400 overflow 通路保留为最后兜底（网不拆：声明窗未知/断锚/剪空/线≤0 → 照发，由
+     * overflow 链接管——严格不差于现状）。
+     * @returns true = 本步已发剪事务（调用方把同 step 的浓缩闸顺延，不吃二次重铸）。
+     */
+    private egressGate;
+    /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
+    private modelDefaultMaxTokens;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;

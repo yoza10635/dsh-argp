@@ -76,3 +76,15 @@ export declare const DEFAULT_MAX_PASSES = 10000;
  * 内部常量，不进设置卡（preset/CR 键集锁零新键）。
  */
 export declare const FOCAL_DOC_HARD_WIDTH_RATIO = 0.15;
+/**
+ * §9.37 出口闸：输出预算三档源的最后一档——`agent.options.maxTokens`（装配期声明，
+ * 宿主 buildRequest 正是拿它发请求，新进程首轮也可读）与 requestMaxTokens 观测
+ * （agent/request 瀑布）皆缺位时，按声明窗 × 本比例预留生成空间。
+ * 0.25 的依据：请求省略 maxTokens 时**服务端自己的默认 mct** 照样吃窗（R2 端点缺省
+ * 65536=0.25×262144，400 死流的 request=273,639=prompt+65,536 分毫吻合），这一档
+ * 在请求面完全隐形——观测档永远抓不到它。宁多留：漏留=撞墙 400/钳位全量重灌，
+ * 多留=早一点剪（可召回），代价不对称。
+ */
+export declare const DEFAULT_EGRESS_OUTPUT_RATIO = 0.25;
+/** §9.37 出口闸提前量：越过 `线 − 声明窗×本比例` 即触发（容 anchored 后增量估值失真）。 */
+export declare const DEFAULT_EGRESS_MARGIN_RATIO = 0.02;
