@@ -118,7 +118,7 @@ npm run release                          # prerelease:check → --tag 建 annota
 - deps: 升级宿主到 0.1.8-alpha.1
 
 ### 修复
-- peratom: 修复压缩后会话重启打不开（`shadowedSeqs` 与当前 surface 不匹配，#2）
+- prune-tx: 修复压缩后会话重启打不开（`shadowedSeqs` 与当前 surface 不匹配，#2）
 
 ### 提示
 - 注意：需宿主 ≥ 0.1.8；仍在 0.1.7 的部署请勿升级
@@ -129,7 +129,7 @@ npm run release                          # prerelease:check → --tag 建 annota
   - 新功能 ← `feat`；优化 ← 使用者可感知的 `perf` / `refactor` / `build` / 依赖升级 / 行为调整；修复 ← `fix`。
   - 纯内部改动（`ci` / `test` / `chore` / 无行为变化的 `refactor`）**不进 CHANGELOG**。
 - **尾部 `### 提示`（视情况追加）**：放升级前置条件、破坏性变更、已知限制、测试基线。**没有就不写这一段**。破坏性变更写成 `注意：…` 开头的一行——直接回答使用者「能不能升、要不要动手」。
-- **一条一行**：格式 `<scope>: <一句话>（#issue）`，**直接由该版 commit subject 收敛**——去掉 `type` 前缀、保留 scope、附上 issue 号。scope 沿用提交规范里的那套（`peratom` / `prune-tx` / `client` / `preset` / `corpus` / `deps` / `docs` / `ci`）。
+- **一条一行**：格式 `<scope>: <一句话>（#issue）`，**直接由该版 commit subject 收敛**——去掉 `type` 前缀、保留 scope、附上 issue 号。scope 沿用提交规范里的那套（`factor` / `prune-tx` / `client` / `preset` / `corpus` / `deps` / `docs` / `ci`）。
 - **长度**：一句话，尽量 ≤ 60 字；一条只讲一件事——写不下就说明该拆成两条。
 - **动词开头**：新增 / 优化 / 修复 / 移除 / 调整（英文条目用 Add / Improve / Fix / Remove）。
 - **类目内排序**：影响面大的在前（会话打不开 / 数据损坏 > 功能缺失 > 体验问题）。

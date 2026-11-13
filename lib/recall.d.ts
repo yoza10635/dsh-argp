@@ -15,7 +15,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { SessionRuntimeState } from './session-state.js';
 /**
  * 召回侧模块函数访问引擎状态所需的窄接口。
- * 1.11.0-beta.0（1-1/1-2）起会话态经 `stateOf(session)` 分桶访问；
+ * 会话态经 `stateOf(session)` 分桶访问；
  * 函数签名一律显式带 session（异步调用方不得依赖引擎焦点指针）。
  */
 export interface RecallHost {

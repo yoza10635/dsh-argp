@@ -14,7 +14,7 @@ export {
   stripPresetRows,
 } from './preset-cleaner.js'
 export type { PurifyOptions, PurifyResult } from './preset-cleaner.js'
-// /argp 只读状态命令（1.10.0）：注册器 + 状态渲染纯函数 + 版本号常量。
+// /argp 只读状态命令：注册器 + 状态渲染纯函数 + 版本号常量。
 export {
   ARGP_COMMAND_DESCRIPTION,
   ARGP_COMMAND_NAME,

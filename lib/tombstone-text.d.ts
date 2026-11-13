@@ -1,53 +1,43 @@
 /**
- * ARGP 墓碑文案叶模块（1.7.1，G 组）——墓碑文本的**单一事实源**。
+ * ARGP 墓碑文案叶模块——墓碑文本与判据的**单一事实源**。
  *
- * ## 为什么单独成叶
- *
- * 墓碑文本有 5 个生成点（`prune-selection.buildTombstones` 的闭包/区间两族、`prune-tx`
- * 的两处 fallback、tool 占位墓碑、`CompactionResult.summary` 渲染）与 3 个消费判据
- * （`isToolTombstoneText` / `isTombstoneText` / `isMergeableTombstoneText`）。
- * 1.7.0 及以前这些字符串**各自复制**（区间文案就存在 3 份拷贝），任何措辞改动都要人肉
- * 同步 9 处，漏一处即**静默**退化：
- *   - 漏改 `isMergeableTombstone` ⇒ tool 占位墓碑被判"可合并" ⇒ 归并后 callId 蒸发 ⇒
- *     issuer A 的 tool_calls 失去应答 ⇒ provider 400（与孤儿 tool 消息同级）；
- *   - 漏改 G1 的 `isTombstoneText` 谓词 ⇒ 终止态排除静默失效（回到"墓碑换墓碑"空转）。
- * 本模块把"文案"与"判据"放进同一文件，使二者**物理上不可分离**。
+ * 墓碑文本有 4 个生成点（区间、单节点、闭包、聚合；tool 占位是独立一族）与 3 个消费
+ * 判据（`isToolTombstoneText` / `isTombstoneText` / `isMergeableTombstoneText`）。
+ * 文案与判据放进同一文件，使二者**物理上不可分离**：任何措辞改动若绕过判据，测试即红
+ * （漏改可合并判据 ⇒ tool 占位墓碑被归并 ⇒ callId 蒸发 ⇒ issuer A 的 tool_calls 失去
+ * 应答 ⇒ provider 400；漏改终止态谓词 ⇒ "墓碑换墓碑"空转）。
  *
  * ## 零 import（硬约束）
  *
- * `prune-selection` 与 `prune-tx` 都是 hub 的下游、都要 import 本模块；若本模块反向
- * import 任一者即成循环依赖（仓库既有的"单向依赖：hub → X"设计决策）。
- * 故本模块**没有任何 import**（含 type-only）。
+ * `prune-tx` 是 hub 的下游、要 import 本模块；若本模块反向 import 任一运行时模块即成
+ * 循环依赖（仓库既有的"单向依赖：hub → X"设计决策）。故本模块**没有任何 import**
+ * （含 type-only）。
  *
- * ## 文案形态（1.7.1 统一短文案，带 `for detail` 劝说语）
+ * ## 文案形态（统一短文案，带 `for detail` 劝说语）
  *
  * ```
- * [elided seq=A..B; recall_pruned(A) for detail]                  区间（115 → 46 字符，1 位 seq 基准）
- * [elided seq=A; recall_pruned(A) for detail]                     单节点（43，1 位 seq 基准）
+ * [elided seq=A..B; recall_pruned(A) for detail]                  区间
+ * [elided seq=A; recall_pruned(A) for detail]                     单节点
  * [elided closure <id> seqs=A..B[; root=<preview>]; recall_pruned(A) for detail]
  * [elided consolidated ×N seqs=A..B; recall_pruned(A) for detail]
- * [elided: seq=A; recall_pruned(A) for detail]                    tool 占位（42 → 44，1 位 seq 基准）
+ * [elided: seq=A; recall_pruned(A) for detail]                    tool 占位
  * ```
  *
- * 字符数随 seq 位数增长（每多 1 位 +1）：2 位 seq 区间 = 49，4 位 tool 占位 = 50。
- * 旧 1.7.0 格式 115 字符（1 位 seq、3 节点区间基准）；缩减对照见 CHANGELOG 1.8.0 条目（与本注同口径）。
- *
  * 设计要点：
- * 1. **`[elided` 前缀保留** ⇒ 既有 `startsWith('[elided')` 类判据（spike/44 等）不破。
+ * 1. **`[elided` 前缀保留**：既有 `startsWith('[elided')` 类判据不破；但判据必须校验
+ *    紧随字符（空格/冒号），裸前缀会把用户自造文本误认成墓碑。
  * 2. **"被剪的是什么 / 怎么取回"只在 system 契约里说一次**（`argp-contract` section），
- *    不在每条墓碑重复 —— 这是 1.7.0 文案（115 字符）"太长"的结构性根因。
- * 3. **seq 一律是原始节点的 log seq**（不是 replace 副本 seq），必须是 `recall_pruned`
- *    的合法入参（`{ seq: integer }`）。1.7.0 的 tool 墓碑写着 `recall_pruned(seq)` 却
- *    **0/364 给 seq**，自相矛盾，逼模型多绕一步 `list_pruned --keyword` 反查。
- * 4. **`for detail`** 是劝说语（用户拍板）：+11 字符买"召回入口指引"，因实测每轮
- *    3 次的召回配额**从未触顶**（6 次调用分散在 2 轮），缺的是入口而非能力。
- *    与之配套：召回上限由"3 次/轮"改为**按字符预算**（见 `recall-tools.ts`）。
+ *    不在每条墓碑重复——单条重复是指引膨胀的结构性根因。
+ * 3. **seq 一律是原始节点的 log seq**（不是 replace 副本 seq）：取回指针才是合法入参；
+ *    只写 `recall_pruned(seq)` 却不给 seq 会让通路等于断的。
+ * 4. **`for detail`** 是劝说语：+11 字符买"召回入口指引"，缺的是入口而非能力。
+ *    与之配套：召回上限是**字符预算**（见 `recall.ts` budgetRecallText），不是次数闸。
  *
- * ## 判别子（1.7.1 换轴）
+ * ## 判别子
  *
- * "不可合并 vs 可合并"改由**语法级前缀**承担：`[elided:`（冒号）= tool 占位墓碑，
- * `[elided `（空格）= 可合并族。1.7.0 用的是自然语言子串 `pruned by ARGP`（缺它 = 不可
- * 合并），措辞一改就失效；前缀是语法级、不随修辞漂移，且与文案生成同处一文件。
+ * "不可合并 vs 可合并"由**语法级前缀**承担：`[elided:`（冒号）= tool 占位墓碑，
+ * `[elided `（空格）= 可合并族。不要用自然语言子串（措辞一改就失效）；前缀是语法级、
+ * 不随修辞漂移，且与文案生成同处一文件。
  */
 /**
  * 全部 ARGP 墓碑的公共前缀。
@@ -62,15 +52,15 @@ export declare const TOOL_TOMBSTONE_PREFIX = "[elided:";
  *
  * G1 把"文本已是墓碑"当作**终止态**（再剪一次仍产出墓碑 = 收益 0，实测占全部 replace
  * 的 76.2%）。但极长墓碑若被一律排除会**卡住地板**：长度是"还有东西可丢"的弱信号，
- * 超长说明它本身承载可观字符（1.7.0 的闭包墓碑曾内联整行 rootPreview，无上限）。
+ * 超长说明它本身承载可观字符（闭包墓碑曾内联整行 rootPreview，无上限）。
  * ⇒ 超过本阈值的墓碑仍允许参剪（宁少剪，不卡地板；少剪是安全方向）。
  */
 export declare const TOMBSTONE_MAX_CHARS = 200;
 /**
  * 闭包墓碑里 root 预览的截断长度。
  *
- * 1.7.0 的 `rootPreview` 取 root 文本**整行、无截断**（`selectClosureToMerge`）⇒ 单条
- * 闭包墓碑可达数千字符，既抬地板又让 G1 的长度安全阀失效。截断后闭包墓碑回到百字符内。
+ * 不截断时 root 预览可整行内联 ⇒ 单条闭包墓碑可达数千字符，既抬地板又让 G1 的长度
+ * 安全阀失效。截断后闭包墓碑回到百字符内。
  */
 export declare const CLOSURE_ROOT_PREVIEW_MAX_CHARS = 40;
 /**
@@ -105,7 +95,7 @@ export declare function isToolTombstoneText(text: string): boolean;
 /**
  * 是否为 ARGP 墓碑文本（**全部**四族，现行 + 已知历史文法的整串匹配）。
  *
- * G1/A10 的终止态判定经 `buildTombstoneReplaceSeqs`（文本判据 + replace 事件锚串联）
+ * G1/A10 的终止态判定 = 文本判据 + replace 事件锚串联
  * 使用本函数；单用文本判据不足以承担终止态语义。peratom 的压缩副本标记
  * （`[已压缩-摘取 seq=N]` / `[已压缩-摘要 seq=N]`）**不算**墓碑 —— 它是 LLM 压缩过的
  * 摘要，仍含信息，应当可继续被剪。
@@ -121,7 +111,7 @@ export declare function isTombstoneText(text: string): boolean;
  */
 export declare function isLooseLegacyTombstoneText(text: string): boolean;
 /**
- * 是否为**可合并**墓碑（`consolidateTombstones` 的判据，1.7.0 的 `isMergeableTombstone`）。
+ * 是否为**可合并**墓碑（`consolidateTombstones` 的判据）。
  *
  * 可合并 = ARGP 墓碑（`[elided ` 空格族，排除 tool 占位）+ 含 `recall_pruned(` 取回指引。
  * 两条排除项都是**双保险**性质：

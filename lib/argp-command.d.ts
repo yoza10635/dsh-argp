@@ -1,5 +1,5 @@
 /**
- * `/argp` 只读状态命令（1.10.0；2.0 factor-only 收窄）。
+ * `/argp` 只读状态命令（2.0 factor-only）。
  *
  * 动机：ARGP 的全部状态（预算、剪枝台账、召回命中）都在引擎实例里，
  * 但此前**没有任何人类可见的出口**——判断"压缩到底生效了没有"只能去翻日志。
@@ -73,7 +73,7 @@ export declare function registerArgpCommand(ctx: Context, host: ArgpStatusHost):
  *
  * 段数自适应：无意义的段整段省略，宁可少一行也不输出恒为 0 的噪声。
  *
- * 多语言（1.11.x）：`locale` 由注册侧每次调用经 `resolveUiLocale` 现取
+ * 多语言：`locale` 由注册侧每次调用经 `resolveUiLocale` 现取
  * （settings `locale.preference`，缺省/异常回退英文）——设置页切语言后下一条
  * /argp 即生效。缺省 'en' 保持既有测试与直接调用方的输出逐字节不变。
  */

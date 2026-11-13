@@ -31,9 +31,8 @@ export interface AgentRouteHint {
 /**
  * 宿主路由自动兜底（2026-09-17，规格 §11.13.1）。
  *
- * 背景：`peratom` 三管线的 LLM 后端原本只认 `config.llm`（要宿主在 bundle/profile
- * patch 里写死 provider+model）或 fetch 环境变量。两者都缺省时组件直接 disabled
- * ——于是"双引擎"在实际分发物里退化成单引擎（Stage-2 only），且宿主换模型要改配置。
+ * 背景：散文浓缩的 LLM 后端若只认写死的 provider+model（bundle/profile patch）
+ * 或 fetch 环境变量，两者缺省时浓缩直接 disabled，且宿主换模型要改配置。
  *
  * 本函数把后端解析从"构造期一次性"改成"**延迟 + 跟随宿主**"：在真会话里从
  * `agent.options` 现取路由，配合宿主 `ctx.llm` 服务（LlmRuntime）解析出 spec。
@@ -41,7 +40,7 @@ export interface AgentRouteHint {
  *   ① provider 与 model 都非空；
  *   ② 宿主确实挂了 llm 服务（`resolveLlmRuntime` 能取到）。
  *
- * 优先序由调用方保证：显式 `config.llm` > fetch（endpoint/apiKey/env）> 本兜底。
+ * 首版 peratom 管线还接受显式 config/fetch 优先序；2.0 的散文浓缩只走本兜底。
  */
 export declare function autoDshLlmSpec(ctx: Context, route: AgentRouteHint | null): DshLlmSpec | null;
 /**

@@ -4,7 +4,37 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。主干缺省仍 graph 引擎（判别式缺省关），故 1.x 稳定行为停在 **1.11.2**；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.0`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.0`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+
+## [2.0.0-alpha.0] - 2026-11-13（factor-only 形态：1.x 图引擎全面退役）
+
+> **未发布**（不发 npm、不 tag，仅入库工作树 checkpoint）。2.x = factor 的干净形态（用户裁定 2026-11-13）；老方案锁定 npm latest **1.11.2** 不动。与 1.11.2 / 原生摘要的对比测试改到本 alpha 就绪后执行（R2 修后世界的对照因旧世界污染作废）。
+
+### Added
+
+- **§9.37 出口闸（缺省开）**：pre-step 确定性容量算术——anchored 投影（含本步 claim 增量）≥ 声明窗 − 输出预算 − 2% 提前量 ⇒ **请求根本不发**，先走标准压缩事务；输出预算三源取 max（`agent.options.maxTokens` / `agent/request` 观测 / `resolveModelInfo().defaultMaxTokens`），全缺退 0.25×窗。400 overflow 保留为兜底网。`ARGP_FACTOR_EGRESS=0` 仅作修前/修后对照臂。
+- **冷 resume 声明窗回填**（R2 实锤 4×400 死流）：`bindSession` 反向扫日志回填 `declaredContextWindows`，`egressGate` 再兜底 `session.requestContext()`；`EG-13/13b` 双锁（M11/M12 变异验证）。
+- **recall_history / list_labels 召回面**（标签制）：标签交集、cursor/epoch 分页、未命中如实回显、字符预算与每轮安全阀；`/argp` 召回段复用同一观测。
+- **散文浓缩链**（唯一 LLM 摘要通路）：事务内双闸（散文占比 ≥50% + anchored ctx ≥ `windowRatio×声明窗`），one-shot 原生式，空输出保原文。
+
+### Changed
+
+- **引擎收窄为 factor-only**：构造器不再有 graph 臂；`compactIfNeeded` 删除整段图剪分支；`compactRegion` 在 factor 下明确拒绝；pre-step 只保留出口闸/浓缩闸二（旧估算驱动压力剪退到 `ARGP_FACTOR_PRESSURE=1` 对照口）。
+- **设置名册收窄到 6 枚**（windowRatio/retainRatio/charsPerToken/focalTurns/vocabTopN/recallLimit）；`engine` 判别式与 1.x 五键退位，老 profile 宽容读 + 告警忽略。
+- **`/argp`**：引擎形态恒报 `factor`，删除 `graph+peratom` 与 cites 段；日志读取改走 `sessionEvents`（不再直接 `snapshotSession`）；版本号 2.0.0-alpha.0。
+- **构建**：`npm run build` 先清空 `lib/` 再编译（防止退役模块的陈旧产物随包分发）。
+- **bundle patch**：`insert` 行去掉 `maxPasses`/`recencyGuard`（graph 时代旋钮）。
+
+### Removed
+
+- **Stage-1 三管线**：`peratom/compressor|cite-declarer|recall-zoom|gate|mount|flush|prompt|collect|compressor-types|decision|split`（保留 `peratom/llm-adapter` 与 `peratom/types`）。
+- **Stage-2 图剪**：`prune-selection`、`token-ontology`、`recall-tools`；`graph-build` 裁到 `atomize`/`classifyUserMessage`/`looksAskText`/`extractCites`；`recall` 裁到 `shadowedSeqsOf`/`budgetRecallText`。
+- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 223 测（221 过 / 0 败 / 2 skip）。
+- **1.x 实验脚本**移入 `spike/retired-1x/`（33–44、47）与 `scripts/retired-1x/`（不参与编译）。
+
+### 读侧兼容（保留）
+
+- 老墓碑文法 v1.3.x–v1.7.x；老 `data.argpCites` 忽略读（三种历史形状归一）；`prune-tx` 的 tool/result 克隆配对契约。
 
 ## [1.11.2] - 2026-11-09（hotfix：preset 死子路径条目炸新建会话，issue #3）
 

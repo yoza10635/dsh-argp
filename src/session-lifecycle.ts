@@ -312,7 +312,7 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
     host.rebuiltCompactionIds.add(s.compactionId)
     const txPrune = txPrunes[0]!
     let intervalSeqs = txPrunes.flatMap(p => p.shadowedSeqs)
-    // 0-5（1.10.2）：error-end = partial 事务。已落地的 replace 子集真实有效，但：
+    // error-end = partial 事务。已落地的 replace 子集真实有效，但：
     //  ① prunedNodeIndex 只收**确实离场**的 seq（prune claim 可能先于 replace 抛错——
     //     被 claim 却仍在 surface 的 seq 不入剪索引，按实际 replace 恢复提交子集）；
     //  ② 不产 intervalRecords——tombstoneSeq=end.endSeq 对 error 事务是双重新话

@@ -1,5 +1,5 @@
 /**
- * 单会话运行时状态（1.11.0-beta.0「会话所有权」批，1-1；2.0 factor-only 收窄）。
+ * 单会话运行时状态（「会话所有权」批；2.0 factor-only 收窄）。
  *
  * 病灶（〔Q〕M4 / 〔K〕P1-1，双 BLOCKER）：引擎把这些字段做成**进程级单例**——
  * 台账（prunedNodeIndex / records）、召回预算与计数、shadowed 增量游标、
@@ -63,7 +63,7 @@ export interface SessionRuntimeState {
   /** 锚点已覆盖的 surface 最大 seq。 */
   lastRealAnchorSeq: number
   /**
-   * 最近一次 resolveScaledBudgets 为**本会话**解析出的有效窗口（1.11.0-beta.1 桶化：
+   * 最近一次 resolveScaledBudgets 为**本会话**解析出的有效窗口（桶化：
    * 原为引擎级共享字段，多会话下 B 的解析会覆盖 A 的 recall 限额（recall-labels 按它推
    * per-call/total 上限）与 /argp 报数；budget.ts 经 stateOf(session) 写入本桶）。
    */

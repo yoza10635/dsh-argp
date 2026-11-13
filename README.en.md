@@ -1,6 +1,6 @@
 [中文](README.md) | English
 
-# dsh-argp — Two-engine context compaction: guarded per-atom shrink + deterministic reference-graph eviction
+# dsh-argp 2.0 — Factor compaction engine: label-addressed eviction + prose condensation + egress gate
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,211 +8,131 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: it replaces summarizer-style compaction ("let the model rewrite history") — **the LLM only proposes, deterministic guards dispose**; nothing shrunk or evicted is ever destroyed (append-only log + verbatim recall), and the compression ratio is honored exactly (0-LLM graph rules). Two-engine form, **mounted on install with no manual configuration**; set `peratom: false` explicitly to fall back to 0-LLM graph eviction only (see [Install & mount](#install--mount)).
+**dsh-argp is a third-party context compaction engine for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**. 2.0 is the clean form of the factor engine: **tool results are evicted by entity label, deterministically (0 LLM)**, **prose is condensed once per compaction transaction (the only LLM path, double-gated)**, and an **egress gate makes sure a request that would necessarily overflow is never sent**. Everything evicted stays in the append-only log and comes back verbatim via `recall_history(label)`.
 
-![dsh-argp overview: guarded two-stage context compaction](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
+> **The 1.x graph engine is retired.** The old scheme (stage-2 reference graph + peratom pipelines + cites edges) is frozen at **npm latest `1.11.2`** (tag `v1.11.2`) and does not continue into 2.x. Graph-era knobs in old profiles are tolerated with a warning under 2.0. The historical CHANGELOG is kept.
+
+![dsh-argp overview](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
 
 ```bash
-dsh plugin --profile <name> add dsh-argp    # mounted on install; type /argp in a session to see live status
+dsh plugin --profile <name> add dsh-argp    # mounted on install; type /argp in a session for live status
 ```
 
-Three core mechanisms:
+## Three mechanisms
 
-- **Stage-1 per-atom shrink (eager, per turn)** — at turn end, the turn's atoms are *shrunk*, not discarded: the model picks `extract` (verbatim excerpt) / `summary` (abridged; every dropped token is itemized into an audit ledger) / `false` (keep original) per atom, and **deterministic guards decide whether a proposal lands** — an `extract` missing even one load-bearing token is rejected whole. The LLM only proposes; it never destroys.
-- **Stage-2 reference-graph eviction (lazy, three-tier trigger)** — on the atom reference graph (deterministic A→R pairing edges + model-declared semantic cites edges), whole atoms are evicted in reverse topological order with **zero LLM calls in the eviction phase**, so the compression budget is honored exactly; triggering is a three-tier ladder: turn-start proactive / mid-turn pressure prune / post-clamp auto-continue (see "Three-tier trigger").
-- **The append-only log is the single source of truth** — originals of everything shrunk or evicted stay in the log forever; two-tier recall `recall_summary` / `recall_detail` brings them back on demand (text blocks verbatim, hash-locked by tests; tool-call arguments are a JSON semantic-equivalent reconstruction, annotated, when the host stores them as an object; the fidelity guarantee covers structured load-bearing tokens verbatim, not prose-level wording; large nodes page via from/limit). The context is a rendered view of the log, not the history itself.
+- **Label-addressed R eviction (the main path, 0 LLM)** — tool results get entity labels (`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`); deterministic staleness (superseded reads, newer versions, non-focal turns) scores them; evicted results become a one-line stub (`[已剪·因子 read → document:…（需要原文时 recall_history(…)）]`). **A is never evicted** (prose belongs to the condenser), U is protected by focal/turn guards. The vocabulary note is refreshed only at transaction end (cache-break frequency = compaction frequency).
+- **Prose condensation (the only LLM summary path)** — transaction-only, two gates in conjunction: ① prose (system + conversational prose) is ≥50% of the declared window; ② anchored total context ≥ `windowRatio×window`. One-shot native-style summary; barriers and protected spans stay untouched; empty output or failure **keeps the original** (fail-open to safety).
+- **§9.37 egress gate** — at pre-step (last request anchored, next request not sent) deterministic capacity math runs: anchored projection (including this step's incoming delta) ≥ declared window − output budget − 2% margin ⇒ **the request is not sent**; a standard compaction transaction runs first. Output budget = max of three sources (`agent.options.maxTokens` / `agent/request` observation / `resolveModelInfo().defaultMaxTokens`), falling back to 0.25×window. The 400 overflow path remains as the last-resort net.
+
+The recall surface is exactly two tools: **`recall_history`** (verbatim log text by labels; intersection-first, cursor/epoch paging, honest epoch-drift warning) and **`list_labels`** (vocabulary drill-down). There is no seq channel — labels are the only address; both share a character budget (5% per call / 10% cumulative, exhaustion stated explicitly).
 
 ## Why
 
-Summarizer-based compaction (an LLM rewriting history) pays three prices:
+Summarizer-style compaction (an LLM rewriting history) pays three prices:
 
 1. **Lossy** — exact tokens (paths, error codes, config values) die first in any rewrite, and are unrecoverable;
 2. **Cache wipeout** — rewritten history changes the system+prefix every turn, invalidating cross-turn KV/prefix caches from the change point on;
 3. **Uncontrolled ratio** — summary length is at the model's whim; the budget is never honored.
 
-ARGP's answer: **the LLM stays in the loop, but in chains** — its output is always an untrusted input proposal, and guards adjudicate under verbatim discipline; **forgetting is deterministic** — 0-LLM graph rules guarantee convergence and budget; **history is immutable** — the append-only log carries every original, backed by the recall contract (never guess).
+The factor engine's answer: **eviction is deterministic** — same input, same output, 0 LLM, recomputable; **forgetting is reversible** — a stub is one label line, the original comes back byte-for-byte from the append-only log; **the LLM does the one thing it is good at** — prose condensation, only inside a transaction, only when both gates pass.
 
-Measured (30-turn synthetic multi-turn coding task, four-arm comparison, spike 37): the only arm that achieves both **7/7 probe fidelity** and lower cost than the active baseline is the dual-engine arm (A); the traditional summary baseline (D) is cheapest but scores 5/7 — it swallows exact strings and key gist. **The selling point is not "cheapest" but "cheapest under fidelity"** (A's full cost components ≤ baseline C; 3.39× more expensive than D — that gap is the price of fidelity, priced openly).
+## How it works
 
-> How it works (dual-engine pipeline, reverse-topological pruning, shadow-price contract, module map) — see [ARCHITECTURE.md](ARCHITECTURE.md).
+### Compaction transaction (prune-tx)
 
-## Core mechanics
+One transaction = `compaction/start` → `compaction/summary` → one `compaction/prune` + matching `replace` per interval → `compaction/end`. The host's `foldSurfaceProjection` requires `shadowedRange` to equal the replace range **exactly** (interval-by-interval). A tool stub clones the original R data and changes only the inner text (keeping callId / role / id), so the issuer A's tool_calls stay paired (no 400). At transaction end the usage anchor resets to a chars estimate; the next successful request re-anchors real usage.
 
-### Stage-1: PeratomCompressor (eager entropy reduction)
+### Triggers (two signals + the egress gate)
 
-1. **Deterministic gating** (`gate.ts`): pure predicates decide *whether* a turn is compressible (long user messages / tool results over 512 chars / non-version-chain members); the LLM only decides *how*.
-2. **Per-atom decisions**: a single LLM call returns `{seq, level, text}` decisions — `extract` (verbatim subset; the guard hard-rejects missing tokens) / `summary` (allowed; every dropped token is itemized into `summaryDropped` for audit) / `false` (explicitly keep the original); long user messages go through splitting (dialog verbatim transcription + remainder aggregated as U-info, gaps assigned to info).
-3. **No-op guard**: full-copy proposals with ≤5% gain count as `false` — no replace event is emitted (a zero-gain replacement wastes a surface generation for nothing).
-4. **Tail-only replacement**: replacements must satisfy sourceEventSeqs ⊆ the current turn's range (out-of-range is a bug, locked by assertion); prefix-fingerprint tests prove request-prefix stability across N turns of per-turn compression — the lifeline of cache economy.
+1. **Manual `/compact`** — evict everything evictable (hard protections win) + condense prose.
+2. **Provider 400 `CONTEXT_WINDOW_EXCEEDED`** — force one prune, then retry (`maxOverflowRetries` defaults to 1, matching stock compaction-basic).
+3. **§9.37 egress gate** — intercepts "necessarily overflow" sends before they happen, demoting 400 from a trigger back to a safety net.
 
-### Stage-2: ArgpGraphEngine (lazy graph eviction, 0-LLM)
+> Pre-step **estimate-driven** pressure pruning is retired (`ARGP_FACTOR_PRESSURE=1` exists only as the old-world comparison arm). Destructive rewriting happens only on the deterministic signals above.
 
-1. **Atomization + graph building**: deterministic edges (assistant → its tool results, via `toolCallId`) + semantic edges (the model outputs `{"cites":[{"t":"prefix","l":"c|s|x"}]}` per contract, four levels: critical/supporting/contextual/isolated).
-2. **Topological eviction**: repeatedly evict in-degree-0 atoms (ordered by edge level → effective importance → last-reference turn); evicted atoms' outgoing edges vanish and downstream atoms unlock pass by pass; the closure lifecycle (ACTIVE→COMPLETED→PRUNABLE→PRUNED) retires finished task closures whole.
-3. **Budget honored exactly**: trigger line window = contextWindow×0.8 (default), retain target = **compressible content × 0.2** (since 1.5.1: compressible = full request − fixed system/tools/MCP overhead = the visible prune target, a constant 80% ratio; the old retain = window×0.2 = 0.16W counted fixed overhead into the base, asymmetric with the overhead-free target). The trigger timing is the three-tier ladder (see "Three-tier trigger" below); the degradation chain is lifecycle→force→fail (the summarize tier is a stub that always returns null — conservative option a of A6, not implemented; `enableSummarize` defaults to false), converging to budget or failing explicitly — measured 200K → 160K trigger → 32K retained, landing exactly.
+### Recall
 
-### Three-tier trigger (the Stage-2 trigger ladder)
+`recall_history(labels)` returns text from the **log's append origin** (not the stub, not a summary), with `state=shadowed|live` and the hit labels per line; `list_labels(category)` lists vocabulary per facet with coverage counts. Budget exhaustion, no matches, and unknown categories are all stated explicitly — never a silent empty result.
 
-Stage-2's "lazy" is not a single threshold check but a three-tier ladder (introduced in 1.4.0, revised in 1.5.0):
+## Model requirements
 
-1. **Turn-start proactive (L1)**: the pressure check runs only at each turn's first pre-step (`step === 1`), threshold = window (default contextWindow×0.8). The estimate **includes this step's user message that has been claimed but not yet flushed to the surface** — the host claims the new user message before dispatching pre-step, so turn start sees the exact content, not a prediction; a large paste at turn start is never missed. Turn start also runs the per-atom LLM pass (atom shrink) + graph eviction.
-2. **Mid-turn pressure prune (L1', 0-LLM)**: `midTurnPrune` defaults to **true** — when `step > 1` and pressure is reached, **only 0-LLM graph eviction runs** (no per-atom LLM pass — that is a 79s–3min block, not worth it mid-turn), with `turnGuard` relaxed to `midTurnTurnGuard` (default **0**, allowing this turn's older A/R to be evicted; `recencyGuard` still protects the newest nodes). The overage comes from this turn's tool results; the old guard (turnGuard=1) protected the whole turn — the root cause of 1.3.x's mid-turn prune being "nearly ineffective". The prune lands in that pre-step ⇒ the same step's request is already slimmed ⇒ the turn continues naturally.
-3. **Post-clamp auto-continue (L3)**: when the output is externally clamped (`finish=max-tokens` and `outputTokens <` the request's `maxTokens` = the host/adapter shrank the output budget — the true capacity-pressure signal): if the turn is about to end (`agent/turn-stopping` hook) ⇒ force-prune in place + `steer` a continuation message, so **the same turn keeps advancing** (the user need not send "continue"); otherwise (the turn is still running) ⇒ force-prune at the next pre-step. The continuation text can be overridden by `continuationNotice` (empty string = prune without continuing); the cap is `reactiveRetries` (default **2**, per "consecutive clamps" episode; from the 2nd on, recency/turn guards are relaxed; once exhausted, control returns to the overflow path).
-
-Config knobs: `midTurnPrune` (default true) / `midTurnTurnGuard` (default 0) / `continuationNotice` (default built-in sentence) / `reactiveRetries` (default 2); 1.4.0's `midTurnActive` remains as a compatibility alias (true = mid-turn prune on with the default guard, the 1.3.x comparison tier; false = off).
-
-### Bridging and recall
-
-- **CiteDeclarer** (per turn): the model declares cross-turn reference edges over its window, fed to Stage-2 through the `injectEdges` channel — measured recall efficiency ≈ 2.6× the edgeless arm (zoom pinpoints the right atoms).
-- **RecallZoom**: `recall_summary(seq)` (compressed state) / `recall_detail(seq, from?, limit?)` (log original: text blocks verbatim, tool-call arguments JSON semantic-equivalent and annotated when stored as an object; large nodes page via from/limit); 4:1 budgeting (summary budget = 4× detail) — over-budget calls return guidance text instead of a hard refusal. Atoms evicted from history are additionally served by `recall_pruned` / `list_pruned`.
-
-## Model requirements (honest version)
-
-The quality of per-atom split/shrink decisions depends on the model's instruction-following ability; **the guards guarantee "never compresses badly" on any model (errors only ever err toward compressing less), but the benefit scales with compliance**:
-
-- Measured baseline: local Qwen3.6-35B-A3B / Qwen3.8-27B, full pipeline over 30/60 turns with 0 errors and 7/7 probes; parse failures of the split-transcription notation 0% (vs 72% for interval locating).
-- **Known DeepSeek-family trait**: when the system prompt conflicts with user instructions (e.g. a task prompt saying "nothing else"), cites declarations can drop to 0 — semantic selectivity goes to zero, but Stage-1 guarded compression and Stage-2 deterministic eviction keep working and all invariants pass (50-turn v4-flash evidence). Once the task prompt leaves room for cites, the declaration rate recovers (43.6% measured over 10 turns).
-- The information-contract compliance probe (info-contract) will be measured on DeepSeek in the post-1.0.0 recheck round.
+- **Eviction and the egress gate do not depend on the model**: identical behaviour on any model (0-LLM determinism).
+- **Prose condensation** needs an LLM route with purpose=compaction: by default it follows the host route (`agent.options.{provider,model}` + `ctx.llm`); if no route resolves, condensation is disabled, zero network, originals kept. Condensation quality scales with instruction following, but failure always errs toward compressing less.
+- Labels come from tool arguments and output (read/edit paths, command family, error codes) — the model is not asked to emit any citation protocol.
 
 ## Install & mount
-
-Install from npm. **npm default = both engines on**: the package's bundle patch (`cordis.patch.yml`) declares `maxPasses: 256` / `recencyGuard: 10`, and Stage-1's three pipelines are mounted by the engine at construction because `peratom` defaults to mounted (see below):
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
 ```
 
-> **⚠️ Installing within 24 hours of a release: pin the version explicitly.** Since pnpm 11, `minimumReleaseAge` defaults to **1440 minutes (24h)**: a just-published version is skipped and pnpm **silently falls back to the newest version past the cooldown** — no error, just the wrong version installed. After each dsh-argp release the older version's peerDeps usually no longer match the current host, so the host reports `Plugin dsh-argp@<older version> is incompatible with dsh <host version>`. **A version number in that error older than npm `latest` means you hit this cooldown** (unrelated to this repo or any mirror: npmmirror and npmjs agree on `dist-tags`).
->
-> Two remedies (the first is narrowest):
->
-> ```bash
-> dsh plugin --profile <name> add dsh-argp@<latest version>   # ① pin the version, bypassing the cooldown
-> ```
->
-> ```yaml
-> # ② exempt this package in the profile's pnpm-workspace.yaml (durable; other packages stay protected)
-> minimumReleaseAgeExclude:
->   - dsh-argp
-> ```
+**Mounted on install, no manual configuration**: the package's bundle patch (`cordis.patch.yml`) disables the stock summarizer (`- id: compaction-basic / disabled: true`) and `insert`s this plugin; the profile layer should only tune config (modify), never insert again (otherwise `duplicate loader entry id`).
 
-> **Disabling the stock summarizer already ships with the package**: the bundle patch carries `- id: compaction-basic / disabled: true`, so there is normally nothing to do at the profile layer (this block used to be a manual step; it is kept here only to document who turns it off). Mounting is likewise handled by the package's own bundle patch (`insert` creates the entry); the profile layer should only override config (`modify`) — do not `insert` again there (otherwise `duplicate loader entry id`).
+> **⚠️ Installing within 24h of a release? Pin the version.** pnpm 11 defaults `minimumReleaseAge` to **1440 minutes (24h)**: a just-published version is skipped and pnpm **silently falls back to the previous version that passed the cooldown** — no error, just the wrong version. If the error names a version older than npm `latest`, this cooldown is why. Fix: `dsh plugin --profile <name> add dsh-argp@<latest>`, or add `minimumReleaseAgeExclude: [dsh-argp]` to the profile's `pnpm-workspace.yaml`.
 
-> **Inert under the minimal preset (since 1.9.0)**: ARGP stands down under the presets listed in `skipPresets` — by default `['minimal']`, so sessions running the minimal preset are **not pruned or compacted** and their history stays pristine (as if this plugin were not installed). The decision follows the preset a session actually runs under (changeable via the preset-switch event); sessions with no preset info (headless/CLI) are unaffected. To make ARGP active under minimal too, add `config: { skipPresets: [] }` via `modify` in the profile layer.
+> **Inactive under the minimal preset**: ARGP steps back under presets listed in `skipPresets` (default `['minimal']`) — history stays untouched there. To activate under minimal, modify config in the profile with `config: { skipPresets: [] }`.
 
-### Stage-1 (two-engine): mounted by default
+### Settings knobs (6)
 
-The production mount path is **the engine self-mounting from `config.peratom` at construction**: `peratom` **defaults to mounted** — the three Stage-1 pipelines (compressor / declarer / zoom) are mounted and wired internally at construction, so **a fresh install is already the two-engine form with no manual configuration**.
+Settings → Plugins → ARGP card (all volatile; changes apply live, no restart):
 
-To fall back to pure Stage-2 (0-LLM graph eviction), disable it explicitly:
+| Key | Default | Meaning |
+|---|---|---|
+| `windowRatio` | 0.8 | Trigger line = declared window × this (shared by the egress gate ctx line and condense gate ②) |
+| `retainRatio` | 0.2 | Retained target after compaction = trigger line × this |
+| `charsPerToken` | 3.5 | Chars→token estimate ratio (real anchored usage takes precedence) |
+| `focalTurns` | 1 | Focal turns: tool results in the newest N turns are never evicted |
+| `vocabTopN` | 10 | Rows per category in the vocabulary note (the rest via `list_labels`) |
+| `recallLimit` | 5 | Default items `recall_history` returns when no limit is given (cap 20) |
 
-```yaml
-- id: dsh-argp
-  config:
-    peratom: false      # or null; both mean "Stage-2 only"
-```
+### Eval/debug env hatches (snapshotted at construction; re-mount to switch)
 
-> **Why the default lives in code rather than in the package's bundle patch**: patch-layer `config` is **replaced wholesale**, not deep-merged (layer order bundle → profile → home → CLI). If the default were written only in the bundle patch's `insert` row, any settings-page tweak (form values written back to the profile's `cordis.patch.yml`) would wipe `peratom` whole and the two-engine form would **silently** fall back to Stage-2 only — the §11.13.1 gap reasserting itself.
+| Variable | Effect |
+|---|---|
+| `ARGP_FACTOR_EGRESS=0` | Disable the egress gate (**comparison arms only**) |
+| `ARGP_FACTOR_PRESSURE=1` | Restore legacy pre-step estimate-driven pressure pruning (old-world reproduction) |
+| `ARGP_FACTOR_TIER=tiered` | Focal tiering strategy (hard/medium focal bands; default flat) |
+| `ARGP_FACTOR_CLIP=1` | C10 clip layer (three-state retention; default off) |
+| `ARGP_PERATOM_A2_DEBUG=<dir>` | Dump LLM wire (redacted by default; `_FULL=1` includes text) |
 
-Optionally pin a dedicated LLM backend for Stage-1 (otherwise it follows the host's routing):
-
-```yaml
-- id: dsh-argp
-  config:
-    peratom:
-      compressor:
-        llm: { provider: deepseek-official, model: deepseek-flash }   # dsh-llm backend
-      declarer:
-        llm: { provider: deepseek-official, model: deepseek-flash }   # may point at a separate lite tier
-      # zoom: {}   # two-tier recall; mounted by default when the block is present
-```
-
-The `llm` sub-block is optional: when both `llm` and `endpoint`/`apiKey` are absent, the backend **automatically follows the host's routing** (1.3.0's `autoDshLlmSpec`: in a real session it reads `agent.options.{provider,model}` on the fly + the host's `ctx.llm` service, following the host when it switches models); when all three paths fail to resolve, the component is naturally disabled (zero network). With `llm` set, it uses the host dsh-llm (production form); otherwise it falls back to OpenAI-compatible direct connection via `endpoint`/`apiKey` config or environment variables (the local llama.cpp experiment form). Stage-2 budgets are ratio-driven by default (window=ctx×0.8 / retain=window×0.2); no hardcoding needed.
-
-`presetClean` is **on by default**: at mount time it generates a cleaned copy `<id>-argp` for each shipped preset that still carries the stock summarizer (removing `compaction-basic`/`tool-result-pruner`, keeping `command-compact` — `/compact` then routes to ARGP graph eviction); idempotent and fail-soft; set `presetClean: false` to disable it.
-
-### Checking status: `/argp`
-
-Once installed, type `/argp` in a session to see ARGP's live status (read-only; it never triggers compaction):
+### Status: `/argp`
 
 ```text
-ARGP 1.10.1 · engine: graph+peratom · preset: standard
-budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
+ARGP 2.0.0-alpha.0 · engine: factor · preset: standard
+budget: trigger 209.7k / retain 41.9k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
-cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
 ```
 
-Line by line: `engine` — `graph` = Stage-2 only (0-LLM), `graph+peratom` = both engines; a `preset` suffix of `ARGP inactive` means the current preset is in `skipPresets` (this plugin does nothing for that session). `budget` — trigger line / retain target / current usage, where `source` is how usage was estimated (`anchored` = pinned to real provider-reported usage, the most accurate). `prunes` — compaction count and the shape of the last one; `forced` = pruned after candidates were exhausted. The `cites` line only appears when the Stage-1 declarer is mounted.
+`engine` is always `factor`; `ARGP inactive` after `preset` means the session hits `skipPresets`. `source=anchored` means occupancy is anchored to provider-reported real usage (the most accurate). Manual compaction uses the host's stock `/compact`.
 
-Manual compaction stays on the host's native `/compact` (provided by `command-compact`, mounted at the preset layer, which lands on this engine's `compactNow`) — this plugin adds no second compaction entry point.
+## Verification
 
-### Third-party marketplace verification (dsh.so)
+- **T24-J R1 (2026-11-13, four arms × 46 turns, 1M window)**: all four arms finished; with the double-compaction order (factor prune → prose condense) 53–96% of entering prose was condensed, all over the line; the clean-window cost of the cand arm was +41%, attributed to that benchmark's domain corpus (tool surface 13.5%) — the real-domain corpus has an 86.5% tool surface. **The 2.0-alpha comparison vs 1.11.2 / native summarizer runs once alpha is ready** (the R2 fixed-world comparison was invalidated by the contaminated old-world run).
+- **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (223 tests, 221 pass / 0 fail / 2 skipped) + build; egress tests EG-1…13b include the cold-resume backfill lock.
+- Historical 1.x graph-engine measurements (four-arm 7/7 probes, 50-turn t-long, etc.) are in the CHANGELOG and git history; they are **not 2.0 numbers** and must not be quoted as such.
 
-dsh itself has **no official plugin marketplace** (`plugin-manager` installs straight from npm); [dsh.so](https://dsh.so) is a community-run index and verification site. Its badge has two very different layers:
+## Known limits
 
-| Layer | What it checks | Site-wide pass rate |
-|---|---|---|
-| **L4** | npm install inside a sandbox (can deps/peers actually resolve) | **100%** |
-| **L5** | web boot in the same sandbox + smoke actions + manifest marked active | **74.5%** |
-
-In other words: **installing is never the common problem; booting is** (L4 is all green while roughly a quarter of L5 runs fail). A badge shows the **most recent result for that dsh version**, not a permanent state — red/green across different dsh versions is not directly comparable.
-
-> Current status of this plugin on dsh.so: **L4 passes, L5.2 (web boot) fails** (1.9.0 / 1.9.1 @ dsh 0.2.0-rc.2; last green was 1.7.0 @ rc.1). Reproduced locally against the sandbox signature (win32 x64 / Node 24 / dsh 0.2.0-rc.2 / web profile) across the full matrix — with and without this plugin, checkout and published builds, full and minimal profiles — all green; the failure does not reproduce. The host also exposes no `/ping` or `/health` endpoints, so that smoke action is a site-private protocol that cannot be simulated locally. Verdict: **not attributable to this plugin**; root cause pending data from the site operator. Production deploys use a local tgz plus a hand-mounted profile and never go through the marketplace path, so they are unaffected.
-
-## Validation results
-
-### Four-arm comparison (30-turn synthetic multi-turn coding, local Qwen3.6-35B-A3B, spike 37)
-
-| Arm | Configuration | Probes | Cost (idle pricing) | Verdict |
-|---|---|---|---|---|
-| **A dual-engine full** | compressor + declarer + graph + zoom | **7/7** | ¥0.454 | The only 7/7 arm at ≤ baseline cost |
-| B edgeless | declarer off | 7/7 | ¥0.556 | 31 recalls vs A's 12 (declarer ≈2.6× cheaper) |
-| C active baseline | graph only (evicts at overflow) | 6/7 (R2 missed) | ¥0.802 | A's full cost components ≤ C |
-| D summary baseline | dsh stock BasicCompactionEngine | 5/7 (loses exact tokens + gist) | ¥0.134 | Cheapest but loses fidelity — the foil for "cheapest under fidelity" |
-
-Anti-interference: zero replacements of append-origin originals across arms A/B/C (A 140 / B 154 / C 216 events); prefix stability: A's 21 main requests share one fingerprint.
-
-### Water level and turn amplification
-
-Measured behavior under a fixed window (16K tok; P5-bis, local Qwen3.6-35B-A3B, 2026-08-28 — evidence detail in `CHANGELOG`):
-
-- **Turn count amplified substantially**: the zero-compaction control dies at ~20 turns on the window ceiling; the dual engine survives to full budget under the same window (~60-turn scale) — sustainable turns under a fixed window improve by an order of magnitude (lower-bound caliber; never cite bare multipliers — always carry window/task/model).
-- **Zero per-request prefix-stability degradation**: the dual engine's per-request prefix fingerprint distribution matches the zero-compaction control; compaction events add only a one-time recompute tax, no cumulative degradation.
-
-### Graph engine historical validation (v0.3.x, DeepSeek v4-flash / Qwen3.8-27B)
-
-50-turn t-long: U anchors 7/7, needles 7/7 (5/7 recovered via recall), 4 transactions 0 errors, compression target honored exactly (32K); 200K mainline cost ¥2.695 vs baseline high ¥3.087 (that baseline contains 77% empty-stream errors — a platform B-5 defect; read the contrast under this caliber, the disabled tier ¥3.19 is the cleaner control).
+- **B-6 window-truncation blind spot**: live nodes that were never replaced get their oldest part dropped by request assembly near the context window, leaving no trace — they are not in the prune vocabulary, so label recall cannot reach them. Mitigation: trigger earlier via ratio budget; the real fix belongs to dsh (B-6 filing).
+- **Condensation output tax**: condensation is the only LLM call and is transaction-only; an over-long summary eats the savings. Gate ① (prose ≥50%) and the 20480 output budget bound it, but extremely long prose can still be a net loss.
+- **Unlabelled content cannot be evicted**: plain chat or output without paths/commands/error codes is untouched by R eviction and waits for prose condensation. That is the other side of "labels are the only address" (fail-closed: identity is never guessed).
+- **Old-log read side**: the old tombstone grammar (v1.3.x–v1.7.x) and old `data.argpCites` are still readable; 2.0 no longer produces them.
 
 ## Reproduce
 
-| Experiment | Command | What it validates |
+| Experiment | Command | What it verifies |
 |---|---|---|
-| Four-arm comparison (needs a local model) | `ARGP_ARM=A\|B\|C\|D\|E node spike/37-peratom-three-arm.ts` | Probe fidelity, cost triplet, anti-interference, K_no / amplification |
-| per-atom soak | `npm run spike36` | Eight verdicts: gating / chain / conservation / prefix / VK-atom |
-| 50-turn t-long | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 invariants, anchors/needles, exact budget |
-| Synthetic 0-LLM | `npm run spike8a` | Single transaction with zero LLM calls |
-| Per-atom audit | `node spike/atom-audit.mjs <artifact dir>` | Event-driven per-atom shrink/eviction detail |
+| Full gate | `npm run check` | typecheck / spike types / smoke / 223 tests / build |
+| Egress unit tests | `npm run test -- --test-name-pattern=EG-` | three-source budget, cold resume, hatch exclusivity |
+| Corpus replay | `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts` | offline replay (skips gracefully when the corpus dir is absent) |
 
-`npm run check` = typecheck + smoke + unit tests (415/415 green as of 2026-10-12). Every number carries its artifact path (evidence landing in `CHANGELOG.md`).
+1.x graph/peratom experiment scripts moved to `spike/retired-1x/` (**not compiled**, kept for the record; their findings live in the CHANGELOG and git history).
 
-> **Model caliber for the historical DeepSeek arms**: the v0.3.x DeepSeek arms were measured with `deepseek-v4-flash` — that model was retired in 2026-09; the official API now serves `deepseek-flash` (DeepSeek-V4.1-Flash), with the old name kept only as a compatibility route (the host `llm-deepseek` catalog is now `deepseek-flash` / `deepseek-v4-pro`). The numbers above are artifacts of that model and **cannot be reproduced as-is on the new API**; re-running the DeepSeek arms uses `deepseek-flash` (the shared `spike/deepseek.ts` mount has migrated along, overridable via `DEEPSEEK_MODEL`).
+## Feedback
 
-## Platform gap feedback (for dsh)
-
-No structured metadata channel for tool/result replacement (B-1), compaction/prune outside the transaction state machine (B-3), headless test assembly silently disables tokenMeter (B-4), summarizer empty streams (B-5), window truncation leaves no trace (B-6) — the formal record lives in [dsh Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) (#1090 and related threads).
-
-## Known limitations
-
-- **B-6 window-truncation blind spot**: live nodes not replaced by ARGP get their oldest part silently truncated by the request-assembly layer as the context nears contextWindow — `recall_pruned` cannot recover them. Mitigation: ratio budgets trigger earlier; the root fix is on the dsh side (B-6 filed upstream).
-- **Model dependence (honest version, above)**: guards guarantee safety; benefits depend on compliance. The lite-tier multi-model split's compliance is unmeasured (ledger D21).
-- **per-atom output tax**: Stage-1's per-turn compression call is a side-channel cost (7.2K completion tokens over 30 turns, measured; it never enters the context but counts toward total cost); usage from the dsh-llm backend is recorded, and the spike aggregation caliber is being wired up.
-- **Tombstone recall path**: since 1.8.0 every tombstone carries its origin node's `seq` (`[elided seq=N; recall_pruned(N) for detail]`), so `recall_pruned(seq)` recovers it in one hop — no more `list_pruned --keyword` reverse lookup; and "re-tombstoning" is excluded as a terminal state (G1), so the original `seq` is no longer diluted by chained replacements. Still bounded by the B-6 window-truncation blind spot (unreplaced live nodes remain unrecoverable).
-
-## Reporting issues
-
-- **Bugs**: open an [Issue](https://github.com/yoza10635/dsh-argp/issues) with `dsh --version`, this package's version, your profile config (`windowTokens`/`retainTokens` etc.), and a minimal reproduction.
-- **Design discussion / usage questions**: open a [Discussion](https://github.com/yoza10635/dsh-argp/discussions).
+- **Bugs**: open an [Issue](https://github.com/yoza10635/dsh-argp/issues) with `dsh --version`, the package version, profile config (`windowTokens`/`retainTokens`, …) and a minimal repro.
+- **Design / usage questions**: open a [Discussion](https://github.com/yoza10635/dsh-argp/discussions).
 
 ## License
 

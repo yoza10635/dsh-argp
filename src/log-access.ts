@@ -1,7 +1,7 @@
 /**
  * 日志级访问原语（P1 修复路线 (b) 的公共实现）。
  *
- * 背景：三个引擎（argp-graph / recall / argp-t1）原本在 recall_pruned 工具里用同一道
+ * 背景：多个引擎入口原本在召回工具里用同一道
  * 布尔门控 `shadowedSeqs(session).has(seq)`，未命中直接拒答 "not a pruned node"。
  * 但数据路径本来就是全日志级的（eventText 直接索引 session.events[seq]），门控是唯一障碍：
  * 掉出可见上下文但未被 ARGP 替换的节点（如适配器按 contextWindow 丢弃的 live surface 节点、
@@ -15,7 +15,7 @@ import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session
 import { isArgpUserInfo, isOwnSourceKind } from './peratom/types.js'
 
 /**
- * 跨宿主版本兼容的事件日志读取（P1 → 1.0.2 升级阻断修复）。
+ * 跨宿主版本兼容的事件日志读取（升级阻断修复）。
  *
  * dsh 0.1.2-alpha.4 的 breaking 重构 `27bf1039db refactor(session)!: distinguish
  * event seqs from log offsets` 移除了 `Session.events` getter（运行时 `undefined`），
@@ -25,7 +25,7 @@ import { isArgpUserInfo, isOwnSourceKind } from './peratom/types.js'
  *   - 宿主 Session 提供 `snapshotEvents`（alpha.4+）→ 调 `snapshotEvents()`
  *   - 否则回退到 legacy `session.events`（rc.2）
  *
- * **1.1.0 起（2026-09-10）支持基线上移到 0.1.5-rc.1**：该版本 `events` getter 已彻底
+ * **当前支持基线 0.1.5-rc.1**：该版本 `events` getter 已彻底
  * 移除、`snapshotEvents()` 是唯一真实路径，故 legacy 分支在受支持范围内**不可达**，
  * 仅作为宿主形态回退的防御保留（由 stub 用例覆盖，见
  * test/session-events-compat.test.ts「legacy 分支回退 events getter」）。将来若要
@@ -169,9 +169,8 @@ export type NodeState = 'shadowed' | 'live' | 'off-surface'
  * 全日志扫描收集被遮蔽 surface seq（权威剪枝账本：compaction/prune.shadowedSeqs 的并集）。
  * 只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，shadowedSeqs 即被剪 seq
  * 权威清单），与 ArgpGraphEngine.shadowedSeqsOf 同口径。**不可**改用「replace 形态推断」
- * （任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed）：那会把 per-atom 原地压缩
- * （peratom/compressor.ts 的副本，无 compaction/prune 事件）误判为 shadowed，导致
- * recall_summary/recall_detail 对压缩原子谎报 state=shadowed。
+ * （任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed）：那会把原地压缩副本
+ * （无 compaction/prune 事件）误判为 shadowed，导致召回对压缩原子谎报 state=shadowed。
  */
 export function scanShadowedSeqs(session: Session): Set<number> {
   const shadowed = new Set<number>()
@@ -301,7 +300,7 @@ export function nodeStateOf(session: Session, seq: number, isShadowed: (seq: num
 const ROOT_SEQ_MAX_DEPTH = 32
 
 /**
- * 沿 surfaceOp replace 链回溯到 append 根源 seq（1.10.2，0-6）。
+ * 沿 surfaceOp replace 链回溯到 append 根源 seq。
  *
  * 归并墓碑指向修正用：墓碑副本事件是 replace，其 [startSeq..endSeq] 指向**上一代**
  * （链式替换下是上一代墓碑而非原文）；循环回溯到 surfaceOp === 'append'（或无 op）

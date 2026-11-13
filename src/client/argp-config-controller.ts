@@ -17,28 +17,24 @@
  */
 
 /**
- * The 2.0 settings roster (design-2.0 §3.4): SIX knobs — three engine-agnostic
- * (windowRatio/retainRatio/charsPerToken) plus three factor-arm (focalTurns/vocabTopN/
- * recallLimit). The retired graph knobs (maxPasses/recencyGuard/
- * turnGuard/minSpanChars/sortMode) are gone from the card; the graph arm keeps
- * consuming them from cordis config (tolerated-read, see server normalizeConfig).
- * The `engine` discriminator is NOT here on purpose: it is non-volatile, and the
- * host's volatile form never carries non-volatile keys (settings/schema.ts
- * volatileForm — verified against the host checkout), so the card could neither
- * read nor write it. Profile/patch layers own that key.
+ * The 2.0 settings roster (design-2.0 §3.4): SIX knobs — three generic
+ * (windowRatio/retainRatio/charsPerToken) plus three factor-specific (focalTurns/
+ * vocabTopN/recallLimit). The retired 1.x graph knobs (maxPasses/recencyGuard/
+ * turnGuard/minSpanChars/sortMode) and the `engine` discriminator are gone from
+ * the card; old profiles are tolerated with a warning (server normalizeConfig).
  */
 export interface ArgpUserSettings {
-  /** Compaction window as a fraction of the context budget (both arms). */
+  /** Compaction window as a fraction of the context budget. */
   windowRatio: number
-  /** Tokens retained after compaction, as a fraction of the window (both arms). */
+  /** Tokens retained after compaction, as a fraction of the window. */
   retainRatio: number
-  /** Characters-per-token heuristic for budget math (both arms). */
+  /** Characters-per-token heuristic for budget math. */
   charsPerToken: number
-  /** Focal turns kept verbatim — never pruned, never summarized (factor arm). */
+  /** Focal turns kept verbatim — never pruned, never summarized. */
   focalTurns: number
-  /** Vocabulary note entries per category (factor arm). */
+  /** Vocabulary note entries per category. */
   vocabTopN: number
-  /** Default items recall_history returns when no limit is given (factor arm). */
+  /** Default items recall_history returns when no limit is given. */
   recallLimit: number
 }
 

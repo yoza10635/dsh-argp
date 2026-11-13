@@ -29,7 +29,7 @@ export declare const HOST_CHARS_PER_TOKEN = 4;
  *
  * 全部发射点（peratom flush 的整窗 summary / per-atom prune、prune-tx 的 summary /
  * 逐区间 prune）一律经本函数，禁止各点裸写 `/ 3.5` 或 `/ host.charsPerToken`——
- * 1.8.0 前的病灶正是三处发射器三种口径（/3.5 硬编码、/4、旋钮 3.5）在同一条 fold 流上
+ * 旧的病灶正是三处发射器三种口径（/3.5 硬编码、/4、旋钮 3.5）在同一条 fold 流上
  * 记两本账。口径锁定测试（`test/compaction-prune-017.test.ts`）对本函数与真实发射路径
  * 双重验锁：摘掉任一发射点的本函数调用必须变红。
  */
@@ -53,7 +53,7 @@ export declare const DEFAULT_LLM_TIMEOUT_MS = 180000;
  *  这两类是**已经浓缩过一次的产物**——子代理把 46K–75K 字符的工作过程提炼成
  *  3.6–7.1K 字符的报告（10–20×）。实测行重复率 **0%**（无内部冗余可丢）、
  *  承重 token 密度 0.1–1.5%（散文式报告而非结构化数据），逐原子压缩只会造成
- *  二次损失。它们更适合交给 Stage-2 图剪：全留或全删 + 墓碑 + `recall_pruned(seq)`
+ *  二次损失。它们更适合交给剪枝事务：全留或全删 + 墓碑 + 标签取回
  *  可召回，而不是中间态的有损摘要。
  *
  * 注意两条正交轴别混用：`source.kind` 非 `'user'` 是「谁生产的」（注入 → 排除），

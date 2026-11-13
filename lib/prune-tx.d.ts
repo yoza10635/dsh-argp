@@ -4,15 +4,13 @@ import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import type { Atom, AtomType } from './argp-types.js';
 import type { SessionRuntimeState } from './session-state.js';
 /**
- * tombstone 可合并判据（v1.2.x §11.8① 修复；1.7.1 换判别轴）。
+ * tombstone 可合并判据。
  *
- * 1.7.0 判据 = `startsWith('[elided') && includes('pruned by ARGP') && includes('recall_pruned')`
- * —— `pruned by ARGP` 是一段**自然语言**，且被故意作为 tool 占位墓碑的"缺项"来区分两族
- * （见下方 consolidateTombstones 注释）。1.7.1 文案统一后该子串消失，判据随之失效，
- * 故换轴为**语法级前缀**（`[elided ` 空格族 = 可合并 / `[elided:` 冒号族 = tool 占位）。
+ * 判据是**语法级前缀**（`[elided ` 空格族 = 可合并 / `[elided:` 冒号族 = tool 占位）。
+ * 不能用自然语言子串（如旧口径的 `pruned by ARGP`）：文案会变，判据随之失效。
  * 实现下沉到 `tombstone-text.ts`，与文案生成同处一文件——两者不再可能各自漂移。
  *
- * 语义不变：X 原子中仅「本引擎剪枝墓碑」可安全合并。其余 X（宿主 system-reminder、
+ * 语义：X 原子中仅「本引擎剪枝墓碑」可安全合并。其余 X（宿主 system-reminder、
  * 官方摘要 checkpoint、注入型 checkpoint）不可动；`consolidateTombstones` 另有一道
  * **事件类型**过滤（只认 user/message），与文本判据构成双保险，防孤儿 tool_calls。
  * 导出供测试锁定行为。
@@ -43,14 +41,14 @@ export interface GraphPruneRecord {
     charsAfter: number;
     forced: boolean;
     /**
-     * 事务以 error end 收尾时携带错误消息（1.10.2，0-5）：该事务是 partial（已落地的
+     * 事务以 error end 收尾时携带错误消息：该事务是 partial（已落地的
      * replace 子集真实有效，但整体未成功）。带 error 的记录**不参与**墓碑重定向表
      * （intervals 为空），账本重建侧据此与成功事务区分。
      */
     error?: string;
 }
 /**
- * F3（1.7.1）：旧 seq → 当前替身 seq（墓碑）的重定向表。
+ * F3：旧 seq → 当前替身 seq（墓碑）的重定向表。
  *
  * **病灶**：declarer 写入侧 `collectDeclAtoms` 走 `sessionEvents`（**原始 append-only 日志**），
  * 已被 replace 离场的旧 seq 仍在 `toBySeq` 校验白名单内（模型引用它**合法**，
@@ -93,7 +91,7 @@ export interface PruneTxHost {
         warn: (msg: string) => void;
         error: (msg: string) => void;
     };
-    /** 1.11.0-beta.0（1-1）：会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
+    /** 会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
     stateOf: (session: Session) => SessionRuntimeState;
     compactSourceCommandId: CommandId | undefined;
     charsPerToken: number;

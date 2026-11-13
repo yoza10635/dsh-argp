@@ -1,100 +1,140 @@
-# ARCHITECTURE — dsh-argp 实现说明
+# ARCHITECTURE — dsh-argp 2.0 实现说明
 
 > 本文档讲**怎么实现的**。能干什么、凭什么选它见 [README.md](README.md)。
 > 读者：想读懂/二次开发本插件的人，不需要读完整设计史。
+> 1.x 的 stage-2 图引擎/三管线实现已退役（冻结在 npm `1.11.2`，tag `v1.11.2`），
+> 本文只描述 2.0 现存代码。
 
 ## 1. 一句话架构
 
-ARGP 把对话历史拆成**原子**（U/A/R/X 四类事件），LLM 每轮声明**引用边**建出依赖图，压缩时按"孤立→contextual→supporting→critical"的**反向拓扑序**纯算法摘除被剪节点——**压缩决策阶段 0 LLM 调用**。被剪内容不销毁，走 recall 从 append-only 日志找回。
+因子引擎把对话拆成**原子**（U/A/R/X 四类 surface 事件）。压缩时**只剪 R**（工具结果）：
+按实体标签与过期判据打分 → `prune-tx` 事务逐区间成对发射 `compaction/prune` + `replace`
+（最小桩）→ 散文浓缩（唯一 LLM 通路，事务内双闸）→ 词表 note 收尾。**剪枝决策 0 LLM**；
+被剪原文留在 append-only 日志，`recall_history(label)` 按字节取回。
 
 ```
 对话事件流（append-only 日志）
       │
       ▼
-┌─────────────────────────────────────────────┐
-│ Stage-1  per-atom 管线（turn 尾，eager）      │
-│  gate(门控) → split(拆分) → compressor(熵降) │
-│        + cite-declarer(引用边声明)            │
-└─────────────────────────────────────────────┘
-      │ 压缩副本落 surface + 引用边入图
+┌──────────────────────────────────────────────────────────┐
+│ 触发（pre-step / 手动 / 400）                              │
+│  §9.37 出口闸（anchored 容量算术）                          │
+│  §9.36 浓缩闸二（ctx 线）                                   │
+└──────────────────────────────────────────────────────────┘
+      │ compactIfNeeded / compactNow
       ▼
-┌─────────────────────────────────────────────┐
-│ Stage-2  图引擎（窗口将满时，lazy）            │
-│  buildGraph → 反向拓扑序 pruneIntervals       │
-│  → 逐区间成对发射（shadowedRange + replace）  │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ FactorEngine（0 LLM）                                     │
+│  atomize → R 贴标打分 → plan（焦点/sticky/过期/宽度）       │
+│  → prune-tx：start → summary → 逐区间 prune+replace → end │
+└──────────────────────────────────────────────────────────┘
+      │ 事务内（可选）
+      ▼
+┌──────────────────────────────────────────────────────────┐
+│ ProseCondenser（唯一 LLM 摘要通路）                        │
+│  闸一：散文占比 ≥ 50% 声明窗                                │
+│  one-shot 原生式摘要；barrier/受保护跨度不动；空输出保原文    │
+└──────────────────────────────────────────────────────────┘
       │
       ▼
-  recall（两级 zoom：summary 档 / detail 档 verbatim）
+  recall_history / list_labels（标签地址，日志原文，字符预算）
 ```
 
-双引擎的分工：**Stage-1 是有损压缩**（熵降，LLM 参与，信息保底可恢复）；**Stage-2 是删除**（剪枝，0-LLM 确定性，被删内容靠 recall 兜底）。
+## 2. 原子模型与剪枝面
 
-## 2. 事件原子化与引用边
+| 原子 | 含义 | 来源 | 可剪？ |
+|---|---|---|---|
+| **U** | user 输入 | 原生 user 事件 | 否（焦点/轮次保护；U-info 副本按 R 待遇是 1.x 口径，2.0 不产生） |
+| **A** | assistant 回复（tool-call 块内嵌） | 原生 assistant 事件 | 否（散文归浓缩链） |
+| **R** | tool result | 原生 toolResult 事件 | **是**（唯一剪枝面） |
+| **X** | 墓碑/checkpoint/plugin 注入 | plugin-source 事件 | 否 |
 
-| 原子类型 | 含义 | 来源 |
-|---|---|---|
-| **U** | user 输入 | 原生 user 事件 |
-| **A** | assistant 回复（tool-call 块内嵌在 A 里；dsh surface 无独立 tool/call 节点） | 原生 assistant 事件 |
-| **R** | tool result | 原生 toolResult 事件 |
-| **X** | compact 墓碑/checkpoint（plugin 注入） | plugin-source 事件 |
+标签（`factor/tag-extract.ts` + `tag-canonical.ts`）：`document:<canonical path>`（read/edit/write）、
+`command:<family>`（bash/pwsh 命令族）、`errorcode:<CODE>`（ALL_CAPS + 错误信号）、
+`scope:<dir>`（grep/glob 的搜索根）。**出口 fail-closed**：词表只渲染当前文法认得的键，
+被拒收的键留索引不进 prompt（`list_labels` 可查拒收数）。
 
-**引用边（cites）**：模型每轮回复尾部可携带 `{"cites":[{"t":"前缀","l":"c|s|x"}]}` 尾块（`t` = 被引用节点的逐字前缀原文，`l` = 分级 c/s/x；旧式裸字符串 `{"cites":["前缀",...]}` 向后兼容，一律判 supporting），声明"本轮引用了哪些历史节点"。引擎侧 `cites-strip.ts` 剥离尾块（纯函数，服务端/客户端共用同一逻辑），解析出的边入图。
+过期判据（`factor/retention-score.ts` + `factor-atoms.ts`）：焦点轮（最新 N 轮）、
+sticky（近窗反复出现的标签）、superseded（同路径更新的读）、版本链、可再生成性
+（读后文件未变 = 可重新读回）、锁定记忆。排序输出 `PrunePlan`；`plan.clipOrder` 是
+C10 夹剪层的归位段（env 开）。
 
-**边的两种来源**（可共存，不能同时归零）：
-- **回复级 cites**：`argp-cites` PromptSection（order 151）驱动模型在回复里声明——默认 `auto`，declarer 管线武装时自动关闭（避免双保险）；
-- **结构化 declarer**：`cite-declarer` 管线在 turn 尾单独调 LLM 声明边，不污染主回复（消灭 UI 显示泄漏）。
+## 3. 压缩事务（prune-tx）
 
-**A→R 确定性边**：assistant 与其 tool result 之间无需模型声明，引擎经 `toolCallId` 自动连边（`toolPairingBalancedBefore/After`）。
-
-## 3. 反向拓扑剪枝（Stage-2 核心）
-
-```
-inDegree 计算（每 pass 重推）
-   │
-   ▼
-按 孤立(inDeg=0) → contextual → supporting → critical 分层
-   │
-   ▼
-逐层摘除：摘一个 pass 后**重推 inDegree**——
-多引用的节点须**所有**引用方都被剪后才解锁
-   │
-   ▼
-pruneIntervals 逐区间成对发射（见 §5 shadow-price 契约）
-```
-
-关键不变式：
-- **inDegree 每 pass 重推**（不是剪完一次就算）：A 被 B、C 两节点引用，必须 B、C 都被剪，A 才解锁。
-- **0 LLM 调用**：整个剪枝循环是纯图算法，LLM 只在边声明阶段（Stage-1）参与。
-
-## 4. 双引擎生产挂载
-
-**生产路径是引擎构造期自挂**：`config.peratom` 为对象时，`ArgpGraphEngine` 构造期挂载三条 Stage-1 管线并内部接线 `injectEdges` / `onOverflowCompress`（显式传入的同名 config 键被忽略并告警）。之所以自挂：真宿主 bundle patch 只能声明式挂一个插件入口（default export 只有图引擎），自挂是双引擎进入生产分发的唯一路径。
-
-`peratom/mount.ts` 的 `mountPeratomStack` 是**测试/三臂工厂**（与生产自挂同拓扑，供单测与 spike 37 的 A/B/C 臂装配），不是生产挂载路径。
-
-```
-ctx.compaction === ArgpGraphEngine（peratom 已武装）
-   ├─ compressor  — turn 尾 eager 熵降（Stage-1 P1）
-   ├─ declarer    — turn 尾引用边声明（Stage-1 P2）
-   └─ zoom        — 两级 recall 工具（Stage-1 P3）
-```
-
-组件 config 传 `llm: { provider, model }` 走宿主 dsh-llm（生产形态）；不传则按各组件 fetch 环境变量解析（本地实验形态）；两路皆缺时走宿主路由自动兜底（`autoDshLlmSpec`，1.3.0）；三路都解不出自然 disabled（零网络）。`peratom: false` / `null` 关闭整条 Stage-1 管线（与缺省同语义），只剩 Stage-2 图引擎。
-
-## 5. shadow-price 契约（与宿主的硬约束）
-
-宿主 `token-meter/surface-projection.ts foldSurfaceProjection` 要求：**每次 prune/summary 的 `shadowedRange` 必须与紧随其后的 surface `replace` 范围严格相等**，否则 resume 投影 throw。
+宿主 `token-meter/surface-projection.ts foldSurfaceProjection` 要求：**每次
+`compaction/prune` 的 `shadowedRange` 必须与紧随其后的 surface `replace` 范围严格相等**，
+否则 resume 投影 throw。
 
 实现口径：
-- `pruneIntervals` **逐区间成对发射**（对齐官方 `compaction-tool-result-pruner`），不是一口气发射所有区间；
-- `shadowedSeqsOf` 只收 `op==='replace'` 且**无 `argpCites` 字段**的 replace——cites 剥离写回（单点 replace + `data.argpCites`）不算"被剪节点"，误收会让 catalog 谎报压缩 → system 前缀每轮变 → 跨轮缓存全断（commit `6d252cf` 修）。
 
-**固有权衡**：任何压缩都会丢一次 KV 缓存（摘要式同样），属设计接受的成本，非缺陷。
+- `pruneIntervals` **逐区间成对发射**（对齐官方 `compaction-tool-result-pruner`），
+  一笔事务可含多个区间；
+- tool 桩**克隆原 R 的 data、只改内文**（保留 callId / role / id / isError），
+  配对 issuer A 的 tool_calls 防 400（`assertToolResultRewrite` 只允许改 inner text）；
+- 事务尾把 usage 锚重置为 chars 估算（`lastRealPromptTokens = visibleChars/charsPerToken`），
+  下一笔成功请求由 provider usage 重锚；
+- `shadowedSeqsOf` 只认 `compaction/prune.shadowedSeqs`——权威账本，不从 replace 形态推断
+  （cites 剥离写回、单节点 replace 不得被误当"已剪"）；
+- 召回字符预算 `recallCharsUsed` 在事务成功时归零。
 
-## 6. 宿主版本兼容与 V3 会话信封
+## 4. 触发与两道闸
 
-### 6.1 事件日志读取（`sessionEvents`）
+### 4.1 两条确定性信号
+
+1. **手动 `/compact`**（宿主 `command-compact` → `compactNow`）：全量剪 + 散文浓缩；
+2. **provider 400 `CONTEXT_WINDOW_EXCEEDED`**：`compactIfNeeded('context-overflow')`
+   强制剪一次后重试（`maxOverflowRetries` 缺省 1）。
+
+pre-step 的**估算驱动压力剪**已退役（`ARGP_FACTOR_PRESSURE=1` 仅旧世界对照臂）。
+
+### 4.2 §9.37 出口闸（缺省开）
+
+位置：pre-step（上一请求 usage 已锚、下一请求未发）。确定性算术：
+
+```
+projected = anchored usage + 本步 incoming 估值（chars/charsPerToken）
+line      = 声明窗 − 输出预算 − round(声明窗 × 0.02)
+projected ≥ line  ⇒  不发请求，先 compactIfNeeded('pressure')
+```
+
+- **只认 anchored**：断锚（回退 chars/tokenMeter）不驱动破坏性改写；
+- **声明窗来源**：活 `request/context` 事件 → 冷 resume 时反向扫日志回填
+  （`restoreDeclaredWindow`）→ 再兜底 `session.requestContext()`；全无 ⇒ 不拦（交 400 网）；
+- **输出预算三源取 max**：①`agent.options.maxTokens`（宿主 buildRequest 同源）
+  ②`requestMaxTokens`（`agent/request` 瀑布观测）③`llm.resolveModelInfo().defaultMaxTokens`
+  （请求缺 mct 时 llm 在瀑布**之后**注入，②对它失明）；全缺退 `0.25×窗`；
+- **互斥**：`ARGP_FACTOR_PRESSURE=1` 时本闸不挂（两 env 各管一个对照世界，不叠乘）；
+- **事务内闸二补检**：出口闸的线可低至 ≈0.73×窗，`compactIfNeeded('pressure')` 里
+  `measurement.contextTokens >= windowTokens` 必须再过一次才允许调用散文浓缩（LLM 链
+  不得被自动通路提前触达）。
+
+### 4.3 §9.36 浓缩闸二（ctx 线）
+
+pre-step 位：`source==='anchored'` 且 `contextTokens ≥ windowRatio×声明窗` ⇒ 驱一发
+清扫式浓缩（闸一在 `prose-condenser` 内：散文占比 ≥50%）。手动 `compactNow` 免闸二。
+
+## 5. 召回面
+
+| 工具 | 输入 | 数据源 |
+|---|---|---|
+| `recall_history` | `labels[]`（交集）+ `limit` + `cursor/epoch` | `rawEventText` 取日志 append 根源原文；桩不冒充 |
+| `list_labels` | `category`（document/command/errorcode）+ `limit` | 被剪账本的词表（键 × 覆盖数 × 最后出现轮） |
+
+- 查询宽容：裸标签按四 facet 展开试匹配；未命中标签**如实回显**（不静默剔除）；
+- 分页：`cursor/epoch` 续读，epoch 漂移显式告警（不假装稳定分页）；
+- 预算：单次 5% / 累计 10% 窗口，耗尽/截断都带余额说明；
+- 防循环：每轮 20 次调用上限（安全阀，非内容限制）。
+
+## 6. 读侧兼容（不可删）
+
+- 老墓碑文法 v1.3.x–v1.7.x（`tombstone-text.ts`）——resume 老会话时识别；
+- 老 `data.argpCites` 忽略读（`atomize` 归一化三种历史形状）；
+- `prune-tx` 的 tool/result 克隆/配对契约；
+- 旧 `compaction/end.catalogText` 字段不再读取（图臂的 catalog 已退役）。
+
+## 7. 宿主兼容与边界
+
+### 7.1 事件日志读取（`sessionEvents`）
 
 ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking 变化：
 
@@ -102,87 +142,71 @@ ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking �
 |---|---|
 | rc.2（0.1.1） | `session.events`（getter，返回全日志数组） |
 | alpha.4（0.1.2+）～0.1.3 | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
-| **0.1.5+（当前支持基线 0.1.7-alpha.2）** | `snapshotEvents()`；`events` 已彻底不存在 |
+| **0.1.5+（当前支持基线）** | `snapshotEvents()`；`events` 已彻底不存在 |
 
-`log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**：运行时探测 `snapshotEvents`（modern）/ 回退 `events`（legacy），两者皆无则 throw。所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
+`log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**。
+所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
 
-**1.1.0 起支持基线上移到 0.1.5-rc.1**：legacy 分支在受支持范围内已不可达，仅作宿主形态回退的防御保留（由 stub 用例覆盖）。rc.2～0.1.3-alpha.2 宿主请使用 dsh-argp **1.0.5**。**当前支持基线为 0.1.7-alpha.2**（`package.json` peerDependencies，1.7.0 起上移；1.7.0 前为 0.1.6-alpha.1）。
+### 7.2 `SurfaceOp` 键名（`startSeq`/`endSeq`）
 
-### 6.2 V3 `SurfaceOp` 键名（`startSeq`/`endSeq`）
+ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5 前是
+`start`/`end`——**两代都强制 `Object.keys(surfaceOp).length === 3`**，同时写两套键会被
+双方拒绝。`Session.append()` 内部**同步**调用 `surfaceManager.validateNext()`，键名写错
+不是"剪枝静默失效"，而是**在事务中途抛错**（start 已落盘而 tombstone 未写，事务半开）。
 
-ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5 前是 `start`/`end`——**两代都强制 `Object.keys(surfaceOp).length === 3`，同时写两套键会被双方拒绝**，因此一个构建无法同时服务两代宿主。
+### 7.3 `SessionSeq` 品牌类型
 
-失败模式值得记住：`Session.append()` 内部**同步**调用 `surfaceManager.validateNext()` → `surfaceOpOf()`，不认即 `throw`。所以键名写错不是"剪枝静默失效"，而是**在 compaction 事务中途抛错**——`compaction/start` 已落盘而 tombstone 未写，事务半开。
+内部模型（原子/区间/账目/预算）一律裸 `number`；只在写入/查询 dsh API 的边界经
+`asSeq()` / `asSeqs()` 收窄（`log-access.ts`），收窄处不做运行时校验（宿主已有权威校验）。
 
-### 6.3 `SessionSeq` 品牌类型与收窄边界
+### 7.4 node 0 系统提示保护
 
-0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`，裸 `number` 不再可赋值。ARGP 的约定：
+0.1.5 把系统提示表示为 surface node 0 的 `system/message`，宿主
+`assertSystemHeadRewrite` 硬性保护该位置。`atomize` 只识别
+`user/message` / `assistant/message` / `tool/result` / `developer/message`，
+`system/message` **静默跳过、不产出原子** → node 0 永不进入剪枝区间。有意依赖，已由
+注释与测试钉死。
 
-- **内部模型（原子/区间/账目/预算）一律裸 `number`**——内部要做加减与区间比较，品牌类型在算术上寸步难行；
-- **只在写入/查询 dsh API 的边界**经 `asSeq()` / `asSeqs()`（`log-access.ts`）收窄；
-- 收窄处**不做运行时校验**：宿主 `Session.append` 已有权威校验，重复校验只会把错误信息推离现场，并制造第二份需同步维护的真相。
-
-### 6.4 node 0 系统提示保护
-
-0.1.5 把系统提示表示为 surface node 0 的 `system/message`，宿主 `assertSystemHeadRewrite` 硬性保护该位置（覆盖 node 0 的 replace 必须是恰好覆盖该单节点的 `system/message`）。`atomize` 只识别 `user/message` / `assistant/message` / `tool/result`，`system/message` **静默跳过、不产出原子** → node 0 永不进入剪枝区间。这是有意依赖而非巧合，已写进 `atomize` 的文档注释并由测试钉死。
-
-## 7. recall 两级 zoom
-
-被剪/被压内容不销毁，从 append-only 日志找回：
-
-| 工具 | 档位 | 数据源 | 成本 |
-|---|---|---|---|
-| `recall_summary(seq)` | gist（"这内容关于什么"） | 优先存储 summary → 降级压缩副本 → 降级原文 | 便宜（预算 4×） |
-| `recall_detail(seq, from?, limit?)` | exact（"确切字符串"） | append-only 日志原文：text 块逐字字面量；tool-call 参数为对象时 JSON 语义等价重建并精确标注。保真仅保证结构化承重 token 逐字（`token-ontology.ts` LOAD_BEARING_PATTERNS），散文级不保证逐字。大节点 from/limit 分页，截断标记回传续读 from | 贵（预算 1×） |
-
-程序化入口：`recallAnyState()` / `nodeState()`（不受工具门控）。引擎侧 `recall(seq)` 是窄接口，**仅**命中被剪节点（pruned-only 语义，给宿主/测试探针用）。
-
-## 8. 模块职责表
+## 8. 模块职责表（2.0）
 
 | 文件 | 职责 | 依赖 |
 |---|---|---|
-| `argp-graph-engine.ts` | Stage-2 图引擎**组合根**：持有字段 + 1–4 行薄转发方法，编排下方 hub 模块（3,313 → 1,646 行） | argp-types, constants, telemetry, log-access, token-ontology, graph-build, budget, recall, prune-selection, prune-tx, recall-tools, session-lifecycle, peratom/* |
-| `argp-types.ts` | 共享类型与常量（Atom/AtomType/SemanticEdge/DeterministicEdge/EdgeLevel/ArgpUserSettings/EDGE_WEIGHTS/LEVEL_ORDER），叶子 | cites-strip（type-only） |
-| `constants.ts` | 跨引擎共享默认阈值/预算/比例/超时（具名常量），叶子 | — |
-| `telemetry.ts` | 有界环形缓冲 `pushBounded`（诊断/遥测数组），叶子 | — |
-| `graph-build.ts` | 建图：atomize / buildGraph / findVersionDuplicates / extractCites / classifyUserMessage / looksAskText | argp-types, log-access, cites-strip, token-ontology, peratom/types |
-| `budget.ts` | token 度量与预算：visibleChars / resolveScaledBudgets / measureTokens / scaleBudgets + acquireTokenMeter | constants, log-access |
-| `recall.ts` | recall 核心：shadowedSeqsOf / catalogText / recallQuery / recall / nodeState / latestTurnOf / noteRecallHit / budgetRecallText | argp-types, log-access, graph-build, telemetry |
-| `prune-selection.ts` | 剪枝候选选择：isAtomCandidate / isGroupCandidate / sortKey / selectClosureToMerge（模块级纯函数） | argp-types |
-| `prune-tx.ts` | 剪枝事务：pruneIntervals / consolidateTombstones / compactRegions / selectManualRanges / compactRegion / isMergeableTombstone | argp-types, log-access, dsh-compaction/llm/commands |
-| `recall-tools.ts` | `recall_pruned` / `list_pruned` 两个 defineTool 闭包 | argp-types, log-access, graph-build, telemetry |
-| `session-lifecycle.ts` | 会话生命周期：normalizeConfig / registerSettings / mountPeratomStack / bindSession / rebuildLedgerFromLog / rearmReactive / compactNow | argp-types, log-access, peratom/compressor |
-| `log-access.ts` | 事件日志唯一入口（sessionEvents）+ 日志级访问原语（eventText / detectOpenTurn / turnOf / rawEventText） | dsh-session, peratom/types |
-| `cites-strip.ts` | cites 尾块匹配/剥离（纯函数，零依赖） | — |
-| `token-ontology.ts` | 承重 token 词表 + 保真守卫 + 原子间推断边（共享叶子模块，零依赖） | — |
-| `preset-cleaner.ts` | preset 净化器（0.1.7 override-only）：纯文本摘除 stock 摘要器行 + compaction isolate 块，把 shipped preset 转成顶层 modify 行；由 build 脚本 `scripts/generate-preset-overrides.ts` 烘焙进 `cordis.patch.yml`（无运行时 registry 变更） | —（纯文本函数，零运行时依赖） |
-| `peratom/types.ts` | Stage-1 共享类型与常量（叶子模块） | — |
-| `peratom/gate.ts` | 门控判定（纯函数，0 LLM/0 Session） | — |
-| `peratom/split.ts` | 拆分解析与策略（纯函数） | — |
-| `peratom/compressor-types.ts` | compressor 共享类型（CompressDecision / CompressRecord / CurrentTurnCollect / defaultEndpoint），叶子 | llm-adapter（type-only）, gate（type-only） |
-| `peratom/decision.ts` | 决策：extractJson / normalizeDecision / planReplacements | types, split, gate, token-ontology, compressor-types |
-| `peratom/collect.ts` | 采集：collectCurrentTurn / collectOpenTurn / waterMarkOf / advanceWaterMark | log-access, gate, compressor-types |
-| `peratom/prompt.ts` | prompt：buildPrompt / postChat / backend | llm-adapter, compressor-types |
-| `peratom/flush.ts` | flush：prepareCurrentTurn / flushStashed / flushEntry / buildContextPrefix / awaitInFlightPass / rememberRoute | log-access, llm-adapter, dsh-compaction/llm |
-| `peratom/compressor.ts` | Stage-1 eager 熵降管线**组合根**（1,520 → 362 行） | types, gate, token-ontology, constants, telemetry, compressor-types, decision, collect, prompt, flush, llm-adapter |
-| `peratom/cite-declarer.ts` | Stage-1 引用边声明管线 | argp-types, gate, log-access, types, constants, telemetry, llm-adapter |
-| `peratom/recall-zoom.ts` | Stage-1 两级 recall 工具（recall_summary / recall_detail 分页） | log-access, types, constants, telemetry |
-| `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / 宿主路由自动兜底 autoDshLlmSpec） | dsh-llm |
-| `peratom/mount.ts` | 测试/三臂挂载工厂（与生产自挂同拓扑；非生产路径） | argp-graph-engine, compressor, cite-declarer, recall-zoom |
-| `client/index.ts` | 客户端：隐藏 cites 尾块（chat 渲染）+ 注册设置卡片（settings.plugin.item slot） | cites-strip, argp-config-controller |
-| `client/argp-config-controller.ts` | 客户端设置卡片控制器：settings 命名空间上的暂存表单 + locale 包 + 字段校验 | — |
-| `client/argp-config-card.ts` | 客户端设置卡片 UI（Settings → Plugins → Plugin configuration，2.0 名册七枚旋钮，design-2.0 §3.4） | argp-config-controller |
-| `index.ts` | 公共导出 | — |
+| `argp-graph-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
+| `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, graph-build, telemetry, constants, budget, prune-tx |
+| `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), graph-build(type), prune-tx(type), log-access(type) |
+| `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表/note | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
+| `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, peratom/llm-adapter |
+| `factor/recall-labels.ts` | `recall_history` / `list_labels` 两个 defineTool + 会话解析/防循环阀 | log-access, telemetry, factor-ledger, factor/engine |
+| `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary` | — |
+| `factor/factor-atoms.ts` | R 原子投影：标签、焦点、sticky、cites/命令/路径抽取辅助 | tag-extract, tag-canonical |
+| `factor/retention-score.ts` | 保留打分与 `planPrune`（焦点带/sticky/过期/宽度熔断/夹剪归位） | factor/types, factor-atoms |
+| `factor/tag-extract.ts` | 工具参数/输出 → 实体标签（四 facet） | tag-canonical |
+| `factor/clip-shape.ts` | C10 夹剪层语义（三态保留与文本形） | — |
+| `graph-build.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, peratom/types |
+| `budget.ts` | `visibleChars` / `resolveScaledBudgets` / `measureTokens` / `scaleBudgets` / `acquireTokenMeter` | constants, log-access |
+| `recall.ts` | `shadowedSeqsOf`（权威账本）+ `budgetRecallText`（字符预算） | log-access, session-state(type) |
+| `prune-tx.ts` | 事务骨架：`pruneIntervals` / `consolidateTombstones` / 手动区间函数 / `buildTombstoneRedirect` | argp-types, log-access, graph-build |
+| `tombstone-text.ts` | 墓碑文案与老文法识别（读侧兼容） | — |
+| `cites-strip.ts` | cites 尾块匹配/剥离（残差清扫；纯函数，零依赖） | — |
+| `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / `autoDshLlmSpec` 宿主路由兜底） | dsh-llm |
+| `peratom/types.ts` | 来源判定叶子（ARG_NS / isArgpUserInfo / isOwnSourceKind） | — |
+| `argp-types.ts` | Atom / AtomType / ArgpUserSettings（叶子） | cites-strip(type-only) |
+| `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, peratom/types |
+| `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
+| `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
+| `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale |
+| `client/*` | 设置卡片（6 旋钮暂存表单 + locale 包）+ 聊天渲染的 cites 尾清扫 | cites-strip |
 
 ## 9. 关键不变式清单
 
-1. **压缩阶段 0 LLM**：剪枝循环纯图算法。
-2. **append-only**：原始事件永不改写，只加新事件；被剪 = surface 上不可见 + shadowedRange 标记。
-3. **inDegree 每 pass 重推**：多引用须全部引用方被剪才解锁。
+1. **剪枝决策 0 LLM**：FactorEngine 全链确定性；LLM 只在散文浓缩里出现。
+2. **只剪 R**：A/U/X 永不入剪枝区间（A 归浓缩链，U 受焦点/轮次保护，X 是墓碑）。
+3. **append-only**：原始事件永不改写，只加新事件；被剪 = surface 上不可见 + shadowedRange 标记。
 4. **shadowedRange === surface replace 范围**（逐区间成对）。
 5. **cites 剥离写回 ≠ 被剪节点**（不收进 shadowedSeqs）。
 6. **sessionEvents 是唯一事件日志入口**：不直接碰 `session.events` / `session.snapshotEvents`。
-7. **lib/ 与 src/ 字节一致**：CI 强制 `git diff --exit-code lib/`，改 src 必须 build 提交 lib。
+7. **lib/ 与 src/ 一致**：改 src 必须 build 提交 lib（构建先清空 lib，防陈旧产物）。
+8. **召回原文来自日志 append 根源**：桩/摘要不冒充原文；预算与未命中都显式。
 
 ## 10. 代码质量预算（软性指引，非门控）
 
@@ -195,35 +219,40 @@ ARGP 的剪枝/压缩写回全部是 `surfaceOp: { op: 'replace', startSeq, endS
 | 嵌套深度 | ≤ 4 | 参数数量 | ≤ 5 |
 | 函数长度 | ≤ 80 行 | | |
 
-阈值取业界常用档（Google/ESLint 常见线）。度量口径：对 `src/`（排除 `test/`、`lib/`、`spike/`）用任意 AST 复杂度分析工具统计**单函数**的圈复杂度、认知复杂度、嵌套深度、函数行数，与上表对照；工具的百分比/severity 标签仅作参考，以原始数值为准。**"文件代码行数"（预算 ≤ 800）指代码行**（AST 语句/声明行，不含空行与纯注释行）；下方快照表的"文件行"列是**总行数**（含空行与注释，更接近编辑器所见），两者口径不同、不可直接对照预算——判断是否超预算时以代码行数为准（总行数超 800 而代码行数未超的，不记为超标）。
+### 2026-11-13 快照（2.0.0-alpha.0，base commit `dd9199c`；单函数 max；超预算项加粗）
 
-### 2026-09-21 快照（P5 重构后；单函数 max；超预算项加粗）
+度量工具：TypeScript 编译器 API（`scripts/analysis-extract.mjs` + `analysis-metrics.mjs`，
+口径同下表注）。"文件代码行"不含空行与纯注释；"总行"接近编辑器所见。
 
-度量工具：TypeScript 5.9.3 编译器 API。"文件行"列 = **总行数**（含空行/注释，见上方口径说明；对照 ≤ 800 预算请用代码行数）。**圈复杂度**口径与重构前基线一致（对 3,380 行旧版精确复现 58，故可直接对照）；**认知 / 嵌套 / 函数行**为本次工具口径（旧快照的认知 68 系另一工具，不直接可比）。
-
-| 文件 | 圈 | 认知 | 嵌套 | 函数行 | 文件行 |
+| 文件 | 圈 | 认知 | 嵌套 | 函数代码行 | 文件代码行/总行 |
 |---|---|---|---|---|---|
-| `argp-graph-engine.ts` | **49** | **148** | **6** | **268** | **1,646** |
-| `graph-build.ts` | **29** | **91** | **5** | **125** | 500 |
-| `prune-selection.ts` | **25** | **68** | 3 | **127** | 388 |
-| `peratom/decision.ts` | **25** | **87** | **9** | **185** | 344 |
-| `token-ontology.ts` | **25** | **55** | 4 | **90** | 268 |
-| `prune-tx.ts` | **24** | **79** | 4 | **213** | 492 |
-| `peratom/cite-declarer.ts` | **24** | **62** | 4 | 78 | 683 |
-| `peratom/flush.ts` | **23** | **40** | 4 | **134** | 469 |
-| `recall-tools.ts` | **17** | **45** | 4 | **171** | 212 |
-| `log-access.ts` | **17** | **46** | **6** | 47 | 413 |
-| `session-lifecycle.ts` | **17** | **41** | **5** | **107** | 484 |
-| `peratom/llm-adapter.ts` | **15** | **41** | **5** | 72 | 298 |
-| `preset-cleaner.ts` | **15** | **88** | **6** | 75 | 349 |
-| `recall.ts` | **14** | **26** | 4 | 40 | 280 |
-| `peratom/collect.ts` | **14** | **29** | 3 | 59 | 227 |
-| `peratom/gate.ts` | **13** | **32** | 4 | 42 | 299 |
-| `budget.ts` | **11** | **28** | 4 | 75 | 206 |
-| `cites-strip.ts` | 9 | **37** | **6** | 44 | 97 |
+| `src/factor/engine.ts` | **95** | **219** | **5** | **171** | **432**/611 |
+| `src/prune-tx.ts` | **65** | **126** | **5** | **235** | **434**/631 |
+| `src/argp-graph-engine.ts` | **52** | **95** | **5** | **137** | **593**/1012 |
+| `src/factor/recall-labels.ts` | **37** | **81** | **5** | **128** | 153/210 |
+| `src/session-lifecycle.ts` | **37** | **86** | **6** | **95** | 220/364 |
+| `src/factor/prose-condenser.ts` | **35** | **87** | **5** | **86** | 385/540 |
+| `src/factor/tag-extract.ts` | **33** | **76** | **6** | **81** | 157/210 |
+| `src/argp-command.ts` | **32** | **50** | 4 | 58 | 152/251 |
+| `src/graph-build.ts` | **28** | **110** | **7** | 64 | 98/178 |
+| `src/preset-cleaner.ts` | **21** | **81** | **7** | 62 | 186/311 |
+| `src/factor/factor-ledger.ts` | **20** | **49** | **7** | 57 | 273/373 |
+| `src/log-access.ts` | **20** | **54** | **7** | 40 | 289/471 |
+| `src/peratom/llm-adapter.ts` | **20** | **51** | **5** | 57 | 173/299 |
+| `src/budget.ts` | **17** | **29** | **5** | 54 | 141/226 |
+| `src/client/argp-config-card.ts` | **15** | 24 | 2 | **144** | 365/405 |
+| `src/factor/factor-atoms.ts` | **15** | **36** | 4 | 32 | 183/254 |
+| `src/factor/retention-score.ts` | **14** | **26** | 4 | 50 | 110/182 |
+| `src/cites-strip.ts` | **13** | **33** | **7** | 30 | 52/97 |
+| `src/client/argp-config-controller.ts` | 11 | 21 | 4 | 20 | 366/547 |
+| 其余 13 个 src 文件 | ≤10 | ≤18 | ≤4 | ≤34 | 均 ≤ 159 |
 
-**重构效果**：文件行数大幅下降（hub 3,380 → 1,646、compressor 1,520 → 362），src 源文件 20 → 32（+15 新模块 − 3 删除的 alt-engine）。但**单函数复杂度基本守恒**——重构把复杂度**搬**进新模块而非削减，每个新模块的函数 max ≈ 被搬走的那个原函数。
+**2.0 读法（诚实记录）**：
 
-**未达标项（诚实记录）**：roadmap 验收标准「`argp-graph-engine.ts` 圈 max 从 58 降到 ≤10 档」**未达成**——当前 **49**（同口径，降 16%）。根因：P5 第 2 步「拆 `compactIfNeeded`」只提了 3 个闭包，**核心贪心 pass 循环（268 行，29 if + 16 for）仍内联**——这才是圈复杂度的真正来源。**下一步**：把该 pass 循环体抽成模块级纯函数，才能把圈 max 压进 ≤10 档。§10 为软性指引（非门控）+ 棘轮原则，此项不阻断 1.5.0 发布，登记为后续目标。
-
-其余 14 个 src 文件全部在预算内。
+- 复杂度**总量大幅下降**：退役文件（peratom 管线、图形选择器、token 本体）整文件消失，
+  `argp-graph-engine.ts` 总行 1,646 → 1,012；
+- 复杂度**没有消失，而是集中**：`factor/engine.ts` 的 `planPrune`/`compactIfNeeded` 与
+  `prune-tx.pruneIntervals` 承接了全部剪枝选择/事务细节，是全库仅有的两处超 60；
+- 圈 ≤10 的验收线**未达成**（2.0 也未以"全部达标"为目标——本轮目标是形态收窄）。
+  后续若要压：优先把 `factor/engine.ts` 的打分/选择拆成纯函数，`pruneIntervals` 的
+  区间发射循环抽独立模块。

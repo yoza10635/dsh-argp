@@ -638,7 +638,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
    *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
    *  dsh tokenMeter / 配置函数 / 字符估算。source 标注估计来源。
-   *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
+   *  `extraTokens`：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
    *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
    *  常在轮初粘贴大段文本。
    */

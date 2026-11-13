@@ -28,15 +28,13 @@ import { pushBounded } from './telemetry.js'
 import { consolidatedTombstone, isMergeableTombstoneText, seqRangeTombstone, toolTombstone, toolTombstoneSummary } from './tombstone-text.js'
 
 /**
- * tombstone 可合并判据（v1.2.x §11.8① 修复；1.7.1 换判别轴）。
+ * tombstone 可合并判据。
  *
- * 1.7.0 判据 = `startsWith('[elided') && includes('pruned by ARGP') && includes('recall_pruned')`
- * —— `pruned by ARGP` 是一段**自然语言**，且被故意作为 tool 占位墓碑的"缺项"来区分两族
- * （见下方 consolidateTombstones 注释）。1.7.1 文案统一后该子串消失，判据随之失效，
- * 故换轴为**语法级前缀**（`[elided ` 空格族 = 可合并 / `[elided:` 冒号族 = tool 占位）。
+ * 判据是**语法级前缀**（`[elided ` 空格族 = 可合并 / `[elided:` 冒号族 = tool 占位）。
+ * 不能用自然语言子串（如旧口径的 `pruned by ARGP`）：文案会变，判据随之失效。
  * 实现下沉到 `tombstone-text.ts`，与文案生成同处一文件——两者不再可能各自漂移。
  *
- * 语义不变：X 原子中仅「本引擎剪枝墓碑」可安全合并。其余 X（宿主 system-reminder、
+ * 语义：X 原子中仅「本引擎剪枝墓碑」可安全合并。其余 X（宿主 system-reminder、
  * 官方摘要 checkpoint、注入型 checkpoint）不可动；`consolidateTombstones` 另有一道
  * **事件类型**过滤（只认 user/message），与文本判据构成双保险，防孤儿 tool_calls。
  * 导出供测试锁定行为。
@@ -62,7 +60,7 @@ export interface GraphPruneRecord {
   charsAfter: number
   forced: boolean
   /**
-   * 事务以 error end 收尾时携带错误消息（1.10.2，0-5）：该事务是 partial（已落地的
+   * 事务以 error end 收尾时携带错误消息：该事务是 partial（已落地的
    * replace 子集真实有效，但整体未成功）。带 error 的记录**不参与**墓碑重定向表
    * （intervals 为空），账本重建侧据此与成功事务区分。
    */
@@ -70,7 +68,7 @@ export interface GraphPruneRecord {
 }
 
 /**
- * F3（1.7.1）：旧 seq → 当前替身 seq（墓碑）的重定向表。
+ * F3：旧 seq → 当前替身 seq（墓碑）的重定向表。
  *
  * **病灶**：declarer 写入侧 `collectDeclAtoms` 走 `sessionEvents`（**原始 append-only 日志**），
  * 已被 replace 离场的旧 seq 仍在 `toBySeq` 校验白名单内（模型引用它**合法**，
@@ -116,7 +114,7 @@ export interface PruneTxHost {
   bindSession: (session: Session) => void
   atomize: (session: Session) => Atom[]
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
-  /** 1.11.0-beta.0（1-1）：会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
+  /** 会话态（台账/目录/召回预算/usage 锚点）分桶访问。 */
   stateOf: (session: Session) => SessionRuntimeState
   compactSourceCommandId: CommandId | undefined
   charsPerToken: number
@@ -320,8 +318,8 @@ export function pruneIntervals(
         const origMsg = origData?.message as Record<string, unknown> | undefined
         const origBlock = (origMsg?.content as Array<Record<string, unknown>> | undefined)?.[0]
         if (origData !== undefined && origMsg !== undefined && origBlock !== undefined) {
-          // G2（1.7.1）：文案自带**原始 R 的 log seq**（ts.seq 已在手，零额外查询）——
-          // 1.7.0 写着 `recall_pruned(seq)` 却不给 seq，逼模型绕一步 list_pruned 反查。
+          // G2：文案自带**原始 R 的 log seq**（ts.seq 已在手，零额外查询）——
+          // 只写 `recall_pruned(seq)` 却不给 seq 会逼模型绕一步反查，通路等于断的。
           // factor 臂传自定义最小桩（design-2.0 §1.2：桩文本禁引退役工具名，
           // 缺省 toolTombstone 是图臂墓碑文法）。
           const elidedText = ts.text ?? toolTombstone(ts.seq)
@@ -494,11 +492,11 @@ export function consolidateTombstones(host: PruneTxHost, session: Session): numb
   }))
   const chars = tombAtoms.reduce((s, a) => s + a.text.length, 0)
   const interval = { seqs: tombSeqs, chars, atoms: tombAtoms }
-  // 聚合墓碑文本（0-6，1.10.2 起 seqs/recall 指针指向 **append 根源**而非墓碑副本自身）：
+  // 聚合墓碑文本（seqs/recall 指针指向 **append 根源**而非墓碑副本自身）：
   // 沿 surfaceOp replace 链回溯被归并各墓碑覆盖的原文并集（链式归并天然穿透到最初原文）。
-  // 1.10.2 前的旧文案指向副本 seq——recall 打过去只取回又一层墓碑（递归空手）；
-  // 存量旧聚合墓碑由 recall_pruned 的墓碑重定向兜底（recall-tools.ts）。保持
-  // 「[elided … recall_pruned」形态（自身可再归并，地板随压缩次数收敛到常数）。
+  // 指向副本 seq 的旧文案会让 recall 只取回又一层墓碑（递归空手）；存量旧聚合墓碑
+  // 由读侧墓碑文法（tombstone-text.ts）识别。保持「[elided …」形态
+  // （自身可再归并，地板随压缩次数收敛到常数）。
   const rootSeqs = [...new Set(tombSeqs.flatMap(s => resolveRootSeqs(sessionEvents(session), s)))].sort((a, b) => a - b)
   const aggText = consolidatedTombstone(tombSeqs.length, rootSeqs[0] as number, rootSeqs[rootSeqs.length - 1] as number)
   try {

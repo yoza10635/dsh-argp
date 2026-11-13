@@ -10,7 +10,8 @@
  *
  * 可逆性契约：clip 文本走与桩同一条 `{type:'tool', seq, callId, text}` 通道
  * （prune-tx 克隆原事件只换内文），原文留在 append-only 日志，
- * recall_pruned(seq) / recall_history(labels) 原样取回；pairing 不破。
+ * recall_history(labels) 原样取回；pairing 不破。无实体标签的文本不可按标签召回
+ * （文本里如实说明，不指向不存在的工具）。
  *
  * 文本族纪律：首行以 STUB_PREFIX 开头——tagRsFromLog 的桩排除判据
  * （factor-atoms.ts `startsWith(STUB_PREFIX)`）据此把夹剪文本自动排除出再贴标；
@@ -86,8 +87,8 @@ export function clipText(i: ClipEmitInput): string | null {
   const tail = i.text.slice(-s.tail)
   const elided = i.text.length - head.length - tail.length
   const recall = i.key === undefined
-    ? '原文仍在日志，recall_pruned(' + i.seq + ') 取回'
-    : 'recall_history(' + i.key + ') 或 recall_pruned(' + i.seq + ') 取回原文'
+    ? '原文仍在日志，无实体标签（不可按标签召回）'
+    : '需要原文时 recall_history(' + i.key + ')'
   return STUB_PREFIX + ' clip ' + (i.tool !== '' ? i.tool : 'tool')
     + (i.key === undefined ? '' : ' → ' + i.key)
     + '〔夹剪：留头 ' + head.length + '/尾 ' + tail.length + ' 字，中段 ' + elided + ' 字省略；' + recall + '〕\n'

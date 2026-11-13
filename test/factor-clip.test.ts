@@ -135,6 +135,7 @@ test('CL2 缺省关字节不变：false ⇒ clipOrder 空、发射逐字节=R1 �
     assert.ok(t.text.startsWith(STUB_PREFIX + ' '), '桩形态（无 clip 词）')
     assert.ok(!t.text.includes(CLIP_MARK) && !t.text.includes('省略'), '绝不含夹剪结构线')
     assert.ok(t.text.includes('recall_history(') || t.text.includes('原文仍在日志'), 'R1 召回指路文案')
+    assert.ok(!t.text.includes('recall_pruned'), '桩文案禁引退役工具名（§1.6）')
   }
 })
 
@@ -146,6 +147,7 @@ test('CL3 族形锁：同文两模板——command 尾窗 640 深，read 头窗 
   const read = clipText({ tool: 'read', key: undefined, seq: 4, text: T })!
   assert.ok(bash.includes('留头 160/尾 640'), 'command 模板实数')
   assert.ok(read.includes('留头 640/尾 160'), 'read 模板实数')
+  assert.ok(!bash.includes('recall_pruned') && !read.includes('recall_pruned'), '夹剪文案禁引退役工具名（§1.6）')
   assert.ok(bash.includes('MMIDNEAR'), '尾重：近尾标记保留')
   assert.ok(!read.includes('MMIDNEAR'), '头重：尾窗 160 容不下近尾标记')
   assert.ok(read.includes('a'.repeat(600)), '头重：深头串保留（头窗 634 个 a）')

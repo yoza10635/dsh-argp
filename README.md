@@ -1,6 +1,6 @@
 [English](README.en.md) | 中文
 
-# dsh-argp — 双引擎上下文压缩：逐原子守卫压缩 + 引用图确定性剪枝
+# dsh-argp 2.0 — 因子压缩引擎：实体标签剪枝 + 散文浓缩 + 出口闸
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,19 +8,23 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎**：替换"让模型自由改写历史"的摘要式压缩——**LLM 只提方案、确定性守卫负责处置**，被压缩 / 被剪枝的原文保留在 append-only 日志、可按 seq 召回（文本块逐字；工具调用参数为 JSON 语义等价重建），压缩目标按**字符口径**收敛（0-LLM 图规则；字符 ≠ provider 实际 token，估算误差见「已知限制」）。双引擎形态、**安装即挂、无需手工配置**；显式 `peratom: false` 可退回纯 0-LLM 图剪枝（见[安装与挂载](#安装与挂载)）。
+**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩引擎**。2.0 是 factor 引擎的干净形态：**工具结果按实体标签确定性剪枝（0-LLM）**、**散文只在压缩事务内一次性浓缩（唯一 LLM 通路、双闸把关）**、**出口闸保证必然超窗的请求根本不发出**；被剪原文永远留在 append-only 日志，按标签 `recall_history` 逐字取回。
 
-![dsh-argp 概览：守护式两阶段上下文压缩](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
+> **1.x 图引擎已退役。** 老方案（stage-2 引用图 + peratom 三管线 + cites 边）冻结在 **npm latest `1.11.2`**（tag `v1.11.2`），不再进入 2.x 主线；老 profile 里的 graph 旋钮在 2.0 下宽容读 + 告警忽略。历史 CHANGELOG 保留。
+
+![dsh-argp 概览](https://raw.githubusercontent.com/yoza10635/dsh-argp/main/.github/assets/argp-overview.svg)
 
 ```bash
-dsh plugin --profile <name> add dsh-argp    # 安装即挂；装好后在会话里输入 /argp 查看实时状态
+dsh plugin --profile <name> add dsh-argp    # 安装即挂；会话里输入 /argp 查看实时状态
 ```
 
-三个核心机制：
+## 三个机制
 
-- **Stage-1 逐原子压缩（eager，每轮）**——轮末对当轮原子做"缩放"而非丢弃：模型按原子自选 `extract`（逐字摘录）/ `summary`（概括，丢弃项入账审计）/ `false`（保留原文），**确定性守卫裁定提案能否落地**——extract 缺任一高信号 token 即整体拒绝。LLM 只提议；原文保留在只追加日志（守卫覆盖编码在内的高信号 token，非全量无损承诺）。
-- **Stage-2 引用图剪枝（lazy，三级触发）**——原子引用图（确定性 A→R 配对边 + 模型声明的语义 cites 边）上按反向拓扑序整原子摘除，**压缩阶段 0 次 LLM 调用**，剪枝量按字符口径收敛到预算；触发为三级阶梯：轮初主动 / 轮中压力剪 / 截断自动续写（见"三级触发"）。
-- **append-only 日志是唯一事实源**——被压/被剪内容原文永远在日志里，两级召回 `recall_summary` / `recall_detail` 随取随回（text 块逐字字面量，哈希测试锁定；tool-call 参数为对象时 JSON 语义等价重建并精确标注；保真仅保证结构化承重 token 逐字，散文级不保证逐字；大节点 from/limit 分页续读）。上下文是日志的一个渲染视图，不是历史本身。
+- **R 贴标剪枝（主体，0-LLM）**——工具结果按实体身份贴标签（`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`），按"过期读、被新版本取代、非焦点轮"的确定性判据打分，把可剪的 R 换成一行最小桩（`[已剪·因子 read → document:…（需要原文时 recall_history(…)）]`）。**A 永不入剪枝区间**（散文归浓缩链管），U 受焦点/轮次保护。词表 note 只在压缩事务收尾刷新（缓存断点频率=压缩频率）。
+- **散文浓缩（唯一 LLM 摘要通路）**——只在压缩事务内触发，双闸合取：①散文（system+对话散文）占声明窗 ≥50%；②anchored 总上下文 ≥ `windowRatio×声明窗`。one-shot 原生式摘要，barrier/受保护跨度不动；空输出或异常**保原文**（宁缺勿错）。
+- **§9.37 出口闸**——pre-step 位（上一请求 usage 已锚、下一请求未发）做确定性容量算术：anchored 投影（含本步增量）≥ 声明窗 − 输出预算 − 2% 提前量 ⇒ **请求根本不发**，先走标准压缩事务再发。输出预算三源取 max（`agent.options.maxTokens` / `request/response` 观测 / `resolveModelInfo().defaultMaxTokens`），全缺退 0.25×窗。400 overflow 网保留为最后兜底。
+
+召回面只有两个工具：**`recall_history`**（按标签取回日志原文，交集优先、cursor/epoch 续读、epoch 漂移如实告警）与 **`list_labels`**（词表下钻）。没有 seq 通道——标签是唯一地址；两者共享字符预算（单次 5% / 累计 10% 窗口，耗尽显式说明）。
 
 ## 为什么
 
@@ -30,190 +34,104 @@ dsh plugin --profile <name> add dsh-argp    # 安装即挂；装好后在会话�
 2. **缓存全断**——重写后的历史使 system+前缀逐轮变化，跨轮 KV/prefix cache 从变化点起全部失效；
 3. **压缩率失控**——摘要长度由模型心情决定，预算不可兑现。
 
-ARGP 的回答：**LLM 在环内、但戴着镣铐**——它的输出永远是"不可信输入提案"，守卫按 verbatim 纪律裁决；**遗忘是确定性的**——0-LLM 图规则保证收敛与预算；**历史不可变**——append-only 日志承载全部原文，召回契约（never guess）兜底。
+factor 的回答：**剪枝是确定性的**——同输入同输出、0 LLM、可复算；**遗忘可撤销**——桩只是一行标签，原文在 append-only 日志里按字节取回；**LLM 只做它擅长的一件事**——散文浓缩，且只在事务内、双闸都过线时才发生。
 
-实测（30 轮合成多轮编码任务，四臂对照，spike 37）：四臂中唯一同时达成 **7/7 探针保真**且成本低于现役基线的臂是双引擎全开臂（A）；传统摘要基线（D）最便宜但探针 5/7——吞掉精确字符串与关键大意。**卖点不是"最便宜"，是"保真前提下最省"**（A 全成本分量 ≤ 基线 C；比 D 贵 3.39×——这个差距就是保真的价格，明码标价）。
+## 工作方式
 
-> 实现方式（双引擎管线、反向拓扑剪枝、shadow-price 契约、模块职责）见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+### 压缩事务（prune-tx）
 
-## 核心机制
+一笔事务 = `compaction/start` → `compaction/summary` → 每个区间一次 `compaction/prune` + 对应 `replace` → `compaction/end`。宿主 `foldSurfaceProjection` 要求 `shadowedRange` 与 replace 范围**严格相等**（逐区间成对发射）。tool 桩克隆原 R 的 data 只改内文（保留 callId / role / id），配对 issuer A 的 tool_calls 防 400；事务尾把 usage 锚重置为 chars 估算，下一笔成功请求即重锚真 usage。
 
-### Stage-1：PeratomCompressor（eager 熵降）
+### 触发（两条信号 + 出口闸）
 
-1. **确定性门控**（`gate.ts`）：纯谓词判定"该轮是否可压"（长 user 消息 / 超 512 字符 tool result / 非版本链成员）；LLM 只执行"怎么压"。
-2. **逐原子决策**：单次 LLM 调用返回 `{seq, level, text}` 决策——`extract`（逐字子集拷贝，守卫硬拒缺失）/ `summary`（概括放行，丢弃 token 逐条入账 `summaryDropped` 供审核）/ `false`（显式不压，保原文）；长 user 消息走拆分（dialog 逐字抄写 + 余量聚合 U-info，空隙归 info）。
-3. **no-op 守卫**：收益 ≤5% 的"全文照抄"副本视同 false，不 emit replace（0 收益替换白花 surface 换代）。
-4. **tail-only 替换**：只允许 sourceEventSeqs ⊆ 当轮区间（越界即 bug，断言锁定）；前缀指纹测试证明 N 轮逐轮压缩后请求前缀稳定（缓存经济的生命线）。
+1. **手动 `/compact`**——全量剪（能剪多少剪多少，硬保护兜底）+ 散文浓缩。
+2. **provider 400 `CONTEXT_WINDOW_EXCEEDED`**——强制剪一次后重试（`maxOverflowRetries` 缺省 1，对齐官方 compaction-basic）。
+3. **§9.37 出口闸**——在请求发出前用 anchored 算术拦截"必然超窗"的发送，把 400 从触发器改回兜底网。
 
-### Stage-2：ArgpGraphEngine（lazy 图剪枝，0-LLM）
+> pre-step 的**估算驱动**压力剪已退役（`ARGP_FACTOR_PRESSURE=1` 仅作旧世界对照臂）。破坏性改写只认上述确定性信号。
 
-1. **原子化 + 建图**：确定性边（assistant → 其 tool result，经 toolCallId）+ 语义边（模型按契约输出的 `{"cites":[{"t":"前缀","l":"c|s|x"}]}`，四级分级 critical/supporting/contextual/isolated）。
-2. **拓扑剪枝**：反复摘除入度为 0 的原子（边等级 → 有效重要性 → 最近引用轮次排序），被剪引用方的出边消失、下游逐 pass 解锁；闭包生命周期（ACTIVE→COMPLETED→PRUNABLE→PRUNED）整闭包退休已完成任务。
-3. **压缩目标按字符口径收敛**（trigger/retain 均为字符×charsPerToken 估算，真实 token 以 provider usage 锚点为准，不构成逐 token 精确承诺）：触发线 window = contextWindow×0.8（默认）；保留目标 retain = **可压缩内容 × 0.2**（1.5.1 起：可压缩内容 = 完整请求 − system/tools/MCP 固定开销 = 剪枝目标量 visible，恒定压缩率 80%；旧公式 retain = window×0.2 = 0.16W 把固定开销算进基数，与目标量不含固定开销不对称）。触发时机是三级阶梯（见下节"三级触发"）；降级链 lifecycle→force→fail（1.11.0-beta.1 起 summarize 档与 enableSummarize 旋钮已撤——原为恒返回 null 的 stub，与"可选降级"宣称不符）+ 反应式补救阶梯（第 2 次起放宽 recency/turn 守卫）收敛到预算或显式失败。
+### 召回
 
-### 三级触发（Stage-2 触发阶梯）
-
-Stage-2 的"lazy"不是单一阈值检查，而是三级阶梯（1.4.0 引入、1.5.0 修订）：
-
-1. **轮初主动（L1）**：只在每轮首个 pre-step（`step === 1`）做压力判定，阈值 = window（默认 contextWindow×0.8）。估值**计入本步已 claim、尚未落盘进 surface 的 user 消息**——宿主先 claim 新 user 消息再 dispatch pre-step，轮初拿到的是精确内容而非预测，用户轮初的大段粘贴不会漏；轮初同时跑 per-atom LLM pass（原子降熵）+ 图剪。
-2. **轮中压力剪（L1'，0-LLM）**：`midTurnPrune` 默认 **true**——`step > 1` 且压力达标时**只做 0-LLM 图剪**（不跑 per-atom LLM pass——那是 79s–3min 的阻塞，轮内不划算），并把 `turnGuard` 放宽到 `midTurnTurnGuard`（默认 **0**，允许剪本轮的旧 A/R；`recencyGuard` 照常保护最新节点）。超额的来源恰恰是本轮的 tool result，旧守卫（turnGuard=1）把整轮保护起来正是 1.3.x 轮中剪"几乎无效"的根因；剪落在那个 pre-step ⇒ 同一个 step 的请求即已瘦身 ⇒ 天然自动继续本 turn。
-3. **截断自动续写（L3）**：输出被外部钳制（`finish=max-tokens` 且 `outputTokens <` 本次请求的 `maxTokens` = 宿主/适配器把输出预算啃小了，容量压力的真信号）时：若本 turn 随后要结束（`agent/turn-stopping` 钩子）⇒ 就地强制剪 + `steer` 一条续写消息，**同一个 turn 继续推进**（用户不必再发"继续"）；否则（turn 还在跑）⇒ 下一个 pre-step 强制剪。续写文案可用 `continuationNotice` 覆盖（空串 = 只剪不续）；上限 `reactiveRetries`（默认 **2**，每次"连续被钳" episode 内，第 2 次起放宽 recency/turn 守卫，用尽交回 overflow 路径）。
-
-配置旋钮：`midTurnPrune`（默认 true）/ `midTurnTurnGuard`（默认 0）/ `continuationNotice`（默认内置一句）/ `reactiveRetries`（默认 2）；1.4.0 的 `midTurnActive` 保留为兼容别名（true = 轮中剪开 + 沿用默认守卫的 1.3.x 对照档，false = 关）。
-
-### 桥接与召回
-
-- **CiteDeclarer**（每轮）：模型按窗口声明跨轮引用边，经 `injectEdges` 通道喂给 Stage-2——实测召回效率 ≈ 无边臂的 2.6×（zoom 精准定位）。
-- **RecallZoom**：`recall_summary(seq)`（读压缩态）/ `recall_detail(seq, from?, limit?)`（日志原文：text 块逐字，tool-call 参数对象时 JSON 语义等价重建并标注；大节点分页续读）；4 倍制预算（summary 预算 = 4×detail），超限返回引导文案而非硬拒。历史被剪原子另有 `recall_pruned` / `list_pruned`。
+`recall_history(labels)` 从**日志 append 根源**取原文（不是桩、不是摘要），每行带 `state=shadowed|live` 与命中标签；`list_labels(category)` 按 facet 列词表与覆盖数。预算耗尽、无命中、未知类别都**显式说明**，不静默空手。
 
 ## 模型要求
 
-per-atom 的拆分/压缩决策质量依赖模型指令遵循能力；**守卫保证任何模型上都"不会压坏"（错误方向只往少压错），但收益随服从率缩放**：
-
-- 实测基准：本地 Qwen3.6-35B-A3B / Qwen3.8-27B 全链路 30/60 轮 0 error、探针 7/7；拆分抄写表示法解析失败 0%（vs 区间定位法 72%）。
-- **DeepSeek 系模型的已知特性**：系统提示词与用户指令冲突时（如任务 prompt 写 "nothing else"）cites 声明可为 0——语义选择性归零，但 Stage-1 守卫压缩与 Stage-2 确定性剪枝照常工作、不变式全过（50 轮 v4-flash 实证）。任务 prompt 给 cites 留出口后声明率恢复（10 轮实测 43.6%）。
+- **剪枝与出口闸不依赖模型**：任何模型上行为一致（0-LLM 确定性）。
+- **散文浓缩**需要一条 compaction 用途的 LLM 路由：缺省自动跟随宿主 `agent.options.{provider,model}` + `ctx.llm`；路由不可用 ⇒ 浓缩 disabled、零网络、保原文。浓缩质量随模型指令遵循能力缩放，但失败方向永远是"少压"。
+- 标签来自工具参数与输出（read/edit 路径、命令族、错误码），不要求模型配合输出任何引用协议。
 
 ## 安装与挂载
-
-从 npm 安装。**安装即挂、双引擎全开**：`peratom` 缺省 = 挂（默认值落在代码里、不受各层 patch 整块替换影响，见下文「Stage-1（双引擎）：缺省即挂」），Stage-1 三管线与 Stage-2 图引擎同时生效，无需任何手工配置：
 
 ```bash
 dsh plugin --profile <name> add dsh-argp
 ```
 
-> **⚠️ 新版发布后 24 小时内安装，请显式指定版本。** pnpm 11 起 `minimumReleaseAge` 默认为 **1440 分钟（24h）**：刚发布的版本会被跳过，pnpm **静默回落到上一个已过冷却期的旧版本**——不报错，只是装错版本。dsh-argp 每次发新版后，旧版本的 peerDeps 往往已不匹配当前宿主，于是宿主抛 `Plugin dsh-argp@<旧版本> is incompatible with dsh <宿主版本>`。**报错里的版本号比 npm `latest` 旧，就是撞上了这个冷却期**（与本仓库/镜像无关：npmmirror 与 npmjs 的 `dist-tags` 一致）。
->
-> 两种解法（推荐前者，粒度最小）：
->
-> ```bash
-> dsh plugin --profile <name> add dsh-argp@<最新版本>   # ① 显式钉版本，绕过冷却期
-> ```
->
-> ```yaml
-> # ② 在 profile 的 pnpm-workspace.yaml 里豁免本包（长期有效，其余包仍受冷却期保护）
-> minimumReleaseAgeExclude:
->   - dsh-argp
-> ```
+**安装即挂，无需手工配置**：包的 bundle patch（`cordis.patch.yml`）自带 `- id: compaction-basic / disabled: true`（关掉 stock 摘要器）并 `insert` 本插件；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
 
-> **stock 摘要器的禁用已随包完成**：包的 bundle patch 自带 `- id: compaction-basic / disabled: true`，安装后**无需**在 profile 层再做这一步（列在这里只为说明它被谁关掉）。挂载同样由包的 bundle patch（`cordis.patch.yml`）负责（`insert` 创建 entry）；profile 层只做配置覆盖（modify），不要再 insert（否则 `duplicate loader entry id`）。
+> **⚠️ 新版发布后 24 小时内安装，请显式指定版本。** pnpm 11 起 `minimumReleaseAge` 默认为 **1440 分钟（24h）**：刚发布的版本会被跳过，pnpm **静默回落到上一个已过冷却期的旧版本**——不报错，只是装错版本。报错里的版本号比 npm `latest` 旧，就是撞上了这个冷却期。解法：`dsh plugin --profile <name> add dsh-argp@<最新版本>`，或在 profile 的 `pnpm-workspace.yaml` 写 `minimumReleaseAgeExclude: [dsh-argp]`。
 
-> **极简（minimal）preset 下不生效（1.9.0 起）**：ARGP 在 `skipPresets` 列出的 preset 下退场——默认 `['minimal']`，即极简 preset 的会话**不剪枝、不压缩**，历史保持原生态（与未安装本插件一致）。判定按会话实际运行的 preset（可被 preset 切换事件改变）；无 preset 信息的会话（headless/CLI）不受影响。要让 ARGP 在 minimal 下也生效，在 profile 层 modify 加 `config: { skipPresets: [] }`。
+> **极简（minimal）preset 下不生效**：ARGP 在 `skipPresets` 列出的 preset 下退场——默认 `['minimal']`，历史保持原生态。要让 ARGP 在 minimal 下也生效，在 profile 层 modify 加 `config: { skipPresets: [] }`。
 
-### Stage-1（双引擎）：缺省即挂
+### 设置页旋钮（6 枚）
 
-生产挂载路径是**引擎构造期经 `config.peratom` 自挂**：`peratom` **缺省 = 挂**——Stage-1 三管线（compressor / declarer / zoom）在构造期挂载并内部接线，**安装后即为双引擎，不需要任何手工配置**。
+Settings → Plugins → ARGP 卡片（全部 volatile，改完即生效，无需重启）：
 
-要退回纯 Stage-2（0-LLM 图剪枝），显式关停：
+| 键 | 缺省 | 含义 |
+|---|---|---|
+| `windowRatio` | 0.8 | 触发线 = 声明窗 × 该值（出口闸的 ctx 线 / 浓缩闸二共用） |
+| `retainRatio` | 0.2 | 压缩后保留目标 = 触发线 × 该值 |
+| `charsPerToken` | 3.5 | 字符→token 估算比（anchored usage 在位时以其为准） |
+| `focalTurns` | 1 | 焦点轮数：最新 N 轮的工具结果永不被剪 |
+| `vocabTopN` | 10 | 词表 note 每类最多列几行（其余经 `list_labels` 可查） |
+| `recallLimit` | 5 | `recall_history` 未给 limit 时的缺省取回条数（上限 20） |
 
-```yaml
-- id: dsh-argp
-  config:
-    peratom: false      # 或 null；二者等价：只要 Stage-2，不挂 Stage-1
-```
+### 评测/调试环境变量（构造期快照，切换须重挂）
 
-> **为什么默认值在代码里、而不是包的 bundle patch 里**：dsh 各层 patch 的 `config` 是**整块替换**而非深合并（层序 bundle → profile → home → CLI）。默认值若只写在 bundle patch 的 `insert` 行，用户在设置页动任一旋钮（表单值写回 profile 的 `cordis.patch.yml`）就会整块冲掉 `peratom`，双引擎**静默**退回纯 Stage-2 —— 即 §11.13.1 那个缺口复发的形态。
-
-可选：为 Stage-1 指定独立 LLM 后端（不配则自动跟随宿主路由）：
-
-```yaml
-- id: dsh-argp
-  config:
-    peratom:
-      compressor:
-        llm: { provider: deepseek-official, model: deepseek-flash }   # dsh-llm 后端
-      declarer:
-        llm: { provider: deepseek-official, model: deepseek-flash }   # 可指向独立 lite 档
-      # zoom: {}   # 两级 recall；块内缺省即挂载
-```
-
-⚠️ 在 profile / home / CLI 层写 `- id: dsh-argp` 的 `config` 会**整块替换**上一层：想让 Stage-1 保持开启**不必重述 `peratom`**（缺省即挂）；只有在确实要关停时才写 `peratom: false`。
-⚠️ 缺省且调用方自带 `injectEdges` / `onOverflowCompress` / `onPrePressureCompress` 时不自动挂载——尊重调用方的自装配（高级 API 向后兼容）。
-
-`llm` 子块可省：`llm` 与 `endpoint`/`apiKey` 两路皆缺时**自动跟随宿主路由**（1.3.0 的 `autoDshLlmSpec`：真会话里现取 `agent.options.{provider,model}` + 宿主 `ctx.llm` 服务，宿主换模型自动跟随）；三路都解不出时组件自然 disabled（零网络）。配了 `llm` 走宿主 dsh-llm（生产形态）；否则按 `endpoint`/`apiKey` config 或环境变量走 OpenAI 兼容直连（本地 llama.cpp 实验形态）。Stage-2 预算默认比例驱动（window=ctx×0.8 / retain=window×0.2），无须硬编码。
-
-`presetClean` **默认开启**：挂载期对仍挂 stock 摘要器的 shipped preset 生成净化副本 `<id>-argp`（摘除 `compaction-basic`/`tool-result-pruner`、保留 `command-compact`——`/compact` 自动指向 ARGP 图剪），幂等、fail-soft；`presetClean: false` 关闭。
+| 变量 | 作用 |
+|---|---|
+| `ARGP_FACTOR_EGRESS=0` | 关出口闸（**仅**修前/修后对照臂） |
+| `ARGP_FACTOR_PRESSURE=1` | 恢复旧 pre-step 估算驱动压力剪（旧世界复现） |
+| `ARGP_FACTOR_TIER=tiered` | 焦点分级策略档（hard/medium 焦点带；缺省 flat） |
+| `ARGP_FACTOR_CLIP=1` | C10 夹剪层（三态保留；缺省关） |
+| `ARGP_PERATOM_A2_DEBUG=<dir>` | LLM wire 落盘（默认脱敏；`_FULL=1` 才含正文） |
 
 ### 查看状态：`/argp`
 
-装好后，在会话里输入 `/argp` 即可看到 ARGP 的实时状态（只读，不触发压缩）：
-
 ```text
-ARGP 1.10.1 · engine: graph+peratom · preset: standard
-budget: trigger 131.1k / retain 26.2k · now 88.4k (source=anchored)
+ARGP 2.0.0-alpha.0 · engine: factor · preset: standard
+budget: trigger 209.7k / retain 41.9k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
-cites: 34 declared · 29 resolved (2 ambiguous, 1 failed)
 ```
 
-各段含义：`engine`——`graph` = 纯 Stage-2（0-LLM），`graph+peratom` = 双引擎；`preset` 后附 `ARGP inactive` 表示当前 preset 命中 `skipPresets`（本插件在此会话不生效）。`budget`——触发线 / 保留目标 / 当前占用，`source` 是占用量的估算来源（`anchored` = 锚定在 provider 回报的真实 usage，最准）。`prunes`——剪枝次数与末次形状，`forced` = 候选耗尽后强制剪。`cites` 段仅在双引擎 declarer 在位时输出。
+`engine` 恒为 `factor`；`preset` 后附 `ARGP inactive` 表示命中 `skipPresets`。`source=anchored` 表示占用锚定在 provider 回报的真实 usage（最准）。手动压缩走宿主原生 `/compact`。
 
-手动压缩走宿主原生的 `/compact`（由 preset 层挂载的 `command-compact` 提供，落到本引擎的 `compactNow`）——本插件不另开压缩入口。
+## 验证
 
-### 第三方市场检测（dsh.so）
+- **T24-J R1（2026-11-13，四臂 × 46 轮，1M 窗）**：四臂全完赛；双连压序（因子剪 → 散文浓缩）下进场散文 53–96% 全部过线；成本干净窗 cand 臂 +41%，归因于该基准的域语料（工具面占比 13.5%），真实域语料工具面 86.5%——**2.0-alpha 就绪后重跑 vs 1.11.2 / 原生摘要的对比**（R2 修复世界的对照在旧世界污染后作废）。
+- **回归**：`npm run check` = typecheck + typecheck:spike + smoke + 单测（223 测，221 过 / 0 败 / 2 skip）+ build；出口闸 EG-1…13b 含冷 resume 回填锁。
+- 历史 1.x 图引擎的实测（四臂 7/7 探针、50 轮 t-long 等）见 CHANGELOG 与 git 历史；它们**不是 2.0 的数字**，不可直接引用。
 
-宿主 dsh **本身没有官方插件市场**（`plugin-manager` 直装 npm），[dsh.so](https://dsh.so) 是社区自建的第三方收录站兼检测站。它的徽章分两层，两层含义差别很大：
+## 已知限制
 
-| 层 | 检测内容 | 全站通过率 |
-|---|---|---|
-| **L4** | 沙盒内 npm 安装（依赖/peer 能否真的装起来） | **100%** |
-| **L5** | 同沙盒内 web 启动 + 冒烟动作 + 清单标记为 active | **74.5%** |
-
-也就是说：**装不上从来不是普遍问题，起得来才是**（L4 全绿而 L5 有约四分之一失败）。徽章显示的是**该 dsh 版本下最近一次检测的结果**，不是永久状态，跨 dsh 版本的红/绿不可直接比较。
-
-> 本插件当前在 dsh.so 上：**L4 通过、L5.2（web 启动层）检测失败**（1.9.0 / 1.9.1 @ dsh 0.2.0-rc.2；最后一次绿是 1.7.0 @ rc.1）。本地已按沙盒签名（win32 x64 / Node 24 / dsh 0.2.0-rc.2 / web profile）穷举复现——含/不含本插件、checkout 与发布态、完整与精简 profile 全绿，未能复现该失败；宿主侧也不存在检测所用的 `/ping`、`/health` 端点，该冒烟动作属站点私有协议，本地无法模拟。结论是**不可归因于本插件**，根因待站点方数据。生产部署走本地 tgz + 手工 profile 挂载，不经市场路径，不受此项影响。
-
-## 验证结果
-
-### 四臂对照（30 轮合成多轮编码，本地 Qwen3.6-35B-A3B，spike 37）
-
-| 臂 | 配置 | 探针 | 成本（空闲价） | 结论 |
-|---|---|---|---|---|
-| **A 双引擎全开** | compressor + declarer + graph + zoom | **7/7** | ¥0.454 | 唯一 7/7 且 ≤ 基线成本的臂 |
-| B 无边 | declarer 关 | 7/7 | ¥0.556 | 召回次数 31 vs A 的 12（declarer ≈2.6× 更省） |
-| C 现役基线 | 仅 graph（溢出才剪） | 6/7（R2 漏检） | ¥0.802 | A 全成本分量 ≤ C |
-| D 摘要基线 | dsh 原生 BasicCompactionEngine | 5/7（丢精确 token + 大意） | ¥0.134 | 最便宜但丢保真——反衬"保真前提下最省" |
-
-防干涉：A/B/C 三臂 append-origin 原文零替换（A 140 / B 154 / C 216 事件）；前缀稳定：A 臂 21 个主请求指纹全同。
-
-### 水位与轮次放大
-
-固定窗口（16K tok）下的实测行为（P5-bis，本地 Qwen3.6-35B-A3B，2026-08-28；证据细节见 CHANGELOG）：
-
-- **轮数显著放大**：零压缩对照在 ~20 轮触窗终止，双引擎同预算下持续存活至满预算（~60 轮量级）——固定窗口下的可持续轮数呈数量级提升（下界口径，禁裸引用"数倍"，须带窗口/任务/模型三要素）。
-- **缓存逐请求前缀稳定性零劣化**：双引擎与零压缩对照的逐请求前缀指纹分布一致；压缩事件仅引入一次性重算税，无持续累积劣化。
-
-### Graph 引擎历史验证（v0.3.x，DeepSeek v4-flash / Qwen3.8-27B）
-
-50 轮 t-long：U 锚点 7/7、needle 7/7（5/7 经 recall 找回）、4 事务 0 error、压缩目标达成（32K，字符口径；该基准对应当时的 retain 公式，与现行口径不同）；200K 主流档成本 ¥2.695 vs 基线 high ¥3.087（该基线含 77% 空流 error，系平台 B-5 缺陷——对照数字按此口径解读，disabled 档 ¥3.19 为更干净的对照）。
+- **B-6 窗口截断盲区**：未被替换的 live 节点在逼近 contextWindow 时被请求组装层截掉最旧部分、不留痕迹——它们不在剪枝词表里，标签召回取不回。缓解：比例预算前移触发点；根治在 dsh 侧（B-6 立案中）。
+- **散文浓缩的输出税**：浓缩是唯一 LLM 调用，only-in-transaction；摘要过长会吃掉节省，闸一（散文≥50%）与 20480 输出预算共同限幅，极端长文仍可能不划算。
+- **无实体标签的内容不可剪**：纯聊天、无路径/命令/错误码的输出不会被 R 剪枝触及，只能等散文浓缩。这是"标签是唯一地址"的另一面（fail-closed：不猜身份）。
+- **旧日志读侧**：老墓碑文法（v1.3.x–v1.7.x）、老 `data.argpCites` 仍可读；但 2.0 不再生成它们。
 
 ## 复现
 
 | 实验 | 命令 | 验证内容 |
 |---|---|---|
-| 四臂对照（需本地模型） | `ARGP_ARM=A\|B\|C\|D\|E node spike/37-peratom-three-arm.ts` | 探针保真、成本三元组、防干涉、K_no/放大 |
-| per-atom soak | `npm run spike36` | 门控/链/守恒/前缀/VK-atom 八判决 |
-| 50 轮 t-long | `ARGP_DEEPSEEK_THINKING=enabled node spike/06-tlong.ts` | L1/L2/L3 不变式、锚点/needle、精确预算 |
-| 合成 0-LLM | `npm run spike8a` | 单事务零 LLM 调用 |
-| 逐原子审计 | `node spike/atom-audit.mjs <产物目录>` | 事件驱动逐原子压缩/剪枝明细 |
+| 全量门 | `npm run check` | typecheck / spike 类型 / smoke / 223 测 / 构建 |
+| 出口闸单测 | `npm run test -- --test-name-pattern=EG-` | 三源预算、冷 resume、hatch 互斥 |
+| 语料回放 | `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts` | 离线重放（语料目录缺失时优雅跳过） |
 
-`npm run check` = typecheck + smoke + 单测（415/415 全绿，2026-10-12）。每个数字都带产物路径（证据落点见 `CHANGELOG.md`）。
-
-> **历史 DeepSeek 臂的模型口径**：v0.3.x 时期的 DeepSeek 臂用 `deepseek-v4-flash` 实测——该模型已于 2026-09 退役，官方 API 由 `deepseek-flash`（DeepSeek-V4.1-Flash）承接，旧名仅作兼容路由（宿主 `llm-deepseek` 的现役 catalog 为 `deepseek-flash` / `deepseek-v4-pro`）。上文数字均为**当时模型产物，不可在新 API 上原样复现**；重跑 DeepSeek 臂的脚本会自动使用 `deepseek-flash`（`spike/deepseek.ts` 共享挂载已随迁，可经 `DEEPSEEK_MODEL` 覆盖）。
-
-## 平台缺口反馈（给 dsh）
-
-tool/result 替换无结构化元数据通道（B-1）、compaction/prune 游离于事务状态机（B-3）、headless 测试装配 tokenMeter 静默失效（B-4）、摘要空流（B-5）、surface 窗口丢弃无痕迹（B-6）——正式记录见 [dsh Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions)（#1090 及关联帖）。
-
-## 已知限制
-
-- **B-6 窗口截断盲区**：未被 ARGP 替换的 live 节点在逼近 contextWindow 时被请求组装层截掉最旧部分、不留痕迹——`recall_pruned` 取不回它们。缓解：比例预算前移触发点；根治在 dsh 侧（B-6 立案中）。
-- **模型依赖（如实版，见上）**：守卫保证安全，收益依赖服从率；lite 档多模型分工的服从率未实测（台账 D21）。
-- **per-atom 输出税**：Stage-1 每轮的压缩调用是 side-channel 成本（30 轮实测 completion 7.2K tokens，不进上下文但计入总成本）；dsh-llm 后端的 usage 已入 record，spike 汇总口径接入中。
-- **tombstone 召回链路**：1.8.0 起每块墓碑自带原节点 `seq`（`[elided seq=N; recall_pruned(N) for detail]`），`recall_pruned(seq)` 一跳可取回，不再需要 `list_pruned --keyword` 反查；且"墓碑再立碑"已按终止态排除（G1），原 `seq` 不再被链式替换稀释。仍受 B-6 窗口截断盲区限制（未替换的 live 节点取不回）。
+1.x 的图臂/peratom 实验脚本已移入 `spike/retired-1x/`（**不参与编译**，仅留档；其结论在 CHANGELOG 与 git 历史里）。
 
 ## 问题反馈
 
-- **Bug**：开 [Issue](https://github.com/yoza10635/dsh-argp/issues)。附 `dsh --version`、本包版本、profile 配置（`windowTokens`/`retainTokens` 等）与最小复现步骤，定位会快很多。
+- **Bug**：开 [Issue](https://github.com/yoza10635/dsh-argp/issues)。附 `dsh --version`、本包版本、profile 配置（`windowTokens`/`retainTokens` 等）与最小复现步骤。
 - **设计讨论 / 使用问题**：开 [Discussion](https://github.com/yoza10635/dsh-argp/discussions)。
 
 ## License

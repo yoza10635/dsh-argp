@@ -17,7 +17,7 @@ import { sessionEvents } from './log-access.js'
 
 /**
  * 召回侧模块函数访问引擎状态所需的窄接口。
- * 1.11.0-beta.0（1-1/1-2）起会话态经 `stateOf(session)` 分桶访问；
+ * 会话态经 `stateOf(session)` 分桶访问；
  * 函数签名一律显式带 session（异步调用方不得依赖引擎焦点指针）。
  */
 export interface RecallHost {
@@ -43,7 +43,7 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
     // 且 shadowedSeqs 即被剪 surface seq 的权威清单）。不再靠「replace 形态推断」：
     // 旧实现扫 surfaceOp replace 并把 sourceEventSeqs 收进集合，会误吞两类非剪枝写回——
     //   ① cites 剥离写回（data.argpCites，仅去协议产物）——2026-08-22 已加 argpCites 门控；
-    //   ② per-atom 原地压缩（peratom/compressor.ts 的 user/tool 副本，start===end、
+    //   ② per-atom 原地压缩副本（1.x 三管线产物，start===end、
     //      sourceEventSeqs=[被压原子]、无 compaction/prune 事件）——2026-08-27 定位：
     //      它仍穿透旧门控被当「已剪」，导致 catalog 谎报 "Compression removed N"、
     //      system 前缀逐轮变、跨轮缓存全断（60 轮 A 臂实证）。
