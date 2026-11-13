@@ -136,6 +136,8 @@ export interface FactorDecision {
 interface SessionFactorState {
   /** 已观察到的日志尾 seq；-1 = 尚未首观察（首观察批 = 重放批，不采快照）。 */
   observedUpToSeq: number
+  /** 召回前是否已做过一次日志重放（冷 resume 首召回必须补账，见 ledgerForRecall）。 */
+  ledgerReady: boolean
   /** 在线采到的事件时文件基线（seq → key → 快照）。 */
   snapshots: Map<number, Map<string, FileSnapshot>>
   /** 词表 note 的当前 surface 节点 seq；null = 本会话尚未注入。 */
@@ -198,10 +200,24 @@ export class FactorEngine {
     return this.lastLedger
   }
 
+  /**
+   * 召回入口账本（冷 resume 修复）：新进程里进程内账本是空的，而账本的唯一真相是
+   * 日志（被剪 R 的 shadowed 投影 + 原事件仍在）。召回工具直接读账本 ⇒ 必须先在
+   * 首召回时补一次 observe 重放；否则 resume 后 `list_labels` 谎报 0 条、
+   * `recall_history` 永远 no match，直到下一次压缩事务才"突然恢复"。
+   * 幂等：observe 的 rootSeq 去重保证重复重放不双计；每会话每进程至多补一次
+   * （后续压缩事务已在线更新）。
+   */
+  ledgerForRecall(session: Session): FactorLedger {
+    const st = this.stateOf(session)
+    if (!st.ledgerReady) this.observe(session)
+    return this.ledgerOf(session)
+  }
+
   private stateOf(session: Session): SessionFactorState {
     let st = this.states.get(session)
     if (st === undefined) {
-      st = { observedUpToSeq: -1, snapshots: new Map(), vocabNoteSeq: null, vocabEpoch: -1 }
+      st = { observedUpToSeq: -1, ledgerReady: false, snapshots: new Map(), vocabNoteSeq: null, vocabEpoch: -1 }
       this.states.set(session, st)
     }
     return st
@@ -243,6 +259,7 @@ export class FactorEngine {
     }
     const tailSeq = events.length > 0 ? (events[events.length - 1]?.seq ?? st.observedUpToSeq) : st.observedUpToSeq
     st.observedUpToSeq = Math.max(st.observedUpToSeq, tailSeq)
+    st.ledgerReady = true
     ledger.sweepClosed(atoms.reduce((m, a) => Math.max(m, a.turn), 0), this.cfg.stickyWindowTurns)
     return { atoms, tagsBySeq, cwd }
   }

@@ -265,3 +265,26 @@ test('L9 error-end 事务的 prune 声称不入 shadowed 账（live 节点不得
   ok.append('compaction/end', { compactionId: CompactionId('argp-lock-ok'), turn: 1 })
   assert.equal(scanShadowedSeqs(ok).has(1), true, '成功事务照常入账')
 })
+
+test('L10 冷 resume 首召回：进程内账本为空时必须先从日志重放（不谎报 0 条）', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('lock-recall-resume')
+  internals.bindSession(session)
+  appendUser(session, '任务')
+  appendGroup(session, 1, 'r1', 'C:/Proj/a.ts', 'RESUME-VISIBLE CONTENT '.repeat(30))
+  appendGroup(session, 2, 'r2', 'C:/Proj/focus.ts', 'focus')
+  assert.ok(internals.factor.compactIfNeeded(session, 1000) !== null, '剪枝发射')
+  // 模拟 headless 每轮新 dsh 进程：FactorEngine 实例是新的，进程内账本为空
+  const f = internals.factor as unknown as {
+    ledgers: WeakMap<Session, unknown>
+    states: WeakMap<Session, unknown>
+  }
+  f.ledgers = new WeakMap()
+  f.states = new WeakMap() // 新进程：会话状态桶（含 ledgerReady）也必须是新的
+  const labels = toolText(await execTool(ctx, { name: 'list_labels', callId: 'l1', agentSession: session, args: {} }))
+  assert.ok(labels.includes('document:c:/proj/a.ts'), 'list_labels 必须先重放日志账本（LL10）')
+  const hit = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session, args: { labels: ['document:c:/proj/a.ts'] },
+  }))
+  assert.ok(hit.includes('RESUME-VISIBLE CONTENT'), 'recall_history 冷 resume 必须取回原文')
+})

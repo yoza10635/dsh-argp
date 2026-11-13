@@ -45,12 +45,13 @@
 - **/argp 口径**：retain 改回 `trigger×retainRatio`（不再用 visible×ratio）；measureTokens 改读**命令会话**的锚点桶（不再串焦点会话）。
 - **epoch 漂移游标未归零**：说"re-sorted from scratch"却按旧 offset 切新排序；漂移时从 0 开始（负/越界游标夹取）。
 - **list_labels 白嫖安全阀**：与 recall_history 共用 per-turn 上限；续读 footer 不再被预算截断吃掉。
+- **冷 resume 首召回账本为空**（2026-11-13 headless 冒烟实锤）：账本只在 compact/decide 时重放日志，新进程首召回 `list_labels` 报 0 条、`recall_history` 永远 no match；召回入口改 `ledgerForRecall` 懒重放（每会话每进程一次，rootSeq 去重幂等）。
 
 ### Removed
 
 - **Stage-1 三管线**：`peratom/compressor|cite-declarer|recall-zoom|gate|mount|flush|prompt|collect|compressor-types|decision|split`（保留 `peratom/llm-adapter` 与 `peratom/types`）。
 - **Stage-2 图剪**：`prune-selection`、`token-ontology`、`recall-tools`；`graph-build` 裁到 `atomize`/`classifyUserMessage`/`looksAskText`/`extractCites`；`recall` 裁到 `shadowedSeqsOf`/`budgetRecallText`。
-- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 236 测（234 过 / 0 败 / 2 skip）。
+- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 237 测（235 过 / 0 败 / 2 skip）。
 - **1.x 实验脚本**移入 `spike/retired-1x/`（33–44、47）与 `scripts/retired-1x/`（不参与编译）。
 
 ### 读侧兼容（保留）

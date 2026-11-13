@@ -109,6 +109,15 @@ export declare class FactorEngine {
     ledgerOf(session: Session): FactorLedger;
     /** 兼容读：最近一次被 observe/decide/vocabulary 触达的会话账本（诊断/单会话测试）。 */
     get ledger(): FactorLedger;
+    /**
+     * 召回入口账本（冷 resume 修复）：新进程里进程内账本是空的，而账本的唯一真相是
+     * 日志（被剪 R 的 shadowed 投影 + 原事件仍在）。召回工具直接读账本 ⇒ 必须先在
+     * 首召回时补一次 observe 重放；否则 resume 后 `list_labels` 谎报 0 条、
+     * `recall_history` 永远 no match，直到下一次压缩事务才"突然恢复"。
+     * 幂等：observe 的 rootSeq 去重保证重复重放不双计；每会话每进程至多补一次
+     * （后续压缩事务已在线更新）。
+     */
+    ledgerForRecall(session: Session): FactorLedger;
     private stateOf;
     /**
      * 观察路（sticky 通道 + 被剪账本 + 在线文件快照）。幂等：ledger rootSeq 去重。

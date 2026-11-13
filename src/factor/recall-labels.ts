@@ -128,7 +128,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE>); '
           + 'call list_labels to see the full pruned vocabulary.'
       }
-      const ledger = factor.ledgerOf(session)
+      const ledger = factor.ledgerForRecall(session)
       const keys = new Set<string>()
       const unknown: string[] = []
       for (const w of wanted) {
@@ -217,7 +217,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         cats = [c]
       } else cats = VOCAB_FACETS
       const limit = Math.max(1, Math.min(200, a.limit ?? 30))
-      const ledger = factor.ledgerOf(session)
+      const ledger = factor.ledgerForRecall(session)
       const lines: string[] = ['list_labels: vocabulary of the pruned ledger (' + ledger.prunedCount + ' pruned item(s))']
       let rejected = 0
       for (const facet of cats) {
