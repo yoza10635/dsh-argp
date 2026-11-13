@@ -28,6 +28,8 @@ export interface RecallLabelsHost {
     stateOf: (session: Session) => SessionRuntimeState;
     shadowedSeqsOf: (session: Session) => Set<number>;
     budgetRecallText: (session: Session, text: string) => string;
+    /** 窗口字符密度（recallBudgetState 装配读数用；hub 侧 charsPerToken getter 同源）。 */
+    charsPerToken: number;
     /** 观测数组容量上限（recallCalls 有界，/argp 报数用）。 */
     telemetryCap: number;
     /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */

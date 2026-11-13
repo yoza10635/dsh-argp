@@ -99,11 +99,9 @@ test('CR3 recallLimit 驱动 recall_history 缺省 limit（7 ⇒ 7 行；缺省 
     const session = makeSession('roster-limit-' + String(limitKey ?? 'd'))
     internals.bindSession(session)
     appendUser(session, '批量读')
-    const labels: string[] = []
+    // 2026-11-14 AND 语义：多标签=同条目交集，数行数改用单标签多条目
     for (let i = 1; i <= 9; i += 1) {
-      const p = 'C:/Proj/f' + i + '.ts'
-      labels.push('document:c:/proj/f' + i + '.ts')
-      appendGroup(session, i, 'c' + i, 'read', JSON.stringify({ file_path: p }), 'R' + i + ' CONTENT '.repeat(40))
+      appendGroup(session, i, 'c' + i, 'read', JSON.stringify({ file_path: 'C:/Proj/f.ts' }), 'R' + i + ' CONTENT '.repeat(40))
     }
     appendGroup(session, 10, 'c10', 'read', '{"file_path":"C:/Proj/z.ts"}', '焦点活体')
     const r = factor.compactIfNeeded(session, 100_000)
@@ -111,7 +109,7 @@ test('CR3 recallLimit 驱动 recall_history 缺省 limit（7 ⇒ 7 行；缺省 
     internals.stateOf(session).resolvedWindowTokens = 1_000_000 // 召回预算放行，数行数
     const res = await execTool(ctx, {
       name: 'recall_history', callId: 'q1', agentSession: session,
-      args: { labels },
+      args: { labels: ['document:c:/proj/f.ts'] },
     })
     const rows = toolText(res).split('\n').filter(l => l.startsWith('--- seq=')).length
     assert.equal(rows, expected, '缺省 limit = recallLimit 旋钮（mount=' + String(limitKey) + '）')

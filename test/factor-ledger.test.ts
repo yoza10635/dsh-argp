@@ -5,7 +5,8 @@
  *  - rootSeq 去重（replace 链双计是 spike/48 实测病灶：47K 副本 vs 7.8K 真调用）；
  *  - 倒排键形 `document:`/`scope:`/`command:`/`errorcode:`；
  *  - 词表源 = 被剪账本（存活原子不列，§1.5-7）+ fail-closed 出口 + 预算诚实截断；
- *  - queryPruned 交集优先 / fresh / 游标分页 / epoch 漂移不静默；
+ *  - queryPruned 真 AND（2026-11-14 语义反转）/ order 三档（fresh/timeline）/ 游标分页 / epoch 漂移不静默；
+ *  - 词表行内线索（last tool/verdict + err-sig 计数，err-sig 只计数不判死）；
  *  - sticky 状态机：修复宣称夹复发才 sticky；closed 复发复活；窗内零复发才闭。
  *
  * 变异纪律：去重检查、出口 labelAllowed、fixClaimedBetween 条件、sweepClosed 的
@@ -49,15 +50,33 @@ test('倒排键形：files→document: / scopes→scope: / commands 原样 / err
 // 查询内核
 // ---------------------------------------------------------------------------
 
-test('queryPruned: 交集优先（双标签命中排在单标签前），fresh 次键', () => {
+test('queryPruned: 真 AND（双标签必须同条目）；命中数/turn 次键；剔除标签不缩小结果集', () => {
   const l = new FactorLedger()
   l.addPruned({ rootSeq: 1, turn: 1, tags: mkTags({ files: ['c:/a.ts'] }) })
   l.addPruned({ rootSeq: 2, turn: 5, tags: mkTags({ files: ['c:/a.ts'], errorcodes: ['E'] }) })
   l.addPruned({ rootSeq: 3, turn: 2, tags: mkTags({ files: ['c:/a.ts'] }) })
   const r = l.queryPruned({ labels: ['document:c:/a.ts', 'errorcode:E'], limit: 10 })
-  assert.equal(r.rows[0]?.rootSeq, 2, '交集命中数多者先')
-  assert.deepEqual(r.rows.map(x => x.rootSeq), [2, 3, 1], '同命中数按 turn 降序')
+  assert.deepEqual(r.rows.map(x => x.rootSeq), [2], 'AND：只有同携两标签的条目入选（2026-11-14 语义反转，旧 union 排序退役）')
   assert.deepEqual(r.rows[0]?.hitLabels, ['document:c:/a.ts', 'errorcode:E'])
+  // 单标签 = AND 平凡情形，回归行为不变（新鲜度降序）
+  const single = l.queryPruned({ labels: ['document:c:/a.ts'], limit: 10 })
+  assert.deepEqual(single.rows.map(x => x.rootSeq), [2, 3, 1], '单标签按 turn 降序')
+  // 新契约（审查 F.3 固化）：不在账本的标签剔除、不参与求交、不缩小结果集
+  const dropped = l.queryPruned({ labels: ['document:c:/a.ts', 'errorcode:NOPE'], limit: 10 })
+  assert.deepEqual(dropped.rows.map(x => x.rootSeq), [2, 3, 1], '空想标签不杀死查询')
+})
+
+test('queryPruned: order=fresh / timeline（升序 episode 阅读序，cursor 从最旧起算）', () => {
+  const l = new FactorLedger()
+  for (let i = 1; i <= 4; i++) l.addPruned({ rootSeq: i, turn: i, tags: mkTags({ files: ['c:/a.ts'] }) })
+  const fresh = l.queryPruned({ labels: ['document:c:/a.ts'], limit: 10, order: 'fresh' })
+  assert.deepEqual(fresh.rows.map(x => x.rootSeq), [4, 3, 2, 1], 'fresh：最新先出')
+  const tl = l.queryPruned({ labels: ['document:c:/a.ts'], limit: 10, order: 'timeline' })
+  assert.deepEqual(tl.rows.map(x => x.rootSeq), [1, 2, 3, 4], 'timeline：因果序（最旧先出）')
+  const tlPage = l.queryPruned({ labels: ['document:c:/a.ts'], limit: 2, order: 'timeline' })
+  assert.deepEqual(tlPage.rows.map(x => x.rootSeq), [1, 2])
+  const tlNext = l.queryPruned({ labels: ['document:c:/a.ts'], limit: 2, order: 'timeline', cursor: tlPage.nextCursor ?? undefined, epoch: tlPage.epoch })
+  assert.deepEqual(tlNext.rows.map(x => x.rootSeq), [3, 4], 'timeline 分页沿因果序续读')
 })
 
 test('queryPruned: 未知标签如实剔除回显；游标分页 + epoch 漂移不静默', () => {
@@ -174,7 +193,25 @@ test('词表预算截断是显式标记，不是静默丢；空标题不单独�
   assert.ok(r.text.length <= 300, '预算硬上限')
   assert.ok(r.text.includes('document:c:/dir/file-30.ts'), '新鲜度高的先渲染并保留，裁的是尾部')
   // 预算连"标题+一行"都容不下 ⇒ 整块弃渲染，绝不留承诺"可取回"的空标题
-  const starved = renderVocabulary({ ledger: l, budgetChars: 120 })
+  // （R4 紧行后单行 ~55 chars：120 已能容标题+一行，饥饿边界收到 60）
+  const starved = renderVocabulary({ ledger: l, budgetChars: 60 })
   assert.equal(starved.truncated, true)
   assert.ok(!starved.text.includes('已清空'), '空标题必须回滚——假通道比不渲染更糟')
+})
+
+test('词表行内线索：last tool/verdict + err-sig 计数；errorish 只计数不判死（ML12/E 纪律锁）', () => {
+  const l = new FactorLedger()
+  l.addPruned({ rootSeq: 1, turn: 1, tags: mkTags({ tool: 'bash', files: ['c:/a.ts'], errorish: true }) })
+  l.addPruned({ rootSeq: 2, turn: 3, tags: mkTags({ tool: 'read', files: ['c:/a.ts'] }) })
+  const v = l.vocabularyRows('document', 10)
+  const row = v.rows.find(r => r.key === 'document:c:/a.ts')!
+  assert.equal(row.lastTool, 'read', 'last 取最后一条的 tool')
+  assert.equal(row.lastFailed, false, 'errorish 文本信号不算失败')
+  assert.equal(row.errSigCount, 1, 'err-sig 计数 1/2')
+  const r = renderVocabulary({ ledger: l })
+  assert.ok(r.text.includes('· last: read ok @t3 · err-sig 1/2'), '线索行格式（err-sig N/M）')
+  assert.ok(!r.text.includes('failed'), 'errorish 绝不渲染 failed 字样（types.ts RTags.failed 注释纪律）')
+  const l2 = new FactorLedger()
+  l2.addPruned({ rootSeq: 1, turn: 1, tags: mkTags({ tool: 'bash', files: ['c:/b.ts'], failed: true, errorish: true }) })
+  assert.ok(renderVocabulary({ ledger: l2 }).text.includes('last: bash failed @t1'), '宿主结构化失败才标 failed')
 })

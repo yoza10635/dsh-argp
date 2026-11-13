@@ -87,17 +87,39 @@ export interface StickyView {
 }
 
 export interface PrunedQuery {
-  /** 全键形标签（`document:c:/x`、`command:npm`、`errorcode:ERESOLVE`）。 */
+  /** 全键形标签（`document:c:/x`、`command:npm`、`errorcode:ERESOLVE`）。
+   *  2026-11-14 起语义 = **真 AND**：候选必须携带全部在场标签（不在账本的标签剔除回显、
+   *  不参与求交）。anyOf（OR 逃生口）2026-11-14 对抗审查裁定缓办：零实测需求牵引、
+   *  排序键/解析管线/翻页护栏四处新语义未定，等 AND 在真实会话跑出"双标签无交集"
+   *  频率后再议。 */
   labels: string[]
   limit: number
-  /** 分页游标 = 上一次结果的 nextCursor；与 epoch 配套才有效。 */
+  /**
+   * 排序档位（缺省 relevant）：
+   *  - relevant：hitLabels 数降序 → turn 降序 → rootSeq 降序（历史行为；纯 AND 下
+   *    hitLabels 数为常数 ⇒ 与 fresh 等价，契约文案如实说明）；
+   *  - fresh：turn 降序 → rootSeq 降序；
+   *  - timeline：turn 升序 → rootSeq 升序（episode 因果阅读序）。
+   */
+  order?: 'relevant' | 'fresh' | 'timeline'
+  /** 分页游标 = 上一次结果的 nextCursor；与 epoch 配套才有效。翻页必须原样重传
+   *  全部查询参数（labels/limit/order）——cursor 是"当前排序的 offset"，换参数 =
+   *  换排序，语义不作跨参数延续。 */
   cursor?: number
   /** 快照 epoch：与账本当前值不符 ⇒ 期间有剪枝入账，排序已漂移。 */
   epoch?: number
 }
 
 export interface PrunedQueryResult {
-  rows: Array<{ rootSeq: number; turn: number; hitLabels: string[] }>
+  rows: Array<{
+    rootSeq: number
+    turn: number
+    hitLabels: string[]
+    /** outline/词表行原料（全部来自贴标期 RTags；verdict 只认宿主结构化失败）。 */
+    tool: string
+    failed: boolean
+    errorish: boolean
+  }>
   nextCursor: number | null
   epoch: number
   /** 传入 epoch 与当前不符：游标失效，调用方须从头重查（不假装稳定分页）。 */
@@ -214,40 +236,64 @@ export class FactorLedger {
     return { rootSeqs: [...set].sort((a, b) => a - b), count: set.size, lastSeenTurn: last }
   }
 
+  /** item 句柄校验（recall_history item= 钻取）：rootSeq 必须在**被剪账本**内——
+   *  对 live seq 用 item 必须拒绝，否则 item 就是无标签限制的 seq 召回通道（假通道复辟）。 */
+  hasEntry(rootSeq: number): boolean {
+    return this.entries.has(rootSeq)
+  }
+
+  /** item 钻取的行元数据（仅账本内 seq 有值；outline/item 路径共用）。 */
+  entryOf(rootSeq: number): { turn: number; tool: string; failed: boolean; errorish: boolean } | null {
+    const e = this.entries.get(rootSeq)
+    if (e === undefined) return null
+    return { turn: e.turn, tool: e.tags.tool, failed: e.tags.failed === true, errorish: e.tags.errorish }
+  }
+
   /**
-   * 标签交集召回（§1.4 需求驱动通道；工具接线在 P2，本函数是查询内核）。
-   * 排序：命中标签数降序（交集优先）→ turn 降序（order=fresh）→ rootSeq 降序。
+   * 标签 **AND** 召回（§1.4 需求驱动通道；2026-11-14 用户批准的 Kimi 方案 R2 内核）。
+   * 候选 = 在场标签倒排集的交集；不在账本的标签剔除回显（droppedLabels 同口径），
+   * 不参与求交（一个空想标签不杀死整个查询）。
    * 未命中的查询标签如实剔除并回显（droppedLabels），不静默。
    */
   queryPruned(q: PrunedQuery): PrunedQueryResult {
-    const hits = new Map<number, string[]>()
-    const dropped: string[] = []
+    // AND：从第一个在场标签的集合开始逐个求交。
+    let candidate: Set<number> | null = null
     for (const label of q.labels) {
       const set = this.inverted.get(label)
-      if (set === undefined || set.size === 0) {
-        dropped.push(label)
-        continue
-      }
-      for (const seq of set) {
-        const arr = hits.get(seq)
-        if (arr === undefined) hits.set(seq, [label])
-        else arr.push(label)
-      }
+      if (set === undefined || set.size === 0) continue
+      if (candidate === null) candidate = new Set(set)
+      else for (const seq of candidate) if (!set.has(seq)) candidate.delete(seq)
     }
-    const sorted = [...hits.entries()]
-      .map(([seq, hitLabels]) => ({ seq, hitLabels, e: this.entries.get(seq) }))
-      .filter((x): x is { seq: number; hitLabels: string[]; e: LedgerEntry } => x.e !== undefined)
-      .sort((a, b) =>
-        b.hitLabels.length - a.hitLabels.length
-        || b.e.turn - a.e.turn
-        || b.seq - a.seq)
+    const sorted = [...(candidate ?? [])]
+      .map(seq => ({ seq, e: this.entries.get(seq) }))
+      .filter((x): x is { seq: number; e: LedgerEntry } => x.e !== undefined)
+      .sort((a, b) => {
+        if ((q.order ?? 'relevant') === 'timeline') {
+          return a.e.turn - b.e.turn || a.seq - b.seq
+        }
+        if (q.order === 'fresh') return b.e.turn - a.e.turn || b.seq - a.seq
+        // relevant（缺省）：hitLabels 数在纯 AND 下为常数 ⇒ 实际退化为 fresh（契约文案
+        // 如实说明）；保留该键是为 anyOf（缓办）与多键形标签未来扩展留位。
+        const aHits = q.labels.filter(l => this.inverted.get(l)?.has(a.seq)).length
+        const bHits = q.labels.filter(l => this.inverted.get(l)?.has(b.seq)).length
+        return bHits - aHits || b.e.turn - a.e.turn || b.seq - a.seq
+      })
+    const hitOf = (seq: number): string[] => q.labels.filter(l => this.inverted.get(l)?.has(seq))
+    return this.pageOf(q, sorted, hitOf)
+  }
+
+  /** cursor/epoch 分页（从 queryPruned 拆出：排序与分页两个正交关注点）。 */
+  private pageOf(q: PrunedQuery, sorted: Array<{ seq: number; e: LedgerEntry }>, hitOf: (seq: number) => string[]): PrunedQueryResult {
     const epochStale = q.epoch !== undefined && q.epoch !== this._epoch
-    // 排序已在上面按当前 epoch 重算：epoch 漂移时旧游标的语义已失效（它指向旧排序的
+    // 排序已在调用侧按当前 epoch 重算：epoch 漂移时旧游标的语义已失效（它指向旧排序的
     // offset），必须从头开始——文案说"re-sorted from scratch"就必须真的从头。
     const start = epochStale ? 0 : Math.max(0, Math.min(q.cursor ?? 0, sorted.length))
     const page = sorted.slice(start, start + q.limit)
     return {
-      rows: page.map(x => ({ rootSeq: x.seq, turn: x.e.turn, hitLabels: x.hitLabels })),
+      rows: page.map(x => ({
+        rootSeq: x.seq, turn: x.e.turn, hitLabels: hitOf(x.seq),
+        tool: x.e.tags.tool, failed: x.e.tags.failed === true, errorish: x.e.tags.errorish,
+      })),
       nextCursor: start + page.length < sorted.length ? start + page.length : null,
       epoch: this._epoch,
       epochStale,
@@ -263,12 +309,32 @@ export class FactorLedger {
   }
 
   /**
+   * 路径后缀归一匹配（2026-11-14 用户裁定；alpha4 T19/T30 实锤：模型猜相对路径标签
+   * `document:.material/p02-1.md`，账本存绝对路径 ⇒ no-match 后模型放弃召回、凭记忆作答）。
+   * 只对路径形键（document:/scope:）；`rel:` 前缀键剥离后同权。多候选时调用方
+   * fail-closed 列出候选，绝不猜（与词表 fail-closed 同纪律）。
+   */
+  matchBySuffix(prefix: 'document:' | 'scope:', tail: string): string[] {
+    const out: string[] = []
+    for (const key of this.inverted.keys()) {
+      if (!key.startsWith(prefix)) continue
+      let rest = key.slice(prefix.length)
+      if (rest.startsWith('rel:')) rest = rest.slice('rel:'.length)
+      if (rest === tail || rest.endsWith('/' + tail)) out.push(key)
+    }
+    return out.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+  }
+
+  /**
    * 词表行（每类 topN，数量降序 → 新鲜度降序）。**只从被剪账本派生**。
    * 出口 fail-closed：不合当前文法的键（文法表改版/历史污染）剔除并计数。
+   * 行内线索（Kimi R4 紧版，2026-11-14）：lastTool/lastFailed 取最后一条的宿主结构化
+   * verdict；err-sig 只**计数**不判死——errorish 是文本信号（日志正文含 ENOENT 也置真），
+   * 绝不当"该次调用失败"渲染（types.ts RTags.failed 注释纪律）。
    */
-  vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number }>; omitted: number; rejected: number } {
+  vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number }>; omitted: number; rejected: number } {
     const prefix = facet + ':'
-    const candidates: Array<{ key: string; count: number; lastSeenTurn: number }> = []
+    const candidates: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number }> = []
     let rejected = 0
     for (const key of this.inverted.keys()) {
       if (!key.startsWith(prefix)) continue
@@ -277,7 +343,25 @@ export class FactorLedger {
         continue
       }
       const st = this.stat(key)
-      if (st !== null) candidates.push({ key, count: st.count, lastSeenTurn: st.lastSeenTurn })
+      if (st === null) continue
+      let lastSeq = -1
+      let lastEntry: LedgerEntry | null = null
+      let errSig = 0
+      for (const seq of st.rootSeqs) {
+        const e = this.entries.get(seq)
+        if (e === undefined) continue
+        if (e.tags.errorish) errSig += 1
+        if (lastEntry === null || e.turn > lastEntry.turn || (e.turn === lastEntry.turn && seq > lastSeq)) {
+          lastEntry = e
+          lastSeq = seq
+        }
+      }
+      candidates.push({
+        key, count: st.count, lastSeenTurn: st.lastSeenTurn,
+        lastTool: lastEntry?.tags.tool ?? 'tool',
+        lastFailed: lastEntry?.tags.failed === true,
+        errSigCount: errSig,
+      })
     }
     candidates.sort((a, b) => b.count - a.count || b.lastSeenTurn - a.lastSeenTurn)
     return { rows: candidates.slice(0, topN), omitted: Math.max(0, candidates.length - topN), rejected }
@@ -293,7 +377,6 @@ export interface RenderVocabularyOptions {
   topNPerFacet?: number
   budgetChars?: number
   /** 触发钩子文案：默认中文，preset 双语在 P2 接。 */
-  recallHook?: (key: string) => string
   stickyHook?: (v: StickyView) => string
 }
 
@@ -306,12 +389,9 @@ export interface RenderVocabularyResult {
   rejectedLabels: number
 }
 
-const DEFAULT_HOOK = (key: string): string => `需要历史细节时 recall_history(${key})`
-
 export function renderVocabulary(o: RenderVocabularyOptions): RenderVocabularyResult {
   const topN = o.topNPerFacet ?? 10
   const budget = o.budgetChars ?? 4000
-  const hook = o.recallHook ?? DEFAULT_HOOK
   const omitted: Partial<Record<VocabFacet, number>> = {}
   const lines: string[] = []
   let rejected = 0
@@ -350,7 +430,11 @@ export function renderVocabulary(o: RenderVocabularyOptions): RenderVocabularyRe
     }
     let anyRow = false
     for (const r of v.rows) {
-      if (!push(`- ${r.key} ×${r.count}（${hook(r.key)}）`)) {
+      // R4 紧版行（2026-11-14）：去每行 hook（facet header 已指路 recall_history），
+      // 换确定性线索——最后一条的 tool + 宿主结构化 verdict + err-sig 计数
+      // （errorish 只计数不判死，见 vocabularyRows 注释）。
+      const errPart = r.errSigCount > 0 ? ' · err-sig ' + r.errSigCount + '/' + r.count : ''
+      if (!push(`- ${r.key} ×${r.count} · last: ${r.lastTool} ${r.lastFailed ? 'failed' : 'ok'} @t${r.lastSeenTurn}${errPart}`)) {
         truncated = true
         break
       }

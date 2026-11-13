@@ -58,8 +58,10 @@ export interface SessionRuntimeState {
   recallCallsThisTurn: number
   /** 计数对应的 turn/start 轮号（-1=尚未同步；轮变即归零，不依赖事件投递）。 */
   recallTurn: number
-  /** 召回字符预算（单窗累计，压缩事务成功时归零——prune-tx）。 */
+  /** 召回字符预算（本 turn 累计，轮变即归零 + 压缩事务成功归零——recall.ts / prune-tx）。 */
   recallCharsUsed: number
+  /** 预算重置游标对应的 turn/start 轮号（-1=尚未同步；与 recallTurn 安全阀游标分立）。 */
+  recallBudgetTurn: number
   /** 最近一次请求的真实 prompt token（provider usage 锚点）。 */
   lastRealPromptTokens: number
   /** 锚点已覆盖的 surface 最大 seq。 */
@@ -91,6 +93,7 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     recallCallsThisTurn: 0,
     recallTurn: -1,
     recallCharsUsed: 0,
+    recallBudgetTurn: -1,
     lastRealPromptTokens: 0,
     lastRealAnchorSeq: -1,
     resolvedWindowTokens: DEFAULT_WINDOW_TOKENS,

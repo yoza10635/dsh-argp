@@ -6,6 +6,53 @@
 
 > **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.3`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
 
+## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
+
+> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha4 长跑（alpha.3/pkg9）暴露召回通道
+> 的三个实锚：预算按压缩纪元累计（73,400/73,400 用尽后同轮全空手）、模型猜相对路径标签
+> no-match 后放弃召回（T19/T30）、多标签实为并集排序而契约文案写"narrows"。本版按用户
+> 批准的 Kimi 方案（子代理对抗审查吸收：anyOf 缓办、装配四不变量、err-sig 不判死）施工。
+
+### Added
+
+- **recall_history 两级视图**：`view:"outline"`（每行确定性元数据 item= · turn · tool ·
+  verdict · 现算长度 · labels=，零 LLM、零正文，供宽查询先扫后取）| 缺省 `full`。full 改
+  **装配式**：目标 = min(perCallLimit, remaining)，装满→截断条目带 `item=<seq>, offset=<n>`
+  续读提示→余项如实计数；footer（全局 cursor）仍在钳位外拼。
+- **item 钻取**：`item=<rootSeq>` 单条取回（仅限先前召回回复列出的条目——item 必须 ∈ 被剪
+  账本，对 live seq 严拒；不是无标签 seq 召回通道）；`offset=<chars>` 条内续读；负 offset
+  严拒、越界如实。續读提示走 footer（钳位外，预算紧时不被吃）。
+- **`order` 三档**：relevant（缺省）| fresh（新→旧）| timeline（旧→新，episode 因果阅读序）。
+- **路径后缀归一**（alpha4 T19/T30 实锤修复）：精确/展开未命中的路径形标签做唯一后缀匹配
+  （document:/scope:，rel: 键剥离后同权），命中如实告知改写；多候选 fail-closed 列出绝不猜。
+- **召回预算跨轮重置**（用户裁定）：`budgetRecallText` 轮变归零（recallBudgetTurn 游标），
+  压缩归零保留双保险；耗尽文案改 "resets next turn"。`recallBudgetState` 纯读 + 轮变同步
+  （装配侧与钳位侧同一预算快照）。
+- **词表行内线索（R4 紧版）**：每行 `×N · last: <tool> <verdict> @t<turn> · err-sig K/M`；
+  err-sig 只**计数**不判死（errorish 是文本信号，宿主 failed 才标 failed——types.ts 纪律）；
+  去每行 hook（facet header 已指路）。list_labels 同步 + **scope 类别按需可见**
+  （缺省扫掠仍不含 scope）；list_labels 行内线索同款。
+- **空结果区分"无交集"**：全部标签解析成功仍零行 ⇒ 明示 "no item carries all of them"，
+  与"标签空想"（ignored 回显）区分，模型不再反复重查同一对。
+
+### Changed
+
+- **多标签查询语义 = 真 AND**（反转旧"并集 + 命中数排序"）：候选必须携带全部在场标签；
+  不在账本的标签剔除回显、不参与求交（空想标签不杀死查询）。契约行同步改写
+  （"intersecting narrows"从假话变真话 + outline/item 指引），新增契约长度上界锁。
+- recall_history 工具描述重写（AND/view/order/item/offset 全量契约）。
+
+### Tests
+
+- 275 测：273 过 / 0 败 / 2 skip（live 需环境）。
+- 反演：factor-ledger T3（交集优先 → 真 AND + 剔除标签不缩小结果集固化）；
+  CR3 数行数改单标签多条目（AND 下九标签交集为空）；recall T2 `hit=` → `labels=`；
+  词表饥饿边界 120 → 60（R4 紧行后单行变短）。
+- 新锁：ML7 后缀归一、ML8 预算轮变归零、ML9 outline 分支、ML10 item 账本校验、
+  ML11 装配式 full（截断提示存活 + 单次记账 used=返回长度）、ML12 词表线索
+  （errorish 只计数不判死）；契约长度 < 1700。
+- 变异（cp 快照回滚）：ML9/ML10/ML11/ML12 摘除全红。
+
 ## [2.0.0-alpha.3] - 2026-11-14（压缩动作改序：先组剪后 pruner + 切片可整组驱逐）
 
 > **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha3 长跑（alpha.2/pkg8）46/46 完赛，

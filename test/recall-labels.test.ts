@@ -8,7 +8,9 @@
  *  - 查询宽容（裸标签展开）与未命中如实回显（半空想查询必须可见）；
  *  - cursor/epoch 续读 + 漂移重排告警（不假装稳定分页）；
  *  - 每轮防循环安全阀双臂同阀（recall-tools 单点复用）；
- *  - 字符预算截断与耗尽显式（budgetRecallText 契约复用）。
+ *  - 字符预算截断与耗尽显式（budgetRecallText 契约复用）+ 跨轮重置（2026-11-14 用户裁定）；
+ *  - 路径后缀归一匹配（alpha4 T19/T30 实锤修复）：相对/缩短标签唯一命中改写并告知，
+ *    多候选 fail-closed 列出绝不猜。
  *
  * 变异台账（摘锁必须变红，已逐条执行）：
  *  ML1 删未命中查询标签回显 → T3 红；
@@ -17,6 +19,11 @@
  *  ML4 删裸标签前缀展开 → T3 红；
  *  ML5 queryPruned 入参 cursor/epoch 改缺省 → T5 红（两页同内容）；
  *  ML6 构造期重新挂回 recall_pruned 三件套 → T1 红。
+ *  ML7 摘后缀归一通道（handler 的 matchBySuffix 块）→ T8 红；
+ *  ML8 摘 budgetRecallText 轮变归零 → T9 红；
+ *  ML9 摘 outline 视图分支 → T10 红；
+ *  ML10 摘 item 钻取路径 → T11 红；
+ *  ML11 装配式 full 改回整批拼接（无截断提示/双记账）→ T12 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -61,7 +68,7 @@ function makeSession(id: string): Session {
 interface EngineInternals {
   factor: FactorEngine | null
   bindSession(session: Session): void
-  stateOf(session: Session): { recallCallsThisTurn: number; recallTurn: number; resolvedWindowTokens: number }
+  stateOf(session: Session): { recallCallsThisTurn: number; recallTurn: number; recallCharsUsed: number; resolvedWindowTokens: number }
 }
 
 async function boot(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals }> {
@@ -109,6 +116,7 @@ test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）
   assert.ok(!contract.includes('[已剪·因子'), '契约不再承诺 stub 文本（2026-11-13 组剪后零指针）')
   assert.ok(!contract.includes('recall_pruned') && !contract.includes('list_pruned'), '契约禁引退役工具名（假通道）')
   assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
+  assert.ok(contract.length < 1700, '契约行长度上界（H.2 防膨胀锁；2026-11-14 实测 ~1530）')
 })
 
 test('recall_history：标签交集 → 日志 append 根源原文；state/hit 标记齐、桩文本不冒充', async () => {
@@ -125,7 +133,7 @@ test('recall_history：标签交集 → 日志 append 根源原文；state/hit �
   assert.ok(text.includes('OLD CONTENT'), '取回的是原文（日志 append 根事件），不是桩')
   assert.ok(!text.includes('已剪·因子 tool →') || text.includes('OLD CONTENT'), '桩文本不作正文返回')
   assert.ok(text.includes('state=shadowed'), '状态标记：取回内容当前不可见')
-  assert.ok(text.includes('hit=document:c:/proj/a.ts'), '命中标签回显')
+  assert.ok(text.includes('labels=document:c:/proj/a.ts'), '命中标签回显（labels= 形，hit= 已随审查 D 项退役）')
   assert.ok(!text.includes('cursor='), '全量命中（limit 内）不给续读提示')
 })
 
@@ -242,4 +250,173 @@ test('每轮防循环安全阀双臂同阀；预算截断与耗尽显式（budge
   }
   assert.ok(sawTruncated, '预算内截断必须带截断标记与余额说明')
   assert.ok(sawExhausted, '累计耗尽显式说明（不静默空手）')
+})
+
+test('路径后缀归一：相对/缩短标签唯一命中改写并告知；多候选 fail-closed 列出（ML7 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-suffix')
+  internals.bindSession(session)
+  // alpha4 T19 同构场景：账本键 = 绝对路径，模型猜相对路径标签
+  appendUser(session, '任务')
+  appendGroup(session, 1, 'm1', 'read', '{"file_path":"C:/Users/admin/t24j-ws/ws2-alpha4/.material/p02-1.md"}', 'P02 ORIGINAL '.repeat(40))
+  appendGroup(session, 2, 'm2', 'read', '{"file_path":"C:/Proj/other.ts"}', 'NEW CONTENT'.repeat(50))
+  assert.ok(factor.compactIfNeeded(session, 1000) !== null)
+  const rel = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session,
+    args: { labels: ['document:.material/p02-1.md'] },
+  }))
+  assert.ok(rel.includes('P02 ORIGINAL'), '后缀归一命中原文（不空手）')
+  assert.ok(rel.includes('suffix-resolved'), '改写必须可见（模型学会下次用全形）')
+  assert.ok(rel.includes('document:c:/users/admin/t24j-ws/ws2-alpha4/.material/p02-1.md'), '全形键如实告知')
+  // 歧义：两条同尾键 → fail-closed 列候选、零内容返回（绝不猜）
+  const session2 = makeSession('recall-suffix-ambig')
+  internals.bindSession(session2)
+  appendUser(session2, '任务')
+  appendGroup(session2, 1, 'a1', 'read', '{"file_path":"C:/x/dir1/p.md"}', 'AAA '.repeat(40))
+  appendGroup(session2, 1, 'a2', 'read', '{"file_path":"C:/y/dir1/p.md"}', 'BBB '.repeat(40))
+  appendGroup(session2, 2, 'a3', 'read', '{"file_path":"C:/Proj/other.ts"}', 'NEW CONTENT'.repeat(50))
+  assert.ok(factor.compactIfNeeded(session2, 1000) !== null)
+  const amb = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q2', agentSession: session2,
+    args: { labels: ['document:dir1/p.md'] },
+  }))
+  assert.ok(amb.includes('ambiguous path suffix'), '歧义必须显式')
+  assert.ok(amb.includes('c:/x/dir1/p.md') && amb.includes('c:/y/dir1/p.md'), '候选如实列出')
+  assert.ok(!amb.includes('AAA') && !amb.includes('BBB'), '绝不猜（零正文返回）')
+})
+
+test('召回预算跨轮重置（2026-11-14 用户裁定）：轮变即归零；同轮仍累计到耗尽显式（ML8 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-budget-turn')
+  internals.bindSession(session)
+  prunedReadPair(session, factor)
+  const st = internals.stateOf(session)
+  st.resolvedWindowTokens = 8 // 极小窗口：total 10% ≈ 2 字符，单次 5% ≈ 1 字符
+  const call = async (id: string): Promise<string> => toolText(await execTool(ctx, {
+    name: 'recall_history', callId: id, agentSession: session,
+    args: { labels: ['document:c:/proj/a.ts'] },
+  }))
+  assert.ok((await call('t1a')).includes('truncated'), '同轮首调：预算内截断')
+  assert.ok((await call('t1b')).includes('budget exhausted'), '同轮累计耗尽显式（不静默空手）')
+  assert.ok((await call('t1c')).includes('budget exhausted'), '同轮仍耗尽（轮内不重置）')
+  session.append('turn/start', { turn: 1 } as never)
+  const t2 = await call('t2a')
+  assert.ok(!t2.includes('budget exhausted'), '轮变预算归零（跨轮重置生效）')
+  assert.ok(t2.includes('truncated'), '轮 2 重新可用（per-call 限额内截断照旧）')
+})
+
+test('outline 视图：每行确定性元数据（item/turn/tool/verdict/现算长度/labels=），零正文（ML9 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-outline')
+  internals.bindSession(session)
+  appendUser(session, '任务')
+  appendGroup(session, 1, 'o1', 'read', '{"file_path":"C:/Proj/a.ts"}', 'OLD'.repeat(10))
+  appendGroup(session, 2, 'o2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(10))
+  assert.ok(factor.compactIfNeeded(session, 1000) !== null)
+  const out = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session,
+    args: { labels: ['document:c:/proj/a.ts'], view: 'outline' },
+  }))
+  assert.ok(/item=\d+ · turn=1 · read ok · 30 chars · labels=document:c:\/proj\/a\.ts/.test(out), '元数据行格式（长度=现算 rawEventText 长度，不用贴标期采样值）')
+  assert.ok(!out.includes('OLDOLD'), 'outline 不给正文（宽查询先扫后取的两级协议）')
+  assert.ok(out.includes('fetch text with item='), '指引 item 钻取')
+})
+
+test('item 钻取：单条取回、截断续读 offset、负 offset 严拒、越界如实、非账本 seq 严拒（ML10 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-item')
+  internals.bindSession(session)
+  prunedReadPair(session, factor)
+  const outline = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q0', agentSession: session,
+    args: { labels: ['document:c:/proj/a.ts'], view: 'outline' },
+  }))
+  const m = outline.match(/item=(\d+)/)
+  assert.ok(m !== null, 'outline 给出 item 句柄')
+  const seq = Number(m![1])
+  const st = internals.stateOf(session)
+  st.resolvedWindowTokens = 2000 // perCall = 350：header/tag 扣除后 slice 被迫截断
+  const first = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session,
+    args: { item: seq },
+  }))
+  assert.ok(first.includes('OLD CONTENT'), 'item 取回原文')
+  assert.ok(first.includes('chars total'), '总长可见；labels/order 等参数被忽略要明示')
+  const fm = first.match(/\[item continues: call recall_history with item=(\d+) offset=(\d+)\]/)
+  assert.ok(fm !== null, '截断必须给续读 footer（钳位外拼）')
+  const second = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q2', agentSession: session,
+    args: { item: Number(fm![1]), offset: Number(fm![2]) },
+  }))
+  assert.ok(second.includes('from offset=' + fm![2]), '续读回显 offset')
+  const neg = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q3', agentSession: session,
+    args: { item: seq, offset: -5 },
+  }))
+  assert.ok(neg.includes('offset must be a non-negative'), '负 offset 严拒（fail-closed）')
+  const past = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q4', agentSession: session,
+    args: { item: seq, offset: 100000 },
+  }))
+  assert.ok(past.includes('past the end'), '越界如实说明、不给下一 offset')
+  const ghost = toolText(await execTool(ctx, {
+    name: 'recall_history', callId: 'q5', agentSession: session,
+    args: { item: 99999 },
+  }))
+  assert.ok(ghost.includes('not in the pruned ledger'), '非账本 seq（含 live）严拒——item 不是无标签 seq 召回通道')
+})
+
+test('装配式 full：新→旧序，首条整装→次条截断带 offset 提示→余项弃装计数；单次记账不双计（ML11 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-assembly')
+  internals.bindSession(session)
+  appendUser(session, '任务')
+  appendGroup(session, 1, 'p1', 'read', '{"file_path":"C:/Proj/a.ts"}', 'AAA-XYZ '.repeat(80))
+  appendGroup(session, 2, 'p2', 'read', '{"file_path":"C:/Proj/a.ts"}', 'BBB-XYZ '.repeat(80))
+  appendGroup(session, 3, 'p3', 'read', '{"file_path":"C:/Proj/a.ts"}', 'CCC-XYZ '.repeat(80))
+  appendGroup(session, 4, 'p4', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(10))
+  appendGroup(session, 5, 'p5', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(10))
+  appendGroup(session, 6, 'p6', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(10))
+  assert.ok(factor.compactIfNeeded(session, 3000) !== null, '大缺额把三条 a.ts 全剪进账本')
+  const st = internals.stateOf(session)
+  st.resolvedWindowTokens = 8000 // perCall = 1400：首条(t3)全文装下，次条(t2)截断，末条(t1)弃装
+  const res = await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session,
+    args: { labels: ['document:c:/proj/a.ts'], limit: 5 },
+  })
+  const text = toolText(res)
+  assert.ok(text.includes('CCC-XYZ '.repeat(20)), '最新条整条装入')
+  assert.ok(text.includes('BBB-XYZ ') && !text.includes('BBB-XYZ '.repeat(30)), '次条只装部分（装配期截断）')
+  assert.ok(!text.includes('AAA-XYZ '), '装不下的条目整条弃装（不装半截静默尾巴）')
+  assert.ok(/item \d+ truncated at \d+ chars/.test(text), '装配期截断提示必须存活（不被外层钳位切头）')
+  assert.ok(text.includes('+1 more item(s) not shown'), '弃装余量如实计数')
+  assert.equal(st.recallCharsUsed, text.length, '单次记账不变量：装配后无外层再截 ⇒ used = 返回长度（恰一次）')
+})
+
+test('list_labels：scope 按需可见（查询侧早已放行，词表侧对齐）；行内线索渲染', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('labels-scope')
+  internals.bindSession(session)
+  appendUser(session, '任务')
+  appendGroup(session, 1, 'g1', 'grep', '{"pattern":"shard","path":"C:/proj/src"}', 'shard hit at line 12')
+  appendGroup(session, 2, 'g2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(50))
+  assert.ok(factor.compactIfNeeded(session, 1000) !== null)
+  const scope = toolText(await execTool(ctx, {
+    name: 'list_labels', callId: 'q1', agentSession: session,
+    args: { category: 'scope' },
+  }))
+  assert.ok(scope.includes('scope — 1 label(s)'), 'scope 类别可见（G 项收口）')
+  assert.ok(scope.includes('scope:c:/proj/src'), 'scope 键入列')
+  assert.ok(scope.includes('· last: grep ok @t'), '行内线索：last tool/verdict/turn')
+  const bogus = toolText(await execTool(ctx, {
+    name: 'list_labels', callId: 'q2', agentSession: session,
+    args: { category: 'bogus' },
+  }))
+  assert.ok(bogus.includes('valid: document | command | errorcode | scope'), '严拒文案与描述同口径（含 scope）')
 })

@@ -33,6 +33,21 @@ export declare function shadowedSeqsOf(host: RecallHost, session: Session): Set<
  * P7 修复：recallCharsUsed 原本只增不减、全会话无 reset —— 累计触顶后 allowed=0，
  * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
  *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
- *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+ *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）；
+ *  3) 2026-11-14 用户裁定：**跨轮也重置**——T44 措辞实验实锤 73,400/73,400 用尽后
+ *     同轮后续召回全部空手、模型放弃核对原文；轮变即归零（recallBudgetTurn 游标），
+ *     压缩归零保留（双保险，语义一致）。
  */
+/**
+ * 召回预算读数（装配式 full 视图用，2026-11-14）：**纯读**——只做与 budgetRecallText
+ * 相同的惰性轮变归零，不写 recallCharsUsed。对抗审查 B 项四不变量之一：装配侧与钳位侧
+ * 必须看到同一预算快照，否则同一回复前后自相矛盾（装配判耗尽、钳位却放行）。
+ */
+export declare function recallBudgetState(host: RecallHost, session: Session | null): {
+    perCallLimit: number;
+    remaining: number;
+    totalLimit: number;
+};
 export declare function budgetRecallText(host: RecallHost, session: Session | null, text: string): string;
+/** 当前轮号（日志尾向前找最近 turn/start；找不到 = 0）——预算重置与召回安全阀共用。 */
+export declare function currentTurnOf(session: Session): number;
