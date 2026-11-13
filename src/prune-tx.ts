@@ -278,7 +278,7 @@ export function pruneIntervals(
           : summaryKind === 'factor-prune'
             ? `ARGP 因子剪：${prunedCount} R 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性贴标排序，0-LLM；原文保留在 append-only 日志，recall_history(labels) 可取回`
             : summaryKind === 'factor-prose'
-              ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；轮级贪心驱逐 + one-shot 原生式 LLM 浓缩（输入仅 sys+散文，无工具原子）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
+              ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；清扫式合并（焦点外前缀一轮全吞，§9.36 H2 终裁）+ one-shot 原生式 LLM 浓缩（输入=span 全栈 U/A+CALL/RESULT 日志原文，不受桩化影响）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
               : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
       }],
       shadowedRange: { start: first, end: last },

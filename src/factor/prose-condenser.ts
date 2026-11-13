@@ -2,12 +2,15 @@
  * 散文浓缩链（P6-④ 共批，2026-11-12 开工）：与剪枝链并行的散文通道——工具原子归
  * 确定性桩+召回（factor decide / prune-tx），散文（U/A 文本）归 LLM 原生式浓缩。
  *
- * 用户裁定（docs §9.22/§9.23 台账，2026-11-11 深夜三裁定 + 11-12 开工令）：
- *  - **触发** =（system 头 + 全上下文散文字符）÷ 声明窗 > 50% **且**常规压缩触发成立（合取）
- *    ——本类只在压缩事务内被调（compactIfNeeded factor 分发 / compactNow），合取的另一半
- *    由调用点保证；分母 = 声明窗（dsh 默认分母），声明未知 ⇒ 跳过不猜；
- *  - **动作** = 完全参照原生 compaction-basic 摘要方式：one-shot、replay 前缀（sys+散文栈）
- *    + 尾部指令 user 消息；**输入仅 sys+散文（不含工具原子）**；
+ * 用户裁定（docs §9.22/§9.23 三裁定 + §9.36 改版，2026-11-11~13）：
+ *  - **触发** = 合取双闸（§9.36）：闸一 =（system 头 + 全上下文散文字符）÷ 声明窗 ≥ 50%
+ *    （本类内查）；闸二 = 总上下文 ≥ windowRatio(0.8)×声明窗（引擎侧 condenseGate 查，
+ *    usage 账单锚，事后形）。400 事务内与手动 compactNow 的调用点保留（手动免闸二）；
+ *    分母 = 声明窗（dsh 默认分母），声明未知 ⇒ 跳过不猜；
+ *  - **动作** = 完全参照原生 compaction-basic 摘要方式：one-shot、replay 前缀 + 尾部指令；
+ *    **输入 = span 全栈原文（U/A + CALL/RESULT 工具面，日志原文不受桩化影响——H1 终裁）**；
+ *  - **刀深** = 清扫式合并（§9.36 H2 终裁：压缩比不可控，释放线语义禁挂本刀）：
+ *    焦点外可驱前缀一轮全吞，"需量满足即收刀"的旧贪心已移除；容量保证归确定性剪枝层；
  *  - **驱逐** = 轮级贪心（用户 11-11 定案"轮内所有中间原子被驱逐→不留墓碑"）：从最老轮起
  *    整轮驱逐——轮内全部原子（散文/工具对/可吞 X）随轮离场，A(args) 随轮走 ⇒ 无悬空
  *    tool_call——连续整轮段一笔 replace 落**单条浓缩节点**（无逐原子墓碑）；首个不可整轮的
@@ -29,21 +32,30 @@ import type { Message } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { eventText, sessionEvents } from '../log-access.ts'
+import { eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { isMergeableTombstoneText } from '../tombstone-text.js'
 import { classifyUaAtom, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
+import { STUB_PREFIX } from './factor-atoms.ts'
 import { autoDshLlmSpec, completeViaDshLlm, type AgentRouteHint } from '../peratom/llm-adapter.ts'
 
-/** 散文占比触发线（分母=声明窗，含 system 头）。用户裁定 50%。 */
+/** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
+ *  闸二（总上下文 ≥ windowRatio×声明窗）在引擎侧 condenseGate 把关，两闸齐过才开压。 */
 export const PROSE_TRIGGER_RATIO = 0.5
 
 /** 浓缩节点文本标记（单一事实源：生成与识别同文件——VOCAB_NOTE_MARKER 同款纪律）。 */
 export const PROSE_CHECKPOINT_PREFIX = '[散文压缩]'
 
-/** 摘要调用输出预算（maxTokens 三易其值终定 8192 的同源口径；思考型模型防烧穿）。 */
-export const PROSE_SUMMARY_MAX_TOKENS = 8192
+/**
+ * 摘要调用输出预算（§9.36 H5 终裁 2026-11-13：8192→20480——R1 回放实测两发顶到
+ * 8192 顶=检查点被人为掐长；20480 ≤ 0.2×262,144=52,429 预留位内）。
+ * 小声明窗守卫（H5）：实际传入 = min(本值, 0.2×声明窗 − 指令预算)，见 condense()。
+ */
+export const PROSE_SUMMARY_MAX_TOKENS = 20_480
+
+/** 小窗守卫给指令与协议开销留的 token 数（H5 式子中的常数项）。 */
+const PROSE_INSTRUCTION_TOKEN_RESERVE = 512
 
 /** LLM 超时（DEFAULT_LLM_TIMEOUT_MS 同源口径）。 */
 const PROSE_LLM_TIMEOUT_MS = 180_000
@@ -54,9 +66,13 @@ const PROSE_LLM_TIMEOUT_MS = 180_000
  */
 const CHECKPOINT_PREAMBLE = 'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
 
-/** 摘要指令（原生 COMPACTION_INSTRUCTION 的段式骨架，散文域裁剪：无工具原子可述）。 */
+/**
+ * 摘要指令 v2（§9.36 全栈带 tool 裁定；文本=回放实测形 replay/stage2-replay.py）：
+ * transcript 面 = "U:" 用户 / "A:" 助手 / "CALL name(args)" 工具调用 / "RESULT ..."
+ * 工具结果（均日志原文）。旧 v1 的 "Tool outputs are NOT included" 规则行随全栈裁定删除。
+ */
 const PROSE_COMPACTION_INSTRUCTION = [
-  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.',
+  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation transcript ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context. The transcript includes the full activity: "U:" user messages, "A:" assistant messages, "CALL name(args)" tool calls, and "RESULT ..." tool outputs.',
   '',
   'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.',
   '',
@@ -68,6 +84,9 @@ const PROSE_COMPACTION_INSTRUCTION = [
   '',
   '## Decisions and Rationale',
   '- [decisions made and why, user feedback and corrections]',
+  '',
+  '## Actions and Findings (from tool activity)',
+  '- [what was actually done: commands run and their outcomes, files read/created/edited and what they revealed, errors hit and how they were resolved; keep exact identifiers, paths, codes, hashes, and key values found in tool results]',
   '',
   '## Pending Jobs',
   '- [explicitly requested work not yet completed]',
@@ -82,9 +101,8 @@ const PROSE_COMPACTION_INSTRUCTION = [
   '- [constraints, user preferences, open questions, data needed to continue]',
   '',
   'Rules:',
-  '- Write concise engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, and syntax fragments.',
+  '- Write concise engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, and syntax fragments — from BOTH the conversation and the tool activity.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
-  '- Tool outputs are NOT included in this request (they are stubbed elsewhere with recall pointers); do not invent tool details.',
   '- Do NOT mention this summarization request or that the context was compacted.',
   '- Output only the checkpoint text: do not call any tool or take any other action.',
 ].join('\n')
@@ -132,11 +150,15 @@ export function planProseEviction(
   const clsOf = (atom: Atom): { cls: SummaryInputClass; swallowableX: boolean } => {
     const probe = probes.get(atom.seq) ?? { attachment: false }
     const cls = classifyUaAtom(atom, probe)
-    // X 的可吞性细化：可并墓碑（[elided 空格族）+ 本链历史浓缩节点（[散文压缩]）可被
-    // 整轮段吞并（内容并入新检查点=原生合并语义）；宿主官方 checkpoint / 词表 note /
+    // X 的可吞性细化：可并墓碑（[elided 空格族）+ 本链历史浓缩节点（[散文压缩]）
+    // + 桩族（STUB_PREFIX：因子桩/夹剪/占位桩，§9.36——清扫式必须吞得下已被剪枝链
+    // 贴桩的轮，原文由 buildSpanMessages 经 sourceEventSeqs 还原，H1）可被整轮段吞并
+    // （内容并入新检查点=原生合并语义）；宿主官方 checkpoint / 词表 note /
     // system-reminder 等 excluded-X 永不吞。
     const swallowableX = cls === 'excluded' && atom.type === 'X'
-      && (isMergeableTombstoneText(atom.text) || atom.text.trimStart().startsWith(PROSE_CHECKPOINT_PREFIX))
+      && (isMergeableTombstoneText(atom.text)
+        || atom.text.trimStart().startsWith(PROSE_CHECKPOINT_PREFIX)
+        || atom.text.trimStart().startsWith(STUB_PREFIX))
     return { cls, swallowableX }
   }
   const proseOf = (atom: Atom, cls: SummaryInputClass): number =>
@@ -262,13 +284,17 @@ export class ProseCondenser {
   }
 
   /**
-   * 压缩事务内调用（合取的另一半由调用点保证）。windowTokens = 声明窗（分母）。
+   * 双闸合取的闸一（散文 ≥50% 线）在本方法内查；闸二（ctx ≥ windowRatio×声明窗）由调用点
+   * 保证（condenseGate / 400 事务天然满足；手动 compactNow 免闸二）。
+   * windowTokens = 触发线（分母口径同旧：声明窗×windowRatio 前的声明值——引擎传缩放后
+   * windowTokens，此处仅作分母）；declaredWindow = 适配器声明窗原值（H5 小窗守卫用）。
    */
   async condense(
     session: Session,
     route: AgentRouteHint,
     windowTokens: number,
     signal?: AbortSignal,
+    declaredWindow = 0,
   ): Promise<CompactionResult | null> {
     if (windowTokens <= 0) {
       this.host.log.info('[argp-factor-prose] 声明窗未知（windowTokens<=0）：散文浓缩跳过（分母=声明窗，不猜物理口径）')
@@ -303,22 +329,27 @@ export class ProseCondenser {
         + '% ≤ 触发线 ' + Math.round(PROSE_TRIGGER_RATIO * 100) + '%：不浓缩')
       return null
     }
+    // 注：needChars 至此只作闸一（散文线）判据用；驱逐计划不再按需量收刀（下方清扫式）。
     // 保护窗：open turn 位置 + 焦点轮号（与 factor decide 同焦点口径）。
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const openTurnSeq = this.openTurnFirstSeq(session)
     const openTurnFromPos = openTurnSeq === null ? null : Math.max(0, surfaceSeqs.indexOf(openTurnSeq))
     const focalTurns = this.focalTurnsOf()
     const protectFromTurn = focalTurns > 0 ? latestTurn - focalTurns + 1 : Number.POSITIVE_INFINITY
-    const plan = planProseEviction(atoms, probes, surfaceSeqs, { needChars, protectFromTurn, openTurnFromPos })
+    // §9.36 H2 终裁=清扫式合并：span=焦点外可驱前缀一轮全吞（顶到焦点/open/洞界），
+    // 不按需量收刀——压缩比不可控的刀不挂"压到线 X"的保证语义（容量归确定性剪枝层）。
+    const plan = planProseEviction(atoms, probes, surfaceSeqs, {
+      needChars: Number.POSITIVE_INFINITY, protectFromTurn, openTurnFromPos,
+    })
     if (plan.stopReason === 'no-candidate') {
       this.host.log.info('[argp-factor-prose] 无可驱逐散文段（全部受保护/含 barrier）：不浓缩')
       return null
     }
-    // 摘要输入 = sys + 被驱逐散文（span+partial 的 textA，按 surface 位置序 replay）。
+    // 摘要输入 = span 全栈原文（§9.36：U/A + CALL/RESULT，日志原文；按 surface 位置序 replay）。
     const evictedSeqs = [...plan.spanSeqs, ...plan.partialSeqs]
     const evictedSet = new Set<number>(evictedSeqs)
-    const proseMessages = this.buildProseMessages(atoms, surfaceSeqs, evictedSet)
-    const summary = await this.callLlm(spec, proseMessages, signal)
+    const spanMessages = this.buildSpanMessages(session, surfaceSeqs, evictedSet)
+    const summary = await this.callLlm(spec, spanMessages, signal, declaredWindow)
     if (summary.trim().length === 0) {
       this.host.log.warn('[argp-factor-prose] LLM 摘要空输出（保原文，本轮不浓缩）')
       return null
@@ -405,37 +436,76 @@ export class ProseCondenser {
     return null
   }
 
-  /** 被驱逐散文 → replay messages（U→user、A→assistant 纯文本；按 surface 位置序）。 */
-  private buildProseMessages(atoms: readonly Atom[], surfaceSeqs: readonly number[], evicted: Set<number>): Message[] {
-    const atomsBySeq = new Map<number, Atom>(atoms.map(a => [a.seq, a]))
+  /**
+   * 驱逐 span → 全栈 replay messages（§9.36 输入面 H1 终裁）：文本一律 rawEventText/
+   * rawEventFaces 取日志原文；桩族成员（STUB_PREFIX 三形=因子桩/夹剪/占位桩，及
+   * [elided 可并族）**以原文替位**——配对账目=替位事件顶层 sourceEventSeqs（R1 档案
+   * 实锤顶层键 {data, seq, sourceEventSeqs, surfaceOp, time, type}；注意它在事件顶层
+   * **不在 data**，stub data 仅 {message, step, turn}）。记账条 seq（compaction/*）被
+   * 面类型滤除；账目在日志故跨 resume 有效，递归穿透归并链。
+   * [散文压缩] checkpoint 例外：滚动合并只再吞旧检查点本身（再吞原文=双份失真+span 爆量）。
+   * 面映射（rawEventFaces）：A→assistant 'A: '，K（A 内 tool-call 块；tool/call 事件
+   * 本身 off-surface）→assistant 'CALL '，R→user 'RESULT '，其余→user 'U: '
+   * （标记 = 指令 v2 首行所宣）；X 节点按原文入列。
+   */
+  private buildSpanMessages(session: Session, surfaceSeqs: readonly number[], evicted: Set<number>): Message[] {
+    const events = sessionEvents(session) as unknown as Array<{ type?: string; sourceEventSeqs?: unknown } | undefined>
     const messages: Message[] = []
-    for (const seq of surfaceSeqs) {
-      if (!evicted.has(seq)) continue
-      const atom = atomsBySeq.get(seq)
-      if (atom === undefined || atom.text.length === 0) continue
-      if (atom.type === 'U') {
-        messages.push(createUserMessage({ content: [{ type: 'text', text: atom.text }], source: { kind: 'user' } }))
-      } else if (atom.type === 'A') {
+    const emitFace = (ty: string | undefined, face: string, text: string): void => {
+      if (text.length === 0) return
+      if (face === 'A') {
         messages.push(createAssistantMessage({
           source: { provider: 'argp-prose', model: 'condense-replay' },
-          content: [{ type: 'text', text: atom.text }],
+          content: [{ type: 'text', text: 'A: ' + text }],
         }))
+      } else if (face === 'K') {
+        messages.push(createAssistantMessage({
+          source: { provider: 'argp-prose', model: 'condense-replay' },
+          content: [{ type: 'text', text: 'CALL ' + text }],
+        }))
+      } else if (ty === 'tool/result') {
+        messages.push(createUserMessage({ content: [{ type: 'text', text: 'RESULT ' + text }], source: { kind: 'user' } }))
+      } else {
+        messages.push(createUserMessage({ content: [{ type: 'text', text: 'U: ' + text }], source: { kind: 'user' } }))
       }
+    }
+    const FACE = new Set(['user/message', 'assistant/message', 'tool/result'])
+    const expand = (seq: number, depth: number, visiting: Set<number>): void => {
+      const ev = events[seq]
+      if (ev === undefined || ev.type === undefined || !FACE.has(ev.type)) return // 记账条（compaction/*/tool/call）滤除
+      const faces = rawEventFaces(session, seq)
+      const text = faces.map(f => f.text).join('\n')
+      if (text.length === 0) return
+      const trimmed = text.trimStart()
+      const stubLike = (trimmed.startsWith(STUB_PREFIX) || isMergeableTombstoneText(text))
+        && !trimmed.startsWith(PROSE_CHECKPOINT_PREFIX) // 滚动合并豁免（见头注）
+      const srcs = Array.isArray(ev.sourceEventSeqs) ? ev.sourceEventSeqs as readonly number[] : []
+      if (stubLike && srcs.length > 0 && depth < 6 && !visiting.has(seq)) {
+        visiting.add(seq)
+        for (const s of srcs) expand(s as number, depth + 1, visiting)
+        visiting.delete(seq)
+        return
+      }
+      for (const f of faces) emitFace(ev.type, f.face, f.text)
+    }
+    for (const seq of surfaceSeqs) {
+      if (evicted.has(seq)) expand(seq, 0, new Set())
     }
     return messages
   }
 
-  private async callLlm(spec: { provider: string; model: string }, proseMessages: Message[], signal?: AbortSignal): Promise<string> {
+  private async callLlm(spec: { provider: string; model: string }, spanMessages: Message[], signal?: AbortSignal, declaredWindow = 0): Promise<string> {
     if (this.cfg.complete !== undefined) {
-      // 测试注入形：散文栈平铺进 prompt（形状同构：前缀 replay + 尾部指令）。
-      const flat = proseMessages.map(m => {
+      // 测试注入形：span 栈平铺进 prompt（形状同构：前缀 replay + 尾部指令）。
+      // 行内标记（U:/A:/CALL/RESULT）已在 buildSpanMessages 写入文本，此处不再叠角色前缀。
+      const flat = spanMessages.map(m => {
         const blocks = (m as unknown as { content?: ReadonlyArray<{ type?: string; text?: string }> }).content ?? []
-        return ((m as unknown as { role?: string }).role === 'assistant' ? 'A: ' : 'U: ')
-          + blocks.map(b => typeof b.text === 'string' ? b.text : '').join('')
+        return blocks.map(b => typeof b.text === 'string' ? b.text : '').join('')
       }).join('\n')
       return await this.cfg.complete(spec, flat + '\n\n' + PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs)
     }
-    return (await completeViaDshLlm(this.ctx, spec, PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs, proseMessages, undefined, signal, PROSE_SUMMARY_MAX_TOKENS)).text
+    return (await completeViaDshLlm(this.ctx, spec, PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs,
+      spanMessages, undefined, signal, summaryMaxTokensOut(declaredWindow))).text
   }
 
   /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
@@ -448,6 +518,17 @@ export class ProseCondenser {
     }
     return autoDshLlmSpec(this.ctx, route)
   }
+}
+
+/**
+ * 浓缩输出预算（§9.36 H5 终裁）：min(20480, 0.2×声明窗 − 指令预留)——
+ * 262K 声明窗下=20480（预留 52,429 tok 内）；小声明窗（如联调 32K 形：0.2×=6.5K）
+ * 自动收缩，摘要调用自己永远装得下窗。declaredWindow ≤0（声明未知）⇒ 常数上限
+ * （调用点已保证声明未知不进入浓缩路径，此处纯防御）。
+ */
+export function summaryMaxTokensOut(declaredWindow: number): number {
+  if (declaredWindow <= 0) return PROSE_SUMMARY_MAX_TOKENS
+  return Math.max(1024, Math.min(PROSE_SUMMARY_MAX_TOKENS, Math.floor(declaredWindow * 0.2) - PROSE_INSTRUCTION_TOKEN_RESERVE))
 }
 
 /** partial 散点的指针墓碑（标准 [elided] 文法：可并、后续贪心可吞；原文在日志 seq）。 */

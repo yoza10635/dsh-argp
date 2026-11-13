@@ -1,16 +1,23 @@
 /**
- * src/factor/prose-condenser.ts 契约（P6-④ 共批，2026-11-11 用户三裁定 + 11-12 开工令）：
- * 散文链与剪枝链并行——触发（(sys+散文)÷声明窗>50% 且已在压缩事务内）、轮级贪心驱逐
- * （整轮段单浓缩节点无逐原子墓碑 / 破段轮逐原子指针）、one-shot 原生式摘要（输入仅
- * sys+散文，无工具原子）、kind 标记、无逐字转写带（原始信息 recall 兜底）。
+ * src/factor/prose-condenser.ts 契约（§9.36 浓缩通道改版，用户 2026-11-13 系列裁定）：
+ * 触发=**合取双闸**——闸一 散文 ≥50%×声明窗（PROSE_TRIGGER_RATIO，本文件）∧ 闸二 总上下文
+ * ≥ windowRatio(0.8)×声明窗（引擎 condenseGate，usage 账单锚）；输入面=span 全栈
+ * U/A+CALL/RESULT **日志原文**（桩族以原文替位，[散文压缩] checkpoint 滚动替身）；
+ * 刀深=**清扫式合并**（焦点外前缀一轮全吞；H2 终裁：压缩比不可控，禁挂"压到线"保证）；
+ * 输出预算=min(20480, 0.2×声明窗−512)（H5）。并行链语义不变：整轮段单浓缩节点无逐原子
+ * 墓碑 / 破段轮逐原子指针；无逐字转写带（原始信息 recall 兜底）。
  *
- * 变异台账（摘锁必须变红，已逐条执行）：
+ * 变异台账（摘锁必须变红，逐条 cp 快照回滚验红）：
  *  PC1 触发判定摘除（比值 ≤ 线也动作）→ T1 红；
- *  PC2 贪心破段停摘除（跨洞续段/整段逐原子化）→ T3 红（整轮段出现逐原子 [elided] 桩）；
+ *  PC2 贪心破段停摘除（跨洞续段/整段逐原子化）→ T3 红（整轮段出现逐原子 [elided 桩）；
  *  PC3 kind 标记摘除（浓缩节点无 [散文压缩] 前缀）→ T2 红；
- *  PC4 输入混入工具原子（R 文本进摘要请求）→ T4 红；
+ *  PC4 全栈输入摘除（RESULT/CALL 文本缺出摘要请求——§9.36 对旧"仅 sys+散文"的反转锁）→ T4 红；
  *  PC5 声明窗守卫摘除（windowTokens<=0 也动作）→ T7 红；
- *  PC6 open 轮位置守卫摘除 → T8 红（open 轮散文被驱逐）。
+ *  PC6 open 轮位置守卫摘除 → T8 红（open 轮散文被驱逐）；
+ *  PC7 驱逐刀改回"按需收刀"（needChars 贪心复辟）→ T10 红（H2 终裁清扫式锁）；
+ *  PC8 桩族不以原文替位（桩文进摘要请求）→ T13 红（H1 锁）；
+ *  PC9 ctx 闸（闸二）判据摘除或锚点要求（source≠anchored）摘除 → T12 红（H6 锁）；
+ *  PC10 H5 输出预算守卫摘除（常数 20480 直通小窗）→ T11 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -19,7 +26,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
-import { PROSE_CHECKPOINT_PREFIX, ProseCondenser, planProseEviction, type ProseEventProbe } from '../src/factor/prose-condenser.ts'
+import { PROSE_CHECKPOINT_PREFIX, ProseCondenser, planProseEviction, summaryMaxTokensOut, type ProseEventProbe } from '../src/factor/prose-condenser.ts'
 import type { Atom } from '../src/argp-types.ts'
 import { sessionEvents } from '../src/log-access.ts'
 
@@ -105,7 +112,8 @@ async function boot(): Promise<{ ctx: Context; internals: EngineInternals }> {
 }
 
 // ---------------------------------------------------------------------------
-// planProseEviction 纯函数
+// planProseEviction 纯函数（驱逐计划的段语义；condense 侧只以 needChars=∞ 走清扫式，
+// 贪心需量形保留为可测语义——PC2 破段停是段语义而非需量语义，两形共用）
 // ---------------------------------------------------------------------------
 
 function atom(seq: number, turn: number, type: Atom['type'], text: string, toolCallIds: string[] = []): Atom {
@@ -183,11 +191,26 @@ test('planProseEviction ④：open 轮位置守卫（run 起点 ≥ open 首位�
   assert.ok(plan.stopReason === 'need-met', 'U1 散文 60 字 ≥ need 10')
 })
 
+test('planProseEviction ⑤：因子桩（STUB_PREFIX 族）可吞（§9.36——清扫式必须吞得下已贴桩的轮）', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'A', 'A1-'.padEnd(60, '答'), ['c1']),
+    atom(3, 1, 'X', '[已剪·因子] bash → command:npm；recall_history(command:npm) 取回原文'),
+    atom(4, 2, 'U', 'U2-'.padEnd(60, '文')),
+  ]
+  const plan = planProseEviction(atoms, noProbe, [1, 2, 3, 4], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.ok(plan.spanSeqs.includes(3), '★桩成员必须可吞（否则剪枝链先手贴桩会腰斩浓缩 span）')
+  assert.ok(plan.spanSeqs.includes(4), '桩后的轮照常进段')
+  assert.deepStrictEqual(plan.partialSeqs, [])
+})
+
 // ---------------------------------------------------------------------------
 // condense() 端到端（complete 注入，零网络）
 // ---------------------------------------------------------------------------
 
-test('T1 触发门控：散文占比 ≤ 50% 声明窗 ⇒ 不动作零调用（PC1 锁）', async () => {
+test('T1 触发门控（闸一）：散文占比 ≤ 50% 声明窗 ⇒ 不动作零调用（PC1 锁）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('prose-gate')
   internals.bindSession(session)
@@ -255,11 +278,11 @@ test('T3 破段轮：不可吞 X 破段 → 轮内 textA 逐原子指针，后�
   assert.ok(pointers.length >= 1, '破段轮的 textA 逐原子指针必须存在（U2）')
   assert.ok(!surfTexts.some(t => t.includes('T2-user')), 'U2 已被指针顶替（部分驱逐）')
   assert.ok(surfTexts.some(t => t.includes('官方 developer 公告')), '不可吞 X 原位不动')
-  assert.ok(surfTexts.some(t => t.includes('T3-user')), '贪心停在破段轮：turn3 散文不动')
+  assert.ok(surfTexts.some(t => t.includes('T3-user')), '清扫式也停不住破段轮：turn3 散文不动（PC2 锁段语义）')
   assert.ok(surfTexts.some(t => t.includes('doing bash c2')), 'A(args) 不逐原子去（孤儿化风险）')
 })
 
-test('T4 输入形状：摘要请求只含 sys+散文，工具原子文本不进（PC4 锁）', async () => {
+test('T4 输入形状（§9.36 全栈终裁）：摘要请求含 U/A + CALL/RESULT 原文，焦点轮除外（PC4 反转锁）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('prose-input')
   internals.bindSession(session)
@@ -270,11 +293,65 @@ test('T4 输入形状：摘要请求只含 sys+散文，工具原子文本不进
     complete: async (_spec, prompt) => { capturedPrompt = prompt; return '正文' },
   })
   await prose.condense(session, { provider: 't', model: 'm' }, 100)
-  assert.ok(capturedPrompt.includes('T1-user'), '散文栈 replay 必须含 U 文本')
-  assert.ok(capturedPrompt.includes('doing bash'), 'A 文本（散文）必须含')
-  assert.ok(!capturedPrompt.includes('R1-TOOL-OUTPUT'), '★工具原子 R 文本禁入摘要请求（输入仅 sys+散文）')
-  assert.ok(!capturedPrompt.includes('焦点轮不动'), '焦点轮散文不进（受保护）')
-  assert.ok(capturedPrompt.includes('## Critical Context'), '原生段式指令在尾部')
+  assert.ok(capturedPrompt.includes('U: T1-user'), 'user 原文带 U: 标记入面')
+  assert.ok(capturedPrompt.includes('A: doing bash'), 'assistant 原文带 A: 标记入面')
+  assert.ok(capturedPrompt.includes('CALL bash'), '★tool/call（K 面）必须入摘要请求（不拆 UA，连带 tool 进压缩）')
+  assert.ok(capturedPrompt.includes('RESULT R1-TOOL-OUTPUT'), '★tool/result（R 面）原文必须入摘要请求（旧"仅 sys+散文"已废）')
+  assert.ok(!capturedPrompt.includes('焦点轮不动'), '焦点轮不进（受保护；H4 最新消息不变量同款）')
+  assert.ok(capturedPrompt.includes('## Critical Context'), '指令 v2 段式在尾部')
+  assert.ok(capturedPrompt.includes('## Actions and Findings'), '指令 v2 工具叙事段必须在（全栈指令）')
+})
+
+test('T10 清扫式刀深（PC7 锁，§9.36 H2 终裁）：span 顶到焦点线一轮全吞，不按"需量"收刀', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('prose-sweep')
+  internals.bindSession(session)
+  buildHistory(session)
+  let capturedPrompt = ''
+  const prose = new ProseCondenser(ctx, internals as never, {
+    focalTurns: 1,
+    complete: async (_spec, prompt) => { capturedPrompt = prompt; return '正文' },
+  })
+  // 分离带数学（probe 实锤 .tmp/probe-sweep.ts 口径：cpt=3.5；需量入账只认 textA——
+  // 带 tool-call 的 A 是 rPair 不计，每轮入账=U 108；proseAll=814、sys=13）：
+  // windowTokens=290 ⇒ 触发线=floor(290×3.5×0.5)=507 ⇒ need=13+814−507=320；
+  // 旧贪心累计 108/216/324 ⇒ turn3 顶到 324≥320 收刀 ⇒ turn4 缺席（变异红点）；
+  // 清扫式不看需量 ⇒ turn4 必在（span 只受焦点/open/洞界约束）。
+  const result = await prose.condense(session, { provider: 't', model: 'm' }, 290)
+  assert.ok(result !== null, '闸一过线必须动作')
+  assert.ok(capturedPrompt.includes('T4-user'), '★清扫式必须吞到焦点线前一转（needChars 收刀复辟=浅刀回震病根，PC7）')
+  assert.ok(!capturedPrompt.includes('焦点轮不动'), '焦点轮仍不动（清扫只到焦点线为止）')
+})
+
+test('T13 桩族原文替位（PC8 锁，§9.36 H1）：已贴桩 R 以日志原文入摘要请求，桩文禁入', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('prose-stub')
+  internals.bindSession(session)
+  buildHistory(session)
+  // 现场贴桩 turn2 的 R：与生产同账目形——compaction/prune（带 shadowedSeqs）→ 紧邻替位事件
+  const nodes = [...session.surface.nodes] as unknown as number[]
+  const events = sessionEvents(session) as unknown as Array<{ type?: string } | undefined>
+  const rSeqs = nodes.filter(s => events[s]?.type === 'tool/result')
+  const r2Seq = rSeqs[1]
+  assert.ok(r2Seq !== undefined, 'fixture 须含 ≥2 个 tool/result 面')
+  session.append('compaction/prune', { shadowedRange: { start: r2Seq as never, end: r2Seq as never }, shadowedSeqs: [r2Seq as never], shadowedTokenCount: 10 } as never)
+  // 与生产同形（prune-tx G2）：克隆原 R data，**只**改 inner text（session 强制 tool/result
+  // replace may change only content）
+  const origData = JSON.parse(JSON.stringify((sessionEvents(session) as unknown as Array<{ data?: unknown }>)[r2Seq]?.data ?? {}))
+  origData.message.content[0].content = [{ type: 'text', text: '[已剪·因子] bash → command:npm；recall_history(command:npm) 取回原文' }]
+  session.append('tool/result', origData as never, {
+    surfaceOp: { op: 'replace', startSeq: r2Seq as never, endSeq: r2Seq as never },
+    sourceEventSeqs: [r2Seq as never],
+  } as never)
+  let capturedPrompt = ''
+  const prose = new ProseCondenser(ctx, internals as never, {
+    focalTurns: 1,
+    complete: async (_spec, prompt) => { capturedPrompt = prompt; return '正文' },
+  })
+  const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
+  assert.ok(result !== null, '桩可吞 ⇒ span 不被贴桩轮腰斩')
+  assert.ok(capturedPrompt.includes('RESULT R2-TOOL-OUTPUT'), '★桩位必须以原文替位入摘要请求（H1：输入面不受桩化影响）')
+  assert.ok(!capturedPrompt.includes('[已剪·因子]'), '桩文禁入摘要请求（替位不叠位）')
 })
 
 test('T7 声明窗守卫：windowTokens<=0（声明未知）⇒ 不动作不猜（PC5 锁）', async () => {
@@ -299,7 +376,7 @@ test('T8 open 轮位置守卫：进行中轮的散文不驱逐（PC6 锁）', as
   buildHistory(session)
   // open turn 6（日志尾 turn/start 未闭合）
   session.append('turn/start', { turn: 6 } as never)
-  // open 轮散文体量调大：need 无法在 t1-t5 满足 ⇒ 守卫（而非 need-met）是拦住 open 轮的唯一原因
+  // open 轮散文体量调大：清扫式默认顶到 open 界 ⇒ 位置守卫（而非需量）是拦住 open 轮的唯一防线
   appendUser(session, 'open 轮进行中：' + '进'.repeat(1500), 6)
   const prose = new ProseCondenser(ctx, internals as never, {
     focalTurns: 0, // 焦点守卫关：open 位置守卫是唯一防线（PC6 变异才咬得住）
@@ -308,7 +385,7 @@ test('T8 open 轮位置守卫：进行中轮的散文不驱逐（PC6 锁）', as
   const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
   assert.ok(result !== null)
   const surfTexts = surfTextsOf(session)
-  assert.ok(surfTexts.some(t => t.includes('open 轮进行中')), '★open 轮散文必须原位保留（位置守卫）')
+  assert.ok(surfTexts.some(t => t.includes('open 轮进行中')), '★open 轮散文必须原位保留（位置守卫；H4 最新消息不变量）')
 })
 
 test('T9 LLM 空输出：保原文零发射', async () => {
@@ -324,4 +401,47 @@ test('T9 LLM 空输出：保原文零发射', async () => {
   const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
   assert.equal(result, null, '空摘要 = 本轮不浓缩（保原文）')
   assert.equal((session.surface.nodes as readonly number[]).length, nodesBefore, 'surface 零改写')
+})
+
+// ---------------------------------------------------------------------------
+// 引擎侧双闸之二（condenseGate）与输出预算（H5）
+// ---------------------------------------------------------------------------
+
+test('T11 输出预算（PC10 锁，§9.36 H5 终裁）：20480 常数帽 + 0.2×声明窗预留收缩', () => {
+  assert.equal(summaryMaxTokensOut(262144), 20480, '262K 声明窗=常数帽 20480（回放实测 8192 顶被掐的修正）')
+  assert.equal(summaryMaxTokensOut(32768), Math.floor(32768 * 0.2) - 512, '小窗按 0.2×窗−512 预留收缩（摘要自己装得下）')
+  assert.ok(summaryMaxTokensOut(32768) < 32768 * 0.2, '预留语义：严格小于 0.2×声明窗')
+  assert.equal(summaryMaxTokensOut(0), 20480, '声明未知=纯防御常数（调用点已挡）')
+})
+
+test('T12 ctx 闸（PC9 锁，§9.36 闸二 + H6 锚点前提）：anchored ≥ 触发线才驱浓缩', async () => {
+  const { internals } = await boot() // 显式 windowTokens=100 ⇒ 触发线=100
+  const session = makeSession('prose-gate2')
+  internals.bindSession(session)
+  buildHistory(session)
+  const logs: string[] = []
+  ;(internals as unknown as EngineInternals & { log: EngineInternals['log'] }).log = {
+    info: m => { logs.push(m) }, warn: m => { logs.push(m) }, error: m => { logs.push(m) },
+  }
+  const st = internals.stateOf(session) as { lastRealPromptTokens: number; lastRealAnchorSeq: number }
+  const gate = internals as unknown as {
+    condenseGate(agent: { session: Session; options: Record<string, never> }, signal: AbortSignal, incoming: number): Promise<void>
+  }
+  const lastSeq = [...session.surface.nodes].pop() as number
+  const signal = new AbortController().signal
+  // ① 断锚（H6：退 chars/est 估=禁触发破坏性改写，宁缺勿错）
+  st.lastRealPromptTokens = 999; st.lastRealAnchorSeq = -1
+  await gate.condenseGate({ session, options: {} }, signal, 0)
+  assert.ok(!logs.some(l => l.includes('ctx 闸过线')), '断锚数字再大也禁驱（宁缺勿错）')
+  // ② 锚好但未过线（90 < 100）
+  st.lastRealPromptTokens = 90; st.lastRealAnchorSeq = lastSeq
+  await gate.condenseGate({ session, options: {} }, signal, 0)
+  assert.ok(!logs.some(l => l.includes('ctx 闸过线')), '未过触发线不驱')
+  // ③ 过线 ⇒ 驱浓缩调用（route={} ⇒ spec 不可解析 ⇒ disabled 日志=调用真实到达，零网络）
+  st.lastRealPromptTokens = 150
+  await gate.condenseGate({ session, options: {} }, signal, 0)
+  assert.ok(logs.some(l => l.includes('ctx 闸过线')), '≥ windowRatio×声明窗必须驱')
+  assert.ok(logs.some(l => l.includes('LLM 后端不可用')), 'condense 调用真实到达（无路由=disabled 日志，零网络）')
+  // ④ 未发射不写 note 的守卫生效路径：condense 返回 null ⇒ 无浓缩节点落面
+  assert.ok(!surfTextsOf(session).some(t => t.startsWith(PROSE_CHECKPOINT_PREFIX)), 'disabled 路径零改写')
 })

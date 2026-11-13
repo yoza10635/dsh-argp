@@ -258,6 +258,36 @@ export function rawEventText(session: Session, seq: number): RawEventText | null
   return { text: parts.join('\n'), reconstructed: note !== '', note: note !== '' ? note : undefined }
 }
 
+/**
+ * 事件的面拆分（§9.36 浓缩输入面）：assistant/message 的 text/reasoning 块归 'A'、
+ * tool-call 块逐块归 'K'（`name(args)` 投影，与 R1 回放 replay 形同构——tool/call 是
+ * off-surface 记账事件，K 面只能从 A 的块里取）；其余类型单面返回（face 按类型给
+ * 'U'/'R'/'X'），文本口径与 {@link rawEventText} 一致。
+ */
+export function rawEventFaces(session: Session, seq: number): Array<{ face: 'U' | 'A' | 'K' | 'R' | 'X'; text: string }> {
+  const event = sessionEvents(session)[seq]
+  if (event === undefined) return []
+  if (event.type === 'assistant/message') {
+    const data = event.data as unknown as { message?: { content?: ReadonlyArray<{ type?: string; text?: string; name?: string; arguments?: unknown }> } } | undefined
+    const blocks = Array.isArray(data?.message?.content) ? data.message.content : []
+    const out: Array<{ face: 'U' | 'A' | 'K' | 'R' | 'X'; text: string }> = []
+    let textBuf = ''
+    for (const b of blocks) {
+      if ((b.type === 'text' || b.type === 'reasoning') && typeof b.text === 'string') textBuf += b.text
+      else if (b.type === 'tool-call') {
+        const args = typeof b.arguments === 'string' ? b.arguments : JSON.stringify(b.arguments ?? {})
+        out.push({ face: 'K', text: (b.name ?? '?') + '(' + args + ')' })
+      }
+    }
+    if (textBuf.length > 0) out.unshift({ face: 'A', text: textBuf })
+    return out
+  }
+  const raw = rawEventText(session, seq)
+  if (raw === null || raw.text.length === 0) return []
+  const face = event.type === 'user/message' ? 'U' : event.type === 'tool/result' ? 'R' : 'X'
+  return [{ face, text: raw.text }]
+}
+
 /** 判定单个 seq 的状态。shadowed 优先（被遮蔽的节点也可能仍留在 surface 索引之外）。 */
 export function nodeStateOf(session: Session, seq: number, isShadowed: (seq: number) => boolean): NodeState {
   if (isShadowed(seq)) return 'shadowed'

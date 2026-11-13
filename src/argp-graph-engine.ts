@@ -934,6 +934,15 @@ export class ArgpGraphEngine extends CompactionEngine {
             this.log.warn('[argp-factor] pre-step 压力剪失败（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
           }
         }
+        // §9.36 浓缩通道闸二（ctx 闸）：上一请求 usage 已锚、下一请求未发——双闸合取里
+        // "总上下文 ≥ windowRatio×声明窗"的把关位（闸一散文线在 condense 内）。
+        if (!signal.aborted && this.prose !== null) {
+          try {
+            await this.condenseGate(agent, signal, this.incomingTokens(messages))
+          } catch (e) {
+            this.log.warn('[argp-factor-prose] pre-step ctx 闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
+          }
+        }
         return next()
       }
       if (!signal.aborted) {
@@ -1498,6 +1507,29 @@ export class ArgpGraphEngine extends CompactionEngine {
     return true
   }
 
+  /**
+   * §9.36 浓缩通道闸二（ctx 闸；用户裁定 2026-11-13：检查点可在发送之后=usage 账单锚）：
+   * pre-step 位（上一请求 usage 已落锚、下一请求未发）测得总上下文 ≥ 触发线
+   * （windowRatio×声明窗，缺省 0.8）⇒ 驱一发清扫式浓缩（prose.condense 内查闸一）。
+   * 锚点健康前提（H6）：source='anchored'（usage 真锚；断锚退 chars 估=禁触发破坏性
+   * 改写，宁缺勿错）+ 声明窗已知。手动 compactNow 免本闸（手动语义保留）。
+   * 0.2×声明窗留给摘要输出（输出预算=summaryMaxTokensOut(声明窗)）。
+   */
+  private async condenseGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number): Promise<void> {
+    if (this.prose === null) return
+    const session = agent.session
+    const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+    this.bindSession(session) // D2：await 窗口内焦点可能换装——回绑后再读锚点
+    if (!declaredKnown || windowTokens <= 0 || signal.aborted) return
+    const measurement = this.measureTokens(session, incomingTokens)
+    if (measurement.source !== 'anchored') return
+    if (measurement.contextTokens < windowTokens) return
+    this.log.info('[argp-factor-prose] ctx 闸过线: contextTokens=' + measurement.contextTokens
+      + ' ≥ ' + windowTokens + '（声明窗=' + (this.declaredContextWindows.get(session) ?? '?') + '），清扫式浓缩')
+    const res = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
+    if (res !== null) await this.refreshFactorNoteSafe(agent) // P6-② note 纪律：变化时机=压缩时机（未发射不写 note）
+  }
+
   override async compactIfNeeded(
     agent: CompactionAgentContext,
     trigger: CompactionTrigger,
@@ -1537,7 +1569,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         let proseResult: CompactionResult | null = null
         if (this.prose !== null && declaredKnown) {
           try {
-            proseResult = await this.prose.condense(session, agent.options, windowTokens, signal)
+            proseResult = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
           } catch (e) {
             this.log.warn('[argp-factor-prose] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
           }
@@ -1915,7 +1947,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         this.bindSession(agent.session) // D2：await 窗口内焦点可能换装——回绑再写 surface
         if (this.prose !== null && declaredKnown) {
           try {
-            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, signal)
+            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, signal, this.declaredContextWindows.get(agent.session) ?? 0)
           } catch (e) {
             this.log.warn('[argp-factor-prose] 手动散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
           }
