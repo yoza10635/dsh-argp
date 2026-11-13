@@ -925,12 +925,13 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * 宿主原生 tool-result-pruner 全局预剪（2026-11-13 用户裁定）。
+   * 宿主原生 tool-result-pruner 二次收紧（2026-11-13 引入，2026-11-14 裁定改为组剪之后）。
    *
-   * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：pruner 先把 surface 上所有
-   * > thresholdChars 的 `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文
-   * 恒留 append-only 日志），随后组剪按 re-measure 后的剩余 deficit 赶 A+R 组。
-   * pruner 的 `compaction/prune` 事件落在我们的 `compaction/start` 之前，因此
+   * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：先按 alpha2 口径把 A+R 协议组
+   * 整组归零（目标 = 真实缺口），再对剩余 surface 上所有 > thresholdChars 的
+   * `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文恒留 append-only 日志）——
+   * 后者专打组剪动不了的部分（焦点/open 轮 read、A 仍存活的 R）。
+   * pruner 的 `compaction/prune` 事件落在我们的 `compaction/end` 之后，因此
    * `rebuildLedgerFromLog` 不会把它并进组剪事务账；`shadowedSeqsOf` 照常计入。
    *
    * 约束：宿主只允许 open turn 内做 `tool/result` replace（durable turn work）；
@@ -992,26 +993,25 @@ export class ArgpGraphEngine extends CompactionEngine {
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
     // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：
-    // 原生 pruner 全局预剪（0-LLM，R head/middle/tail）→ R 剪 0-LLM（deficit = 真实
-    // 口径 − retain，pruner 节省经 re-measure 自动扣除）→ 散文浓缩（(sys+散文)÷声明窗
-    // > 50% 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→ 词表 note 事务收尾
-    // （P6-② 违规点整改：note 变化时机 = 压缩时机）。
+    // A+R 组剪（0-LLM，整组归零；deficit = 真实口径 − retain）→ 原生 pruner 二次收紧
+    // 剩余大 R（0-LLM，head/middle/tail；焦点/open 轮里组剪动不了的 read）→ 散文浓缩
+    // （(sys+散文)÷声明窗 > 50% 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→
+    // 词表 note 事务收尾（P6-② 违规点整改：note 变化时机 = 压缩时机）。
     if (trigger === 'context-overflow' || declaredKnown) {
-      // 同一笔压缩：pruner 先切全局 R（含焦点尾窗内的大 read），组剪再按剩余缺口
-      // 赶 A+R 组。只在确有压力时预剪；pruner 已够（deficit ≤0）就不做无谓组驱逐。
-      let native = { pruned: 0, charsRemoved: 0 }
-      if (trigger === 'context-overflow' || measurement.contextTokens > retainTokens) {
-        native = this.nativePruneToolResults(session)
-        if (native.pruned > 0) measurement = this.measureTokens(session, incomingTokens)
-      }
+      // 2026-11-14 用户裁定：先组剪、后 pruner。反序（pruner 先切）会把大 R 变成派生
+      // 克隆，组剪随后按 root 建账认不到克隆，整组反而驱逐不了，留下永久配重。
       let pruned: CompactionResult | null = null
       const deficit = measurement.contextTokens - retainTokens
       if (deficit > 0) {
         pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
       }
+      let native = { pruned: 0, charsRemoved: 0 }
+      if (trigger === 'context-overflow' || measurement.contextTokens > retainTokens) {
+        native = this.nativePruneToolResults(session)
+      }
       if (native.pruned > 0) {
-        this.log.info('[argp-factor] 同笔压缩：native pruner ' + native.pruned + ' 枚 / '
-          + native.charsRemoved + ' chars；组剪目标 ' + Math.max(0, deficit) + ' tok')
+        this.log.info('[argp-factor] 同笔压缩：组剪目标 ' + Math.max(0, deficit) + ' tok → native pruner 二次收紧 '
+          + native.pruned + ' 枚 / ' + native.charsRemoved + ' chars')
       }
       let proseResult: CompactionResult | null = null
       // §9.36 闸二（ctx ≥ windowRatio×声明窗）契约="由调用点保证"：overflow 天然满足
@@ -1055,12 +1055,13 @@ export class ArgpGraphEngine extends CompactionEngine {
       const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
         const opSignal = AbortSignal.any([signal, agentSignal])
         opSignal.throwIfAborted()
-        // 同一动作序：原生 pruner 全局预剪 → factor 组剪（手动=全量，目标 MAX）。
-        // 宿主 manual compact 走 idle maintenance，通常无 open turn ⇒ pruner no-op。
-        const native = this.nativePruneToolResults(agent.session)
+        // 同一动作序（2026-11-14 用户裁定）：factor 组剪（手动=全量，目标 MAX）→
+        // 原生 pruner 二次收紧剩余大 R。宿主 manual compact 走 idle maintenance，
+        // 通常无 open turn ⇒ pruner no-op。
         const pruned = this.factor.compactIfNeeded(agent.session, Number.MAX_SAFE_INTEGER)
+        const native = this.nativePruneToolResults(agent.session)
         if (native.pruned > 0) {
-          this.log.info('[argp-factor] 手动压缩：native pruner ' + native.pruned + ' 枚 / ' + native.charsRemoved + ' chars')
+          this.log.info('[argp-factor] 手动压缩：native pruner 二次收紧 ' + native.pruned + ' 枚 / ' + native.charsRemoved + ' chars')
         }
         opSignal.throwIfAborted()
         let proseResult: CompactionResult | null = null

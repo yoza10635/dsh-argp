@@ -1,12 +1,14 @@
 /**
- * 原生 tool-result-pruner 全局预剪接线（2026-11-13 用户裁定）：
- *  - 同一笔 compactIfNeeded：pruner 先切全局 R（含焦点尾窗内大 read），组剪再按
- *    re-measure 后的剩余 deficit 赶 A+R 组；
- *  - pruner 的 compaction/prune 落在我们的 compaction/start 之前 ⇒ 不并进组剪事务账；
+ * 原生 tool-result-pruner 二次收紧接线（2026-11-13 引入，2026-11-14 用户裁定改序）：
+ *  - 同一笔 compactIfNeeded：**先** alpha2 口径组剪（A+R 整组归零，目标 = 真实缺口），
+ *    **再**对剩余 surface 跑 pruner（专打焦点/open 轮里组剪动不了的大 read）；
+ *  - pruner 的 compaction/prune 落在我们的 compaction/end 之后 ⇒ 不并进组剪事务账；
+ *  - pruner 切片（root 已 shadowed 的 replace 克隆）算 stub ⇒ 下一笔组剪可整组驱逐，
+ *    不再形成永久配重（alpha3 实锤 63.5% surface）；
  *  - 服务缺失 / 无 open turn / 异常 ⇒ no-op，不阻断组剪。
  *
- * 变异锁：摘掉 compactIfNeeded 的 nativePruneToolResults 调用 ⇒ NP1 红（fake 未调用、
- * 大 R 原文仍在 surface）。
+ * 变异锁：摘掉 compactIfNeeded 的 nativePruneToolResults 调用 ⇒ NP1 红；
+ * 把 pruner 挪回组剪之前 ⇒ NP7/NP9 红；摘掉 stubSeqs 的克隆判据 ⇒ NP8 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -57,12 +59,13 @@ function appendGroup(session: Session, turn: number, callId: string, filePath: s
 
 /** 假 pruner：真实服务的行为镜像（只切 text 块、保留 callId/source、append
  *  compaction/prune + tool/result replace）。测试只依赖接口形状，不重测宿主包。 */
-function installFakePruner(ctx: Context, opts: { throw?: boolean; omit?: boolean } = {}): { calls: number; charsRemoved: number } {
-  const state = { calls: 0, charsRemoved: 0 }
+function installFakePruner(ctx: Context, opts: { throw?: boolean; omit?: boolean; onCall?: () => void } = {}): { calls: number; charsRemoved: number; pruneSeqs: number[] } {
+  const state = { calls: 0, charsRemoved: 0, pruneSeqs: [] as number[] }
   if (opts.omit === true) return state
   const fake = {
     pruneSession(session: Session) {
       state.calls += 1
+      opts.onCall?.()
       if (opts.throw === true) throw new Error('fake pruner boom')
       const pruned: { originalSeq: number; replacementSeq: number }[] = []
       let charsRemoved = 0
@@ -89,9 +92,10 @@ function installFakePruner(ctx: Context, opts: { throw?: boolean; omit?: boolean
           }
         })
         const message = { ...msg, content }
-        session.append('compaction/prune', {
+        const pruneEvent = session.append('compaction/prune', {
           shadowedRange: { start: seq, end: seq }, shadowedSeqs: [seq], shadowedTokenCount: 10,
         } as never)
+        state.pruneSeqs.push(pruneEvent.seq)
         const rep = session.append('tool/result', { ...(ev.data as object), message } as never, {
           surfaceOp: { op: 'replace', startSeq: seq, endSeq: seq },
           sourceEventSeqs: [seq],
@@ -196,7 +200,7 @@ test('NP4 pruner 异常：不阻断，组剪照常', async () => {
 
 test('NP5 pruner 的裸 compaction/prune 不并进组剪事务账（resume 重建安全）', async () => {
   const { ctx, engine } = await boot()
-  installFakePruner(ctx)
+  const state = installFakePruner(ctx)
   const session = makeSession('native-np5')
   appendUser(session, 1, '开始任务')
   appendGroup(session, 1, 'old', 'C:/Proj/old.ts', 'OLD-TEXT '.repeat(300))
@@ -214,12 +218,17 @@ test('NP5 pruner 的裸 compaction/prune 不并进组剪事务账（resume 重�
   const focusOriginal = evs.find(e => e.type === 'tool/result' && JSON.stringify(e).includes('BIG-FOCUS'))?.seq
   assert.ok(focusOriginal !== undefined)
   assert.ok(!engine.records[0]!.shadowedSeqs.includes(focusOriginal), 'pruner 原 R 不混入组剪区间账')
+  // 新序：组剪事务结束后才出现 pruner 事件（先组剪后 pruner 的结构锁）。
+  const endSeq = evs.find(e => e.type === 'compaction/end')?.seq ?? -1
+  assert.ok(state.pruneSeqs.length > 0, 'pruner 必须实际切过')
+  assert.ok(state.pruneSeqs.every(s => s > endSeq), 'pruner 的 prune 事件必须在 compaction/end 之后')
 })
 
-test('NP7 pruner 节省计入同一 deficit：组剪目标按 re-measure 缩小', async () => {
-  const targetOf = async (withPruner: boolean): Promise<number> => {
+test('NP7 组剪目标按真实缺口计算（pruner 不再缩小目标）：先组剪后 pruner', async () => {
+  const targetOf = async (withPruner: boolean): Promise<{ target: number; order: string[] }> => {
     const { ctx, engine } = await boot()
-    installFakePruner(ctx, withPruner ? {} : { omit: true })
+    const order: string[] = []
+    installFakePruner(ctx, withPruner ? { onCall: () => order.push('pruner') } : { omit: true })
     const session = makeSession('native-np7-' + String(withPruner))
     appendUser(session, 1, '开始任务')
     appendGroup(session, 1, 'old', 'C:/Proj/old.ts', 'OLD-TEXT '.repeat(300))
@@ -228,15 +237,40 @@ test('NP7 pruner 节省计入同一 deficit：组剪目标按 re-measure 缩小'
     appendBigFocusGroup(session)
     let target = -1
     const orig = engine.factor.compactIfNeeded.bind(engine.factor)
-    engine.factor.compactIfNeeded = (s: Session, t: number) => { target = t; return orig(s, t) }
+    engine.factor.compactIfNeeded = (s: Session, t: number) => { target = t; order.push('factor'); return orig(s, t) }
     await engine.compactIfNeeded(makeAgent(session), 'context-overflow', new AbortController().signal)
-    return target
+    return { target, order }
   }
   const withPruner = await targetOf(true)
   const withoutPruner = await targetOf(false)
-  assert.ok(withoutPruner > 0 && withPruner > 0)
-  assert.ok(withPruner < withoutPruner, 'pruner 后组剪目标必须更小（re-measure 未接 ⇒ 此条红）：'
-    + withPruner + ' < ' + withoutPruner)
+  assert.ok(withoutPruner.target > 0 && withPruner.target > 0)
+  assert.equal(withPruner.target, withoutPruner.target,
+    '先组剪 ⇒ pruner 不参与目标计算（若 re-measure 前置残留 ⇒ 此条红）')
+  assert.deepEqual(withPruner.order, ['factor', 'pruner'], '★动作顺序必须是 组剪→pruner（反序 ⇒ 此条红）')
+})
+
+test('NP8 pruner 切片在下一笔压缩可被整组驱逐（残留配重修复锁）', async () => {
+  const { ctx, engine } = await boot()
+  const state = installFakePruner(ctx)
+  const session = makeSession('native-np8')
+  appendUser(session, 1, '开始任务')
+  session.append('turn/start', { turn: 2 })
+  appendBigFocusGroup(session) // turn 2 的焦点大 read：第一笔组剪动不了
+  await engine.compactIfNeeded(makeAgent(session), 'context-overflow', new AbortController().signal)
+  assert.equal(state.calls, 1, 'pruner 必须切出切片')
+  let dump = surfaceDump(session)
+  assert.ok(dump.includes(MARKER), '第一笔：焦点大 R 被切成 head/middle/tail')
+  assert.ok(dump.includes('focus.ts'), '第一笔：焦点 A 仍受 open turn 保护')
+
+  // 下一笔：turn 3 打开，turn 2 组离开焦点窗；切片是 stub ⇒ 整组（A+切片）离场。
+  appendUser(session, 2, '第二轮')
+  session.append('turn/start', { turn: 3 })
+  appendGroup(session, 3, 'new', 'C:/Proj/new.ts', 'NEW-TEXT '.repeat(300))
+  await engine.compactIfNeeded(makeAgent(session), 'context-overflow', new AbortController().signal)
+  dump = surfaceDump(session)
+  assert.ok(!dump.includes(MARKER), 'pruner 切片必须被组剪带走（不判 stub ⇒ 此条红）')
+  assert.ok(!dump.includes('focus.ts'), '切片所属 A 同组离场（整组闭包）')
+  assert.ok(dump.includes('NEW-TEXT'), '新焦点组保留')
 })
 
 test('NP6 surface 文本判据：无 pruner 时大 R 原文仍在（变异对照锚）', async () => {

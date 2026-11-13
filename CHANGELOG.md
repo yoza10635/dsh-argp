@@ -4,7 +4,33 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.2`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.3`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+
+## [2.0.0-alpha.3] - 2026-11-14（压缩动作改序：先组剪后 pruner + 切片可整组驱逐）
+
+> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha3 长跑（alpha.2/pkg8）46/46 完赛，
+> 但暴露两个问题：pruner 切片不可再剪（终态 63.5% surface 是永久配重，bill +25.7%）、
+> 压缩率跌到 62.1%。本版按用户裁定调整机制。
+
+### Changed
+
+- **压缩动作序反转**：`compactIfNeeded` 从「pruner 预剪 → re-measure → 组剪补缺口」改为
+  「**组剪（alpha2 口径，目标 = 真实缺口，整组归零）→ 原生 pruner 二次收紧剩余大 R**」。
+  pruner 专打组剪动不了的部分（焦点/open 轮 read、A 仍存活的 R），不再把大 R 先变成
+  派生克隆而让组剪整组驱逐失效。`compactNow`（手动）同步改为组剪 → pruner。
+- pruner 的 `compaction/prune` 事件现在落在 `compaction/end` 之后，仍不并进组剪事务账；
+  `shadowedSeqsOf` 照常计入。
+- **切片可整组驱逐（修 alpha3 残留配重 P1）**：`stubSeqs` 不再要求文本空/桩前缀——
+  「replace 克隆 ∧ root 已 shadowed」一律算 stub，覆盖 R-only 空克隆与 pruner 的
+  head/middle/tail 切片；下一笔组剪可把切片所属 A+R 组整组送走。alpha3 实测终态
+  42 个切片 / 216,678 chars（63.5% surface）、全跑平均 129,470 chars/步配重。
+
+### Tests
+
+- `factor-native-prune.test.ts`：NP5 锁 pruner 事件必须在 `compaction/end` 之后；
+  NP7 锁组剪目标按真实缺口（pruner 不再缩小目标）且调用顺序 = factor→pruner；
+  NP8 锁切片在下一笔压缩可整组驱逐。累计 267 测：265 过 / 0 败 / 2 skip。
+- 变异（cp 快照回滚）：pruner 挪回组剪之前 ⇒ NP5/NP7 红；摘切片 stub 判据 ⇒ NP8 红。
 
 ## [2.0.0-alpha.2] - 2026-11-13（A+R 协议组剪 + 原生 pruner 同笔 + 焦点尾窗）
 

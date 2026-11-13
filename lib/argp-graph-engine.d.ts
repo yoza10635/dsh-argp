@@ -381,12 +381,13 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
     private modelDefaultMaxTokens;
     /**
-     * 宿主原生 tool-result-pruner 全局预剪（2026-11-13 用户裁定）。
+     * 宿主原生 tool-result-pruner 二次收紧（2026-11-13 引入，2026-11-14 裁定改为组剪之后）。
      *
-     * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：pruner 先把 surface 上所有
-     * > thresholdChars 的 `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文
-     * 恒留 append-only 日志），随后组剪按 re-measure 后的剩余 deficit 赶 A+R 组。
-     * pruner 的 `compaction/prune` 事件落在我们的 `compaction/start` 之前，因此
+     * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：先按 alpha2 口径把 A+R 协议组
+     * 整组归零（目标 = 真实缺口），再对剩余 surface 上所有 > thresholdChars 的
+     * `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文恒留 append-only 日志）——
+     * 后者专打组剪动不了的部分（焦点/open 轮 read、A 仍存活的 R）。
+     * pruner 的 `compaction/prune` 事件落在我们的 `compaction/end` 之后，因此
      * `rebuildLedgerFromLog` 不会把它并进组剪事务账；`shadowedSeqsOf` 照常计入。
      *
      * 约束：宿主只允许 open turn 内做 `tool/result` replace（durable turn work）；
