@@ -318,9 +318,9 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     static inject: string[];
     /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
     private readonly args;
-    /** 2.0 因子臂组合根（design-2.0 §3.2）：engine='factor' 时非空，构造期定、会话内不变。 */
+    /** 2.0 因子引擎（factor-only：构造期恒装配、会话内不变）。 */
     private readonly factor;
-    /** P6-④ 散文浓缩链（factor 臂唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
+    /** P6-④ 散文浓缩链（factor 唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
     private readonly prose;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;
