@@ -46,7 +46,7 @@ export type { CiteStats, InferredStats } from './graph-build.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
 // acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
 import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
-import { FactorEngine, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
+import { FactorEngine, resolveClipEnabled, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { ProseCondenser } from './factor/prose-condenser.ts'
 export { scaleBudgets } from './budget.js'
@@ -634,6 +634,8 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 策略档 env 逃生口（T-3 两臂实跑）：缺省 flat=现行为字节不变，
         // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
         focalTiered: resolveFocalTiered(),
+        // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
+        clipEnabled: resolveClipEnabled(),
       })
       // P6-④ 散文浓缩链：factor 臂唯一 LLM 摘要通路，只在压缩事务内被调
       // （compactIfNeeded factor 分发 / compactNow；pre-step 零估算驱动零触达）。
