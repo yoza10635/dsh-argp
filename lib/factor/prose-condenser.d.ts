@@ -4,12 +4,17 @@ import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { type PruneTxHost } from '../prune-tx.ts';
 import type { Atom } from '../argp-types.ts';
 import { type AgentRouteHint } from '../peratom/llm-adapter.ts';
-/** 散文占比触发线（分母=声明窗，含 system 头）。用户裁定 50%。 */
+/** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
+ *  闸二（总上下文 ≥ windowRatio×声明窗）在引擎侧 condenseGate 把关，两闸齐过才开压。 */
 export declare const PROSE_TRIGGER_RATIO = 0.5;
 /** 浓缩节点文本标记（单一事实源：生成与识别同文件——VOCAB_NOTE_MARKER 同款纪律）。 */
 export declare const PROSE_CHECKPOINT_PREFIX = "[\u6563\u6587\u538B\u7F29]";
-/** 摘要调用输出预算（maxTokens 三易其值终定 8192 的同源口径；思考型模型防烧穿）。 */
-export declare const PROSE_SUMMARY_MAX_TOKENS = 8192;
+/**
+ * 摘要调用输出预算（§9.36 H5 终裁 2026-11-13：8192→20480——R1 回放实测两发顶到
+ * 8192 顶=检查点被人为掐长；20480 ≤ 0.2×262,144=52,429 预留位内）。
+ * 小声明窗守卫（H5）：实际传入 = min(本值, 0.2×声明窗 − 指令预算)，见 condense()。
+ */
+export declare const PROSE_SUMMARY_MAX_TOKENS = 20480;
 /** 事件读侧探针（同 ua-input 口径：source.form + 附件块）。 */
 export interface ProseEventProbe {
     form?: string;
@@ -64,9 +69,12 @@ export declare class ProseCondenser {
     private readonly cfg;
     constructor(ctx: Context, host: PruneTxHost, config?: ProseCondenserConfig);
     /**
-     * 压缩事务内调用（合取的另一半由调用点保证）。windowTokens = 声明窗（分母）。
+     * 双闸合取的闸一（散文 ≥50% 线）在本方法内查；闸二（ctx ≥ windowRatio×声明窗）由调用点
+     * 保证（condenseGate / 400 事务天然满足；手动 compactNow 免闸二）。
+     * windowTokens = 触发线（分母口径同旧：声明窗×windowRatio 前的声明值——引擎传缩放后
+     * windowTokens，此处仅作分母）；declaredWindow = 适配器声明窗原值（H5 小窗守卫用）。
      */
-    condense(session: Session, route: AgentRouteHint, windowTokens: number, signal?: AbortSignal): Promise<CompactionResult | null>;
+    condense(session: Session, route: AgentRouteHint, windowTokens: number, signal?: AbortSignal, declaredWindow?: number): Promise<CompactionResult | null>;
     /** 焦点轮数活读：宿主侧旋钮与 FactorEngine 同源（引擎构造期传 getter 到本类）。 */
     focalTurnsOf(): number;
     /** 散文占比统计（触发线日志/遥测复用；不读 LLM）。 */
@@ -77,9 +85,27 @@ export declare class ProseCondenser {
     private buildProbes;
     /** open turn 首节点 seq（detectOpenTurn 的位置版：日志尾向前找最近 turn/start）。 */
     private openTurnFirstSeq;
-    /** 被驱逐散文 → replay messages（U→user、A→assistant 纯文本；按 surface 位置序）。 */
-    private buildProseMessages;
+    /**
+     * 驱逐 span → 全栈 replay messages（§9.36 输入面 H1 终裁）：文本一律 rawEventText/
+     * rawEventFaces 取日志原文；桩族成员（STUB_PREFIX 三形=因子桩/夹剪/占位桩，及
+     * [elided 可并族）**以原文替位**——配对账目=替位事件顶层 sourceEventSeqs（R1 档案
+     * 实锤顶层键 {data, seq, sourceEventSeqs, surfaceOp, time, type}；注意它在事件顶层
+     * **不在 data**，stub data 仅 {message, step, turn}）。记账条 seq（compaction/*）被
+     * 面类型滤除；账目在日志故跨 resume 有效，递归穿透归并链。
+     * [散文压缩] checkpoint 例外：滚动合并只再吞旧检查点本身（再吞原文=双份失真+span 爆量）。
+     * 面映射（rawEventFaces）：A→assistant 'A: '，K（A 内 tool-call 块；tool/call 事件
+     * 本身 off-surface）→assistant 'CALL '，R→user 'RESULT '，其余→user 'U: '
+     * （标记 = 指令 v2 首行所宣）；X 节点按原文入列。
+     */
+    private buildSpanMessages;
     private callLlm;
     /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
     private resolveSpec;
 }
+/**
+ * 浓缩输出预算（§9.36 H5 终裁）：min(20480, 0.2×声明窗 − 指令预留)——
+ * 262K 声明窗下=20480（预留 52,429 tok 内）；小声明窗（如联调 32K 形：0.2×=6.5K）
+ * 自动收缩，摘要调用自己永远装得下窗。declaredWindow ≤0（声明未知）⇒ 常数上限
+ * （调用点已保证声明未知不进入浓缩路径，此处纯防御）。
+ */
+export declare function summaryMaxTokensOut(declaredWindow: number): number;

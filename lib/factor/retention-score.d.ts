@@ -57,7 +57,15 @@ export interface PrunePlan {
     hardProtected: number[];
     /** 目标未达成量（降级链：少剪 + 告警上报，永不放宽判据换名额）。 */
     shortfallChars: number;
+    /** 净释放核算量（clip 成员按净收益入账，见 planPrune.clip——shadow 成员按全量）。 */
     releasedChars: number;
+    /**
+     * C10 夹剪归位集（pruneOrder 子序）：**不可再生 ∧ 未被覆盖**的软序成员——
+     * 内容无可替代来源却仍被驱逐 ⇒ 头尾留真比全遮少丢信息。可再生/被覆盖者
+     * 重读即得原文，夹剪不加分 ⇒ 留 shadow 全遮；forcedFirst（协议残渣）恒 shadow。
+     * `clip` 未启用 ⇒ 恒空集（R1 行为字节不变）。
+     */
+    clipOrder: number[];
 }
 /**
  * 排序 + 目标释放量选择。targetReleaseChars 是**下界**（retain 目标：释放不足
@@ -67,8 +75,15 @@ export interface PrunePlan {
  *
  * `forcedFirstSeqs`（P6-③ 裁定 3）：强制先行段——中断轮半截 A + 孤儿工具对等协议残渣，
  * 无视目标量下次压缩必驱逐（"驱逐时机=下次压缩"）。与 soft 求交去重（同一 seq 不两段入账）。
+ *
+ * `clip`（C10 夹剪层，缺省关）：给出即启用三态归位——被归 clip 的成员在目标账上
+ * 只按**净收益**（size − 头尾预留）累计，防"名义达标、实报欠火"；归位判据与
+ * 预留量解耦（语义在此，形状归 clip-shape.ts 模板，预留经回调注入）。
  */
 export declare function planPrune(entries: ScoredEntry[], opts?: {
     targetReleaseChars?: number;
     forcedFirstSeqs?: number[];
+    clip?: {
+        reserveCharsOf: (e: ScoredEntry) => number;
+    };
 }): PrunePlan;

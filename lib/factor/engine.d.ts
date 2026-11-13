@@ -22,6 +22,11 @@ export interface FactorEngineConfig {
      *    + superseded 焦点豁免（v1.4）+ 裸 errorcode 焦点降出 hard（v1.2 路由）。
      */
     focalTiered?: 'flat' | 'tiered';
+    /**
+     * C10 夹剪层开关（三态保留）。同 focalTiered 纪律：**内部裸项，严禁进
+     * static Config schema**，env ARGP_FACTOR_CLIP 唯一触达通道（resolveClipEnabled）。
+     */
+    clipEnabled?: boolean;
 }
 /**
  * focalTiered 的 env 逃生口（T-3 两臂实跑唯一触达通道）：tiered 是策略档，
@@ -38,6 +43,13 @@ export declare function resolveFocalTiered(env?: NodeJS.ProcessEnv): 'flat' | 't
  * 生效 = 构造期快照（档切换须重挂引擎，不做活读）。
  */
 export declare function resolvePressureTriggerEnabled(env?: NodeJS.ProcessEnv): boolean;
+/**
+ * C10 夹剪层评测逃生口（focalTiered 同款纪律：禁入 static Config/设置卡，
+ * CR5/CR6/preset 键锁不变，env 是唯一通道）：缺省关=shadow 二态（R1 行为字节
+ * 不变）；env 置 1 开启三态（归位见 planPrune.clipOrder，剪形见 clip-shape.ts）。
+ * 生效=构造快照（层切换=策略文档换版，须重挂引擎）。非法值 ⇒ 关（缺省安全）。
+ */
+export declare function resolveClipEnabled(env?: NodeJS.ProcessEnv): boolean;
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
 export interface FactorEngineHost extends PruneTxHost {
     fileSnapshot?: (canonicalKey: string) => FileSnapshot | null;
@@ -54,6 +66,8 @@ export interface FactorDecision {
     shortfallChars: number;
     /** 本次决策所用策略档（遥测：评测/日志要能区分臂）。 */
     focalTiered: 'flat' | 'tiered';
+    /** C10 夹剪层档（遥测：夹剪臂/shadow 臂区分；归位集在 plan.clipOrder）。 */
+    clipEnabled: boolean;
     /** tiered：焦点文档 hard 的字节量（flat 恒 0）。 */
     focalDocHardChars: number;
     /** tiered：宽度熔断是否触发（触发 ⇒ 每文档只保最新一枚）。 */
@@ -89,9 +103,17 @@ export declare class FactorEngine {
      * content-only 桩 replace，宿主契约由 prune-tx 保证）。目标不达不放宽。
      */
     compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null;
+    /**
+     * 三态替换文本（C10）：归位 ∈ clipOrder 的成员走夹剪模板（原文经 rawEventText
+     * 取回——**只读 append-only 日志**，不改日志本体）；模板拒绝（小文本）或原文
+     * 缺失 ⇒ 回落最小桩。clip 关闭时逐字节等于现行为（stubText）。
+     */
+    private replacementText;
     /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
-     *  tagRsFromLog 的桩排除判据——单点引用，改文案不得动前缀。 */
+     *  tagRsFromLog 的桩排除判据（夹剪文本同带此前缀，同受排除）——单点引用，改文案不得动前缀。 */
     private stubText;
+    /** 实体标签选择序：document → command → errorcode（stubText 与 clip 首行共用）。 */
+    private stubKey;
     /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;
     /**

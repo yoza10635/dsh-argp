@@ -130,6 +130,16 @@ export interface RawEventText {
     note?: string;
 }
 export declare function rawEventText(session: Session, seq: number): RawEventText | null;
+/**
+ * 事件的面拆分（§9.36 浓缩输入面）：assistant/message 的 text/reasoning 块归 'A'、
+ * tool-call 块逐块归 'K'（`name(args)` 投影，与 R1 回放 replay 形同构——tool/call 是
+ * off-surface 记账事件，K 面只能从 A 的块里取）；其余类型单面返回（face 按类型给
+ * 'U'/'R'/'X'），文本口径与 {@link rawEventText} 一致。
+ */
+export declare function rawEventFaces(session: Session, seq: number): Array<{
+    face: 'U' | 'A' | 'K' | 'R' | 'X';
+    text: string;
+}>;
 /** 判定单个 seq 的状态。shadowed 优先（被遮蔽的节点也可能仍留在 surface 索引之外）。 */
 export declare function nodeStateOf(session: Session, seq: number, isShadowed: (seq: number) => boolean): NodeState;
 /**

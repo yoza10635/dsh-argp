@@ -1909,3 +1909,49 @@ test('批次 3-1: catalog 快照域升格——resume 首绑从日志回放事�
     await ctx.fiber.dispose()
   }
 })
+
+// ---- 内容侧闸门（2026-11-13 T24-J R2 头翻转税定谳）----
+// 病灶：宿主 preStep() 先 assemble 后派发 agent/pre-step，新进程（headless=每轮）首绑晚于
+// 首轮装配 ⇒ step1 渲染无目录版 → 宿主合流支 replace 系统头 → step2 换回带目录版，每轮两头翻。
+// 修复：argp-catalog text() 经装配上下文的 agent.session 早绑（A7 统一入口，幂等）。
+
+function systemPromptOf(ctx: Context) {
+  return (ctx as unknown as { systemPrompt: { assemble(c?: unknown): Promise<{ sections: { name: string; text?: string }[] }> } }).systemPrompt
+}
+
+async function catalogTextOf2(ctx: Context, agent: unknown): Promise<string> {
+  const assembly = await systemPromptOf(ctx).assemble(agent === undefined ? undefined : { agent })
+  return assembly.sections.find(s => s.name === 'argp-catalog')?.text ?? ''
+}
+
+test('内容侧闸门: resume 新进程的首次装配（pre-step 之前）即渲染事务快照——头翻转归零锁', async () => {
+  const { ctx, engine } = await makeEngine()
+  try {
+    const session = Session.create(SessionId('catalog-early-bind'))
+    appendUser(session, 'user anchor')
+    appendAssistant(session, 'A1:' + 'x'.repeat(300), 1)
+    appendAssistant(session, 'A2:' + 'y'.repeat(300), 2)
+    appendAssistant(session, 'A3:' + 'z'.repeat(300), 3)
+    engine.setSession(session)
+    const result = await engine.compactIfNeeded({ session } as never, 'pressure', new AbortController().signal)
+    assert.ok(result !== null, '事务先立起：剪后快照进冻结域')
+    const snapshot = engine.frozenCatalog ?? ''
+    assert.ok(snapshot !== '', '事务尾快照非空（前提）')
+    // 模拟新进程：全新引擎从未 setSession——宿主 step1 的装配发生在 pre-step 钩子之前。
+    const { ctx: ctx2, engine: engine2 } = await makeEngine()
+    try {
+      assert.equal(engine2.frozenCatalog, null, '新引擎未绑——复现 step1 前置态')
+      assert.equal(await catalogTextOf2(ctx2, undefined), '', '未绑+无 agent 装配 ⇒ 冻结域 null 兜底空串（绝不 live 重算）')
+      const t1 = await catalogTextOf2(ctx2, { session })
+      assert.equal(t1, snapshot, 'step1 首次装配文本 = 当前事务快照（早绑生效；旧实现此处为裸 \'\'）')
+      const t2 = await catalogTextOf2(ctx2, { session })
+      assert.equal(t2, t1, '事务间装配逐字节恒定（头翻转=0）')
+      assert.equal(engine2.frozenCatalog, snapshot, '早绑即首绑：走 end 事件回放路径，冻结域同值')
+      assert.equal(await catalogTextOf2(ctx2, undefined), snapshot, '绑定后无 agent 装配 = 冻结域回放')
+    } finally {
+      await ctx2.fiber.dispose()
+    }
+  } finally {
+    await ctx.fiber.dispose()
+  }
+})

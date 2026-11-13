@@ -750,6 +750,15 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * 无 preset 信息（undefined/null）时不跳过。命中时记一次日志（每会话一次）。
      */
     private skipIfPreset;
+    /**
+     * §9.36 浓缩通道闸二（ctx 闸；用户裁定 2026-11-13：检查点可在发送之后=usage 账单锚）：
+     * pre-step 位（上一请求 usage 已落锚、下一请求未发）测得总上下文 ≥ 触发线
+     * （windowRatio×声明窗，缺省 0.8）⇒ 驱一发清扫式浓缩（prose.condense 内查闸一）。
+     * 锚点健康前提（H6）：source='anchored'（usage 真锚；断锚退 chars 估=禁触发破坏性
+     * 改写，宁缺勿错）+ 声明窗已知。手动 compactNow 免本闸（手动语义保留）。
+     * 0.2×声明窗留给摘要输出（输出预算=summaryMaxTokensOut(声明窗)）。
+     */
+    private condenseGate;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;

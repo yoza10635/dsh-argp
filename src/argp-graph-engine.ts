@@ -683,21 +683,28 @@ export class ArgpGraphEngine extends CompactionEngine {
     // argp-cites 等静态 section 构成稳定前缀。
     // 根因修复：原实现把动态 catalog 拼进 order:150 的契约段，导致 system message 前缀每轮变、
     // 缓存从 catalog 处断开（2026-08-22 发现，A 臂测试缓存零命中）。recall 协议不依赖其在 system 靠前。
-    // 位置说明（批次 3-1 核验修订）：**新会话**首绑先于任何剪枝 ⇒ frozenCatalog 冻结为 ''
-    //（空目录 per-design：发现能力由 tombstone 指针承担，G2/0-6）；**resume 会话**（重启/换
-    // 进程重开日志）首绑时 bindSession 先经 shadowedSeqsOf 建账再拍快照 ⇒ catalog 拍到
-    // **真实目录**并在本进程内恒定回放——机制非死段（test/argp-graph-engine.test.ts 批次 3-1
-    // 例锁定），是"重启后模型还能看到曾有内容被剪"的唯一 system 提示。恒定回放保 KV：两类
-    // 会话的 system 块全程逐字节不变；order 9999 仅为保守排布（0.1.5-rc.1 起 10000+ 段在其后，
-    // 均为会话内静态）。
+    // 位置说明：新会话首绑先于任何剪枝 ⇒ 快照为 ''（空目录 per-design：发现能力由 tombstone
+    // 指针承担，G2/0-6）；resume 会话首绑回放 compaction/end 在案快照 ⇒ "重启后模型还能看到
+    // 曾有内容被剪"的唯一 system 提示。order 9999 仅为保守排布（10000+ 段均在其后）。
+    //
+    // 内容侧闸门（2026-11-13 T24-J R2 头翻转税定谳，用户裁定"闸门放内容侧"）：正文=冻结域
+    // 快照（快照域=压缩事务，P6 note 施工①；跨进程字节稳定，test 批次 3-1 锁）。但宿主
+    // preStep()（agent-loop/agent.ts：claim→assemble→派发 agent/pre-step 的固定顺序）里
+    // assemble() 先于 pre-step 瀑布，headless 回合制
+    // 每轮新进程 ⇒ 首绑若只挂在 pre-step，本轮 step1 的装配必渲染无目录版，宿主合流支
+    // （SystemPromptProjection：rendered≠头即 replace node 0）把头换成无目录版、step2 又换回
+    // ⇒ 每轮两次头翻转、前缀缓存拆成 base/aug 两链（R2 实锤：压缩后该臂 44-46 万 miss/轮）。
+    // 闸门=求值时先经装配上下文的 agent.session 早绑（A7 统一绑定点，幂等），使"任何装配
+    // 都渲染当前事务快照"⇒ 头只在事务尾变一次（唯一故意的失效点），事务间/跨进程零改写。
+    // 绝不 live 重算（08-27 账本权威域教训）；无 agent 会话的装配走冻结域初值或空串。
     ctx.systemPrompt.section({
       name: 'argp-catalog',
       order: 9999,
-      // 永久冻结快照：catalog 只在首次 bindSession 拍一次（见 bindSession / pruneIntervals 注释），
-      // 之后全程回放 frozenCatalog，绝不引用实时状态——否则每步重求值会改 system 块、打穿前缀缓存。
-      // fallback 用空串而非 catalogText：即便极端情况下 frozenCatalog 为 null，也返回空而非 live 重算，
-      // 保证 system 块恒定。
-      text: () => this.frozenCatalog ?? '',
+      text: (assemblyContext: unknown) => {
+        const session = (assemblyContext as { agent?: { session?: Session } }).agent?.session
+        if (session !== undefined) this.bindSession(session)
+        return this.frozenCatalog ?? ''
+      },
     })
 
     // 引用输出协议：独立 PromptSection，只负责 cites 格式；recall 行为不在这里要求。
@@ -2018,6 +2025,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
     const { retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     if (!declaredKnown) return
+    this.bindSession(agent.session) // D2：上方 await 窗口内焦点可能被其他会话的装配换桶——回绑后再测量
     const m = this.measureTokens(agent.session, incomingTokens)
     const deficit = m.contextTokens - retainTokens
     if (deficit <= 0) return
