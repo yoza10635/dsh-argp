@@ -29,6 +29,7 @@ import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { PROSE_CHECKPOINT_PREFIX, ProseCondenser, planProseEviction, summaryMaxTokensOut, type ProseEventProbe } from '../src/factor/prose-condenser.ts'
 import type { Atom } from '../src/argp-types.ts'
 import { sessionEvents } from '../src/log-access.ts'
+import { VOCAB_NOTE_MARKER } from '../src/constants.ts'
 
 function appendUser(session: Session, text: string, turn?: number): void {
   session.append('user/message', {
@@ -252,14 +253,14 @@ test('T2 端到端：整轮段单浓缩节点 + kind 标记 + <compacted-summary
   assert.ok(removed >= 10, '驱逐必须真实缩面（removed=' + removed + '）')
 })
 
-test('T3 破段轮：不可吞 X 破段 → 轮内 textA 逐原子指针，后续轮不动（PC2 锁）', async () => {
+test('T3 破段轮：不可吞 X 破段 → textA 原样保留（无指针），后续轮不动（2026-11-13 裁定）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('prose-partial')
   internals.bindSession(session)
   appendUser(session, 'T1-user：' + '散'.repeat(100), 1)
   appendGroup(session, 1, 'c1', 'bash', '{"command":"npm test"}', 'R1-' + 'out'.repeat(60))
-  // turn2 破段轮：U(textA) + A(tc)+R + 不可吞 X（developer 公告）——整轮降级部分驱逐：
-  // U2 走逐原子指针；A(tc)/R 不可逐原子去（孤儿化）⇒ 原位不动；X 恒不动。
+  // turn2 破段轮：U(textA) + A(tc)+R + 不可吞 X（developer 公告）——整轮段止于 T1；
+  // 破段轮的 textA **不驱逐**（用户裁定：召回走标签、不走指针；partial 原样保留）。
   appendUser(session, 'T2-user：' + '散'.repeat(100), 2)
   appendGroup(session, 2, 'c2', 'bash', '{"command":"ls"}', 'R2-' + 'out'.repeat(60))
   session.append('developer/message', { content: '官方 developer 公告（不可吞 X）', turn: 2 } as never, { surfaceOp: 'append' })
@@ -275,31 +276,87 @@ test('T3 破段轮：不可吞 X 破段 → 轮内 textA 逐原子指针，后�
   const cpCount = surfTexts.filter(t => t.startsWith(PROSE_CHECKPOINT_PREFIX)).length
   assert.equal(cpCount, 1, '整轮段单检查点')
   const pointers = surfTexts.filter(t => t.startsWith('[elided seq='))
-  assert.ok(pointers.length >= 1, '破段轮的 textA 逐原子指针必须存在（U2）')
-  assert.ok(!surfTexts.some(t => t.includes('T2-user')), 'U2 已被指针顶替（部分驱逐）')
+  assert.equal(pointers.length, 0, '用户 2026-11-13 裁定：散文侧不再产生 seq 指针墓碑')
+  assert.ok(surfTexts.some(t => t.includes('T2-user')), '破段轮 textA 原样保留（partial 不再驱逐）')
   assert.ok(surfTexts.some(t => t.includes('官方 developer 公告')), '不可吞 X 原位不动')
   assert.ok(surfTexts.some(t => t.includes('T3-user')), '清扫式也停不住破段轮：turn3 散文不动（PC2 锁段语义）')
   assert.ok(surfTexts.some(t => t.includes('doing bash c2')), 'A(args) 不逐原子去（孤儿化风险）')
 })
 
-test('T4 输入形状（§9.36 全栈终裁）：摘要请求含 U/A + CALL/RESULT 原文，焦点轮除外（PC4 反转锁）', async () => {
+test('T4 输入形状（2026-11-13 用户裁定）：摘要请求只含 U + final A，toolCallA/R 不进（反转 §9.36 全栈锁）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('prose-input')
   internals.bindSession(session)
-  buildHistory(session)
+  appendUser(session, 'T1-user：' + '散'.repeat(100), 1)
+  appendGroup(session, 1, 'c1', 'bash', '{"command":"npm test"}', 'R1-' + 'out'.repeat(60))
+  // turn1 的 final A（无 tool_call）：textA 必须入摘要；上面的 toolCallA 不入。
+  session.append('assistant/message', {
+    stream: [], turn: 1, step: 2,
+    message: createAssistantMessage({
+      source: { provider: 'test', model: 'test' },
+      content: [{ type: 'text', text: 'FINAL-A-PROSE' }],
+    }),
+  } as never, { surfaceOp: 'append' })
+  appendUser(session, 'T2-user：' + '散'.repeat(100), 2)
+  appendGroup(session, 2, 'c2', 'bash', '{"command":"ls"}', 'R2-' + 'out'.repeat(60))
+  appendUser(session, '焦点轮不动：' + '焦'.repeat(100), 5)
+  appendGroup(session, 5, 'c5', 'read', '{"file_path":"C:/Proj/z.ts"}', '焦点活体')
   let capturedPrompt = ''
   const prose = new ProseCondenser(ctx, internals as never, {
     focalTurns: 1,
     complete: async (_spec, prompt) => { capturedPrompt = prompt; return '正文' },
   })
   await prose.condense(session, { provider: 't', model: 'm' }, 100)
-  assert.ok(capturedPrompt.includes('U: T1-user'), 'user 原文带 U: 标记入面')
-  assert.ok(capturedPrompt.includes('A: doing bash'), 'assistant 原文带 A: 标记入面')
-  assert.ok(capturedPrompt.includes('CALL bash'), '★tool/call（K 面）必须入摘要请求（不拆 UA，连带 tool 进压缩）')
-  assert.ok(capturedPrompt.includes('RESULT R1-TOOL-OUTPUT'), '★tool/result（R 面）原文必须入摘要请求（旧"仅 sys+散文"已废）')
+  assert.ok(capturedPrompt.includes('U: T1-user'), 'user 散文入面')
+  assert.ok(capturedPrompt.includes('A: FINAL-A-PROSE'), 'final A（无 R 的 A）必须入摘要')
+  assert.ok(!capturedPrompt.includes('A: doing bash'), 'toolCallA 的 args 不入散文')
+  assert.ok(!capturedPrompt.includes('CALL bash'), '★tool/call（K 面）不得进散文摘要（用户裁定）')
+  assert.ok(!capturedPrompt.includes('RESULT R1-TOOL-OUTPUT'), '★tool/result（R 面）不得进散文摘要（用户裁定）')
   assert.ok(!capturedPrompt.includes('焦点轮不动'), '焦点轮不进（受保护；H4 最新消息不变量同款）')
-  assert.ok(capturedPrompt.includes('## Critical Context'), '指令 v2 段式在尾部')
-  assert.ok(capturedPrompt.includes('## Actions and Findings'), '指令 v2 工具叙事段必须在（全栈指令）')
+  assert.ok(capturedPrompt.includes('## Critical Context'), '指令段式在尾部')
+  assert.ok(capturedPrompt.includes('## Actions and Findings'), '指令段式保留（来源改为 final A）')
+})
+
+test('P-span 配对闭包：A 在 barrier 前、R 在后 ⇒ 不浓缩（审查 P0-2）', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('prose-span-pair')
+  internals.bindSession(session)
+  appendUser(session, 'T1-user：' + '散'.repeat(100), 1)
+  session.append('assistant/message', {
+    stream: [], turn: 1, step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'test', model: 'test' },
+      content: [
+        { type: 'text', text: 'doing c1' },
+        { type: 'tool-call', id: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'C:/Proj/a.ts' }) } as never,
+      ],
+    }),
+  } as never, { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 1, callId: 'c1', name: 'read', arguments: JSON.stringify({ file_path: 'C:/Proj/a.ts' }) } as never)
+  // 屏障放在 turn2 的 run 起点：turn1 的 [U1,A1] 成整轮段（span），R1 在 turn2 的破段 run
+  // ——A 在 span 内、R 在 span 外，才能触发配对闭包预检。
+  session.append('developer/message', { content: '官方公告（barrier）', turn: 2 } as never, { surfaceOp: 'append' })
+  session.append('tool/result', {
+    turn: 2, step: 1,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'R1 CONTENT' }], isError: false }],
+      source: { kind: 'tool', callId: 'c1' }, id: 'm_c1',
+    },
+  } as never, { surfaceOp: 'append' })
+  appendUser(session, 'T2-user：' + '散'.repeat(100), 2)
+  appendGroup(session, 2, 'c2', 'bash', '{"command":"ls"}', 'R2')
+  let calls = 0
+  const prose = new ProseCondenser(ctx, internals as never, {
+    focalTurns: 1,
+    complete: async () => { calls += 1; return '不该调用' },
+  })
+  const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
+  assert.equal(result, null, 'A/R 被 barrier 切开 ⇒ 不浓缩（不产生孤儿 tool result）')
+  assert.equal(calls, 0, '闭包预检必须在 LLM 调用之前')
+  const evs = sessionEvents(session) as unknown as Array<{ type?: string }>
+  const nodes = new Set(session.surface.nodes as readonly number[])
+  assert.ok([...nodes].some(s => evs[s as number]?.type === 'tool/result'), 'R 仍存活（不产生孤儿/蒸发）')
 })
 
 test('T10 清扫式刀深（PC7 锁，§9.36 H2 终裁）：span 顶到焦点线一轮全吞，不按"需量"收刀', async () => {
@@ -323,7 +380,7 @@ test('T10 清扫式刀深（PC7 锁，§9.36 H2 终裁）：span 顶到焦点线
   assert.ok(!capturedPrompt.includes('焦点轮不动'), '焦点轮仍不动（清扫只到焦点线为止）')
 })
 
-test('T13 桩族原文替位（PC8 锁，§9.36 H1）：已贴桩 R 以日志原文入摘要请求，桩文禁入', async () => {
+test('T13 桩族：已贴桩 R 不进散文摘要（tool 原子归 factor；零指针替位）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('prose-stub')
   internals.bindSession(session)
@@ -350,8 +407,26 @@ test('T13 桩族原文替位（PC8 锁，§9.36 H1）：已贴桩 R 以日志原
   })
   const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
   assert.ok(result !== null, '桩可吞 ⇒ span 不被贴桩轮腰斩')
-  assert.ok(capturedPrompt.includes('RESULT R2-TOOL-OUTPUT'), '★桩位必须以原文替位入摘要请求（H1：输入面不受桩化影响）')
-  assert.ok(!capturedPrompt.includes('[已剪·因子]'), '桩文禁入摘要请求（替位不叠位）')
+  assert.ok(!capturedPrompt.includes('RESULT R2-TOOL-OUTPUT'), 'R 原文不入散文摘要（tool 原子归 factor，用户裁定）')
+  assert.ok(!capturedPrompt.includes('[已剪·因子]'), '桩文不入（tool 原子整体不进散文输入）')
+})
+
+test('T14 闸一分子只认 textA：toolCallA 的 args 不计入散文（2026-11-13 裁定）', async () => {
+  const { ctx, internals } = await boot()
+  const session = makeSession('prose-gate-texta')
+  internals.bindSession(session)
+  appendUser(session, '短问题：' + '问'.repeat(20), 1)
+  // 4K 的 write args（toolCallA）——旧口径会把它们算散文 ⇒ 闸一误开、白付 LLM。
+  appendGroup(session, 1, 'c1', 'write', '{"file_path":"C:/Proj/a.ts","content":"' + 'X'.repeat(4000) + '"}', 'ok')
+  appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/focus.ts"}', '焦点')
+  let calls = 0
+  const prose = new ProseCondenser(ctx, internals as never, {
+    focalTurns: 1,
+    complete: async () => { calls += 1; return '不该调用' },
+  })
+  const result = await prose.condense(session, { provider: 't', model: 'm' }, 100)
+  assert.equal(result, null, 'textA 散文只有 ~30 chars ⇒ 闸一不过')
+  assert.equal(calls, 0, '★toolCallA 的 4K args 不得充气闸一（否则误浓缩）')
 })
 
 test('T7 声明窗守卫：windowTokens<=0（声明未知）⇒ 不动作不猜（PC5 锁）', async () => {
@@ -491,4 +566,32 @@ test('planProseEviction ⑦：factor 指针墓碑（无 recall_pruned）可吞�
   })
   assert.ok(plan.spanSeqs.includes(2), 'factor 墓碑必须可吞')
   assert.ok(plan.spanSeqs.includes(3), '墓碑后的 A 同段')
+})
+
+test('planProseEviction ⑧：argp-removed 空 developer 占位可吞（组剪不成为 prose barrier）', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'A', 'A1-'.padEnd(60, '答')),
+    atom(3, 1, 'R', 'R1'),
+    atom(4, 1, 'X', ''),
+  ]
+  const probes = new Map([[4, { form: 'argp-removed', attachment: false }]])
+  const plan = planProseEviction(atoms, probes, [1, 2, 3, 4], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.ok(plan.spanSeqs.includes(4), 'argp-removed X 必须可吞（否则组剪占位腰斩清扫）')
+})
+
+test('planProseEviction ⑨：词表 note 可吞（否则第二次散文永久死，审查 P0-6）', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'A', 'A1-'.padEnd(60, '答')),
+    atom(3, 1, 'X', VOCAB_NOTE_MARKER + '\n[document] a.ts'),
+    atom(4, 2, 'U', 'U2-'.padEnd(60, '文')),
+  ]
+  const plan = planProseEviction(atoms, noProbe, [1, 2, 3, 4], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.ok(plan.spanSeqs.includes(3), '词表 note 必须可吞（不是永久 barrier）')
+  assert.ok(plan.spanSeqs.includes(4), 'note 后的轮仍可进 span')
 })

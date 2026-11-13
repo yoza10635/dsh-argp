@@ -26,7 +26,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceede
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { asSeq, sessionEvents, turnOf } from './log-access.js'
+import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
@@ -173,10 +173,18 @@ const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
  * （前缀缓存纪律：system 块任何字节变化都会让整块 KV 失效）。
  */
 const FACTOR_CONTRACT_TEXT = 'Context compression (ARGP factor engine):\n'
-  + 'Your visible context is a pruned view of the full conversation. Older tool results may have been replaced by minimal stubs of the form [已剪·因子 <tool> → <label>（需要原文时 recall_history(<label>)）]: the full original left the visible context but remains in the append-only log. A vocabulary section elsewhere lists what was pruned overall. Absence from the visible context never means it was never said.\n'
+  + 'Your visible context is a pruned view of the full conversation. Older tool calls and results may have been removed from the visible transcript; a short "已压缩剪枝次要原子" checkpoint message marks where old secondary tool atoms were compacted (it carries no recall pointer). The full originals remain in the append-only log and are addressed by entity labels. A vocabulary section elsewhere lists the pruned labels. Absence from the visible context never means it was never said.\n'
   + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-  + '- When your answer depends on content behind a stub (or anything else no longer visible), recover it before answering — never reconstruct missing facts from memory. Call recall_history with the label(s) the stub or vocabulary shows verbatim (document:<path> / command:<family> / errorcode:<CODE>); intersecting several labels narrows the result. There is no seq-based recall in this engine — labels are the only address.\n'
+  + '- When your answer depends on content no longer visible, recover it before answering — never reconstruct missing facts from memory. Call recall_history with the label(s) the vocabulary shows verbatim (document:<path> / command:<family> / errorcode:<CODE>); intersecting several labels narrows the result. There is no seq-based recall in this engine — labels are the only address.\n'
   + '- When you cannot remember the exact label, call list_labels(category) to see the real vocabulary instead of guessing one.\n'
+
+/**
+ * 宿主原生 `toolResultPruner` 的窄接口（`@deepseek-ai/dsh-compaction-tool-result-pruner`）。
+ * 只依赖 `pruneSession`；服务缺失（未挂载/被 preset 禁用）时整层 no-op。
+ */
+interface NativeToolResultPruner {
+  pruneSession?: (session: Session) => { pruned?: readonly unknown[]; charsRemoved?: number }
+}
 
 export class ArgpGraphEngine extends CompactionEngine {
   /**
@@ -225,6 +233,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly skipPresets: string[]
   /** 已就"跳过"记过日志的会话（每会话只记一次，避免 pre-step 每步刷屏）。 */
   private readonly skipLogged = new WeakSet<Session>()
+  /** 已就"toolResultPruner 缺失"记过日志的会话（每会话一次，防压缩事务刷屏）。 */
+  private readonly nativePrunerMissingLogged = new WeakSet<Session>()
   /**
    * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
    * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
@@ -458,6 +468,12 @@ export class ArgpGraphEngine extends CompactionEngine {
         // 剪枝可能在摘要之类后续阶段抛错前已落地（模型无关的确定性占位
         // 替换）。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
         if (!signal.aborted && session.surface.replaceGeneration > genBefore) {
+          // 审查 P1-1：durable surface progress ≠ 减够；仍 ≥ 窗则不 retry（同一超窗请求重发只会再 400）。
+          const declaredAfterCatch = this.declaredContextWindows.get(session) ?? 0
+          if (declaredAfterCatch > 0 && this.postPruneProjection(session) >= declaredAfterCatch) {
+            this.log.warn(`[argp-graph] overflow prune partial progress but still ≥ window: ${message}; not retrying`)
+            return next()
+          }
           this.log.warn(`[argp-graph] overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
           this.overflowRetries.set(agent, retries + 1)
           return { kind: 'retry' }
@@ -471,6 +487,17 @@ export class ArgpGraphEngine extends CompactionEngine {
           `[argp-graph] context-overflow prune: shadowed ${result.shadowedSeqs.length} surface nodes `
           + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
         )
+      }
+      // 2026-11-13 T34 实锤：surface 换代 ≠ 减够。事务后二次测量；仍 ≥ 声明窗 ⇒ 不 retry
+      // （重发同一超窗请求只会再吃一发 400），保留原始错误交给下一轮/用户。
+      const declaredForGuard = this.declaredContextWindows.get(session) ?? 0
+      if (declaredForGuard > 0) {
+        const after = this.postPruneProjection(session)
+        if (after >= declaredForGuard) {
+          this.log.warn('[argp-graph] overflow prune 后仍 ≥ 声明窗（projected=' + after
+            + ' ≥ ' + declaredForGuard + '）：不 retry 同一超窗请求')
+          return next()
+        }
       }
       this.overflowRetries.set(agent, retries + 1)
       return { kind: 'retry' }
@@ -509,7 +536,19 @@ export class ArgpGraphEngine extends CompactionEngine {
       let egressPruned = false
       if (!signal.aborted && this.egressEnabled && !this.pressureTriggerEnabled) {
         try {
-          egressPruned = await this.egressGate(agent, signal, incoming)
+          const gate = await this.egressGate(agent, signal, incoming)
+          if (gate === 'blocked') {
+            // 剪后仍 ≥ 声明窗：不进入本步请求（宿主 PreStepDecision 硬拒）。但若本步已
+            // claim 了用户消息，reject 会让这条 prompt 永久丢失（宿主 claim 已从 inbox
+            // 移除）——此时绝不 reject，交 400 兜底网，下一轮再剪。
+            if (messages.length > 0) {
+              this.log.warn('[argp-factor-egress] 剪后仍超窗，但本步有用户输入：不硬拒（避免丢 prompt），交 400 兜底')
+            } else {
+              this.log.warn('[argp-factor-egress] pre-step 硬拒：事务后仍超窗，本步不发送')
+              return { kind: 'reject' }
+            }
+          }
+          egressPruned = gate === true
         } catch (e) {
           this.log.warn('[argp-factor-egress] pre-step 出口闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
         }
@@ -656,6 +695,22 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
+   * 剪后投影（审查 P1-1）：取 max(锚点估算, tokenMeter 总量)。prune-tx 事务后锚点被
+   * 重置为 `visibleChars/charsPerToken`（不含 system + tool schemas），单用它会低估算；
+   * tokenMeter 在真会话可用时是含 tools/system 的权威值。
+   */
+  private postPruneProjection(session: Session, extraTokens = 0): number {
+    const m = this.measureTokens(session, extraTokens)
+    let total = m.contextTokens
+    if (this.tokenMeter !== undefined) {
+      try {
+        total = Math.max(total, this.tokenMeter.measure(session).totalTokens + extraTokens)
+      } catch { /* tokenMeter 不可用：保持锚点估算 */ }
+    }
+    return total
+  }
+
+  /**
    * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
    * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
    */
@@ -794,7 +849,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    * overflow 链接管——严格不差于现状）。
    * @returns true = 本步已发剪事务（调用方把同 step 的浓缩闸顺延，不吃二次重铸）。
    */
-  private async egressGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number): Promise<boolean> {
+  private async egressGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number): Promise<boolean | 'blocked'> {
     const session = agent.session
     if (signal.aborted) return false
     this.bindSession(session) // D2：同钩子内 factorPressure（逃生口开时）的 await 窗口可能已换桶——回绑再测量
@@ -824,6 +879,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.log.info('[argp-factor-egress] 出口闸过线·先剪后发: projected=' + measurement.contextTokens
       + ' ≥ line=' + line + '（声明窗=' + declaredWindow + '，输出预算=' + outputBudget + '）')
     const result = await this.compactIfNeeded(agent, 'pressure', signal, incomingTokens)
+    // 2026-11-13 硬校验（长跑 T34 实锤）：事务后二次测量；仍 ≥ 声明窗 ⇒ 拒绝发送
+    // （pre-step 返回 {kind:'reject'}），绝不把注定 400 的请求发出去。组剪正常时应远低于窗。
+    const after = this.postPruneProjection(session, incomingTokens)
+    if (after >= declaredWindow) {
+      this.log.warn('[argp-factor-egress] 剪后仍超窗：projected=' + after
+        + ' ≥ 声明窗=' + declaredWindow + '；本步拒绝发送（不再发注定 400 的请求）')
+      return 'blocked'
+    }
+    if (after >= line) {
+      this.log.info('[argp-factor-egress] 剪后仍在线上但未超窗：projected=' + after
+        + ' ≥ line=' + line + '（估计误差；本步放行，下轮再剪）')
+    }
     return result !== null
   }
 
@@ -857,6 +924,46 @@ export class ArgpGraphEngine extends CompactionEngine {
     return v !== undefined && v > 0 ? v : undefined
   }
 
+  /**
+   * 宿主原生 tool-result-pruner 全局预剪（2026-11-13 用户裁定）。
+   *
+   * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：pruner 先把 surface 上所有
+   * > thresholdChars 的 `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文
+   * 恒留 append-only 日志），随后组剪按 re-measure 后的剩余 deficit 赶 A+R 组。
+   * pruner 的 `compaction/prune` 事件落在我们的 `compaction/start` 之前，因此
+   * `rebuildLedgerFromLog` 不会把它并进组剪事务账；`shadowedSeqsOf` 照常计入。
+   *
+   * 约束：宿主只允许 open turn 内做 `tool/result` replace（durable turn work）；
+   * 轮间 manual compact 无 open turn ⇒ 跳过。服务缺失/异常 ⇒ no-op，不阻断组剪。
+   */
+  private nativePruneToolResults(session: Session): { pruned: number; charsRemoved: number } {
+    const pruner = this.ctx.get('toolResultPruner') as NativeToolResultPruner | undefined
+    if (pruner?.pruneSession === undefined) {
+      if (!this.nativePrunerMissingLogged.has(session)) {
+        this.nativePrunerMissingLogged.add(session)
+        this.log.info('[argp-factor-native-prune] toolResultPruner 服务未挂载，跳过全局预剪')
+      }
+      return { pruned: 0, charsRemoved: 0 }
+    }
+    if (detectOpenTurn(session) === null) {
+      this.log.info('[argp-factor-native-prune] 无 open turn，跳过 tool/result 全局预剪')
+      return { pruned: 0, charsRemoved: 0 }
+    }
+    try {
+      const result = pruner.pruneSession(session)
+      const pruned = Array.isArray(result?.pruned) ? result.pruned.length : 0
+      const charsRemoved = typeof result?.charsRemoved === 'number' ? result.charsRemoved : 0
+      if (pruned > 0) {
+        this.log.info('[argp-factor-native-prune] 全局预剪 ' + pruned + ' 枚 / ' + charsRemoved + ' chars')
+      }
+      return { pruned, charsRemoved }
+    } catch (e) {
+      this.log.warn('[argp-factor-native-prune] 全局预剪异常（不阻断，继续 factor 组剪）：'
+        + (e instanceof Error ? e.message : String(e)))
+      return { pruned: 0, charsRemoved: 0 }
+    }
+  }
+
   override async compactIfNeeded(
     agent: CompactionAgentContext,
     trigger: CompactionTrigger,
@@ -881,18 +988,30 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.log.info('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
       return null
     }
-    const measurement = this.measureTokens(session, incomingTokens)
+    let measurement = this.measureTokens(session, incomingTokens)
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
     // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：
-    // R 剪 0-LLM 在前（deficit = 真实口径 − retain）→ 散文浓缩（(sys+散文)÷声明窗 > 50%
-    // 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→ 词表 note 事务收尾
+    // 原生 pruner 全局预剪（0-LLM，R head/middle/tail）→ R 剪 0-LLM（deficit = 真实
+    // 口径 − retain，pruner 节省经 re-measure 自动扣除）→ 散文浓缩（(sys+散文)÷声明窗
+    // > 50% 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→ 词表 note 事务收尾
     // （P6-② 违规点整改：note 变化时机 = 压缩时机）。
     if (trigger === 'context-overflow' || declaredKnown) {
+      // 同一笔压缩：pruner 先切全局 R（含焦点尾窗内的大 read），组剪再按剩余缺口
+      // 赶 A+R 组。只在确有压力时预剪；pruner 已够（deficit ≤0）就不做无谓组驱逐。
+      let native = { pruned: 0, charsRemoved: 0 }
+      if (trigger === 'context-overflow' || measurement.contextTokens > retainTokens) {
+        native = this.nativePruneToolResults(session)
+        if (native.pruned > 0) measurement = this.measureTokens(session, incomingTokens)
+      }
       let pruned: CompactionResult | null = null
       const deficit = measurement.contextTokens - retainTokens
       if (deficit > 0) {
         pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+      }
+      if (native.pruned > 0) {
+        this.log.info('[argp-factor] 同笔压缩：native pruner ' + native.pruned + ' 枚 / '
+          + native.charsRemoved + ' chars；组剪目标 ' + Math.max(0, deficit) + ' tok')
       }
       let proseResult: CompactionResult | null = null
       // §9.36 闸二（ctx ≥ windowRatio×声明窗）契约="由调用点保证"：overflow 天然满足
@@ -936,7 +1055,13 @@ export class ArgpGraphEngine extends CompactionEngine {
       const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
         const opSignal = AbortSignal.any([signal, agentSignal])
         opSignal.throwIfAborted()
+        // 同一动作序：原生 pruner 全局预剪 → factor 组剪（手动=全量，目标 MAX）。
+        // 宿主 manual compact 走 idle maintenance，通常无 open turn ⇒ pruner no-op。
+        const native = this.nativePruneToolResults(agent.session)
         const pruned = this.factor.compactIfNeeded(agent.session, Number.MAX_SAFE_INTEGER)
+        if (native.pruned > 0) {
+          this.log.info('[argp-factor] 手动压缩：native pruner ' + native.pruned + ' 枚 / ' + native.charsRemoved + ' chars')
+        }
         opSignal.throwIfAborted()
         let proseResult: CompactionResult | null = null
         const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)

@@ -86,18 +86,18 @@ export declare class ProseCondenser {
     /** open turn 首节点 seq（detectOpenTurn 的位置版：日志尾向前找最近 turn/start）。 */
     private openTurnFirstSeq;
     /**
-     * 驱逐 span → 全栈 replay messages（§9.36 输入面 H1 终裁）：文本一律 rawEventText/
-     * rawEventFaces 取日志原文；桩族成员（STUB_PREFIX 三形=因子桩/夹剪/占位桩，及
-     * [elided 可并族）**以原文替位**——配对账目=替位事件顶层 sourceEventSeqs（R1 档案
-     * 实锤顶层键 {data, seq, sourceEventSeqs, surfaceOp, time, type}；注意它在事件顶层
-     * **不在 data**，stub data 仅 {message, step, turn}）。记账条 seq（compaction/*）被
-     * 面类型滤除；账目在日志故跨 resume 有效，递归穿透归并链。
-     * [散文压缩] checkpoint 例外：滚动合并只再吞旧检查点本身（再吞原文=双份失真+span 爆量）。
-     * 面映射（rawEventFaces）：A→assistant 'A: '，K（A 内 tool-call 块；tool/call 事件
-     * 本身 off-surface）→assistant 'CALL '，R→user 'RESULT '，其余→user 'U: '
-     * （标记 = 指令 v2 首行所宣）；X 节点按原文入列。
+     * 配对闭包预检（审查 P0-2）：span 内每个 tool-call A 的全部 R 必须也在 span；
+     * span 内每个有 issuer 的 R 的 issuer A 必须也在 span。孤儿 R（无 issuer）可随 span 走。
      */
-    private buildSpanMessages;
+    private spanPairingBalanced;
+    /**
+     * 驱逐 span → **散文** replay messages（2026-11-13 用户裁定：散文 = U + 无 R 的 final A）。
+     * 只回放 classifyUaAtom === 'textA' 的原子；toolCallA（K）与 rPair 属 factor 协议组，
+     * 不进摘要输入；excluded/barrier 同样跳过。标记 U:/A: 与指令首行一致。
+     * 这是对 §9.36 "全栈 U/A+CALL/RESULT 输入" 的用户裁定反转：工具原子不再喂给摘要，
+     * 由 factor 组剪（压缩检查点占位）回收，原文经 recall_history(labels) 召回。
+     */
+    private buildProseMessages;
     private callLlm;
     /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
     private resolveSpec;

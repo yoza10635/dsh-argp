@@ -84,6 +84,9 @@ test('端到端 V4 形会话：compactIfNeeded 真落 replace 事务（发射不
   appendGroupV4(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW ' + 'B'.repeat(900))
   const result = factor.compactIfNeeded(session, 500)
   assert.notEqual(result, null, 'V4 形会话必须剪成功（旧形下决策过但发射全 continue）')
-  const dump = sessionEvents(session).map(e => JSON.stringify(e)).join('\n')
-  assert.ok(dump.includes('[已剪·因子]'), 'surface 必须出现桩文本（replace 真改写，非仅内存决策）')
+  const evs = sessionEvents(session) as unknown as Array<{ seq: number }>
+  const dump = [...session.surface.nodes].map(s => JSON.stringify(evs[s as number])).join('\n')
+  assert.ok(dump.includes('"kind":"compact-checkpoint"') && dump.includes('已压缩剪枝次要原子'),
+    'surface 必须出现压缩检查点（A+R 组 replace 真改写，非仅内存决策）')
+  assert.ok(!dump.includes('OLD ' + 'A'.repeat(900)), '旧 A+R 组原文离场（surface 判据；日志原文恒留）')
 })

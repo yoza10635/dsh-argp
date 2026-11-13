@@ -161,8 +161,19 @@ export function atomize(host: GraphBuildHost, session: Session): Atom[] {
       continue
     }
     if (event.type === 'tool/result') {
-      const d = data as { message?: { source?: { callId?: string } } }
-      const callId = d?.message?.source?.callId
+      // callId 双读（审查 P0-4）：model.source.callId（V4 常见）→ 内容块 toolCallId
+      // （V3 内嵌 tool-result）→ message.toolCallId（V4 tool 角色）。与 factor-atoms 同口径。
+      const d = data as {
+        message?: {
+          source?: { callId?: string }
+          toolCallId?: string
+          content?: Array<{ toolCallId?: string }>
+        }
+      }
+      const rawCallId = d?.message?.source?.callId
+        ?? d?.message?.content?.find(b => b?.toolCallId !== undefined)?.toolCallId
+        ?? d?.message?.toolCallId
+      const callId = typeof rawCallId === 'string' ? rawCallId : undefined
       atoms.push({ id: atoms.length, seq, type: 'R', turn, text: eventText(session, seq), toolCallIds: callId === undefined ? [] : [callId], cites: [], citesFailed: false })
       continue
     }

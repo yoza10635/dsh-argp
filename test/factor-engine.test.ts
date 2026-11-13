@@ -17,7 +17,8 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { FactorEngine, type FactorEngineHost } from '../src/factor/engine.ts'
-import { sessionEvents } from '../src/log-access.ts'
+import { eventText, sessionEvents } from '../src/log-access.ts'
+import { FACTOR_COMPACTED_MARKER } from '../src/constants.ts'
 
 async function makeFactorEngine(fileSnap?: Map<string, { mtimeMs: number; size: number }>): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
@@ -62,13 +63,11 @@ function makeSession(id: string): Session {
   return session
 }
 
-test('决策序：焦点实体被保护、非焦点旧 read 入剪；发射成对、桩 content-only、R 节点不离场', async () => {
+test('决策序：焦点实体被保护、非焦点旧 read 入剪；A+R 组整组离场 + 空 developer（2026-11-13 裁定）', async () => {
   const { host, factor } = await makeFactorEngine()
   const session = makeSession('factor-order')
   host.bindSession(session)
   appendUser(session, '开始任务')
-  // turn1 读 a.ts（旧），turn2 焦点转向 b.ts——a.ts 离开焦点即入排序；
-  // 焦点内实体 + 无再生证明 = focalNonRegenerable 硬保护（§2.3 第一层）。
   appendGroup(session, 1, 'c1', 'read', READ_ARGS, 'OLD CONTENT'.repeat(50))
   appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW CONTENT'.repeat(50))
   appendUser(session, '收尾')
@@ -81,22 +80,23 @@ test('决策序：焦点实体被保护、非焦点旧 read 入剪；发射成�
 
   const result = factor.compactIfNeeded(session, 1000)
   assert.ok(result !== null, '压力目标可达必须发射')
-  const events = sessionEvents(session) as unknown as Array<{ type: string; data?: Record<string, unknown> }>
+  const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: Record<string, unknown> }>
   const prunes = events.filter(e => e.type === 'compaction/prune')
-  const replaces = events.filter(e => e.type === 'tool/result' && e.data?.['message'] !== undefined
-    && JSON.stringify(e.data).includes('已剪·因子'))
-  assert.equal(prunes.length, replaces.length, 'shadow-price 逐区间成对：prune 事件数 = 桩 replace 数')
-  assert.ok(prunes.length >= 1)
-  // 每条桩 shadowedRange 与紧随 replace 单节点等值由 prune-tx 保证——此处验形态：
-  // 桩内容 content-only（role 仍是 tool/result 的 user 形态 + toolCallId 保留）
-  const stub = replaces[0]?.data?.['message'] as { content?: Array<{ toolCallId?: string; content?: Array<{ text?: string }> }> }
-  assert.ok(stub.content?.[0]?.toolCallId !== undefined, '桩必须保留 callId（孤儿 tool result = provider 400）')
-  const stubText = stub.content?.[0]?.content?.[0]?.text ?? ''
-  assert.ok(stubText.includes('recall_history('), '桩自带触发钩子')
-  assert.ok(!stubText.includes('recall_pruned'), '桩文案禁引退役工具名（§1.6）')
-  // R 节点永不离场：replace 换 content 不换节点（离场即孤儿 tool result →
-  // provider 400）——surface 节点数不缩（桩是 append 新事件，只会更多）
-  assert.ok(session.surface.nodes.length >= 4, 'R 节点不离场：surface 节点数不缩')
+  assert.equal(prunes.length, 1, '一个 A+R 组 ⇒ 一个 shadow-price 区间')
+  const surfaceTexts = [...session.surface.nodes].map(s => eventText(session, s as number))
+  assert.ok(!surfaceTexts.some(t => t.includes('OLD CONTENT')), '旧 R 随组离场')
+  assert.ok(!surfaceTexts.some(t => t.includes('C:/Proj/a.ts')), '旧 A（args）随组离场')
+  assert.ok(surfaceTexts.some(t => t.includes('NEW CONTENT')), '焦点 R 保留')
+  assert.ok(surfaceTexts.some(t => t.includes('C:/Proj/b.ts')), '焦点 A 保留')
+  const cps = [...session.surface.nodes].filter(s => {
+    const e = events[s as number]
+    const src = (e?.data as { source?: { kind?: string } } | undefined)?.source
+    return e?.type === 'user/message' && src?.kind === 'compact-checkpoint'
+      && JSON.stringify(e.data).includes(FACTOR_COMPACTED_MARKER)
+  })
+  assert.equal(cps.length, 1, '组剪落压缩检查点')
+  assert.ok(!events.some(e => e.type === 'tool/result' && JSON.stringify(e.data).includes('已剪·因子')),
+    '新方案不再产生 pointer/stub 文本')
   assert.ok(factor.ledger.prunedCount >= 1, '被剪账本入账（shadowed diff 投影）')
 })
 

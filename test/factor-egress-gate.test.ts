@@ -33,7 +33,7 @@ import { resolveEgressEnabled, type FactorEngine } from '../src/factor/engine.ts
 interface EgressInternals {
   factor: FactorEngine | null
   bindSession(session: Session): void
-  egressGate(agent: unknown, signal: AbortSignal, incomingTokens: number): Promise<boolean>
+  egressGate(agent: unknown, signal: AbortSignal, incomingTokens: number): Promise<boolean | 'blocked'>
   condenseGate(agent: unknown, signal: AbortSignal, incomingTokens: number): Promise<void>
   requestMaxTokens: WeakMap<Session, number>
 }
@@ -359,4 +359,35 @@ test('EG-13b 日志无 request/context 时走 requestContext() 兜底（M12 锁�
   const fired = await internals.egressGate(makeAgent(session), sig(), 0)
   assert.equal(fired, true, '宿主 requestContext() 是权威声明面，日志缺失时也不得放行')
   assert.equal(spy.targets.length, 1)
+})
+
+// EG-14（2026-11-13 T34 实锤）：事务后仍 ≥ 声明窗 ⇒ 硬拒，不发注定 400 的请求。
+// 合成：一条 1,000 chars 的 U（散文闸一不过）+ 锚 usage 1,200 > 声明窗 1,000；
+// factor 无 R、prose 不浓缩 ⇒ 剪后投影仍 1,200 ≥ 1,000 ⇒ egressGate='blocked'，
+// pre-step 必须返回 {kind:'reject'}（不进入本步请求）。
+test('EG-14 剪后仍 ≥ 窗 ⇒ blocked + pre-step reject（不发送注定 400 的请求）', async () => {
+  const { ctx, internals } = await bootFactor()
+  const session = makeSession('eg-blocked')
+  session.append('user/message', { ...createUserMessage({ content: [{ type: 'text', text: '散'.repeat(1000) }], source: { kind: 'user' } }), turn: 1 } as never, { surfaceOp: 'append' })
+  anchorUsage(session, 2, 1200)
+  internals.bindSession(session)
+  bridgeDeclaredWindow(ctx, session, 1000)
+  const gate = await internals.egressGate(makeAgent(session), sig(), 0)
+  assert.equal(gate, 'blocked', '剪后仍 ≥ 窗必须返回 blocked（不是 true 放行）')
+  const decision = await emitPreStep(ctx, makeAgent(session))
+  assert.deepEqual(decision, { kind: 'reject' }, 'pre-step 必须硬拒（PreStepDecision reject）')
+})
+
+// EG-14b（审查 P0-1）：本轮 claim 了用户消息 ⇒ 绝不 reject——宿主 claim 已把消息
+// 从 inbox 删除，reject 会让这条 prompt 永久丢失；交 400 网。
+test('EG-14b 有 claim 用户消息时不得 reject（否则丢 prompt）', async () => {
+  const { ctx, internals } = await bootFactor()
+  const session = makeSession('eg-blocked-input')
+  session.append('user/message', { ...createUserMessage({ content: [{ type: 'text', text: '散'.repeat(1000) }], source: { kind: 'user' } }), turn: 1 } as never, { surfaceOp: 'append' })
+  anchorUsage(session, 2, 1200)
+  internals.bindSession(session)
+  bridgeDeclaredWindow(ctx, session, 1000)
+  const claimed = createUserMessage({ content: [{ type: 'text', text: '下一步' }], source: { kind: 'user' } })
+  const decision = await emitPreStep(ctx, makeAgent(session), [claimed as never])
+  assert.notDeepEqual(decision, { kind: 'reject' }, '有 user 输入时不得 reject（prompt 会丢）')
 })

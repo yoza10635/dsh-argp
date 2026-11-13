@@ -1,6 +1,8 @@
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
+import { VOCAB_NOTE_MARKER } from '../constants.ts';
 import { type PruneTxHost } from '../prune-tx.ts';
+import type { Atom } from '../argp-types.ts';
 import { type RTagInput } from './factor-atoms.ts';
 import { FactorLedger, type RenderVocabularyResult } from './factor-ledger.ts';
 import { type PrunePlan } from './retention-score.ts';
@@ -89,9 +91,79 @@ export interface FactorDecision {
     focalBandBySeq: ReadonlyMap<number, 0 | 1 | 2>;
     /** P6-③ 裁定 3：强制先行段（中断轮半截 A + 孤儿工具对；已含在 plan.pruneOrder 头部）。 */
     interruptedForcedSeqs: number[];
+    /**
+     * 焦点尾窗是否降级（2026-11-13 用户裁定）：最新轮 A/R 占比 ≥50% 且该轮
+     * 协议组 >10 ⇒ 焦点从整轮收窄到最新 10 组。false = 现行整轮焦点（字节不变）。
+     */
+    focusEscalated: boolean;
+    /** 降级后的焦点原子集（A 与其全部 callId R）；未降级时为空集。 */
+    focusSeqs: ReadonlySet<number>;
+    /** 焦点区内协议组总数（遥测：是否触发尾窗/宽度账）。 */
+    focusGroupCount: number;
+    /** 最新轮 A/R 字节占全部 A/R 字节的比例（遥测/触发线复核）。 */
+    latestTurnShare: number;
 }
-/** 词表 note 的行首标记：resume 找回 note 指针的判据（改文案不得动标记）。 */
-export declare const VOCAB_NOTE_MARKER = "[argp-factor \u8BCD\u8868]";
+/** 词表 note 的行首标记（单一事实源在 constants.ts；此处保留 re-export 供既有测试/调用方）。 */
+export { VOCAB_NOTE_MARKER };
+export interface ProtocolGroup {
+    aSeq: number;
+    rSeqs: number[];
+    /** surface 序、连续切片；prune-tx 的 shadowedRange 必须与 replace 范围严格相等。 */
+    seqs: number[];
+    chars: number;
+    atoms: Atom[];
+}
+export interface ProtocolGroupPlan {
+    groups: ProtocolGroup[];
+    /** 未被组吸收的 selected R（A 保留）→ 空 tool/result 克隆，配对不破。 */
+    rOnly: number[];
+}
+export interface FocusTailPlan {
+    /** 是否触发降级（最新轮 A/R 占比 ≥ 阈值且该轮协议组数 > cap）。 */
+    escalated: boolean;
+    /** 降级后的焦点原子集（最新 cap 组 A + 全部 live R）；未降级时为空集。 */
+    focusSeqs: Set<number>;
+    /** 焦点区内（最近 focalTurns 轮）协议组总数（遥测）。 */
+    groupCount: number;
+    /** 最新轮协议组数（触发判据原料）。 */
+    latestTurnGroupCount: number;
+    /** 最新轮 A/R 字节 / 全部 A/R 字节。 */
+    latestTurnShare: number;
+}
+/**
+ * 焦点尾窗规划（2026-11-13 用户裁定）：**只在最新轮自身过大时**把焦点从整轮
+ * 降级为该轮最新的至多 `cap` 个 A+R 协议组。正常轮（占比 <阈值或组数 ≤cap）
+ * 原样返回 escalated=false，硬保护/组剪/排序全部走现行 turn 判据（零行为变化）。
+ *
+ * 判据用 A/R 字节占比作代理（本轮真实 token 密度未知；用户原话"最后一轮上下文
+ * 占比超过已有的一半"）。组按 A 的 surface 位置排序，取最新 cap 组；焦点集含
+ * A 与其全部 live R（闭包，组不拆分）。
+ */
+export declare function planFocusTail(atoms: readonly Atom[], surfaceSeqs: readonly number[], opts: {
+    protectFromTurn: number;
+    cap: number;
+    latestTurn: number;
+    shareThreshold: number;
+}): FocusTailPlan;
+/**
+ * A+R 组剪选择（2026-11-13 用户裁定，design-group-prune）：
+ *  - R 入选（或已是因子桩）且 A 的全部 callId 闭包成立 ⇒ A+R 整组驱逐；
+ *  - 旧 A+桩组（K pack）即使 R 未入选也驱逐（死重 GC，回收 K 面 args）；
+ *  - A 有 live R（未入选）⇒ A 保留，selected R 走空 tool 桩；
+ *  - 缺失 R 的 A（中断轮）只有在 forced（in selected）时才整组驱逐；
+ *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
+ *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
+ *    组（含 open 轮内）可整组驱逐；
+ *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
+ */
+export declare function planProtocolGroups(atoms: readonly Atom[], surfaceSeqs: readonly number[], selected: ReadonlySet<number>, opts: {
+    protectFromTurn: number;
+    openTurn: number | null;
+    /** null = 未降级（turn/open 判据）；非 null = 焦点尾窗降级（只保护该集合）。 */
+    focusSeqs: ReadonlySet<number> | null;
+    stubSeqs: ReadonlySet<number>;
+    attachmentSeqs: ReadonlySet<number>;
+}): ProtocolGroupPlan;
 export declare class FactorEngine {
     /**
      * 被剪账本**按会话分桶**：账本键是 rootSeq（会话内 seq），引擎却是宿主进程级单例。
@@ -126,10 +198,15 @@ export declare class FactorEngine {
     /** 纯决策（无发射副作用）：单测主对象。targetReleaseChars = 需释放的下界。 */
     decide(session: Session, targetReleaseChars: number): FactorDecision;
     /**
-     * 压力剪一笔：决策 → pruneIntervals 成对发射（每区间 shadow-price claim +
-     * content-only 桩 replace，宿主契约由 prune-tx 保证）。目标不达不放宽。
+     * 压力剪一笔：决策 → 协议组（A+R 整组 + K pack）/ R-only 空桩 → prune-tx 成对发射。
+     * 目标不达不放宽；组剪收益按区间实际 chars 复核。
      */
     compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null;
+    /**
+     * C10 夹剪臂（ARGP_FACTOR_CLIP=1）的旧语义：R-only 夹剪/最小桩 + A 仅 forced 时 user 墓碑。
+     * 与 2026-11-13 的 A+R 组剪互斥（组剪是新默认；夹剪是显式对照世界，A/B 需要字节可复现）。
+     */
+    private compactClipArm;
     /**
      * 三态替换文本（C10）：归位 ∈ clipOrder 的成员走夹剪模板（原文经 rawEventText
      * 取回——**只读 append-only 日志**，不改日志本体）；模板拒绝（小文本）或原文

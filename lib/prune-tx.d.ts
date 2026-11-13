@@ -111,7 +111,9 @@ export interface ManualRangeHost extends PruneTxHost {
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
  *  tombstone 类型（半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
  *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
- *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。
+ *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400；
+ *  'developer' = 协议组整组离场的空占位（content:[]，source.form='argp-removed'；宿主请求投影
+ *  丢弃未注册 developer ⇒ 模型零可见，不是 user 消息、不伪造轮边界）。
  */
 export declare function pruneIntervals(host: PruneTxHost, session: Session, intervals: {
     seqs: number[];
@@ -125,6 +127,10 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
     seq: number;
     callId: string;
     text?: string;
+} | {
+    type: 'developer';
+    form?: string;
+    kind?: 'group' | 'a' | 'orphan';
 })[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-prose'): CompactionResult | null;
 /**
  * tombstone 归并。扫描 surface，找**连续**的「可合并墓碑」X 段

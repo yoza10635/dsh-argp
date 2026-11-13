@@ -34,6 +34,7 @@ import { CLIP_MARK, clipText } from '../src/factor/clip-shape.ts'
 import { STUB_PREFIX } from '../src/factor/factor-atoms.ts'
 import { isMergeableTombstone } from '../src/prune-tx.ts'
 import { rawEventText, sessionEvents } from '../src/log-access.ts'
+import { FACTOR_COMPACTED_MARKER } from '../src/constants.ts'
 
 async function makeClipEngine(clipEnabled: boolean): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
@@ -100,6 +101,25 @@ function emittedTexts(session: Session): { text: string; callId: string | undefi
 const BIG_BASH = 'HEAD-MARKER ok\n' + 'x'.repeat(4000) + '\nerror: exit code 7 TAIL-MARKER'
 const BIG_READ = 'FILEHEAD 1\n' + 'y'.repeat(4000) + '\nFILETAIL last'
 
+/** surface 原文 dump（组剪/桩形态判据，V3 形内嵌 text 也能读到）。 */
+function surfaceDump(session: Session): string {
+  const evs = sessionEvents(session) as unknown as Array<{ seq: number; data?: unknown }>
+  const nodes = new Set(session.surface.nodes as readonly number[])
+  return [...nodes].map(s => JSON.stringify(evs[s]?.data ?? '')).join('\n')
+}
+
+/** surface 上的因子压缩检查点数（组剪默认形态：compact-checkpoint user message）。 */
+function devCount(session: Session): number {
+  const evs = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: unknown }>
+  const nodes = new Set(session.surface.nodes as readonly number[])
+  return [...nodes].filter(s => {
+    const e = evs[s]
+    if (e?.type !== 'user/message') return false
+    const src = (e.data as { source?: { kind?: string } } | undefined)?.source
+    return src?.kind === 'compact-checkpoint' && JSON.stringify(e.data).includes(FACTOR_COMPACTED_MARKER)
+  }).length
+}
+
 test('CL1 归位锁：旧大 R 入 clipOrder，夹剪文本头尾留真带省略线', async () => {
   const { host, factor } = await makeClipEngine(true)
   const session = makeSession('clip-cl1')
@@ -120,7 +140,7 @@ test('CL1 归位锁：旧大 R 入 clipOrder，夹剪文本头尾留真带省略
   assert.ok(bash.text.includes('HEAD-MARKER') && bash.text.includes('TAIL-MARKER'), '头尾都在')
 })
 
-test('CL2 缺省关字节不变：false ⇒ clipOrder 空、发射逐字节=R1 桩', async () => {
+test('CL2 缺省关=组剪默认：clipOrder 空、旧 A+R 组离场 → 压缩检查点（无桩/无夹剪）', async () => {
   const { host, factor } = await makeClipEngine(false)
   const session = makeSession('clip-cl2')
   host.bindSession(session)
@@ -129,14 +149,12 @@ test('CL2 缺省关字节不变：false ⇒ clipOrder 空、发射逐字节=R1 �
   assert.equal(decision.plan.clipOrder.length, 0, '缺省关恒空集')
   assert.equal(decision.clipEnabled, false)
   assert.ok(factor.compactIfNeeded(session, 6000) !== null)
-  const texts = emittedTexts(session)
-  assert.equal(texts.length, 2)
-  for (const t of texts) {
-    assert.ok(t.text.startsWith(STUB_PREFIX + ' '), '桩形态（无 clip 词）')
-    assert.ok(!t.text.includes(CLIP_MARK) && !t.text.includes('省略'), '绝不含夹剪结构线')
-    assert.ok(t.text.includes('recall_history(') || t.text.includes('原文仍在日志'), 'R1 召回指路文案')
-    assert.ok(!t.text.includes('recall_pruned'), '桩文案禁引退役工具名（§1.6）')
-  }
+  assert.equal(emittedTexts(session).length, 0, '新默认不产生 pointer/stub 文本')
+  const dump = surfaceDump(session)
+  assert.ok(!dump.includes('BIG_BASH') && !dump.includes('BIG_READ'), '旧 A+R 组原文离场')
+  assert.ok(dump.includes('FOCUS CONTENT'), '焦点组保留')
+  assert.equal(devCount(session), 2, '旧 bash/read 两组 → 两个压缩检查点')
+  assert.ok(!dump.includes(CLIP_MARK) && !dump.includes('省略'), '无夹剪结构线')
 })
 
 test('CL3 族形锁：同文两模板——command 尾窗 640 深，read 头窗 640 深', async () => {

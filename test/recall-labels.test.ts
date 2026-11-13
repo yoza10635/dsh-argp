@@ -105,7 +105,8 @@ test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）
   }
   const fs = await sectionsOf(f.ctx)
   const contract = fs.get('argp-contract') ?? ''
-  assert.ok(contract.includes('recall_history') && contract.includes('已剪·因子'), 'factor 契约指新通道')
+  assert.ok(contract.includes('recall_history') && contract.includes('vocabulary'), 'factor 契约指标签通道')
+  assert.ok(!contract.includes('[已剪·因子'), '契约不再承诺 stub 文本（2026-11-13 组剪后零指针）')
   assert.ok(!contract.includes('recall_pruned') && !contract.includes('list_pruned'), '契约禁引退役工具名（假通道）')
   assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
 })

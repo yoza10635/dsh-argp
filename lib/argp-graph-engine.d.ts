@@ -159,6 +159,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly skipPresets;
     /** 已就"跳过"记过日志的会话（每会话只记一次，避免 pre-step 每步刷屏）。 */
     private readonly skipLogged;
+    /** 已就"toolResultPruner 缺失"记过日志的会话（每会话一次，防压缩事务刷屏）。 */
+    private readonly nativePrunerMissingLogged;
     /**
      * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
      * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
@@ -294,6 +296,12 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private measureTokens;
     /**
+     * 剪后投影（审查 P1-1）：取 max(锚点估算, tokenMeter 总量)。prune-tx 事务后锚点被
+     * 重置为 `visibleChars/charsPerToken`（不含 system + tool schemas），单用它会低估算；
+     * tokenMeter 在真会话可用时是含 tools/system 的权威值。
+     */
+    private postPruneProjection;
+    /**
      * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
      * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
      */
@@ -372,6 +380,19 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private egressGate;
     /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
     private modelDefaultMaxTokens;
+    /**
+     * 宿主原生 tool-result-pruner 全局预剪（2026-11-13 用户裁定）。
+     *
+     * 与 factor 组剪**同一笔** `compactIfNeeded` 动作：pruner 先把 surface 上所有
+     * > thresholdChars 的 `tool/result` 切成 head/middle/tail（0-LLM、确定性、原文
+     * 恒留 append-only 日志），随后组剪按 re-measure 后的剩余 deficit 赶 A+R 组。
+     * pruner 的 `compaction/prune` 事件落在我们的 `compaction/start` 之前，因此
+     * `rebuildLedgerFromLog` 不会把它并进组剪事务账；`shadowedSeqsOf` 照常计入。
+     *
+     * 约束：宿主只允许 open turn 内做 `tool/result` replace（durable turn work）；
+     * 轮间 manual compact 无 open turn ⇒ 跳过。服务缺失/异常 ⇒ no-op，不阻断组剪。
+     */
+    private nativePruneToolResults;
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;

@@ -21,6 +21,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
 import { sessionEvents } from '../src/log-access.ts'
+import { FACTOR_COMPACTED_MARKER } from '../src/constants.ts'
 
 function appendUser(session: Session, text: string, turn?: number): void {
   session.append('user/message', {
@@ -113,6 +114,18 @@ function surfaceDump(session: Session): string {
   return [...nodes].map(seq => JSON.stringify(events[seq]?.data ?? '')).join('\n')
 }
 
+/** surface 上的因子压缩检查点数（A/R 组离场后的 compact-checkpoint user message）。 */
+function devCount(session: Session): number {
+  const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: unknown }>
+  const nodes = new Set(session.surface.nodes as readonly number[])
+  return [...nodes].filter(seq => {
+    const e = events[seq]
+    if (e?.type !== 'user/message') return false
+    const src = (e.data as { source?: { kind?: string } } | undefined)?.source
+    return src?.kind === 'compact-checkpoint' && JSON.stringify(e.data).includes(FACTOR_COMPACTED_MARKER)
+  }).length
+}
+
 test('T1 召回对无条件进剪序：open 轮内的 recall_history R 照剪（EV1 锁）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('p6iii-recall')
@@ -128,10 +141,12 @@ test('T1 召回对无条件进剪序：open 轮内的 recall_history R 照剪（
   const result = await internals.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
   assert.ok(result !== null, 'context-overflow 必须触发 factor 剪')
   const texts = surfaceDump(session)
-  assert.ok(!texts.includes('被召回原文') && texts.includes('[已剪·因子]'),
-    '★open 轮 recall R 必须被剪（硬保护豁免）')
+  assert.ok(!texts.includes('被召回原文'), '★open 轮 recall R 原文必须被剪（硬保护豁免）')
+  assert.ok(!texts.includes('[已剪·因子]'), '新方案零指针桩文本')
+  assert.ok(texts.includes('"toolCallId":"r1"'), 'recall R 以空 tool/result 克隆留位（callId 配对）')
   assert.ok(texts.includes('open 轮活体输出'), 'open 轮正常 R 仍受保护（豁免只认召回面）')
-  assert.ok(!texts.includes('旧轮输出'), 'closed 旧 R 照常参剪（对照面）')
+  assert.ok(!texts.includes('旧轮输出'), 'closed 旧 A+R 组照常组剪（对照面）')
+  assert.ok(devCount(session) >= 1, 'closed 旧组落压缩检查点')
 })
 
 test('T2 中断轮半截 A 强制驱逐，user 消息保留（EV2 锁）', async () => {
@@ -146,10 +161,10 @@ test('T2 中断轮半截 A 强制驱逐，user 消息保留（EV2 锁）', async
   const result = await internals.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
   assert.ok(result !== null)
   const texts = surfaceDump(session)
-  assert.ok(texts.includes('原文在 append-only 日志'),
-    '★半截 A 必须 user 墓碑驱逐（强制先行，无视目标量）')
+  assert.equal(devCount(session), 1, '★半截 A 走压缩检查点（强制先行，无视目标量）')
   assert.ok(texts.includes('中断轮任务'), '该轮 user 消息保留（裁定 3）')
   assert.ok(!texts.includes('interrupted cX'), '半截 A 原文离场')
+  assert.ok(!texts.includes('原文在 append-only 日志'), '不再产生 user 指针墓碑')
 })
 
 test('T3 孤儿 R 强制驱逐（EV2 锁）', async () => {
@@ -164,7 +179,7 @@ test('T3 孤儿 R 强制驱逐（EV2 锁）', async () => {
   const result = await internals.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
   assert.ok(result !== null)
   const texts = surfaceDump(session)
-  assert.ok(texts.includes('[已剪·因子]'), '★孤儿 R 必须被剪（强制先行）')
+  assert.equal(devCount(session), 1, '★孤儿 R 走压缩检查点（强制先行）')
   assert.ok(!texts.includes('孤儿输出'), '孤儿 R 原文离场')
   assert.ok(texts.includes('孤儿轮'), 'user 保留')
 })
@@ -193,9 +208,11 @@ test('T4 半截 A 的已应答 R 同行驱逐（EV3 锁：不同行即孤儿化�
   const result = await internals.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
   assert.ok(result !== null)
   const texts = surfaceDump(session)
-  assert.ok(texts.includes('原文在 append-only 日志'), '半截 A 驱逐')
-  assert.ok(!texts.includes('已应答输出2'), '★R(cA) 必须经 companion 同行入事务（focal 硬保护成员，soft 通道进不来；tool 桩会悬空 callId ⇒ 走 user 指针墓碑）')
+  assert.equal(devCount(session), 1, '★半截 A 与其已应答 R 整组走压缩检查点')
+  assert.ok(!texts.includes('已应答输出2'), '★R(cA) 必须经 companion 同行入事务（focal 硬保护成员，soft 通道进不来）')
   assert.ok(!texts.includes('已应答输出'), 'R(cA) 原文离场')
+  assert.ok(!texts.includes('两调用中断现场'), '半截 A 原文离场')
+  assert.ok(!texts.includes('原文在 append-only 日志'), '不再产生 user 指针墓碑')
   // 协议组完整性：A 驱逐后不得留悬空 tool result（prune-tx 事务后审计同口径）
   const nodes = new Set(session.surface.nodes as readonly number[])
   const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: Record<string, unknown> }>

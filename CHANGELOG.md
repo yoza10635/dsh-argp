@@ -4,7 +4,29 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.0`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.2`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+
+## [2.0.0-alpha.2] - 2026-11-13（A+R 协议组剪 + 原生 pruner 同笔 + 焦点尾窗）
+
+> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。`2.0.0-alpha.1` 是 T24-J bench 构建号（pkg6：组剪 + compact-checkpoint），从未不可变发布，内容并入本版；alpha2 长跑成绩（46/46、7 笔组剪 750,996 tok、peak 191,235）见 `C:/workspace/tmp/cb-bench/t24j/marathon/REPORT-alpha-longrun.md` §6.2。
+
+### Added
+
+- **A+R 协议组剪（0-LLM，factor 事务内）**：tool-call A 与它全部 callId 的 R 作为闭包整体离场——所有 R 必须已 selected/stub（有 live R 则 A 不动）、区间连续（不连续退回 R-only）；旧 A+桩（K pack）一并回收；中断组 forcedFirst。释放量含 A args。剪除落点为宿主原生 **compact-checkpoint `user/message`**（`source.kind='compact-checkpoint'`，文本 `已压缩剪枝次要原子`；v4 fold 在压缩边界合法，空 `developer` 因未开 step 会写坏会话——alpha2 首跑 T9/T10 `SessionFormatError` 实锤）。R-only 仍落空 `tool/result` 克隆。R 标签入账本，`recall_history(labels)` 可取回。T34 冻结态重放：286 组 / 339,363 chars。
+- **toolResultPruner 全局预剪（与组剪同一笔压缩）**：`compactIfNeeded` 内先调宿主 `toolResultPruner`（默认 8192 chars 阈 → head 4096 + `[... tool result middle pruned ...]` + tail 1024，只改 `tool/result` text），re-measure 后组剪只补剩余 deficit；服务缺失/无 open turn/异常均 no-op。pruner 的 `compaction/prune` 落在 `compaction/start` 之前，不并进组剪事务账。
+- **焦点尾窗降级**：最新轮 A/R 字符占比 ≥50% 且该轮协议组数 >10 ⇒ 焦点从整轮收窄为最新 **10 个 A+R 组**；`focalNonRegenerable`/`focalDocStrong`/`focalBand`/`superseded` 按 `inFocus` 收窄，`failureNoFollowR` 收窄为 `openTurn && (!escalated || inFocus)`，组剪按 `focusSeqs` 守卫（open 轮焦点外旧组可离场）。未触发时判据字节不变。
+- **出口闸硬校验**：`compactIfNeeded` 后二次测量；仍 ≥ 声明窗 ⇒ pre-step `{kind:'reject'}`、400 恢复路径 `next()`（不重发同一超窗请求）。
+- **散文层还原原始设计**：散文闸分子与摘要输入 = U + 每轮 final textA，**不含 toolCallA**；摘要请求不喂 CALL/RESULT；`swallowableX` 吞 factor 检查点占位。
+
+### Changed
+
+- `planProtocolGroups` 选项收窄为 `{protectFromTurn, openTurn, focusSeqs, stubSeqs, attachmentSeqs}`；`FocusTailPlan`/`planFocusTail` 导出。
+- 组剪/散文事务摘要文案改正（去“空 developer”、去退役工具名）。
+
+### Tests
+
+- 新增 `factor-group-prune.test.ts`（G1–G10/EG-14/14b/T14/⑧⑨）、`factor-focus-tail.test.ts`（FT1–FT6）、`factor-native-prune.test.ts`（NP1–NP7）。累计 266 测：264 过 / 0 败 / 2 skip。
+- 变异锁（cp 快照回滚）：组剪摘除、闭包放宽、占位形改 developer、逐笔 7 条（pruner 调用/cap/focusGate/focusSeqs/open 收窄/re-measure/share 阈值）全红后还原。
 
 ## [2.0.0-alpha.0] - 2026-11-13（factor-only 形态：1.x 图引擎全面退役）
 
