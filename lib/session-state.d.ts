@@ -1,63 +1,51 @@
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { SemanticEdge, DeterministicEdge } from './argp-types.js';
-import type { CiteStats, InferredStats } from './graph-build.js';
-import type { PrunedNodeInfo } from './prune-selection.js';
+import type { AtomType } from './argp-types.js';
+import type { CiteStats } from './graph-build.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 import type { NodeState } from './log-access.js';
+/**
+ * 已剪节点目录条目（seq -> 元数据）。原定义在 prune-selection（图剪选择器），
+ * 2.0 随选择器退役迁入本叶子——账本重建与 /argp 仍读它。
+ */
+export interface PrunedNodeInfo {
+    seq: number;
+    type: AtomType;
+    turn: number;
+    firstLine: string;
+    citedBySeq: number[];
+    /** 被剪瞬间的有效重要性（历史图臂口径；2.0 不消费，保留字段形状供旧日志回放）。 */
+    eff: number;
+    /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时指向同路径最新存活版本的 seq。 */
+    latestOfPath?: number;
+}
 /**
  * 一个会话的全量运行时状态。语义与单例时代逐字段相同，仅生命周期从"进程"改"会话"：
  * 会话首次被 stateOf 触达时创建，会话对象释放时随 WeakMap 回收。
  */
 export interface SessionRuntimeState {
-    /** 剪枝事务台账（有界遥测，pruneIntervals 写、账本重建补、buildTombstoneRedirect 读）。 */
+    /** 剪枝事务台账（有界遥测，pruneIntervals 写、账本重建补）。 */
     records: GraphPruneRecord[];
-    /** recall_pruned 观测（有界）。 */
+    /** 召回观测（有界；factor 两工具每命中一条记一笔，/argp 报数）。 */
     recallCalls: {
         seq: number;
         hit: boolean;
         state?: NodeState;
     }[];
-    /** recall(query) 观测（有界）。 */
-    recallQueryCalls: {
-        query: string;
-        count: number;
-        hits: number;
-    }[];
-    /** 建图统计（cites 声明/解析；/argp 报数）。 */
+    /** 建图统计（cites 声明/解析；atomize 写，诊断用）。 */
     citeStats: CiteStats;
-    /** §3-3 recall 价值继承：最近一次 recall 的旧原子 seq 与结果 R 原子 seq。 */
-    recallSourceSeq: number;
-    recallResultSeq: number;
-    /** 最近一次建图的边集（判决 G3 / 诊断）。 */
-    lastEdges: SemanticEdge[];
-    lastDeterministicEdges: DeterministicEdge[];
-    lastInferredEdges: SemanticEdge[];
-    /** 最近一次建图的推断边统计。 */
-    inferredStats: InferredStats;
-    /** 已剪节点目录（seq -> 元数据；list_pruned / 版本链重定向读）。 */
+    /** 已剪节点目录（seq -> 元数据；账本重建写，/argp 报数）。 */
     prunedNodeIndex: Map<number, PrunedNodeInfo>;
-    /** 闭包生命周期剪除记录（noteRecallHit 反查 rootSeq）。 */
-    closurePrunes: {
-        closureId: string;
-        rootSeq: number;
-        prunedSeqs: number[];
-        at: string;
-    }[];
-    /** 闭包最近一次被 recall 回拉的轮次；key = rootSeq。 */
-    closureLastRecalled: Map<number, number>;
     /** 每轮召回调用计数（防循环安全阀）。 */
     recallCallsThisTurn: number;
     /** 召回字符预算（单窗累计，压缩事务成功时归零——prune-tx）。 */
     recallCharsUsed: number;
-    /** 冻结 catalog 文本（system 块恒定性；本会话首绑时拍快照）。 */
-    frozenCatalog: string | null;
     /** 最近一次请求的真实 prompt token（provider usage 锚点）。 */
     lastRealPromptTokens: number;
     /** 锚点已覆盖的 surface 最大 seq。 */
     lastRealAnchorSeq: number;
     /**
      * 最近一次 resolveScaledBudgets 为**本会话**解析出的有效窗口（1.11.0-beta.1 桶化：
-     * 原为引擎级共享字段，多会话下 B 的解析会覆盖 A 的 recall 限额（recall.ts 按它推
+     * 原为引擎级共享字段，多会话下 B 的解析会覆盖 A 的 recall 限额（recall-labels 按它推
      * per-call/total 上限）与 /argp 报数；budget.ts 经 stateOf(session) 写入本桶）。
      */
     resolvedWindowTokens: number;
@@ -69,10 +57,5 @@ export interface SessionRuntimeState {
     shadowedSession: Session | null;
     shadowedSet: Set<number>;
     shadowedScanned: number;
-    /** 反应式阶梯守卫覆盖（"剪不动 ⇒ 放宽 recency/turn"的当前档位；A→B 不得继承）。 */
-    guardOverride: {
-        recencyGuard: number;
-        turnGuard: number;
-    } | null;
 }
 export declare function createSessionRuntimeState(): SessionRuntimeState;

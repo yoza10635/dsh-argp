@@ -24,7 +24,6 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as zlib from 'node:zlib'
-import type { OntologyAtom } from '../../src/token-ontology.ts'
 
 /** zstd 帧 magic（little-endian 0xFD2FB528）。 */
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
@@ -214,16 +213,24 @@ function isOriginalAppend(ev: RawSessionEvent): boolean {
   return false
 }
 
+/** 语料原子（原 token-ontology 的 OntologyAtom；图臂退役后本文件本地定义）。 */
+export interface CorpusAtom {
+  seq: number
+  turn: number
+  type: string
+  text: string
+}
+
 /**
- * 事件流 → 原子序列（OntologyAtom：seq/turn/type/text）。
+ * 事件流 → 原子序列（seq/turn/type/text 的结构型，本文件本地定义）。
  * 只保留**原始 append 写入**：ARGP 自己的 replace 副本 / prune 影子节点不参与
  * ——语料要的是"压缩前的真实历史"，即压缩器的输入。
  *
  * 注意信封形状差异（实测）：`user/message` 的 content 在 `data.content`；
  * `tool/result` 与 `assistant/message` 在 `data.message.content`。
  */
-export function atomsFromEvents(events: readonly RawSessionEvent[]): OntologyAtom[] {
-  const out: OntologyAtom[] = []
+export function atomsFromEvents(events: readonly RawSessionEvent[]): CorpusAtom[] {
+  const out: CorpusAtom[] = []
   let turn = 0
   for (const ev of events) {
     if (ev.type === 'turn/start') {
@@ -252,7 +259,7 @@ export interface RealSession {
   stats: LoadStats
   /** session 头信息（version/cwd/createdAt/agentPreset）。 */
   header: Record<string, unknown> | undefined
-  atoms: OntologyAtom[]
+  atoms: CorpusAtom[]
 }
 
 /** 从 `session.v<N>.jsonl.zstd` 文件名提取格式版本 N（不匹配返回 -1）。 */

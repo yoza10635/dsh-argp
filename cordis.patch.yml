@@ -1,5 +1,6 @@
 # dsh-argp bundle patch — installed by the DSH plugin marketplace (dsh.bundle.patch).
-# Disables the stock summarizer and mounts the 0-LLM ARGP engine.
+# Disables the stock summarizer and mounts the ARGP factor engine (2.0: R 贴标剪枝
+# 0-LLM + 散文浓缩 + 出口闸；1.x 图臂已退役、老方案冻结在 npm latest 1.11.2).
 #
 # WHY `insert`: a bundle include applies this patch but does NOT create an
 # entry for the package itself (verified against vendor/loader + apps/cli
@@ -27,9 +28,6 @@
 - insert:
     - id: dsh-argp
       name: dsh-argp
-      config:
-        maxPasses: 256
-        recencyGuard: 10
 
 # === ARGP preset overrides (GENERATED — do not edit by hand) ===
 # Regenerate: node --import ./scripts/ts-import-rewrite-loader.mjs scripts/generate-preset-overrides.ts [presetsDir]

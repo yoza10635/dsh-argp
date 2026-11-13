@@ -1,7 +1,7 @@
 /**
- * `/argp` 只读状态命令（1.10.0）。
+ * `/argp` 只读状态命令（1.10.0；2.0 factor-only 收窄）。
  *
- * 动机：ARGP 的全部状态（预算、剪枝台账、召回命中、cites 统计）都在引擎实例里，
+ * 动机：ARGP 的全部状态（预算、剪枝台账、召回命中）都在引擎实例里，
  * 但此前**没有任何人类可见的出口**——判断"压缩到底生效了没有"只能去翻日志。
  * 本命令把引擎的内观测面搬到一个 `/argp` 上，零模型交互、零副作用。
  *
@@ -15,8 +15,7 @@
  *
  * 2. **不新增 boot 期失败面**：宿主命令服务经嵌套 `ctx.inject(['commands'], ...)`
  *    获取（与 `session-lifecycle.registerSettings` 同款）。宿主没有 commands 服务时
- *    inject 回调永不执行 ⇒ 命令静默不注册，引擎其余部分照常工作。当前正在排查
- *    dsh.so 的 L5.2 web boot 失败，任何"缺服务即抛"的写法都会污染那边的归因。
+ *    inject 回调永不执行 ⇒ 命令静默不注册，引擎其余部分照常工作。
  *
  * 3. **宿主契约不自己复刻**：命令的注册/生命周期（`command/run` ↔ `command/done`）
  *    全部由宿主 `CommandRuntime` 负责，本模块只提供 `{name, description, handler}`
@@ -31,6 +30,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionRuntimeState } from './session-state.js'
 import type { BudgetHost } from './budget.js'
 import { measureTokens, visibleChars, capRetain } from './budget.js'
+import { sessionEvents } from './log-access.js'
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { resolveUiLocale, type UiLocale } from './ui-locale.js'
 
@@ -38,7 +38,7 @@ import { resolveUiLocale, type UiLocale } from './ui-locale.js'
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
  */
-export const ARGP_STATUS_VERSION = '1.11.2'
+export const ARGP_STATUS_VERSION = '2.0.0-alpha.0'
 
 /** 命令名（不带斜杠）。UI 发现列表按此展示。 */
 export const ARGP_COMMAND_NAME = 'argp'
@@ -55,14 +55,12 @@ export const ARGP_COMMAND_DESCRIPTION = 'Show ARGP context-compression status fo
  */
 export interface ArgpStatusHost extends BudgetHost {
   /**
-   * 会话运行时状态桶（批次 3-2：records/recallCalls/citeStats/prunedNodeIndex 改按
+   * 会话运行时状态桶（批次 3-2：records/recallCalls/prunedNodeIndex 改按
    * **发起命令的会话**取桶读取——旧字段是引擎焦点桶 getter，多会话下 /argp 显示的是
-   * 别的会话的账（跨会话残留）。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
+   * 别的会话的账（跨会话残留））。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
    * 的窄 {resolvedWindowTokens} 型变宽，引擎真身满足）。
    */
   stateOf: (session: Session) => SessionRuntimeState
-  /** 双引擎自挂载句柄（null = 纯 Stage-2 图引擎）。诊断"双引擎到底挂没挂"的唯一出口。 */
-  readonly peratomStack: { compressor: unknown | null; declarer: unknown | null; zoom: unknown | null } | null
   /** 在这些 preset 下引擎不生效（默认 ['minimal']）。 */
   readonly skipPresets: string[]
   /** 引擎当前绑定的会话（可能尚未绑定）。 */
@@ -121,10 +119,10 @@ function fmtPct(hit: number, total: number): string {
 /**
  * 状态卡文案表（服务端多语言，1.11.x）。语言取自宿主设置 `locale.preference`
  * （见 ui-locale.ts）；两份实现以同一接口互为完整性校验（缺键 = 编译错）。
- * 技术记号不翻译：preset id、`source=`、`cites`、引擎形态值。
+ * 技术记号不翻译：preset id、`source=`、引擎形态值。
  */
 interface StatusCopy {
-  head(version: string, stage1: string): string
+  head(version: string, engine: string): string
   preset(preset: string, skipped: boolean): string
   capNote(from: string): string
   budgetNoSession(trigger: string, retain: string, capNote: string): string
@@ -135,11 +133,10 @@ interface StatusCopy {
   forced(): string
   audit(count: number, latest: string): string
   recall(calls: number, hits: number, pct: string): string
-  cites(declared: number, resolved: number, ambiguous: number, failed: number): string
 }
 
 const enCopy: StatusCopy = {
-  head: (version, stage1) => 'ARGP ' + version + ' · engine: ' + stage1,
+  head: (version, engine) => 'ARGP ' + version + ' · engine: ' + engine,
   preset: (preset, skipped) => ' · preset: ' + preset + (skipped ? ' (ARGP inactive — in skipPresets)' : ''),
   capNote: from => ' (capped from ' + from + ')',
   budgetNoSession: (trigger, retain, capNote) => 'budget: trigger ' + trigger + ' / retain ' + retain + capNote + ' · no session bound yet',
@@ -153,12 +150,10 @@ const enCopy: StatusCopy = {
   forced: () => ' (forced)',
   audit: (count, latest) => 'audit: ' + count + ' warning(s) · latest: ' + latest,
   recall: (calls, hits, pct) => 'recall: ' + calls + ' calls · ' + hits + ' hits (' + pct + ') [this process]',
-  cites: (declared, resolved, ambiguous, failed) => 'cites: ' + declared + ' declared · ' + resolved + ' resolved'
-    + ' (' + ambiguous + ' ambiguous, ' + failed + ' failed) [this process]',
 }
 
 const zhCopy: StatusCopy = {
-  head: (version, stage1) => 'ARGP ' + version + ' · 引擎 ' + stage1,
+  head: (version, engine) => 'ARGP ' + version + ' · 引擎 ' + engine,
   preset: (preset, skipped) => ' · 预设 ' + preset + (skipped ? '（ARGP 未生效——在 skipPresets 中）' : ''),
   capNote: from => '（自 ' + from + ' 截断）',
   budgetNoSession: (trigger, retain, capNote) => '预算：触发 ' + trigger + ' / 保留 ' + retain + capNote + ' · 尚未绑定会话',
@@ -172,15 +167,12 @@ const zhCopy: StatusCopy = {
   forced: () => '（强制）',
   audit: (count, latest) => '审计：' + count + ' 条警告 · 最近：' + latest,
   recall: (calls, hits, pct) => '召回：' + calls + ' 次调用 · ' + hits + ' 次命中（' + pct + '）[本进程]',
-  cites: (declared, resolved, ambiguous, failed) => 'cites：声明 ' + declared + ' · 解析 ' + resolved
-    + '（歧义 ' + ambiguous + '，失败 ' + failed + '）[本进程]',
 }
 
 /**
  * 渲染状态文本（分段详单）。纯函数，除 `measureTokens` 的读操作外无副作用。
  *
- * 段数自适应：无意义的段（如未挂 declarer 时的 cites 段）整段省略，
- * 宁可少一行也不输出恒为 0 的噪声。
+ * 段数自适应：无意义的段整段省略，宁可少一行也不输出恒为 0 的噪声。
  *
  * 多语言（1.11.x）：`locale` 由注册侧每次调用经 `resolveUiLocale` 现取
  * （settings `locale.preference`，缺省/异常回退英文）——设置页切语言后下一条
@@ -192,9 +184,8 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   const lines: string[] = []
   const st = session !== null && session !== undefined ? host.stateOf(session) : null
 
-  // 段 1：身份 + 引擎形态 + preset 生效性
-  const stage1 = host.peratomStack !== null ? 'graph+peratom' : 'graph'
-  let head = T.head(ARGP_STATUS_VERSION, stage1)
+  // 段 1：身份 + 引擎形态 + preset 生效性（2.0 = factor-only，无第二形态可报）
+  let head = T.head(ARGP_STATUS_VERSION, 'factor')
   if (session !== null && session !== undefined) {
     const preset = host.activePresetOf(session)
     const skipped = preset !== undefined && preset !== null && host.skipPresets.includes(preset)
@@ -231,7 +222,7 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   // 重建未及/失败时不再伪造 0，改报日志真值；auditWarnings 一并露出）
   const records = st?.records ?? []
   const logStarts = session !== null && session !== undefined
-    ? session.snapshotEvents().filter(e => e.type === 'compaction/start').length
+    ? sessionEvents(session).filter(e => e.type === 'compaction/start').length
     : 0
   if (records.length === 0) {
     lines.push(logStarts > 0 ? T.prunesRebuild(logStarts) : T.prunesNone())
@@ -254,12 +245,6 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   const calls = recallCalls.length
   const hits = recallCalls.reduce((n, r) => n + (r.hit ? 1 : 0), 0)
   lines.push(T.recall(calls, hits, fmtPct(hits, calls)))
-
-  // 段 5：cites 统计（仅双引擎 declarer 在位时输出；纯 Stage-2 下全 0 无意义）
-  if (host.peratomStack?.declarer != null && st !== null) {
-    const c = st.citeStats
-    lines.push(T.cites(c.declared, c.resolved, c.ambiguous, c.failed))
-  }
 
   return { kind: 'success', text: lines.join('\n') }
 }

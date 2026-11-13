@@ -1,20 +1,20 @@
 /**
- * ARGP 建图模块：原子化（atomize）+ 建图（buildGraph）+ 版本链去重
- * （findVersionDuplicates）+ cites 提取（extractCites）+ user 分类
- * （classifyUserMessage）+ 它们的纯辅助（looksAskText / citePrefixTooShort /
- * n-gram 索引 / lineOverlap）。
+ * ARGP 原子化模块（2.0 factor-only 收窄）：atomize + cites 提取（extractCites）+
+ * user 分类（classifyUserMessage）+ ask 检测（looksAskText）。
  *
- * 循环 import 规避：本模块**不** import hub 运行时。需要读/写引擎可变字段的函数
- * （atomize / buildGraph / findVersionDuplicates）接收窄接口 {@link GraphBuildHost}
- * 而非具体 class；hub 的 class 以 `this as unknown as GraphBuildHost` 传入
- * （编译期断言，运行时即真实实例，私有字段经 host 类型可读写/重赋值）。
- * 依赖方向：hub → graph-build（单向）。
+ * 1.x 的建图部分（buildGraph / findVersionDuplicates / n-gram 索引 / 前缀守卫 /
+ * 行重叠归链）随 stage-2 图臂退役；读侧仍保留 `data.argpCites` 的归一化读
+ * （历史会话的 A 原子在 atomize 里照旧取用，见下）。
+ *
+ * 循环 import 规避：本模块**不** import hub 运行时。atomize 接收窄接口
+ * {@link GraphBuildHost} 而非具体 class；hub 的 class 以
+ * `this as unknown as GraphBuildHost` 传入（编译期断言，运行时即真实实例，
+ * 私有字段经 host 类型可读写/重赋值）。依赖方向：hub → graph-build（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { Atom, SemanticEdge, DeterministicEdge } from './argp-types.js';
+import type { Atom } from './argp-types.js';
 import type { ParsedCite } from './cites-strip.js';
-import { type InferredEdgeOptions } from './token-ontology.js';
-/** cites 服从率度量台账（C7-cites 判决用）。 */
+/** cites 服从率度量台账（历史 C7-cites 口径；atomize 仍累计，诊断用）。 */
 export interface CiteStats {
     aAtoms: number;
     declared: number;
@@ -22,31 +22,14 @@ export interface CiteStats {
     ambiguous: number;
     failed: number;
 }
-/** 推断边统计（v1.2.0；最近一次 buildGraph 口径，每次建图重置；skippedDup = 与既有声明边同 (from,to) 被去重）。 */
-export interface InferredStats {
-    candidates: number;
-    accepted: number;
-    skippedDup: number;
-}
 /**
- * 建图侧模块函数访问引擎状态所需的窄接口。
- * 仅列出 atomize / buildGraph / findVersionDuplicates 实际读写的字段；
- * hub 的 ArgpGraphEngine 以 `this as unknown as GraphBuildHost` 满足它。
+ * 原子化访问引擎状态所需的窄接口。
+ * 仅列出 atomize 实际读写的字段；hub 的 ArgpGraphEngine 以
+ * `this as unknown as GraphBuildHost` 满足它。
  */
 export interface GraphBuildHost {
     session: Session | null;
     citeStats: CiteStats;
-    citeMinPrefixLen: number;
-    disableCiteEdges: boolean;
-    injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined;
-    disableInferredEdges: boolean;
-    inferredOpts: InferredEdgeOptions;
-    lastInferredEdges: SemanticEdge[];
-    inferredStats: InferredStats;
-    lastEdges: SemanticEdge[];
-    lastDeterministicEdges: DeterministicEdge[];
-    enableOverlapChain: boolean;
-    overlapTheta: number;
 }
 /**
  * A8（问题 10 修订）：ask 检测中英双语纯函数。
@@ -82,7 +65,8 @@ export declare function extractCites(text: string): {
     parseFailed: boolean;
 };
 /**
- * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
+ * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。
+ * cites 统计在 A 原子处累计。
  *
  * switch 认四类 surface 事件：`user/message` / `assistant/message` / `tool/result` /
  * `developer/message`；唯一不产出原子的 surface 类型是 `system/message`——
@@ -92,57 +76,12 @@ export declare function extractCites(text: string): {
  * replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
  * `system/message` **静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
  * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
- * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
- * 「system prompt at surface node 0 is never selected for pruning」。
+ * 必须同时改这里与宿主契约。
  *
  * `developer/message`（V4 保留类型：tool-addition / tool-removal 块；宿主 ContentBlockMap
  * 注释"providers and UI reject them until their producers and consumers are implemented
  * together"）不像 system head 那样被宿主硬保护，故**显式归类 X**（与 checkpoint 同档）：
- * 进原子台账（手动剪枝段在它处作为**有意边界**断开，见 selectManualRanges），但永不进
- * Stage-1 候选（isMaterial）、永不被剪。宿主若日后激活该类型，边界已在此定义，
- * 而不是一个意外的非原子漏点。
+ * 进原子台账（手动剪枝段在它处作为**有意边界**断开），但永不压缩、永不被剪。
+ * 宿主若日后激活该类型，边界已在此定义，而不是一个意外的非原子漏点。
  */
 export declare function atomize(host: GraphBuildHost, session: Session): Atom[];
-/**
- * A2 前缀长度守卫（问题 5 修订）：统一按「有效字符」折算——ASCII 1 字符、CJK/全角 2 字符，
- * effective = ascii + wide×2 < minLen（默认 4）即视为噪音前缀（"的""a""the"）→ 不参与匹配。
- * 效果："the"(3 ascii) 拒、"读书"(2 wide = 4) 放行、"the quick"(9 ascii) 放行。
- */
-export declare function citePrefixTooShort(prefix: string, minLen: number): boolean;
-/** A5 倒排索引：prefix n-gram → atom id 候选集（n=3）。索引查询只给候选，命中须过验证谓词。 */
-export declare function buildNGramIndex(atoms: Atom[], extract: (a: Atom) => string): Map<string, number[]>;
-/** 查询候选集：前缀长度 < n 时返回 null（走全扫描回退）。取前缀上 ≤3 个 n-gram 交集收窄候选。 */
-export declare function queryNGramCandidates(index: Map<string, number[]>, prefix: string): number[] | null;
-/**
- * 建图（§4.2 + §4.7 + A1/A2/A5）：确定性边不计级别；cites 子串匹配生成语义边，
- * 级别取声明级别（V6 契约，裸字符串默认 supporting；critical 参与闭包守卫不变量 2′）。
- * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
- * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
- * 前缀长度守卫：过短前缀不计 declared 也不建边。
- *
- * citeStats / lastEdges / lastDeterministicEdges / lastInferredEdges / inferredStats
- * 经 host 读写：对象字段为同一引用（累计语义），重赋值经 host 落到真实字段。
- */
-export declare function buildGraph(host: GraphBuildHost, atoms: Atom[]): {
-    edges: SemanticEdge[];
-    deterministicEdges: DeterministicEdge[];
-    inDegree: Map<number, number>;
-};
-/** A4 行级重叠相似度：sim=|A∩B|/min(|A|,|B|)（行集合）。 */
-export declare function lineOverlap(a: string, b: string): number;
-/**
- * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
- *  - A：文本全等（不变）。
- *  - R：按「issuer A 的 tool name + arguments JSON」去重（而非旧版 issuer?.text.trim()），
- *    解决「同措辞不同工具调用（如不同参数 read different files）被错误归链去重」的问题。
- *    回退：issuer 不存在时用 r.text（callId 缺失的最小退化）。
- *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
- *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
- * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
- */
-export declare function findVersionDuplicates(host: GraphBuildHost, atoms: Atom[], inDegree: Map<number, number>): {
-    dupIds: Set<number>;
-    chainLen: Map<number, number>;
-    latestRByKey: Map<string, number>;
-    rKeyByRId: Map<number, string>;
-};

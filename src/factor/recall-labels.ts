@@ -1,30 +1,31 @@
 /**
  * 因子臂召回面（design-2.0 §1.4/§3.2）：`recall_history` + `list_labels` 两个
- * defineTool——factor 臂**只挂这两个**，graph 臂三件套（recall_pruned/list_pruned/
- * recall）不挂（挂载分流在 argp-graph-engine 构造期，按 engine 判别式）。
+ * defineTool——2.0 factor-only 引擎**只挂这两个**；1.x graph 臂的
+ * recall_pruned/list_pruned/recall 已随图臂退役。
  *
- * 与 graph 臂的口径差：
+ * 口径：
  *  - 入口是**标签**不是 seq——factor 桩只写标签（seq 不进 prompt 是 §1.2 物理下限的
  *    直接推论），词表行同样只给标签；
  *  - 查询内核 = FactorLedger.queryPruned（交集优先 + 新鲜度降序 + cursor/epoch
  *    分页；epoch 漂移如实告警不假装稳定）；原文经 rawEventText 取日志 append 根源
  *    （被剪 R 的原事件仍在 append-only 日志里，text 块逐字；重建部分带 note）；
- *  - 预算照抄 graph 臂契约（budgetRecallText：单次 5% + 累计 10% 窗口、耗尽显式
+ *  - 预算照抄 graph 时代契约（budgetRecallText：单次 5% + 累计 10% 窗口、耗尽显式
  *    说明、压缩事务归零）——发现类工具 list_labels 同付费（0-4 教训：白嫖通道会把
  *    预算挤占面变成发现面本身）。
  *
- * 单点复用（禁各写一份）：sessionOfToolCall / RECALL_CALLS_PER_TURN_LIMIT ← recall-tools.ts。
+ * 会话解析与防循环安全阀原在 recall-tools（已退役），2.0 起单点落在本文件——
+ * 两个工具共用这一个 resolveSession/上限，不得各写一份。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionRuntimeState } from '../session-state.ts'
 import { nodeStateOf, rawEventText } from '../log-access.ts'
-import { RECALL_CALLS_PER_TURN_LIMIT, sessionOfToolCall, type RecallToolsHost } from '../recall-tools.ts'
+import { pushBounded } from '../telemetry.ts'
 import { VOCAB_FACETS, facetOfKey, type VocabFacet } from './factor-ledger.ts'
 import type { FactorEngine } from './engine.ts'
 
-/** 窄宿主：两个闭包实际触达的引擎成员（同 recall-tools 的窄接口纪律）。 */
+/** 窄宿主：两个闭包实际触达的引擎成员。 */
 export interface RecallLabelsHost {
   /** 焦点会话（exec.agent.session 缺席时的单会话兜底）。 */
   session: Session | null
@@ -32,9 +33,29 @@ export interface RecallLabelsHost {
   stateOf: (session: Session) => SessionRuntimeState
   shadowedSeqsOf: (session: Session) => Set<number>
   budgetRecallText: (session: Session, text: string) => string
+  /** 观测数组容量上限（recallCalls 有界，/argp 报数用）。 */
+  telemetryCap: number
   /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */
   recallLimitOf?: () => number
 }
+
+/**
+ * 工具调用的目标会话解析（1-2）：优先 exec.agent.session（agent loop 设置，多会话/
+ * 子代理宿主下逐调用正确）。回退焦点绑定**只在引擎只见过一个会话时允许**（beta.1 评审
+ * D2 同族：多会话宿主下 exec.agent 缺席的静默回退会把 B 会话的上下文喂给 A 的调用；
+ * 单会话宿主与无 agent 上下文的测试路径不受影响）。
+ */
+function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | null {
+  const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
+  if (agent?.session !== undefined) return agent.session
+  return host.sessionCount() <= 1 ? host.session : null
+}
+
+/**
+ * 每轮召回**调用次数**上限（防循环安全阀，20）。主闸门是字符预算
+ * （budgetRecallText 的 recallCharsUsed 窗口），本计数只拦病态循环。
+ */
+const RECALL_CALLS_PER_TURN_LIMIT = 20
 
 /** 裸标签（无 facet 前缀）的展开候选——查询向宽容，词表向 fail-closed 不冲突：
  *  出口渲染拦的是**进 prompt 的键**，这里放行的是**模型抄错形态的查询**。 */
@@ -51,8 +72,7 @@ export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_lab
  * （账本/epoch 与发射侧共享，构造期装配一次）。
  */
 export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: RecallLabelsHost): void {
-  const resolveSession = (exec: unknown): Session | null =>
-    sessionOfToolCall(exec, host as unknown as RecallToolsHost)
+  const resolveSession = (exec: unknown): Session | null => sessionOfToolCall(exec, host)
 
   const recallHistoryTool = defineTool({
     name: 'recall_history',
@@ -109,6 +129,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
       const limit = Math.max(1, Math.min(20, a.limit ?? host.recallLimitOf?.() ?? 5))
       const q = ledger.queryPruned({ labels: [...keys], limit, cursor: a.cursor, epoch: a.epoch })
       if (q.rows.length === 0) {
+        pushBounded(st.recallCalls, { seq: -1, hit: false }, host.telemetryCap)
         return 'recall_history: no pruned item matches (' + wanted.join(', ') + ')'
           + (unknown.length > 0 ? ' — labels not in the pruned ledger, ignored: ' + unknown.join(', ') : '')
           + '. The ledger holds ' + ledger.prunedCount + ' pruned item(s) total; '
@@ -123,6 +144,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
       if (q.epochStale) lines.push('[warning: ledger epoch changed since your cursor — results re-sorted from scratch, continue with the cursor/epoch below]')
       for (const row of q.rows) {
         const state = nodeStateOf(session, row.rootSeq, s => shadowed.has(s))
+        pushBounded(st.recallCalls, { seq: row.rootSeq, hit: true, state }, host.telemetryCap)
         const tag = '--- seq=' + row.rootSeq + ' turn=' + row.turn + ' state=' + state + ' hit=' + row.hitLabels.join(',')
         const raw = rawEventText(session, row.rootSeq)
         if (raw === null) {

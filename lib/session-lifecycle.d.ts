@@ -1,61 +1,46 @@
 /**
- * 会话生命周期 + 构造期装配：
- *  - 构造期装配四函数中的三个：normalizeConfig（字段归一）/ registerSettings（UI 设置页注册）/
- *    mountPeratomStack（peratom 三管线自挂载 + maxOverflowRetries 提升 + citesObligation 解析）。
- *    （第四个 registerRecallTools 在 recall-tools.ts。）
- *  - 运行时方法：bindSession（统一绑定 + 账目懒重建）/ rebuildLedgerFromLog（A7 事务账目重建）/
- *    rearmReactive（反应式零候选重挂）/ compactNow（/compact 手动压缩入口）。
+ * 会话生命周期 + 构造期装配（2.0 factor-only）：
+ *  - 构造期：normalizeConfig（字段归一并拒坏形状）/ registerSettings（声明设置页 auto 表单）。
+ *  - 运行时：bindSession（统一绑定 + 账目懒重建）/ rebuildLedgerFromLog（A7 事务账目重建）。
  *
  * 函数经窄接口 LifecycleHost 触达引擎（`this as unknown as LifecycleHost`，编译期类型、
  * 运行时同一实例；方法引用经 host 派发回 class 薄编排方法，this 绑定语义不变）。
  * 构造期副作用顺序由 hub 构造器调用次序保证：normalizeConfig → registerSettings →
- * mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on。
+ * FactorEngine/ProseCondenser → registerRecallLabels → systemPrompt sections → ctx.on。
  *
  * 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
  * 在本模块：ArgpUserSettingsSchema 是运行时值（z.object 产物），若放在 hub 会迫使本模块
  * 运行时 import hub 形成环；hub 反向 import 本模块并 re-export，公共 API 不变
  * （index.ts 的 `export *` 透出）。
  *
- * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）；它是 hub 侧的宽接口
- * （引用 peratom 三管线 config），若放在本模块会迫使本模块 import peratom
- * 全部 config 类型，故按「深度依赖则留 hub」原则保留在 hub，本模块仅 type-only 引用。
+ * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）。
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { CompactionResult, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
-import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
 import z from '@deepseek-ai/schemastery';
-import type { Atom, SemanticEdge, ArgpUserSettings } from './argp-types.js';
+import type { ArgpUserSettings } from './argp-types.js';
+import type { PrunedNodeInfo } from './session-state.js';
 import { type TokenMeter } from './budget.js';
-import { PeratomCompressor } from './peratom/compressor.js';
-import { CiteDeclarer } from './peratom/cite-declarer.js';
-import { RecallZoom } from './peratom/recall-zoom.js';
-import type { InferredEdgeOptions } from './token-ontology.js';
-import type { PrunedNodeInfo } from './prune-selection.js';
-import { type GraphPruneRecord } from './prune-tx.js';
+import type { GraphPruneRecord } from './prune-tx.js';
 import type { ArgpGraphConfig } from './argp-graph-engine.js';
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /**
- * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **6 枚**（windowRatio/
- * retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
- * ＋ engine 判别式随行。
+ * 引擎设置 schema（schemastery）：2.0 旋钮名册 = **6 枚**
+ * （windowRatio/retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成 volatile
  * form；settings.register 已随 #4587 移除，本 schema 经 hub re-export 维持公共 API
  * 与文档口径）。两面键集必须一致。
  *
- * 旧五键（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）已退出名册：
- * schemastery 非 strict 解析（宿主实测未声明键原样透传）⇒ 老 profile 宽容读不炸；
- * graph 臂照旧消费它们（逐字不变契约），factor 臂构造期对非缺省值告警忽略
- * （normalizeConfig 内，焦点保护由 focalTurns 接管）。
- * engine 保留在 schema 但**卡不渲染**：非 volatile 键经 form 写被宿主 throw（实测），
- * 判别式只由 profile/patch 层写值。
+ * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）与
+ * engine 判别式在 2.0 一并退位：schemastery 非 strict 解析（宿主实测未声明键原样
+ * 透传）⇒ 老 profile 宽容读不炸；normalizeConfig 对非缺省旧值告警忽略。
  */
 export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;
 /**
  * 窄宿主接口：本模块函数实际触达的引擎成员（字段 + 方法引用）。
- * 方法引用（shadowedSeqsOf/rebuildLedgerFromLog/restoreUsageAnchor/catalogText/bindSession）
+ * 方法引用（shadowedSeqsOf/rebuildLedgerFromLog/restoreUsageAnchor/bindSession）
  * 经 host 派发到 class 上的薄编排方法，运行时 this 仍是引擎实例。
  */
 export interface LifecycleHost {
@@ -70,32 +55,7 @@ export interface LifecycleHost {
         surfaceTokens: number;
     };
     tokenMeter: TokenMeter | undefined;
-    degradationStrategy: 'lifecycle' | 'force' | 'fail';
-    turnBasis: 'semantic' | 'all';
     maxOverflowRetries: number;
-    midTurnPruneEnabled: boolean;
-    midTurnLegacyGuard: boolean;
-    midTurnTurnGuard: number;
-    reactiveRetries: number;
-    continuationNotice: string;
-    onOverflowCompress?: (session: Session) => Promise<void>;
-    onPrePressureCompress?: (session: Session) => Promise<void>;
-    closureWindowK: number;
-    citeMinPrefixLen: number;
-    overlapTheta: number;
-    enableOverlapChain: boolean;
-    injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined;
-    disableCiteEdges: boolean;
-    disableInferredEdges: boolean;
-    tombstoneMergeMinRun: number;
-    inferredOpts: InferredEdgeOptions;
-    peratomStack: {
-        compressor: PeratomCompressor | null;
-        declarer: CiteDeclarer | null;
-        zoom: RecallZoom | null;
-    } | null;
-    citesObligation: boolean;
-    citesObligationAuto: boolean;
     log: {
         info: (msg: string) => void;
         warn: (msg: string) => void;
@@ -103,24 +63,20 @@ export interface LifecycleHost {
     };
     session: Session | null;
     rebuiltCompactionIds: Set<string>;
-    frozenCatalog: string | null;
     auditWarnings: string[];
     records: GraphPruneRecord[];
     prunedNodeIndex: Map<number, PrunedNodeInfo>;
-    reactivePending: WeakMap<Session, true>;
-    compactSourceCommandId: CommandId | undefined;
     bindRuntimeState: (session: Session) => void;
     shadowedSeqsOf: (session: Session) => Set<number>;
     rebuildLedgerFromLog: () => void;
     restoreUsageAnchor: (session: Session) => void;
-    catalogText: (maxItems?: number, snippetChars?: number, tokenBudget?: number) => string;
     bindSession: (session: Session) => void;
 }
 /**
- * 构造期字段归一（纯字段赋值，无 ctx 副作用）：windowTokens/retainTokens 静态默认 + 顶层旋钮
- * 缺省 + 三级触发旋钮 + 推断边参数。字段赋值与任何 ctx 副作用无交互（settings 回调不读
- * 本批字段），故整体置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）
- * 是唯一的 ctx 读取，保持在 settings 注册之前。
+ * 构造期字段归一（纯字段赋值，无 ctx 副作用）：windowTokens/retainTokens 静态默认 +
+ * 顶层旋钮缺省。字段赋值与任何 ctx 副作用无交互（settings 回调不读本批字段），故整体
+ * 置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）是唯一的 ctx 读取，
+ * 保持在 settings 注册之前。
  */
 export declare function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
 /**
@@ -137,30 +93,10 @@ export declare function normalizeConfig(ctx: Context, host: LifecycleHost, confi
  */
 export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpGraphConfig): void;
 /**
- * P0 双引擎自挂载：**缺省即挂**（opt-out）——Stage-1 三管线在构造期挂载并接线
- * （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
- * ctx.compaction 接收 injectEdges / onOverflowCompress）。
- *
- * ⚠️ 默认值语义（2026-09-30 由 opt-in 反转为 opt-out）：`peratom` 缺省 = **挂**；
- * 只有显式 `peratom: false` / `peratom: null` 才不挂。反转理由是宿主的 patch 层语义：
- * 各层 config 是**整块替换**而非深合并（dsh-app-boot："A patch config replaces the whole
- * config"，层序 bundle → profile → home → CLI）。默认值若只写在 bundle patch 的 insert 行里，
- * 用户在设置页动任一旋钮（表单值写回 profile 的 cordis.patch.yml）就会整块冲掉 peratom，
- * 双引擎静默退回纯 Stage-2（0-LLM）——正是 §11.13.1 那个缺口复发的形态。
- * 判据落在代码里，则任何层只要不显式关停都保持挂载 ⇒ 安装即双引擎，无需手工挂载。
- *
- * ⚠️ 显式归一成对象：`peratom: true` 或缺省 ⇒ 按 `{}` 处理（三管线全开），
- * `false` / `null` ⇒ 不挂（YAML 关停写法，语义与反转前一致）。
- *
- * 含两个构造期派生赋值：maxOverflowRetries 缺省提升（挂 compressor 时 1→3）与
- * citesObligation auto 解析（declarer 已武装即关）——两者都依赖本函数先完成 peratomStack
- * 挂载，故一并收在本函数内（保持原构造器 line 617-662 的相对次序）。
- */
-export declare function mountPeratomStack(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
-/**
- * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定
- * 都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：账目丢失仅日志在），
- * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
+ * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded
+ * 首次绑定都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：
+ * 账目丢失仅日志在），懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds
+ * 去重保证。
  */
 export declare function bindSession(host: LifecycleHost, session: Session): void;
 /**
@@ -170,15 +106,3 @@ export declare function bindSession(host: LifecycleHost, session: Session): void
  * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
  */
 export declare function rebuildLedgerFromLog(host: LifecycleHost): void;
-/**
- * 反应式"零候选"重挂：把钳制信号留给下一次机会（下个 pre-step / 下一轮 turn-stopping），
- * 那时阶梯已 +1 ⇒ 守卫放宽，原本剪不动的局面（turnGuard 保护当前轮）才可能剪动。
- * 额度用尽则不再重挂（避免"每步白压"）。
- */
-export declare function rearmReactive(host: LifecycleHost, session: Session, used: number): void;
-/**
- * /compact 手动压缩入口（override CompactionEngine.compactNow）。
- * 统一绑定 + 账目懒重建后，选全部可剪极大段（selectManualRanges）合并为一笔事务剪除
- * （compactRegions）；runMaintenance 可用时经其执行（宿主维护窗口），否则直接跑。
- */
-export declare function compactNow(host: LifecycleHost, agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;

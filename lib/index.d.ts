@@ -1,14 +1,5 @@
 export { ArgpGraphEngine, default } from './argp-graph-engine.js';
 export * from './argp-graph-engine.js';
-export * from './peratom/gate.js';
-export { PeratomCompressor, default as PeratomCompressorDefault } from './peratom/compressor.js';
-export type { CompressDecision, CompressRecord, CurrentTurnCollect, PeratomCompressorConfig, ToolAction, UserSplit, } from './peratom/compressor.js';
-export { CiteDeclarer, CITATION_WINDOW_TURNS, citeDeclarerDefaultEndpoint, collectDeclAtoms, normalizeCites, } from './peratom/cite-declarer.js';
-export type { CiteDeclarerConfig, CiteRecord, DeclAtom, DeclCollect, DeclaredCite, DeclaredLevel, } from './peratom/cite-declarer.js';
-export { RecallZoom, DEFAULT_BUDGET_RATIO, resolveSummaryText, default as RecallZoomDefault, } from './peratom/recall-zoom.js';
-export type { RecallZoomConfig, RecallZoomRecord, SummaryResolution, SummarySource, } from './peratom/recall-zoom.js';
-export { mountPeratomStack } from './peratom/mount.js';
-export type { PeratomStack, PeratomStackConfig } from './peratom/mount.js';
 export { purifyPresetPatch, toModifyRow, DEFAULT_STRIP_ROWS, DEFAULT_ISOLATE_GROUP, dropEmptyGroups, stripIsolateBlock, stripPresetRows, } from './preset-cleaner.js';
 export type { PurifyOptions, PurifyResult } from './preset-cleaner.js';
 export { ARGP_COMMAND_DESCRIPTION, ARGP_COMMAND_NAME, ARGP_STATUS_VERSION, registerArgpCommand, renderArgpStatus, } from './argp-command.js';

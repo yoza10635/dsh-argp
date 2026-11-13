@@ -10,9 +10,9 @@
  *      → 变异「装配处写死 10」= T1 红；
  *  CR3 recallLimit 驱动 recall_history 缺省 limit（mount=7 ⇒ 取回 7 行；缺省 mount ⇒ 5 行
  *      = P2-1 口径逐字保持）→ 变异「recall-labels 的 host.recallLimitOf?.() 摘除恒 5」= T2 红；
- *  CR4 旧 graph 五键：factor 臂对非缺省值告警忽略、graph 臂静默（宽容读=resolve 透传，
+ *  CR4 旧 graph 五键与 engine 判别式：2.0 factor-only 一律告警忽略（宽容读=resolve 透传，
  *      见 T4 的 schema 面）→ 变异「normalizeConfig 告警块删」= T3 红；
- *  CR5 ArgpUserSettingsSchema 名册 = 6 枚 + engine；旧五键与退役 uaSummaryThreshold
+ *  CR5 ArgpUserSettingsSchema 名册 = 6 枚；旧五键/engine/退役 uaSummaryThreshold
  *      （factor-ua 退役随之除名）不在默认集、但 resolve 宽容
  *      透传不炸（宿主 cordis 非 strict 同构）→ 变异「schema 回加任一旧键」= T4 红。
  */
@@ -118,17 +118,18 @@ test('CR3 recallLimit 驱动 recall_history 缺省 limit（7 ⇒ 7 行；缺省 
   }
 })
 
-test('CR4 旧 graph 键：factor 臂非缺省⇒告警忽略；graph 臂静默', async () => {
+test('CR4 旧 graph 键：2.0 factor-only 一律告警忽略（含 engine 判别式）', async () => {
   const fWarns: string[] = []
   const fctx = new Context()
   await mountAgentLoopTestDependencies(fctx, { systemPrompt: { personaPrefix: 'p' } })
   const flogger = fctx.logger as unknown as { warn: (msg: string) => void }
   const fReal = flogger.warn.bind(fctx.logger)
   flogger.warn = (msg: string): void => { fWarns.push(msg); fReal(msg) }
-  await ctxPlugin(fctx, { engine: 'factor', recencyGuard: 0, windowTokens: 100, retainTokens: 50 })
+  await ctxPlugin(fctx, { engine: 'factor', recencyGuard: 0, peratom: { compressor: false }, windowTokens: 100, retainTokens: 50 })
   const hit = fWarns.find(w => w.includes('[argp-factor]') && w.includes('recencyGuard=0'))
-  assert.ok(hit !== undefined, 'factor 臂：老键非缺省 ⇒ 宽容读+告警（文案含键与值）')
+  assert.ok(hit !== undefined, '老键非缺省 ⇒ 宽容读+告警（文案含键与值）')
   assert.ok(hit.includes('focalTurns'), '告警指向替代键')
+  assert.ok(hit.includes('peratom='), 'peratom 块同样在告警名册（三管线已退役）')
 
   const gWarns: string[] = []
   const gctx = new Context()
@@ -136,8 +137,10 @@ test('CR4 旧 graph 键：factor 臂非缺省⇒告警忽略；graph 臂静默',
   const glogger = gctx.logger as unknown as { warn: (msg: string) => void }
   const gReal = glogger.warn.bind(gctx.logger)
   glogger.warn = (msg: string): void => { gWarns.push(msg); gReal(msg) }
-  await ctxPlugin(gctx, { recencyGuard: 0, windowTokens: 100, retainTokens: 50 })
-  assert.ok(!gWarns.some(w => w.includes('[argp-factor]')), 'graph 臂照旧消费老键——不告警')
+  await ctxPlugin(gctx, { engine: 'graph', windowTokens: 100, retainTokens: 50 })
+  const graphWarn = gWarns.find(w => w.includes('[argp-factor]') && w.includes('engine='))
+  assert.ok(graphWarn !== undefined, 'engine=graph ⇒ 明确告警（不再静默换引擎）')
+  assert.ok(graphWarn.includes('1.11.2'), '告警指认老方案冻结点')
 })
 
 async function ctxPlugin(ctx: Context, cfg: Record<string, unknown>): Promise<void> {
@@ -164,7 +167,7 @@ test('CR6 卡片对账：渲染行 = 名册（6）= en/zh 键集；旧键文案�
   assert.deepEqual(stale, [], '退位旋钮的文案必须清零（残留=渲染不到的死字典项）')
 })
 
-test('CR5 schema 名册 = 6 + engine；旧五键无缺省但 validate 宽容透传', () => {
+test('CR5 schema 名册 = 6 枚（engine 判别式退役）；旧五键无缺省但 validate 宽容透传', () => {
   // 宿主 resolveConfig 经 ~standard.validate（vendor/cordis fiber.ts:50）；非 strict，
   // 未声明键原样透传（vendor/schemastery index.ts:821 merge）——"宽容读"正是这条路。
   const validate = (v: unknown): Record<string, unknown> => {
@@ -176,11 +179,12 @@ test('CR5 schema 名册 = 6 + engine；旧五键无缺省但 validate 宽容透�
   }
   const keys = Object.keys(validate({})).sort()
   assert.deepEqual(keys, [
-    'charsPerToken', 'engine', 'focalTurns', 'recallLimit', 'retainRatio', 'vocabTopN', 'windowRatio',
-  ].sort(), '名册恰 6 枚 + engine（旧五键与退役 uaSummaryThreshold 均不得回进默认集）')
-  const tolerant = validate({ maxPasses: 3, sortMode: 'legacy' })
-  assert.equal(tolerant.maxPasses, 3, '老键宽容读：validate 不拒、原样透传（factor 臂据此告警忽略）')
+    'charsPerToken', 'focalTurns', 'recallLimit', 'retainRatio', 'vocabTopN', 'windowRatio',
+  ].sort(), '名册恰 6 枚（engine 与旧五键、退役 uaSummaryThreshold 均不得回进默认集）')
+  const tolerant = validate({ maxPasses: 3, sortMode: 'legacy', engine: 'graph' })
+  assert.equal(tolerant.maxPasses, 3, '老键宽容读：validate 不拒、原样透传（normalizeConfig 据此告警忽略）')
   assert.equal(tolerant.sortMode, 'legacy')
+  assert.equal(tolerant.engine, 'graph', 'engine 判别式退位但接受透传（构造期告警按 factor 运行）')
   const retired = validate({ uaSummaryThreshold: 12345 })
   assert.equal(retired.uaSummaryThreshold, 12345, '退役 ua 键宽容透传：老 profile 带该键不炸')
 })

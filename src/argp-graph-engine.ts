@@ -1,13 +1,17 @@
 /**
- * ARGP 建边版引擎（spike 5，M3）：原子化 + 建图 + 图序剪枝 + cites 义务。
+ * ARGP 压缩引擎（2.0 factor-only）。
  *
- * 按设计稿 §3-§7 移植，机制验证版简化：
- *  - 版本链去重为简化版（相同文本全等去重、A/R 成对，非设计 §5.13 的 θ=0.8 重叠归链）、summarize 降级默认关闭（§4.6.1，候选耗尽走 force_prune）、catalog 已支持
- *  - 占位主路径（§8.3 路径 b）+ 区间 replace；事务仿 spike 4（借 compaction/summary 语义，候选卡点 B-3）
- *  - 配对自保：A（含 tool-call 块）+ 应答 R 成组同剪；U 与 tombstone 永不参剪（不变式 6）。
- *    实测：dsh surface 无 tool/call 节点（SURFACE_EVENT_TYPES 三类），call 块内嵌在 assistant/message 里
- *  - cites 义务开启：正为回答母表待决项（本地新 SOTA 模型的 cites 服从率）
- *  - 触发/目标同一可见字符估算基准（不变式 2）；reasoning 块不计入预算（spike 4a 判决 C）
+ * 宿主面 = `CompactionEngine`：pre-step 三通道（压力逃生口 / §9.37 出口闸 / §9.36
+ * 浓缩闸二）、溢出 400 恢复、手动 `/compact`、`/argp` 只读状态。
+ * 事务内核 = factor 引擎（R 贴标剪枝，0-LLM）+ 散文浓缩（唯一 LLM 摘要通路）。
+ *
+ * 1.x 的 stage-2 图剪（建图/闭包/版本链/cites 边/catalog/list_pruned 召回面）已整体
+ * 退役：老方案锁定在 npm latest 1.11.2（tag v1.11.2）。读侧兼容保留：老墓碑文法、
+ * 老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result 克隆配对契约。
+ *
+ * 循环 import 规约：引擎是唯一组合根，向下单向依赖各功能模块；各模块经窄接口
+ * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
+ * 编译期断言、运行时同一实例。
  */
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -22,59 +26,38 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceede
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
-import { asSeq, detectOpenTurn, eventText, sessionEvents, turnOf } from './log-access.js'
-import type { NodeState as NodeStateLabel } from './log-access.js'
+import { asSeq, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState, LogRow, LogRowType } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
 // 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
-import type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
-import { EDGE_WEIGHTS } from './argp-types.js'
-export type { Atom, AtomType, EdgeLevel, SemanticEdge, DeterministicEdge, ArgpUserSettings } from './argp-types.js'
-export { EDGE_WEIGHTS } from './argp-types.js'
-import { DEFAULT_WINDOW_TOKENS } from './constants.js'
-import { createSessionRuntimeState, type SessionRuntimeState } from './session-state.js'
-import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_MAX_PASSES, DEFAULT_RETAIN_RATIO, DEFAULT_WINDOW_RATIO } from './constants.js'
+import type { Atom, ArgpUserSettings } from './argp-types.js'
+export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_RETAIN_RATIO, DEFAULT_WINDOW_RATIO } from './constants.js'
+import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
+export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
-export type { ParsedCite, CiteLevel } from './cites-strip.js'
-import type { InferredEdgeOptions } from './token-ontology.js'
-// 建图侧模块：atomize/buildGraph/findVersionDuplicates/extractCites/
-// classifyUserMessage/looksAskText + 纯辅助。本地使用 + 转发维持既有公共 API。
-import { looksAskText, classifyUserMessage, extractCites, atomize, buildGraph, findVersionDuplicates, type CiteStats, type InferredStats, type GraphBuildHost } from './graph-build.js'
+// 原子化模块：atomize/extractCites/classifyUserMessage/looksAskText。本地使用 + 转发。
+import { looksAskText, classifyUserMessage, extractCites, atomize, type CiteStats, type GraphBuildHost } from './graph-build.js'
 export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js'
-export type { CiteStats, InferredStats } from './graph-build.js'
-// 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/
-// acquireTokenMeter/visibleChars。本地使用 + 转发维持既有公共 API。
-import { visibleChars, resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
+export type { CiteStats } from './graph-build.js'
+// 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/acquireTokenMeter。
+import { resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
+export { scaleBudgets } from './budget.js'
 import { FactorEngine, resolveClipEnabled, resolveEgressEnabled, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { ProseCondenser } from './factor/prose-condenser.ts'
-export { scaleBudgets } from './budget.js'
-// 召回模块：shadowedSeqsOf/catalogText/recallQuery/recall/
-// recallAnyState/nodeState/latestTurnOf/noteRecallHit/budgetRecallText。本地使用。
-import { shadowedSeqsOf, catalogText, recallQuery, recall, recallAnyState, nodeState, latestTurnOf, latestTurnOfSession, noteRecallHit, budgetRecallText, type RecallHost } from './recall.js'
-// 剪枝选择模块：isAtomCandidate/isGroupCandidate/sortKey/
-// mergeIntervals/buildTombstones/selectClosureToMerge + 共享类型。本地使用 + 转发维持公共 API。
-import { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, selectClosureToMerge, buildPruneIndexes, buildTombstoneReplaceSeqs, type PruneInterval, type PruneTombstone, type PruneState, type PrunedNodeInfo, type PruneSelectionHost } from './prune-selection.js'
-export { isAtomCandidate, isGroupCandidate, sortKey, compareSortKeys, mergeIntervals, buildTombstones, buildPruneIndexes, buildTombstoneReplaceSeqs } from './prune-selection.js'
-export type { PruneInterval, PruneTombstone, PruneState, PrunedNodeInfo } from './prune-selection.js'
-// 剪枝事务模块：pruneIntervals/consolidateTombstones/
-// compactRegions/selectManualRanges/compactRegion/isMergeableTombstone + GraphPruneRecord。
-// 本地使用 + 转发维持公共 API。
-import { pruneIntervals, consolidateTombstones, compactRegions, selectManualRanges, compactRegion, isMergeableTombstone, type GraphPruneRecord, type PruneTxHost } from './prune-tx.js'
-export { isMergeableTombstone } from './prune-tx.js'
+// 召回模块（2.0 只留共享语义）：shadowed 增量账本 + 召回字符预算。本地使用。
+import { shadowedSeqsOf, budgetRecallText, type RecallHost } from './recall.js'
+// 剪枝事务模块：prune-tx 事务骨架（factor 参数化复用）+ 台账记录类型。
+import type { GraphPruneRecord, PruneTxHost } from './prune-tx.js'
 export type { GraphPruneRecord } from './prune-tx.js'
-import { registerRecallTools, type RecallToolsHost } from './recall-tools.js'
-// /argp 只读状态命令（1.10.0）：经嵌套 ctx.inject(['commands']) 注册，宿主无命令服务时静默不注册。
+// /argp 只读状态命令：经嵌套 ctx.inject(['commands']) 注册，宿主无命令服务时静默不注册。
 import { registerArgpCommand, type ArgpStatusHost } from './argp-command.js'
-// 会话生命周期 + 构造期装配模块：normalizeConfig/registerSettings/
-// mountPeratomStack + bindSession/rebuildLedgerFromLog/rearmReactive/compactNow。
+// 会话生命周期 + 构造期装配：normalizeConfig/registerSettings/bindSession/rebuildLedgerFromLog。
 // 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）在 session-lifecycle，此处转发维持公共 API。
-import { normalizeConfig, registerSettings, mountPeratomStack, bindSession, rebuildLedgerFromLog, rearmReactive, compactNow, ARG_SETTINGS_KEY, ArgpUserSettingsSchema, type LifecycleHost } from './session-lifecycle.js'
+import { normalizeConfig, registerSettings, bindSession, rebuildLedgerFromLog, ARG_SETTINGS_KEY, ArgpUserSettingsSchema, type LifecycleHost } from './session-lifecycle.js'
 export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js'
-import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js'
-import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js'
-import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
 
 /**
  * 解析后的设置页旋钮（dsh 0.1.7+ 的 `Config` 形状）。与下面 `static Config` schema
@@ -84,11 +67,6 @@ import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
 export interface ArgpLiveConfig {
   windowRatio: Volatile<number>
   retainRatio: Volatile<number>
-  maxPasses: Volatile<number>
-  recencyGuard: Volatile<number>
-  turnGuard: Volatile<number>
-  minSpanChars: Volatile<number>
-  sortMode: Volatile<string>
   charsPerToken: Volatile<number>
   // 2.0 设置卡旋钮（design-2.0 §3.4 名册）：引擎侧一律 getter 活读（宿主实测：
   // configForms.set 对非 volatile 键直接 throw「not volatile」⇒ 卡片可写=volatile）。
@@ -97,6 +75,14 @@ export interface ArgpLiveConfig {
   recallLimit: Volatile<number>
 }
 
+/**
+ * 引擎构造配置（2.0 factor-only 面）。
+ *
+ * 保留的键 = factor 事务与本会话可观测面实际消费的字段；1.x graph 臂的旋钮
+ * （maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/cites/推断边/peratom…）
+ * 已退位——cordis 非 strict 合并仍会把它们透传进来，normalizeConfig 宽容读 + 告警忽略
+ * （老 profile 不炸，但不静默改变预期）。
+ */
 export interface ArgpGraphConfig {
   /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
   windowTokens?: number
@@ -106,217 +92,43 @@ export interface ArgpGraphConfig {
   windowRatio?: number
   /** 保留目标占触发线比例（默认 0.2；仅当 retainTokens 未显式指定时生效）。 */
   retainRatio?: number
-  recencyGuard?: number   // 默认 4（surface 末尾 N 节点不参剪）
-  turnGuard?: number      // 默认 1（最近 N 个 turn 的原子不参剪；独立于 recencyGuard）
-  /**
-   * 轮中（step > 1）压力剪开关（三级触发 v1.5.0）。默认 **true**。
-   *
-   * 动机（2026-09-21 真会话存档实证）：上下文超限的两个主要形态是「拿到 tool result 之后
-   * 才超」与「输出被钳制」——前者发生在**轮中**，而只在轮初判定的 L1 看不到它。轮中不剪
-   * ⇒ 只能等 provider 400（浪费一次请求）或等输出被钳（本 turn 直接被 max-tokens 终结）。
-   * 轮中剪的落地位置是那个 pre-step，剪完**同一个 step 的请求**即已瘦身 ⇒ 天然自动继续。
-   *
-   * ⚠️ 与 1.3.x 的关键差别：轮中剪**放宽 `turnGuard`**（见 `midTurnTurnGuard`）。超额的来源
-   * 就是**本轮**的 tool result，而 turnGuard=1 恰把整轮保护起来——这正是 1.3.x 轮中剪"只剪
-   * 掉 1 原子/154 tok、却每次都断一次前缀缓存"的根因。轮中剪**不跑 per-atom LLM pass**
-   * （那是 79s–3min 的阻塞，轮中不划算；0-LLM 图剪放宽守卫即可剪掉本轮旧 tool result）。
-   *
-   * 兼容别名（1.4.0 起）：`midTurnActive: true` = 轮中剪**开**且用默认守卫（1.3.x 语义，
-   * 对照组）；`midTurnActive: false` = 轮中剪**关**（1.4.0 语义）。两者都不写 = 新默认。
-   */
-  midTurnPrune?: boolean
-  /** 轮中剪时 `turnGuard` 降到该值（默认 0 = 允许剪本轮的旧 A/R；`recencyGuard` 照常保护最新节点）。 */
-  midTurnTurnGuard?: number
-  /** 1.4.0 的旧键：见 `midTurnPrune` 的兼容别名说明。 */
-  midTurnActive?: boolean
-  /**
-   * 输出被钳制后自动续写的提示词（三级触发 v1.5.0）。默认内置中文一句（点明"输出被宿主的
-   * 输出预算截断 + 上下文已压缩 + 接着上次未完成处写、勿重述"）。设为空串则只剪枝不续写。
-   */
-  continuationNotice?: string
-  /**
-   * 反应式补救的最大次数（**每次"连续被钳"episode** 内，默认 2；出现一次正常输出即清零）。
-   * 输出被外部钳制后（`finish=max-tokens` 且 `usage.outputTokens < 本次请求的 maxTokens`，
-   * = provider/适配器把输出预算啃小了，容量压力的真信号）：
-   *   ① 若本 turn 随后要结束（`agent/turn-stopping`）⇒ 就地强制剪 + `steer` 一条续写消息，
-   *      把**当前轮**续下去（1.5.0 核心：被钳不再等于任务中断）；
-   *   ② 否则（turn 还在跑）⇒ 下一个 pre-step 强制剪。
-   * 第 2 次起放宽 `recencyGuard`/`turnGuard`（连最新节点一起剪）。用尽后不再重试，交给
-   * overflow 路径（provider 400）兜底——避免"每步都被钳 → 每步白压"的死循环。
-   */
-  reactiveRetries?: number
-  minSpanChars?: number   // 默认 0（微剪枝下限；>0 会放回小区间，易导致连续压缩）
-  charsPerToken?: number  // 默认 3.5（触发与目标同基准；tokenMeter 可用时不再使用）
-  /** 单次剪枝事务的最大贪心 pass 数（默认 16；生产档大批量剪枝应调高）。 */
-  maxPasses?: number
+  /** 字符/token 估算比（默认 3.5；provider usage 锚点在位时以其为准）。 */
+  charsPerToken?: number
   /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
   reserveTokens?: number
   /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
   telemetryCap?: number
   /** 可选显式 token 测量函数；不传则退化为字符估算。 */
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  /** 降级链：lifecycle（默认）/ force / fail。'summarize' 档已撤（批次 3-1：
-   *  原为恒 null 的 stub，与"可选降级"宣称不符；存量配置值运行时自然落入 lifecycle 链）。
-   *  summarize 撤除后 lifecycle 与 force 同链（候选耗尽都是 闭包→force_prune），
-   *  唯一行为分叉是 fail（候选耗尽即终止、不产出）；三档保留为公开配置契约。 */
-  degradationStrategy?: 'lifecycle' | 'force' | 'fail'
-  /** 排序模式（spike 18 提案，2026-08-23 起默认 density）：
-   *  density（默认）：eff 同档内 token 降序（大 token 先剪，单位 token 重要性；spike 19 实证同达成度 recall 2→0）
-   *  legacy： [lvl, eff, lastRef, seq]（绝对 eff，忽略体积；显式传入以回退旧行为）
-   *  density-chain：density + 版本链存活代表 eff 叠加 (count-1)*1 */
-  sortMode?: 'legacy' | 'density' | 'density-chain'
-  /**
-   * latestTurn 口径（P4 修复）：
-   *  semantic（默认）：只算真实 U/A/R 活动的 turn；注入型 X 节点（system-reminder、
-   *    ARGP 自己的 tombstone）不推进轮次计数，避免"注入撑大 latestTurn → 闭包保护
-   *    窗口 latestTurn-k 被抬高 → 本应受保护的旧闭包被提前剪"。
-   *  all：旧口径，把 X 一并算进 latestTurn（既往实验数据基线；对照实验需显式指定）。
-   * 注意：本项影响 turnGuard 与闭包保护窗口的判定，口径变更需在实验台账标注。
-   */
-  turnBasis?: 'semantic' | 'all'
-  /**
-   * 上下文溢出恢复的最大重试次数（context-overflow trigger）。缺省口径（2026-08-29
-   * review 修复）：未挂 peratom compressor 时默认 1（对齐官方 compaction-basic）；
-   * 挂载时自动提到 3——否则三步序列的第②步（事件#2）在重试上限守卫处被跳过，
-   * 溢出三步退化为"① + 保留错误"。显式配置始终优先。每次「模型请求 400
-   * exceed_context_size → 恢复步 → retry」消耗 1 次；超限后保留原始请求错误。
-   */
+  /** 上下文溢出恢复的最大重试次数（context-overflow trigger），缺省 1（对齐官方 compaction-basic）。 */
   maxOverflowRetries?: number
   /**
    * 在这些 agent preset 下**不生效**（不剪枝/不压缩，会话历史保持原生态）的 preset id 列表。
-   * 默认 `['minimal']`：极简 preset 本身无 compaction 组，本插件在其下不介入，
-   * 与"未安装 dsh-argp"的原生行为一致。判定按**会话实际运行的 preset**
-   * （session projection `agentPreset`，可被 `agent-preset/selected` 事件切换）；
+   * 默认 `['minimal']`。判定按**会话实际运行的 preset**（session projection `agentPreset`）；
    * 无 preset 信息的会话（如 headless/CLI profile 无 preset registry）不受影响。
    * 设为 `[]` 关闭该行为（所有 preset 下都生效）。
    */
   skipPresets?: string[]
-  /** 闭包静止窗 K（默认 2）：lastRef 须 ≤ latestTurn−K 且未被 recall 防抖才可整闭包剪除。 */
-  closureWindowK?: number
-  /** cites 前缀最小长度守卫（A2，默认 2）：前缀字符数低于该值直接判失败，避免"的/a"等噪音伪引用。 */
-  citeMinPrefixLen?: number
-  /** 版本链重叠归链阈值 θ（A4，默认 0.8，仅对 R 生效）：sim=|A∩B|/min(|A|,|B|) ≥ θ 视为同一版本链。 */
-  overlapTheta?: number
-  /** 版本链重叠归链启用（A4，默认 false；启用后 A 文本仍走全等去重）。 */
-  enableOverlapChain?: boolean
-  /**
-   * 边价值实验 A₃：注入 oracle 边（离线辅助 LLM 组图，schema 强制）。
-   * buildGraph 在 cites 边之后合并这些边，用于测"理论上限"保留集（A₃−A₂ = 模型服从率吃掉的价值）。
-   */
-  injectEdges?: (atoms: Atom[], session?: Session) => SemanticEdge[]
-  /**
-   * 边价值实验 A₁ 离线重放：跳过 cites 边构建（仅保留确定性 A→R 边），
-   * 隔离"无边"保留集，与 A₂（带 cites 边）比 shadowedSeqs 差异（P1 结构层）。
-   * 注意（v1.2.0）：A₁"无边"臂同时**自动隔离推断边**——disableCiteEdges=true 时
-   * 推断边一并关闭，保证该臂零语义边的实验语义不被 0-LLM 派生边污染。
-   */
-  disableCiteEdges?: boolean
-  /**
-   * 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认 true = 启用）。
-   * 承重 token 逐字包含派生语义边（0 LLM、建图期）：模型声明通道空窗时恢复选择性，
-   * 保护集只增不减（I-A4）。false = 退回 v1.1 行为（语义边仅 cites / inject 两源）。
-   * 独立于 disableCiteEdges（A₁ 臂经后者一并关闭，见上）。
-   */
-  disableInferredEdges?: boolean
-  /** 推断边种子 token 最小长度（默认 6；守卫词表 ≥4 为保真口径，边派生需更强区分度）。 */
-  inferredMinTokenLen?: number
-  /** 推断边停词阈值（默认 0.15）：出现在 >15% 原子中的 token 不派生边。 */
-  inferredStopwordRatio?: number
-  /** 每 A 原子推断边上限（默认 8）。 */
-  inferredMaxEdgesPerAtom?: number
-  /** 推断边声明窗口轮数（默认 20）：仅近 N 轮的 A 原子作边源。 */
-  inferredWindowTurns?: number
-  /**
-   * tombstone 归并阈值（v1.2.x §11.8① 修复，默认 8；0 = 关闭）。
-   * X 原子（剪枝墓碑）在 isAtomCandidate 结构性不可剪 → 墓碑地板单调累积，
-   * 实测两臂复现同形态 CONTEXT_WINDOW_EXCEEDED（141,313+32,768>174,080；
-   * run2 T16 dump：1297/1310 surface 节点是墓碑，284,786 chars ≈ 142K tok）。
-   * ≥N 的连续可合并墓碑段会被归并为单条聚合墓碑（原文仍在 append-only 日志，
-   * recall_pruned(seq) 可取回）。每 pass 至多归并一段——若整段一次事务 replace
-   * 失败，回退范围清晰可查（宁少并不错删）。
-   */
-  tombstoneMergeMinRun?: number
-  /**
-   * P0 双引擎生产挂载：非空时
-   * 引擎构造期自挂 peratom 三管线（Stage-1 eager 熵降 + 边声明 + 两级召回），
-   * injectEdges/onOverflowCompress 由内部接线——显式传入的同名 config 键被忽略并告警。
-   * 管线组件的 llm 后端：component config 传 `llm: { provider, model }` 走宿主 dsh-llm
-   * （生产形态，purpose='compaction'）；不传按各组件 fetch 环境变量口径解析（本地实验
-   * 形态，环境缺失时组件自然 disabled，零网络）。`false` = 关闭该管线。
-   *
-   * 默认值（2026-09-30 由 opt-in 反转为 opt-out）：**缺省即挂**。只有显式 `false` / `null`
-   * 才不挂；显式给对象 / `true` 时按其内容挂载（`true` 等价于 `{}`）。缺省且调用方自带
-   * injectEdges / onOverflowCompress / onPrePressureCompress 时不自动挂载，尊重调用方自装配。
-   * 反转原因见 session-lifecycle.mountPeratomStack（宿主各层 patch 的 config 是整块替换，
-   * 默认值写在 bundle patch 里会被设置页写回覆盖 ⇒ 双引擎静默退回纯 Stage-2）。
-   *
-   * 与 mountPeratomStack（测试/三臂工厂）同拓扑；本块存在的意义是真宿主 bundle patch
-   * 只能声明式挂一个插件入口（发现一：default export 只有 graph 引擎 = 双引擎无生产路径）。
-   */
-  peratom?:
-    | {
-        compressor?: PeratomCompressorConfig | false
-        declarer?: CiteDeclarerConfig | false
-        zoom?: RecallZoomConfig | false
-      }
-    | boolean
-    | null
-  /**
-   * 回复级 cites 义务开关（argp-cites system section，order 151）。
-   * 缺省 auto：declarer 管线挂载且已武装（解析到 LLM 后端）时关闭，否则开启——
-   * 边声明由 declarer 结构化旁路承担，主回复不再携带 {"cites":...} 尾（源头消灭
-   * UI 显示泄漏）。
-   * 2026-09-21 时序修复：auto 兜底（autoLlm）的 declarer 构造期未武装、会话中期
-   * 才经 agent/status 武装——auto 口径下 section 恒注册，text 回调在 armed 翻转后
-   * 动态返回 ''（renderPrompt 过滤空 section ⇒ system 块不再含协议）；armed 单调
-   * 递增 ⇒ 至多翻转一次。显式 true/false 覆盖 auto（静态语义不变）：边价值实验
-   * A₁-A₃ 臂依赖回复级 cites 时强制开；双保险关闭时强制关。declarer 挂载但始终
-   * 未武装（无 LLM 后端）时 auto 保持全文（两种边来源不能同时归零）。buildGraph
-   * 的 cites 解析不受影响——协议关闭后模型偶发残留的 cites 尾仍被剥离并作为加菜
-   * 边消费，引擎侧 flush 剥离恒开。
-   */
-  citesObligation?: boolean
-  /** 2.0 判别式（§3.2）：'factor' ⇒ 三管线不挂、cites 硬关、R 贴标剪枝 + 词表。缺省 'graph'。 */
-  engine?: 'graph' | 'factor'
-  /** 焦点轮数（§2.5，factor 臂）。 */
+  /** 焦点轮数（§2.5，设置卡旋钮的构造期缺省）。 */
   focalTurns?: number
-  /** 词表每类 topN（§1.4，factor 臂）。 */
+  /** 词表每类 topN（§1.4，设置卡旋钮的构造期缺省）。 */
   vocabTopN?: number
-  /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径，
-   *  20 一线留给 P3 裁决包按数据调——登记于 design-2.0 §9.5）。 */
+  /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径）。 */
   recallLimit?: number
-  /**
-   * P4 溢出三步序列第 ② 步：第一次溢出 forcePrune 后若仍超窗，
-   * 回调对当前 open turn 做 per-atom 降熵（PeratomCompressor.compressOpenTurn：
-   * U 拆分 / 大 R extract + 顺带补 cites），产生 surface 换代后由第 ③ 步
-   * 再次 forcePrune 收尾。未注入（undefined）时退化为现役两步
-   * （forcePrune → 保留原错误），行为与 0.3.x 完全一致。
-   * 回调自身失败被吞掉（失败隔离：不影响后续 forcePrune 与原错误保留）。
-   */
-  onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
-  /**
-   * P6 轮内压力压缩（2026-09-19 方案 B 主路径）：pre-step 压力达标（与
-   * compactIfNeeded('pressure') 同口径）时，**先**对当前 open turn 做 per-atom
-   * 压缩（compressOpenTurn），**再**图剪（compactIfNeeded），两者在同一 pre-step
-   * 窗口落地 = 单变异窗口（"拼回"效果：step k+1 看到剪枝后 turns 1..N-1 +
-   * 原子压缩过的进行到一半的 turn N）。仅 open turn 触发（闭合轮走 idle 边界
-   * 路径）；活跃态守卫内建——pre-step 在轮内只在 tool result 之后触发，纯文本
-   * 收手的 turn 不会再 fire。回调自身失败被吞掉（失败隔离：不影响后续图剪）。
-   * 未注入（undefined）时行为与 P6 前完全一致（仅溢出才压 open turn）。
-   */
-  onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
+  /** 2.0 判别式仅剩 'factor'：旧的 'graph' 值宽容读但在构造期告警并按 factor 运行。 */
+  engine?: 'factor'
 }
 
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
  * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
+ * 2.0 factor 契约已不再要求模型输出 cites；本剥离保留为**残差清扫**（历史会话与
+ * 旧契约惯性的输出），幂等且零副作用。
  * 注意（2026-08 修正认知）：Web UI 的人类转录按 dsh 核心设计固定取 append 起源
  * 事件，replace 副本是 model-only（core session surface.ts："replacement copies
- * stay model-only"），因此本剥离**不影响 UI 显示**。UI 侧残留的治理在源头：
- * cites 契约 V5 规定空引用时不产出任何 block（空块对引用图零信息）；非空 block
- * 在 UI 中作为原始回复的一部分可见（模型侧仍被剥离）。仅改写最后一个 text 块；
- * 保留 model/provider/replay 等元数据；将 cites 存入 data.argpCites，以便后续
- * compaction 经 atomize 重建引用图（文本被剥离后 extractCites 取不到 cites）。
+ * stay model-only"），因此本剥离**不影响 UI 显示**。
+ * 仅改写最后一个 text 块；保留 model/provider/replay 等元数据；将 cites 存入
+ * data.argpCites，以便后续 atomize 读侧仍能取到引用（文本已剥离后 extractCites 取不到）。
  * 幂等：已剥离节点（含 argpCites）再次进入时直接跳过，无重入循环。
  */
 export function stripTrailingCitesIfNeeded(session: Session, event: { seq: number; data?: Record<string, unknown> }): void {
@@ -347,8 +159,8 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
     // 不给 sourceEventSeqs：dsh 0.1.5 起 assistant/message 自带 provider stream，
     // 类型层为 `sourceEventSeqs?: never`、运行时 assertProvenance 亦直接 throw
     // （"assistant/message embeds its source stream and cannot carry sourceEventSeqs"）。
-    // 安全性：shadowedSeqsOf 已改为只认 compaction/prune.shadowedSeqs 权威账本，
-    // 不再从 replace 事件推断被遮节点，故本处省略不影响剪枝账目。
+    // 安全性：shadowedSeqsOf 只认 compaction/prune.shadowedSeqs 权威账本，
+    // 不从 replace 事件推断被遮节点，故本处省略不影响剪枝账目。
   })
 }
 
@@ -356,9 +168,9 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
 const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
 
 /**
- * factor 臂压缩契约（design-2.0 §1.6/§3.2）：召回面只有 recall_history/list_labels
- * （标签制，无 seq 通道），退役工具名一字不提。纯静态——臂在构造期定，
- * section 求值不引用运行时状态（前缀缓存纪律与 graph 侧同源）。
+ * factor 压缩契约（design-2.0 §1.6/§3.2）：召回面只有 recall_history/list_labels
+ * （标签制，无 seq 通道），退役工具名一字不提。纯静态——不引用运行时状态
+ * （前缀缓存纪律：system 块任何字节变化都会让整块 KV 失效）。
  */
 const FACTOR_CONTRACT_TEXT = 'Context compression (ARGP factor engine):\n'
   + 'Your visible context is a pruned view of the full conversation. Older tool results may have been replaced by minimal stubs of the form [已剪·因子 <tool> → <label>（需要原文时 recall_history(<label>)）]: the full original left the visible context but remains in the append-only log. A vocabulary section elsewhere lists what was pruned overall. Absence from the visible context never means it was never said.\n'
@@ -372,23 +184,15 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 表单，不再接受 `settings.register(ns, schema, { base })` —— 该 API 在宿主
    * 0.1.7（#4587，`profile-owned-live-configuration`）已移除。字段标 `.volatile()`
    * 表示"无需重新挂载即可变化"，引擎侧每次经 `config.x.get()` 读当前值。
+   *
+   * 2.0 名册 = 6 枚（design-2.0 §3.4）：3 枚引擎通用（windowRatio/retainRatio/
+   * charsPerToken）+ 3 枚 factor（focalTurns/vocabTopN/recallLimit）。1.x graph 五键与
+   * engine 判别式退位（设置卡不再渲染，profile 里的老值宽容读+告警，见 normalizeConfig）。
    */
   static Config = z.object({
     windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO).volatile(),
     retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO).volatile(),
-    maxPasses: z.number().step(1).min(1).default(DEFAULT_MAX_PASSES).volatile(),
-    recencyGuard: z.number().step(1).min(0).default(4).volatile(),
-    turnGuard: z.number().step(1).min(0).default(1).volatile(),
-    minSpanChars: z.number().step(1).min(0).default(0).volatile(),
-    sortMode: z.string().default('density').volatile(),
     charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
-    // 2.0 判别式（design-2.0 §3.2）：**非 volatile**——engine 键会话内不可变（§1.5-9
-    // 防配置漂移）；宿主实测非 volatile 键经设置写入直接 throw「not volatile」，
-    // 拒写语义由宿主天然把守（设置卡因此不渲染 engine 行）。
-    // 其余三枚 = §3.4 旋钮名册的 factor 键：必须 volatile 才可被设置卡写入
-    // （宿主 settings/schema.ts volatileForm 只投影 volatile 字段），引擎侧全部
-    // 决策点 getter 活读（FactorEngine/ProseCondenser/recall-labels 构造期收 getter）。
-    engine: z.string().default('graph'),
     focalTurns: z.number().step(1).min(0).default(1).volatile(),
     vocabTopN: z.number().step(1).min(1).default(10).volatile(),
     recallLimit: z.number().step(1).min(1).default(5).volatile(),
@@ -399,7 +203,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
   private readonly args!: ArgpLiveConfig
 
-  /** 2.0 因子引擎（factor-only：构造期恒装配、会话内不变）。 */
+  /** 2.0 因子引擎（构造期恒装配、会话内不变）。 */
   private readonly factor!: FactorEngine
 
   /** P6-④ 散文浓缩链（factor 唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
@@ -417,8 +221,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   private readonly explicitRetainTokens!: boolean
   readonly reserveTokens!: number
   readonly tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
-  readonly degradationStrategy!: 'lifecycle' | 'force' | 'fail'
-  readonly turnBasis!: 'semantic' | 'all'
   /** 在这些 preset 下不生效的 preset id 列表（构造期定，默认 ['minimal']）。 */
   private readonly skipPresets: string[]
   /** 已就"跳过"记过日志的会话（每会话只记一次，避免 pre-step 每步刷屏）。 */
@@ -430,113 +232,29 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   get windowRatio(): number { return this.args.windowRatio.get() }
   get retainRatio(): number { return this.args.retainRatio.get() }
-  /**
-   * 守卫读取点统一走 getter：反应式补救（L2）在第 2 次尝试时用 `guardOverride` 临时
-   * 放宽守卫（连当前轮一起剪），使"被钳后回线"成为可能；其余时刻恒等于设置页值。
-   */
-  get guardOverride(): { recencyGuard: number; turnGuard: number } | null { return this.rt.guardOverride }
-  set guardOverride(v: { recencyGuard: number; turnGuard: number } | null) { this.rt.guardOverride = v }
-  get recencyGuard(): number { return this.guardOverride?.recencyGuard ?? this.args.recencyGuard.get() }
-  get turnGuard(): number { return this.guardOverride?.turnGuard ?? this.args.turnGuard.get() }
-  get minSpanChars(): number { return this.args.minSpanChars.get() }
   get charsPerToken(): number { return this.args.charsPerToken.get() }
   /** recallLimit 旋钮活读（RecallLabelsHost 接线；缺省 5 = P2-1 已测口径）。 */
   recallLimitOf(): number { return this.args.recallLimit.get() }
-  get maxPasses(): number { return this.args.maxPasses.get() }
-  get sortMode(): 'legacy' | 'density' | 'density-chain' {
-    // 0-8（1.10.2）：volatile 源的值经 settings 页写回（z.string() 无枚举约束），此处
-    // 运行时兜底——非法值回退默认 'density'（构造期 config 路径已在 normalizeConfig
-    // 显式拒绝；本兜底覆盖 settings 热改路径）。热路径不加告警（每 pass 每 原子调用）。
-    const v = this.args.sortMode.get() as unknown
-    return v === 'legacy' || v === 'density' || v === 'density-chain' ? v : 'density'
-  }
   readonly maxOverflowRetries!: number
-  /** P4 溢出三步第②步回调（undefined = 退化为现役两步）。 */
-  readonly onOverflowCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
-  /** P6 轮内压力压缩回调（undefined = 仅溢出才压 open turn，P6 前行为）。 */
-  readonly onPrePressureCompress?: (session: Session, signal?: AbortSignal) => Promise<void>
-  /** 闭包静止窗 K（A11 参数化，默认 2）。 */
-  readonly closureWindowK!: number
-  /** cites 前缀最小长度守卫（A2，默认 2；ASCII ≥4 / CJK ≥2 的换算由守卫实现）。 */
-  readonly citeMinPrefixLen!: number
-  /** 版本链重叠归链阈值 θ（A4，默认 0.8）。 */
-  readonly overlapTheta!: number
-  /** 版本链重叠归链开关（A4，默认 false）。 */
-  readonly enableOverlapChain!: boolean
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter!: TokenMeter | undefined
 
-  /** 遥测数组容量上限（P4.5：records/recallCalls/recallQueryCalls/closurePrunes/auditWarnings 有界）。 */
+  /** 遥测数组容量上限（P4.5：records/recallCalls/auditWarnings 有界）。 */
   readonly telemetryCap!: number
+  /** prune-tx 接口成员（factor 事务不读；图时代的墓碑归并阈值，保留默认值供旧骨架）。 */
+  readonly tombstoneMergeMinRun = 8
   // ---------------------------------------------------------------------
-  // 会话运行时状态（1.11.0-beta.0，1-1）：以下成员全部住在 SessionRuntimeState
+  // 会话运行时状态（1-1 起按会话分桶）：以下成员住在 SessionRuntimeState
   //（WeakMap<Session> 分桶，见 sessionStates/stateOf）。引擎上的 getter/setter 是
-  // **焦点兼容层**——同步方法（图剪全同步，sync 期间焦点不可变）沿用 this.x 写法零改动；
-  // 异步路径（召回工具 / peratom / 事件回调）一律 stateOf(session) 显式线程化。
+  // **焦点兼容层**——同步方法沿用 this.x 写法零改动。
   // ---------------------------------------------------------------------
   get records(): GraphPruneRecord[] { return this.rt.records }
-  get recallCalls(): { seq: number; hit: boolean; state?: NodeStateLabel }[] { return this.rt.recallCalls }
-  get recallQueryCalls(): { query: string; count: number; hits: number }[] { return this.rt.recallQueryCalls }
+  get recallCalls(): { seq: number; hit: boolean; state?: import('./log-access.js').NodeState }[] { return this.rt.recallCalls }
   get citeStats(): CiteStats { return this.rt.citeStats }
-  get recallSourceSeq(): number { return this.rt.recallSourceSeq }
-  set recallSourceSeq(v: number) { this.rt.recallSourceSeq = v }
-  get recallResultSeq(): number { return this.rt.recallResultSeq }
-  set recallResultSeq(v: number) { this.rt.recallResultSeq = v }
-  /** 最近一次建图的语义边（判决 G3 读：被引原子是否获得保护）。 */
-  get lastEdges(): SemanticEdge[] { return this.rt.lastEdges }
-  set lastEdges(v: SemanticEdge[]) { this.rt.lastEdges = v }
-  /** 最近一次建图的确定性边（组内 A→R，不参与语义级别排序）。 */
-  get lastDeterministicEdges(): DeterministicEdge[] { return this.rt.lastDeterministicEdges }
-  set lastDeterministicEdges(v: DeterministicEdge[]) { this.rt.lastDeterministicEdges = v }
-  /** 边价值实验 A₃：注入的 oracle 边（buildGraph 合并用）。 */
-  injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined = undefined
-  /** 边价值实验 A₁ 离线重放：跳过 cites 边构建（同时隔离推断边，见 config 注释）。 */
-  disableCiteEdges = false
-  /** 推断边开关（PROPOSAL-token-ontology 组件 A，v1.2.0；默认启用）。 */
-  disableInferredEdges = false
-  /** tombstone 归并阈值（§11.8① 修复；默认 8，0=关闭；见 ArgpGraphConfig.tombstoneMergeMinRun）。 */
-  tombstoneMergeMinRun = 8
-  /** 推断边派生参数（config 缺省 6/0.15/8/20；见 InferredEdgeOptions）。 */
-  inferredOpts: InferredEdgeOptions = { minTokenLen: 6, stopwordRatio: 0.15, maxEdgesPerAtom: 8, windowTurns: 20 }
-  /** 推断边统计（最近一次 buildGraph 口径）。 */
-  get inferredStats(): InferredStats { return this.rt.inferredStats }
-  /** 最近一次建图的推断边（诊断/测试断言用；同 lastEdges）。 */
-  get lastInferredEdges(): SemanticEdge[] { return this.rt.lastInferredEdges }
-  set lastInferredEdges(v: SemanticEdge[]) { this.rt.lastInferredEdges = v }
-  /** 回复级 cites 义务实际生效值（auto 已解析；构造期定死，运行期不重评）。 */
-  readonly citesObligation!: boolean
-  /** citesObligation 是否 auto 口径（config 未显式给值）。auto 下 section 恒注册、
-   *  text 回调随 declarer.armed 动态返回 ''（autoLlm 会话中期武装的时序修复，2026-09-21）。 */
-  readonly citesObligationAuto!: boolean
-  /** P0 双引擎自挂载句柄（config.peratom 缺省时为 null；观测/诊断用）。 */
-  readonly peratomStack: {
-    compressor: PeratomCompressor | null
-    declarer: CiteDeclarer | null
-    zoom: RecallZoom | null
-  } | null = null
-
-  /** 已剪节点目录（seq -> 元数据 + 依赖），供 list_pruned 查询；新事务覆盖旧 seq。 */
+  /** 已剪节点目录（seq -> 元数据），供 /argp 与账目重建。 */
   get prunedNodeIndex(): Map<number, PrunedNodeInfo> { return this.rt.prunedNodeIndex }
-  /** 闭包生命周期剪除记录。 */
-  get closurePrunes(): { closureId: string; rootSeq: number; prunedSeqs: number[]; at: string }[] { return this.rt.closurePrunes }
-  /** 闭包 id 计数器保持进程级单调（跨会话唯一无害；会话内唯一性不受影响）。 */
-  private nextClosureId = 0
-  /** 闭包最近一次被 recall 回拉的轮次；key = rootSeq（跨 pass 稳定，见 P2 修复注释）。 */
-  get closureLastRecalled(): Map<number, number> { return this.rt.closureLastRecalled }
   get recallCallsThisTurn(): number { return this.rt.recallCallsThisTurn }
   get recallCharsUsed(): number { return this.rt.recallCharsUsed }
-  /**
-   * 冻结的 catalog 文本快照：system 块是单条被前缀缓存的消息，块内任何字节变化都会
-   * 让整块 KV 失效。故 catalog 不与每步 assemble 联动，而是"全程冻结、仅在真正落剪时刷新一次"
-   * （见 bindSession 初值 + pruneIntervals 末尾刷新）。无剪枝的整段对话里 system 块逐字节一致，
-   * 前缀缓存全段命中；剪枝本身已改动可见上下文，那一步的缓存失效是必然代价。
-   */
-  get frozenCatalog(): string | null { return this.rt.frozenCatalog }
-  set frozenCatalog(v: string | null) { this.rt.frozenCatalog = v }
-  /** P6 note 施工①：catalog 快照域（事务尾取快照随 compaction/end 落账 + 冻结刷新；跨进程 resume 回放同值）。 */
-  get catalogDomain(): { snapshot: () => string; freeze: (text: string) => void } {
-    return { snapshot: () => this.catalogText(), freeze: text => { this.frozenCatalog = text } }
-  }
   /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
   private readonly overflowRetries = new WeakMap<Agent, number>()
   /** session → agent 映射，供成功后重置重试计数（agent loop 上下文经 session/event 取不到 agent）。 */
@@ -563,23 +281,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   get auditWarnings(): string[] { return this.rt.auditWarnings }
   /** A7：已重建过的 compactionId 集合（per-session 分桶后天然跨会话隔离，幂等 + 告警不重复）。 */
   get rebuiltCompactionIds(): Set<string> { return this.rt.rebuiltCompactionIds }
-  /** L2/L3 反应式：观察到"输出被外部钳制"后置位，由 pre-step（turn 仍在跑）或 turn-stopping（本轮要收）消费。 */
-  private readonly reactivePending = new WeakMap<Session, true>()
   /** 本次请求声明的输出预算（`agent/request` 捕获；适配器的钳制发生在其后，故这里拿到的是请求值）。 */
   private readonly requestMaxTokens = new WeakMap<Session, number>()
   /** §9.37 出口闸·输出预算档③：llm `resolveModelInfo().defaultMaxTokens` 探测缓存
    *  （请求缺 maxTokens 时 llm 服务在 agent/request 瀑布**之后**注入它——观测档盲区，
    *  宿主 llm/src/index.ts resolveCallWithInfo 实证）。0 = 已探无（不重探）；缺键 = 未探。 */
   private readonly modelDefaultMaxTokensCache = new WeakMap<Session, number>()
-  /** 三级触发 ①②③ 开关与旋钮（cordis 配置，不进 UI 设置页）。 */
-  private readonly midTurnPruneEnabled!: boolean
-  private readonly midTurnTurnGuard!: number
-  /** 兼容别名路径：`midTurnActive: true` ⇒ 轮中用默认 `turnGuard`（1.3.x 语义）。 */
-  private readonly midTurnLegacyGuard!: boolean
-  private readonly reactiveRetries!: number
-  private readonly continuationNotice!: string
-  /** 本 episode（连续被钳）内已用掉的"剪枝 + 续写"次数；出现一次正常输出即清零。 */
-  private readonly reactiveRescues = new WeakMap<Session, number>()
 
   private session: Session | null = null
   /** 会话运行时状态分桶（1-1）：stateOf 懒建；rt = 当前焦点会话的桶（bindRuntimeState 换装）。 */
@@ -599,9 +306,8 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** bindSession 专用：把焦点桶换装为该会话的桶（session-lifecycle 经 LifecycleHost 调用）。 */
   bindRuntimeState(session: Session): void {
     this.rt = this.stateOf(session)
-    // 会话可见性登记（1-2 延伸，beta.1 评审）：召回工具的"焦点回退"只在引擎只见过
-    // 一个会话时允许；多会话宿主下 exec.agent 缺席的回退会静默串台，改为显式拒绝
-    // （recall-tools.sessionOfToolCall 经 RecallToolsHost.sessionCount 读取）。
+    // 会话可见性登记：召回工具的"焦点回退"只在引擎只见过一个会话时允许；
+    // 多会话宿主下 exec.agent 缺席的回退会静默串台，改为显式拒绝。
     if (!this.seenSessions.has(session)) {
       this.seenSessions.add(session)
       this.seenSessionCount += 1
@@ -622,11 +328,9 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.log = ctx.logger
     // 在这些 preset 下不生效（构造期定；默认 ['minimal']）。
     this.skipPresets = [...(config.skipPresets ?? DEFAULT_SKIP_PRESETS)]
-    // 2.0 factor-only：peratom 三管线已退役（不再 mountPeratomStack）；本类宿主面
-    // （bindSession/atomize/stateOf/log/…）以 PruneTxHost 兼容形态注入。
     normalizeConfig(ctx, this as unknown as LifecycleHost, config)
     registerSettings(ctx, this as unknown as LifecycleHost, config)
-    // 旋钮经 getter 活读（args 里这四枚已被 static Config 标 volatile，见 §3.4 注释）：
+    // 旋钮经 getter 活读（args 里这三枚已被 static Config 标 volatile，见 §3.4 注释）：
     // 设置页改动免重挂即生效（宿主 loader 对纯 volatile 变化走 _commitVolatile）。
     this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
       focalTurns: () => this.args.focalTurns.get(),
@@ -637,7 +341,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
       clipEnabled: resolveClipEnabled(),
     })
-    // P6-④ 散文浓缩链：factor 臂唯一 LLM 摘要通路，只在压缩事务内被调
+    // P6-④ 散文浓缩链：factor 唯一 LLM 摘要通路，只在压缩事务内被调
     // （compactIfNeeded——overflow 或出口闸驱进的 'pressure' 且闸二 ctx 线补检通过 /
     // compactNow 免闸二；估算驱动零触达）。
     this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
@@ -650,31 +354,18 @@ export class ArgpGraphEngine extends CompactionEngine {
     // 2.0 召回面 = recall_history / list_labels（标签制）；图时代三件套已退役。
     registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
     this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩 + 出口闸；召回面 = recall_history/list_labels')
-    // /argp 状态命令：只读出口，放在工具注册之后（与 settings/peratom 同批的 ctx 副作用，
-    // 但它依赖 commands 服务，缺失时 inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
+    // /argp 状态命令：只读出口，放在工具注册之后（依赖 commands 服务，缺失时
+    // inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
     registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
 
-    // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall 工具找回”。
+    // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall_history 找回”。
     // 本 section 的 text 必须是纯静态（不引用引擎运行时状态）——否则每轮变化会破坏
-    // system message 前缀，使 KV/prefix cache 从本位置起全部失效（动态目录见 argp-catalog）。
+    // system message 前缀，使 KV/prefix cache 从本位置起全部失效。
     ctx.systemPrompt.section({
       name: 'argp-contract',
       order: 150,
-      // 双臂分流：factor 臂的召回面是 recall_history/list_labels（标签制），契约若
-      // 继续指 recall_pruned/list_pruned 就是承诺不存在的工具（假通道）。两侧文案
-      // 均为纯静态（臂在构造期定），缓存语义不变。
-      text: () => this.factor !== null ? FACTOR_CONTRACT_TEXT : 'Context compression (ARGP):\n'
-        + 'Your visible context is a pruned view of the full conversation. Older parts may be no longer in visible context — either replaced by placeholders of the form [elided seq=N..M; recall_pruned(N) for detail] (the placeholder carries its own recall instruction), or dropped from the render window without any placeholder. Absence from the visible context never means it was never said.\n'
-        + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-        + '- When your answer depends on content that is no longer in visible context, recover it before answering — never reconstruct missing facts from memory. Start with recall(query) (a few distinctive keywords are enough); if a placeholder names a seq, call recall_pruned(seq) directly; use list_pruned when you neither remember keywords nor have a seq.\n'
-        + '- If a placeholder does not name the seq you need, or the content you need left the context without any placeholder, use list_pruned with fromSeq/toSeq to scan that seq window of the raw log. recall_pruned works on any seq in the log and labels each result with state=shadowed|live|off-surface.\n'
-        // v1.6.1：逐原子压缩副本的标记契约。召回指引**只在此处一次性声明**，不写进每条
-        // 副本（每原子重复一段指引纯属浪费上下文）；标记本身只需带 seq——模型在
-        // tool/result 里看不到 seq，不带则召回无参数可调（通路实际是断的）。
-        + '- A tool result may also have been replaced by a shorter compressed copy. Such a copy is marked at its top with [已压缩-摘取 seq=N] (a verbatim extract — a subset of the original, not the whole output) or [已压缩-摘要 seq=N] (a paraphrase — its wording is NOT the original). It is never the complete original: call recall_detail(N) or recall_pruned(N) for the verbatim text before you quote it or rely on exact strings.',
+      text: () => FACTOR_CONTRACT_TEXT,
     })
-
-
 
     ctx.on('session/event', (session, event) => {
       // 声明窗口缓存（真环境联调实证）：request/context 事件携带适配器声明的
@@ -693,12 +384,12 @@ export class ArgpGraphEngine extends CompactionEngine {
       }
       // 外来压缩事务可见性（真环境联调实证）：本插件的 compactionId 一律带
       // `argp-` 前缀；不带前缀的 compaction/start = 其他压缩实现（如原生摘要器）在
-      // 本 ctx.compaction 位之外运作——lossy 摘要会先于图剪发生，必须在日志可见。
+      // 本 ctx.compaction 位之外运作——lossy 摘要会先于本引擎事务发生，必须在日志可见。
       if (event.type === 'compaction/start') {
         const cid = (event.data as { compactionId?: string } | undefined)?.compactionId
         if (typeof cid === 'string' && !cid.startsWith('argp-')) {
           this.log.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${turnOf(event) ?? '?'})`
-            + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt graph pruning')
+            + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt ARGP pruning')
         }
       }
       // 真实 token 锚点（2026-08-23）：assistant/message 携带 provider 回报的 usage，
@@ -719,9 +410,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         const agent = this.overflowAgents.get(session)
         if (agent !== undefined) this.overflowRetries.delete(agent)
       }
-      // 流式闭环后立刻剥离尾部 {"cites":[...]} JSON（ARGP 引用协议产物），
-      // 使其不残留在模型可见 surface 上（UI 人类转录取 append 原文，不受影响；
-      // 空块由契约 V5 在源头不产出）。完全在 dsh-argp 插件内完成，不改官方插件。
+      // 流式闭环后立刻剥离尾部 {"cites":[...]} JSON（残差清扫；见函数头注释）。
       const seq = (event as { seq?: unknown }).seq
       if (event.type === 'assistant/message' && typeof seq === 'number') {
         // 延迟到本次事件发射结束后执行，避免在读/写 surface 的中途改写 surface（重入安全）
@@ -757,42 +446,17 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= this.maxOverflowRetries) return next()
-      // P4 溢出三步序列（在现有重试环内，"仍超？"的真信号 = provider 再次溢出事件）：
-      //   事件#1（retries=0）→ ① forcePrune(旧内容) → retry
-      //   事件#2（retries=1）→ ① 没解决才走到这：② onOverflowCompress（当前轮
-      //      per-atom 降熵：U 拆分/大 R extract，顺带补 cites）→ ③ forcePrune → retry
-      //   事件#3（retries≥2）→ ③ 也没解决 → 保留原错误（现有行为）
-      // retries 是每序列单调计数器（成功应答/idle 才重置），故第②步全序列只跑一次、
-      // 且永不空转（① 成功即不再溢出、不再进本钩子）。onOverflowCompress 未注入时
-      // 事件#2 直接保留原错误——与现役行为完全一致。
+      // 2.0：溢出恢复只剩一步（forcePrune 后 retry）。1.x 的 per-atom 第②步随
+      // peratom 管线退役；重试上限缺省 1（对齐官方 compaction-basic）。
       const session = agent.session
       const genBefore = session.surface.replaceGeneration
-      const isStepOne = retries < 1
-      // 耗尽判定：事件#3（retries≥2 三步用尽）或未注入 compressor 的事件#2（现役即止）。
-      if (!isStepOne && (this.onOverflowCompress === undefined || retries >= 2)) {
-        this.log.warn(`[argp-graph] overflow recovery exhausted (retries=${retries}); preserving the original request error`)
-        return next()
-      }
-      // ② per-atom 降熵（仅事件#2；① 成功就不会进到这里，故不空转）。
-      // 失败隔离：compressor 抛错只记日志——genBefore 在其前捕获，② 的换代仍计入下方
-      // "durable progress" 凭证，不吞 provider 溢出错误。
-      if (!isStepOne && this.onOverflowCompress !== undefined) {
-        try {
-          // signal 透传（1-5 延伸）：溢出恢复被取消时，peratom 的 LLM await 也应立即取消
-          await this.onOverflowCompress(session, signal)
-        } catch (compressError: unknown) {
-          const message = compressError instanceof Error ? compressError.message : String(compressError)
-          this.log.warn(`[argp-graph] overflow per-atom compress failed: ${message}; relying on step-3 forcePrune`)
-        }
-      }
-      // ①（事件#1）/ ③（事件#2）forcePrune
       let result: CompactionResult | null
       try {
         result = await this.compactIfNeeded(agent, 'context-overflow', signal)
       } catch (recoveryError: unknown) {
         const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
-        // 剪枝可能在 summarize 之类后续阶段抛错前已落地（模型无关的确定性占位
-        // 替换）；或 ② 已换代。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
+        // 剪枝可能在摘要之类后续阶段抛错前已落地（模型无关的确定性占位
+        // 替换）。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
         if (!signal.aborted && session.surface.replaceGeneration > genBefore) {
           this.log.warn(`[argp-graph] overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
           this.overflowRetries.set(agent, retries + 1)
@@ -804,7 +468,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (signal.aborted || session.surface.replaceGeneration <= genBefore) return next()
       if (result !== null) {
         this.log.info(
-          `[argp-graph] context-overflow step-${isStepOne ? 1 : 3} prune: shadowed ${result.shadowedSeqs.length} surface nodes `
+          `[argp-graph] context-overflow prune: shadowed ${result.shadowedSeqs.length} surface nodes `
           + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
         )
       }
@@ -822,46 +486,42 @@ export class ArgpGraphEngine extends CompactionEngine {
     })
     ctx.on('agent/pre-step', async ({ agent, messages, step, signal }, next): Promise<PreStepDecision> => {
       this.bindSession(agent.session) // A7（问题 3）：生产 resume 点，账目缺失时自动重建
-      // factor 臂分发（P6-④ 触发收敛）：pre-step 估算驱动退役——破坏性改写只认
-      // 手动 compact + context 报错两信号（见 compactIfNeeded factor 分发），外加
-      // §9.37 出口闸（anchored 确定性容量算术，非估算驱动）。词表 note 同步迁出
-      // pre-step（变化时机 = 压缩时机，事务收尾统一写）。ARGP_FACTOR_PRESSURE=1 = 评测逃生口，
-      // 恢复旧估算驱动路径（压力剪 + 缺口摘要 + note 每 pre-step 刷新，旧世界字节级复现）。
-      if (this.factor !== null) {
-        const incoming = this.incomingTokens(messages)
-        if (!signal.aborted && this.pressureTriggerEnabled) {
-          try {
-            await this.factorPressure(agent, incoming)
-          } catch (e) {
-            this.log.warn('[argp-factor] pre-step 压力剪失败（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
-          }
+      // factor 分发（P6-④ 触发收敛）：pre-step 估算驱动退役——破坏性改写只认
+      // 手动 compact + context 报错两信号，外加 §9.37 出口闸（anchored 确定性容量算术，
+      // 非估算驱动）。词表 note 同步迁出 pre-step（变化时机 = 压缩时机，事务收尾统一写）。
+      // ARGP_FACTOR_PRESSURE=1 = 评测逃生口，恢复旧估算驱动路径。
+      const incoming = this.incomingTokens(messages)
+      if (!signal.aborted && this.pressureTriggerEnabled) {
+        try {
+          await this.factorPressure(agent, incoming)
+        } catch (e) {
+          this.log.warn('[argp-factor] pre-step 压力剪失败（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
         }
-        // §9.37 出口闸（缺省开）：必然超窗的请求根本不发——先剪后发，撞墙 400/钳位→重试
-        // →全量重灌链根除；返回真值=本步已发剪事务，浓缩闸顺延（同 step 不吃二次重铸）。
-        // 与 PRESSURE 逃生口互斥（审查 F5）：hatch=旧世界字节级复现契约，两 env 各管各的
-        // 对照世界——要"旧世界+出口闸"的第三组合请显式改码，别靠 env 叠乘出第四态。
-        let egressPruned = false
-        if (!signal.aborted && this.egressEnabled && !this.pressureTriggerEnabled) {
-          try {
-            egressPruned = await this.egressGate(agent, signal, incoming)
-          } catch (e) {
-            this.log.warn('[argp-factor-egress] pre-step 出口闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
-          }
-        }
-        // §9.36 浓缩通道闸二（ctx 闸）：上一请求 usage 已锚、下一请求未发——双闸合取里
-        // "总上下文 ≥ windowRatio×声明窗"的把关位（闸一散文线在 condense 内）。
-        if (!signal.aborted && !egressPruned && this.prose !== null) {
-          try {
-            await this.condenseGate(agent, signal, incoming)
-          } catch (e) {
-            this.log.warn('[argp-factor-prose] pre-step ctx 闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
-          }
-        }
-        return next()
       }
+      // §9.37 出口闸（缺省开）：必然超窗的请求根本不发——先剪后发，撞墙 400/钳位→重试
+      // →全量重灌链根除；返回真值=本步已发剪事务，浓缩闸顺延（同 step 不吃二次重铸）。
+      // 与 PRESSURE 逃生口互斥（审查 F5）：hatch=旧世界字节级复现契约，两 env 各管各的
+      // 对照世界——要"旧世界+出口闸"的第三组合请显式改码，别靠 env 叠乘出第四态。
+      let egressPruned = false
+      if (!signal.aborted && this.egressEnabled && !this.pressureTriggerEnabled) {
+        try {
+          egressPruned = await this.egressGate(agent, signal, incoming)
+        } catch (e) {
+          this.log.warn('[argp-factor-egress] pre-step 出口闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
+        }
+      }
+      // §9.36 浓缩通道闸二（ctx 闸）：上一请求 usage 已锚、下一请求未发——双闸合取里
+      // "总上下文 ≥ windowRatio×声明窗"的把关位（闸一散文线在 condense 内）。
+      if (!signal.aborted && !egressPruned) {
+        try {
+          await this.condenseGate(agent, signal, incoming)
+        } catch (e) {
+          this.log.warn('[argp-factor-prose] pre-step ctx 闸异常（不阻断本步）: ' + (e instanceof Error ? e.message : String(e)))
+        }
+      }
+      void step
       return next()
     })
-
   }
 
   /**
@@ -889,9 +549,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    * `measureTokens` 会静默走回退分支 `visibleChars / charsPerToken`——而 `visibleChars`
    * 的投影口径**不含 reasoning**。实测该估算 ≈ 真实 prompt 的 **0.48 倍**：
    *   turn 6 真实 prompt 210,719 tok 时估算仅 ≈102,703 ⇒ 触发线 100,007 一路不越线，
-   *   直到真实 prompt 210,719 才触发（迟 2.1×，66 步空转；graph 剪全程只跑 1 次）。
-   *   windowRatio=0.8 档下估算上限 ≈126K **永远够不到** 210,715 触发线 ⇒ 压力路径
-   *   完全不触发，只剩 provider 报错后的溢出恢复兜底。
+   *   直到真实 prompt 210,719 才触发（迟 2.1×，66 步空转）。
    *
    * 口径与 usage 处理器**完全一致**（in + cacheRead + cacheWrite = provider 回报的 billed
    * prompt），取日志中最后一条带 `usage.inputTokens` 的 `assistant/message`——即本进程
@@ -927,7 +585,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       return
     }
     this.log.info('[argp-graph] usage anchor restored from log: real prompt='
-      + this.lastRealPromptTokens + ' tok at seq=' + this.lastRealAnchorSeq)
+      + st.lastRealPromptTokens + ' tok at seq=' + st.lastRealAnchorSeq)
   }
 
   /**
@@ -958,90 +616,31 @@ export class ArgpGraphEngine extends CompactionEngine {
     }
   }
 
-  /** 生成上下文头部 catalog（设计稿 §5 + A9）：U/A/R 三类都列（R 带 type=R），snippet 截断，字符预算驱动（A9）。
-   */
-  catalogText(maxItems = 20, snippetChars = 70, tokenBudget = 600): string {
-    return catalogText(this as unknown as RecallHost, maxItems, snippetChars, tokenBudget)
-  }
-  /** 按关键词查询被剪节点原文（设计稿 §6 的 recall(query) 简化版）。
-   */
-  recallQuery(session: Session | null, query: string, maxResults = 5): string {
-    return recallQuery(this as unknown as RecallHost, session, query, maxResults)
-  }
-
   /**
-   * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
-   * 避免每次 recall/剪枝压力检查都 O(事件总量) 重扫。session 切换时重置。
+   * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts）。
    */
   private shadowedSeqsOf(session: Session): Set<number> {
     return shadowedSeqsOf(this as unknown as RecallHost, session)
   }
 
   /**
-   * 程序化 recall（RecallHandle 语义）：**仅**命中被遮蔽节点，未命中返回 null。
-   * 这是给宿主/测试用的窄接口，故意保留 pruned-only 语义（历史 spike 系列的
-   * `engine.recall(seq) !== null` 探针依赖它判定"是否已被剪"，去门控会破坏探针）；
-   * 模型侧 recall_pruned 工具已按 P1 修复 (b) 去门控并带状态标签，
-   * 程序化的全日志入口是 recallAnyState()。
-   */
-  recall(seq: number): string | null {
-    return recall(this as unknown as RecallHost, this.session, seq)
-  }
-
-  /**
-   * 全日志级 recall（P1 修复 (b) 的程序化入口）：对任意界内 seq 返回原文 + 状态标签，
-   * 不要求节点属于 pruned 集合。越界返回 null。
-   */
-  recallAnyState(seq: number): { text: string; state: NodeStateLabel } | null {
-    return recallAnyState(this as unknown as RecallHost, this.session, seq)
-  }
-
-  /** 单个 seq 相对可见上下文的状态（shadowed / live / off-surface）。
-   */
-  nodeState(seq: number): NodeStateLabel | null {
-    return nodeState(this as unknown as RecallHost, this.session, seq)
-  }
-
-  /**
-   * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。cites 统计在 A 原子处累计。
+   * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。
    *
    * node 0 保护（2026-09-10，dsh 0.1.5 起）：宿主把 system prompt 表示为 surface node 0 的
    * `system/message`，并在 surface.ts `assertSystemHeadRewrite` 里硬性保护——任何覆盖 node 0 的
    * replace 必须是"恰好覆盖该单节点的 system/message"，否则 throw。
-   * 本函数的 switch 只认 `user/message` / `assistant/message` / `tool/result`，其余类型（含
-   * `system/message`）**静默跳过、不产出原子**，因此 node 0 永远不会进入 ARGP 的剪枝区间，
-   * 上述宿主断言不会被触发。**这是有意依赖，不是巧合**——若日后要支持剪系统提示，
-   * 必须同时改这里与宿主契约。守护用例见 test/argp-graph-engine.test.ts
-   * 「system prompt at surface node 0 is never selected for pruning」。
-   *
+   * 本投影**静默跳过** system/message，因此 node 0 永远不会进入 ARGP 的剪枝区间。
    */
   atomize(session: Session): Atom[] {
     return atomize(this as unknown as GraphBuildHost, session)
   }
 
-  /**
-   * 建图（§4.2 + §4.7 + A1/A2/A5）：确定性边不计级别；cites 子串匹配生成语义边，
-   * 级别取声明级别（V6 契约，裸字符串默认 supporting；critical 参与闭包守卫不变量 2′）。
-   * A5：3-gram 倒排索引候选（先精确 n-gram 命中，再子串验证）；前缀过短自动全扫描回退。
-   * 歧义消解增强（A2）：命中集内 U 优先 → 最长公共前缀最深的原子优先 → 最早 seq。
-   * 前缀长度守卫：过短前缀不计 declared 也不建边。
-   *
-   */
-  buildGraph(atoms: Atom[]): { edges: SemanticEdge[]; deterministicEdges: DeterministicEdge[]; inDegree: Map<number, number> } {
-    return buildGraph(this as unknown as GraphBuildHost, atoms)
-  }
-  /** surface 可见字符总量（与 spike 4 同基准）。 */
-  private visibleChars(session: Session): number {
-    return visibleChars(session)
-  }
-
   /** 测量当前上下文 token。优先「真实 usage 锚点 + 增量估算」（2026-08-23，
    *  替代 tokenMeter chars/4 低估导致的迟触发/窗口保护失效）；无锚点才回退
-   *  dsh tokenMeter / 配置函数 / 字符估算。source 标注估计来源（2026-08-29：
-   *  压力日志与实验审计需要区分 anchored 真值路径与启发式回退路径）。
+   *  dsh tokenMeter / 配置函数 / 字符估算。source 标注估计来源。
    *  `extraTokens`（1.4.0）：本步**已 claim 但尚未落盘**的 user 消息估值。轮初它既不在
    *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
-   *  常在轮初粘贴大段文本，正是 1.3.x 轮初估值偏低的直接原因。
+   *  常在轮初粘贴大段文本。
    */
   private measureTokens(session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
     return measureTokens(this as unknown as BudgetHost, session, extraTokens)
@@ -1070,218 +669,25 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 
   /**
-   * §4.4 版本链去重（+ A3 N1 bug fix + A4 θ 重叠归链）：
-   *  - A：文本全等（不变）。
-   *  - R：按「issuer A 的 tool name + arguments JSON」去重（而非旧版 issuer?.text.trim()），
-   *    解决「同措辞不同工具调用（如不同参数 read different files）被错误归链去重」的问题。
-   *    回退：issuer 不存在时用 r.text（callId 缺失的最小退化）。
-   *  - A4：enableOverlapChain 时，R 文本行重叠 sim ≥ θ（默认 0.8）也归入同一版本链
-   *    （read→edit→read 等高频工具迭代）；A 文本仍走全等。
-   * 返回 { dupIds, chainLen }：chainLen 记录每个存活代表（newer）的链长，供 density-chain 叠加 eff。
-   *
-   */
-  private findVersionDuplicates(atoms: Atom[], inDegree: Map<number, number>): { dupIds: Set<number>; chainLen: Map<number, number>; latestRByKey: Map<string, number>; rKeyByRId: Map<number, string> } {
-    return findVersionDuplicates(this as unknown as GraphBuildHost, atoms, inDegree)
-  }
-
-  /**
-   * 当前最大 turn 号（recall 回拉防抖窗口 / 闭包保护窗口共用口径）。
-   *
-   * P4 修复：旧实现遍历 **全部 events** 取 max，把 turn/start、注入型 system-reminder
-   * 等非 surface 事件也算进来，与 compactIfNeeded（含内联闭包降级链）用的
-   * "atoms（surface 节点）最大 turn" 口径不一致 —— 同一个防抖判定两端基准不同。
-   * 现统一为 surface 节点口径；turnBasis='semantic'（默认）时进一步排除注入型 X 节点，
-   * 使纯注入不推进轮次、不抬高 latestTurn-k 保护线。
-   */
-  latestTurnOf(session: Session): number {
-    return latestTurnOf(this as unknown as RecallHost, session)
-  }
-
-  private latestTurnOfSession(): number {
-    return latestTurnOfSession(this as unknown as RecallHost)
-  }
-
-  /**
-   * recall 命中被剪闭包内节点时，将该闭包拉回 ACTIVE 并记下防抖轮。
-   *
-   * P2 修复：防抖 key 从 closureId 改为 rootSeq。closureId 由 `nextClosureId++` 生成，
-   * selectClosureToMerge 每 pass 都给所有 root 重发新 id，导致此处写入的旧 id 与
-   * 剪枝决策处读取的新 id 永不相等 → `continue` 防抖分支永不触发 → 刚 recall 回来的
-   * 闭包下一 pass 又被剪。rootSeq 跨 pass 稳定，是闭包的天然身份。
-   */
-  private noteRecallHit(session: Session | null, seq: number): void {
-    noteRecallHit(this as unknown as RecallHost, session, seq)
-  }
-
-  /**
    * recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。
-   *
-   * P7 修复：recallCharsUsed 原本只增不减、全会话无 reset —— 累计触顶后 allowed=0，
-   * 返回值退化成纯 '…(truncated)' 且不说明原因，长会话静默丢 recall。现在
-   *  1) 预算耗尽时显式说明剩余额度与何时恢复（不再静默）；
-   *  2) 每笔 compaction 事务成功后归零（见 pruneIntervals 末尾）。
+   * 预算耗尽时显式说明剩余额度与何时恢复；每笔 compaction 事务成功后归零
+   * （见 prune-tx 事务尾）。
    */
   private budgetRecallText(session: Session, text: string): string {
     return budgetRecallText(this as unknown as RecallHost, session, text)
   }
 
   /**
-   * 批次 3-1（beta.1）已撤：原为 A6（保守选项 a）的恒 null stub——degradationStrategy
-   * 的 'summarize' 档与 enableSummarize 旋钮一并移除（"可选降级"的宣称与 stub 实现不符）。
+   * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
+   *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
+   *  上下文容量由其他插件（模型适配器声明）决定，本引擎不硬编码。
+   *  解析顺序：1) session.requestContext()（request/context 事件，真会话最可靠）；
+   *           2) llm.resolveModelInfo(provider, model)；3) 静态默认值。
    */
-
-  /** P2 选择侧：选一个 PRUNABLE 闭包并返回其原子/区间，不执行剪枝。
-   *  `alreadyPruned` 用于排除已由正常候选/版本重复剪过的原子——修复前独立闭包事务
-   *  按整闭包（含已剪原子）独立剪枝并 return，导致正常候选成果被丢弃；现改为"选择并入
-   *  pruned、统一事务剪"（compactIfNeeded 降级链内联），闭包原子需与已剪集合去重
-   *  （如 A1/A2 已正常剪 → 闭包仅剩 root U，单独退休 root U 是有意设计：P5 注释
-   *  "自动闭包生命周期确实会连 root U 一起剪除"）。 */
-  private selectClosureToMerge(
-    session: Session,
-    atoms: Atom[],
-    edges: SemanticEdge[],
-    inDegree: Map<number, number>,
-    askCover: Map<number, number>,
-    latestTurn: number,
-    alreadyPruned: Set<number>,
-  ): {
-    closureId: string
-    root: Atom
-    rootPreview: string
-    /** 闭包全量 seq（含已由正常候选剪过的原子）——closurePrunes 记录用（noteRecallHit 反查 rootSeq）。 */
-    seqs: number[]
-    /** 本事务实际并入 pruned 的原子（过滤 alreadyPruned）。 */
-    atoms: Atom[]
-    intervals: { seqs: number[]; chars: number; atoms: Atom[] }[]
-  } | null {
-    return selectClosureToMerge(this as unknown as PruneSelectionHost, session, atoms, edges, inDegree, askCover, latestTurn, alreadyPruned)
-  }
-
-
-/**
- * 预算解析：显式配置用显式值；否则从适配器声明的 contextWindow 按比例推导——
- *  windowTokens = contextWindow × windowRatio（默认 0.8），retainTokens = windowTokens × retainRatio（默认 0.2）。
- *  上下文容量由其他插件（模型适配器声明）决定，本引擎不硬编码。
- *  解析顺序：1) session.requestContext()（request/context 事件，真会话最可靠）；
- *           2) llm.resolveModelInfo(provider, model)；3) 静态默认值。
- */
   private async resolveScaledBudgets(
     agent: CompactionAgentContext,
   ): Promise<{ windowTokens: number; retainTokens: number; declaredKnown: boolean }> {
     return resolveScaledBudgets(this as unknown as BudgetHost, agent)
-  }
-
-  /**
-   * tombstone 归并（v1.2.x §11.8① 修复）。扫描 surface，找**连续**的「可合并墓碑」X 段
-   * （user/message + isMergeableTombstone 文本），段长 ≥ tombstoneMergeMinRun 时一笔事务
-   * replace 成单条聚合墓碑（列出原 tombstone seqs → 原文仍 recall_pruned(seq) 可取回）。
-   * 复用 pruneIntervals 事务骨架（含 shadow-price 契约、summary、锚点重置）。
-   * 每 pass 至多一段——失败回退范围清晰。返回被归并的墓碑节点数（0 = 无可归并）。
-   * tool 占位墓碑（type=tool）与 system-reminder / 官方 checkpoint（non-mergeable 文本）
-   * 均被 isMergeableTombstone / 事件类型过滤挡住，不会被吞。
-   */
-  private consolidateTombstones(session: Session): number {
-    return consolidateTombstones(this as unknown as PruneTxHost, session)
-  }
-
-  /**
-   * 压力剪枝（§4.3/§4.5）：估算量 ≥ windowTokens 时重建图，按排序键逐弱剪至 ≤ retainTokens。
-   * 候选：A/T/R、语义入度 0、非近因豁免区、非最新轮、非保守保护；普通 U 仅 ask-exempt 参剪，
-   * X（墓碑/checkpoint）不参剪——但墓碑地板由 §11.8① tombstone-merge 在图剪前归并（见 consolidateTombstones）。
-   * 排序键（§4.5）：最低关联语义级别升 → effective_importance 升 → lastRefRound 升 → seq 升。
-   * 候选耗尽仍超预算 → force_prune（忽略入度，§4.6.2）。
-   *
-   * trigger='context-overflow'（官方溢出恢复，见 agent/request-error 钩子）：
-   * 模型请求已被 provider 确认超出上下文（400 exceed_context_size_error）——估算量
-   * 可能与实际请求偏差（估算低于触发线但请求已撞墙），此时**跳过 pressure 门槛强制
-   * 剪枝**，剪到 retain 目标（≈1/5 窗口，远低于 n_ctx）后由钩子重发请求。
-   */
-  /**
-   * P6 轮内压力判定（与 compactIfNeeded('pressure') 同口径，2026-09-19 方案 B）：
-   * 声明窗口已知 且 contextTokens ≥ windowTokens − reserveTokens。抽出供 pre-step
-   * 钩子复用，避免两处重复预算解析（口径漂移风险）。返回 false = 未达标（或
-   * reserve 超窗 / 声明窗口未知）⇒ 调用方跳过轮内压缩。
-   */
-  private async isPressureExceeded(agent: CompactionAgentContext, extraTokens = 0): Promise<boolean> {
-    const session = agent.session
-    const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
-    this.bindSession(session) // D2：await 窗口内焦点可能被其他会话换装——回绑后再测量（measureTokens 读锚点走 rt）
-    const thresholdTokens = windowTokens - this.reserveTokens
-    if (thresholdTokens <= 0) return false
-    if (!declaredKnown) return false
-    const measurement = this.measureTokens(session, extraTokens)
-    return measurement.contextTokens >= thresholdTokens
-  }
-
-  /**
-   * L2 反应式补救（三级触发②）：轮中唯一允许的压缩时机。
-   *
-   * 触发源见 `session/event` 里的 max-tokens 判据（输出被宿主/适配器钳制 = 容量压力已由
-   * 上游确认）。执行用 `context-overflow` trigger 走 `compactIfNeeded` —— 该 trigger
-   * **绕过阈值早检**（"仍未回线"的真信号由上游继续钳输出给出），即"强制剪一次"。
-   *
-   * 升级策略：第 2 次起临时放宽 recencyGuard/turnGuard（连当前轮一起进入候选）——因为
-   * 常规轮内剪枝受 turnGuard 保护几乎剪不动，"被钳后回线"需要更狠的手段。用尽
-   * `reactiveRetries` 次即停止重试并交给 overflow 路径（provider 400）兜底：避免
-   * "每步都被钳 → 每步白压"的死循环（那比现状更糟，每圈多吃一次输出）。
-   */
-  /**
-   * 反应式"零候选"重挂：把钳制信号留给下一次机会（下个 pre-step / 下一轮 turn-stopping），
-   * 那时阶梯已 +1 ⇒ 守卫放宽，原本剪不动的局面（turnGuard 保护当前轮）才可能剪动。
-   * 额度用尽则不再重挂（避免"每步白压"）。
-   */
-  private rearmReactive(session: Session, used: number): void {
-    rearmReactive(this as unknown as LifecycleHost, session, used)
-  }
-
-  /**
-   * L2：turn 仍在跑时的反应式收紧剪。被钳后宿主可能继续本 turn（还有 next-step 输入），
-   * 此时就在下一个 pre-step 剪；若本轮要收，则由 turn-stopping 的 L3 路径剪 + 续写。
-   * 两者共用同一个 episode 计数器（`reactiveRescues`），故连续被钳会逐级放宽守卫而不是各自从头开始。
-   */
-  private async runReactivePrune(
-    agent: CompactionAgentContext,
-    signal: AbortSignal,
-    ctx: Context,
-  ): Promise<void> {
-    if (!this.reactivePending.has(agent.session)) return
-    this.reactivePending.delete(agent.session)
-    if (signal.aborted) return
-    this.bindSession(agent.session) // D2：调用链上方有 await（compactIfNeeded/peratom），入点回绑
-    const used = this.reactiveRescues.get(agent.session) ?? 0
-    if (used >= this.reactiveRetries) {
-      this.log.warn('[argp-graph] reactive prune retries exhausted after ' + used
-        + ' attempt(s); leaving further recovery to the overflow path')
-      return
-    }
-    this.reactiveRescues.set(agent.session, used + 1)
-    const relax = used + 1 > 1
-    const previousOverride = this.guardOverride
-    if (relax) {
-      this.guardOverride = { recencyGuard: 0, turnGuard: 0 }
-      this.log.warn('[argp-graph] reactive prune attempt ' + (used + 1)
-        + ': relaxing recency/turn guards so the newest turn becomes prunable')
-    }
-    try {
-      const result = await this.compactIfNeeded(agent, 'context-overflow', signal)
-      if (result !== null) {
-        this.log.info('[argp-graph] reactive prune attempt ' + (used + 1) + ': shadowed '
-          + result.shadowedSeqs.length + ' surface nodes (seqs ' + result.shadowedRange.start + '-'
-          + result.shadowedRange.end + ', ~' + result.shadowedTokenCount + ' tokens)')
-      } else {
-        // 没剪到东西 ⇒ 信号留着：下一次机会（下一个 pre-step / 下一轮 turn-stopping）带上
-        // 放宽守卫再试。若这里直接消费掉，"守卫太紧导致零候选"就会变成永久漏救。
-        this.rearmReactive(agent.session, used + 1)
-        this.log.warn('[argp-graph] reactive prune attempt ' + (used + 1)
-          + ': nothing prunable (candidate set exhausted); re-arming for a relaxed retry')
-      }
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.log.error('[argp-graph] reactive prune FAILED: ' + message)
-      this.log.warn(`[argp-graph] reactive prune failed: ${message}; leaving recovery to the overflow path`)
-    } finally {
-      this.guardOverride = previousOverride
-    }
   }
 
   /**
@@ -1337,7 +743,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 0.2×声明窗留给摘要输出（输出预算=summaryMaxTokensOut(声明窗)）。
    */
   private async condenseGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number): Promise<void> {
-    if (this.prose === null) return
     const session = agent.session
     const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     this.bindSession(session) // D2：await 窗口内焦点可能换装——回绑后再读锚点
@@ -1456,8 +861,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.bindSession(session) // A7（问题 3）：compactIfNeeded 也走统一绑定（含账目懒重建）
     const { windowTokens, retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     // D2（beta.1 评审）：上面这个 await 的窗口内，其他会话的 pre-step 可能已把焦点桶
-    // （this.rt）换装——恢复后必须先回绑本会话再继续，否则 measureTokens 的锚点、
-    // 图缓存等 getter 层字段全部落到别人的桶（多会话串台）。回绑幂等（焦点未动即早退）。
+    // （this.rt）换装——恢复后必须先回绑本会话再继续，否则 measureTokens 的锚点
+    // 等 getter 层字段全部落到别人的桶（多会话串台）。回绑幂等（焦点未动即早退）。
     this.bindSession(session)
     signal.throwIfAborted() // 取消优先于任何事务写点（错误分类：abort 不属于可重试类别）
     const thresholdTokens = windowTokens - this.reserveTokens
@@ -1466,35 +871,35 @@ export class ArgpGraphEngine extends CompactionEngine {
       return null
     }
     const measurement = this.measureTokens(session, incomingTokens)
-    // ── factor 臂分发（design-2.0 §3.2，P6-④ 触发收敛后口径）：本方法只被两信号驱进
+    // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
     // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：
     // R 剪 0-LLM 在前（deficit = 真实口径 − retain）→ 散文浓缩（(sys+散文)÷声明窗 > 50%
     // 才动，one-shot 原生式，factor 臂唯一 LLM 摘要通路）→ 词表 note 事务收尾
-    // （P6-② 违规点整改：note 变化时机 = 压缩时机，note 前缀炸弹案施工①）。
-      if (trigger === 'context-overflow' || declaredKnown) {
-        let pruned: CompactionResult | null = null
-        const deficit = measurement.contextTokens - retainTokens
-        if (deficit > 0) {
-          pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
-        }
-        let proseResult: CompactionResult | null = null
-        // §9.36 闸二（ctx ≥ windowRatio×声明窗）契约="由调用点保证"：overflow 天然满足
-        // （provider 已拒收）；'pressure' 现由 §9.37 出口闸驱进且线可低至 ≈0.73×窗——
-        // 闸二必须在此补检，LLM 浓缩链不得被自动通路提前触达（审查 F2；手动 compactNow
-        // 走 compactRegions 免闸二不受影响）。
-        const proseGateOk = trigger === 'context-overflow' || measurement.contextTokens >= windowTokens
-        if (this.prose !== null && declaredKnown && proseGateOk) {
-          try {
-            proseResult = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
-          } catch (e) {
-            this.log.warn('[argp-factor-prose] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
-          }
-        }
-        await this.refreshFactorNoteSafe(agent)
-        return proseResult ?? pruned
+    // （P6-② 违规点整改：note 变化时机 = 压缩时机）。
+    if (trigger === 'context-overflow' || declaredKnown) {
+      let pruned: CompactionResult | null = null
+      const deficit = measurement.contextTokens - retainTokens
+      if (deficit > 0) {
+        pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
       }
-      return null
+      let proseResult: CompactionResult | null = null
+      // §9.36 闸二（ctx ≥ windowRatio×声明窗）契约="由调用点保证"：overflow 天然满足
+      // （provider 已拒收）；'pressure' 现由 §9.37 出口闸驱进且线可低至 ≈0.73×窗——
+      // 闸二必须在此补检，LLM 浓缩链不得被自动通路提前触达（审查 F2；手动 compactNow
+      // 免闸二不受影响）。
+      const proseGateOk = trigger === 'context-overflow' || measurement.contextTokens >= windowTokens
+      if (declaredKnown && proseGateOk) {
+        try {
+          proseResult = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
+        } catch (e) {
+          this.log.warn('[argp-factor-prose] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
+        }
+      }
+      await this.refreshFactorNoteSafe(agent)
+      return proseResult ?? pruned
+    }
+    return null
   }
 
   override async compactNow(
@@ -1503,45 +908,41 @@ export class ArgpGraphEngine extends CompactionEngine {
     sourceCommandId?: CommandId,
   ): Promise<CompactionResult | null> {
     if (this.skipIfPreset(agent.session)) return null
-    // factor 臂手动压缩（P6-④：手动 compact 是两信号之一，"待 P2"拒绝随之解除）：
-    // 全量剪（能剪多少剪多少——目标 = 全部可剪面，硬保护自然兜底）→ 散文浓缩 → 词表 note
-    // 事务收尾。与 compactIfNeeded factor 分发同一动作序；sourceCommandId 经 host 透传
-    // 三事件（prune-tx 契约），事务后复位防串账。
-    if (this.factor !== null) {
-      if (signal.aborted) return null
-      this.bindSession(agent.session)
-      this.compactSourceCommandId = sourceCommandId
-      try {
-        const pruned = this.factor.compactIfNeeded(agent.session, Number.MAX_SAFE_INTEGER)
-        let proseResult: CompactionResult | null = null
-        const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
-        this.bindSession(agent.session) // D2：await 窗口内焦点可能换装——回绑再写 surface
-        if (this.prose !== null && declaredKnown) {
-          try {
-            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, signal, this.declaredContextWindows.get(agent.session) ?? 0)
-          } catch (e) {
-            this.log.warn('[argp-factor-prose] 手动散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
-          }
+    // factor 手动压缩（P6-④：手动 compact 是两信号之一）：全量剪（能剪多少剪多少——
+    // 目标 = 全部可剪面，硬保护自然兜底）→ 散文浓缩 → 词表 note 事务收尾。与
+    // compactIfNeeded factor 分发同一动作序；sourceCommandId 经 host 透传三事件
+    // （prune-tx 契约），事务后复位防串账。
+    if (signal.aborted) return null
+    this.bindSession(agent.session)
+    this.compactSourceCommandId = sourceCommandId
+    try {
+      const pruned = this.factor.compactIfNeeded(agent.session, Number.MAX_SAFE_INTEGER)
+      let proseResult: CompactionResult | null = null
+      const { windowTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
+      this.bindSession(agent.session) // D2：await 窗口内焦点可能换装——回绑再写 surface
+      if (declaredKnown) {
+        try {
+          proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, signal, this.declaredContextWindows.get(agent.session) ?? 0)
+        } catch (e) {
+          this.log.warn('[argp-factor-prose] 手动散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
         }
-        await this.refreshFactorNoteSafe(agent)
-        return proseResult ?? pruned
-      } finally {
-        this.compactSourceCommandId = undefined
       }
+      await this.refreshFactorNoteSafe(agent)
+      return proseResult ?? pruned
+    } finally {
+      this.compactSourceCommandId = undefined
     }
-    return compactNow(this as unknown as LifecycleHost, agent, signal, sourceCommandId)
   }
 
   override async compactRegion(
-    start: number,
-    end: number,
-    agent: CompactionAgentContext,
-    signal?: AbortSignal,
+    _start: number,
+    _end: number,
+    _agent: CompactionAgentContext,
+    _signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    if (this.factor !== null) {
-      throw new Error('[argp-factor] 手动区间剪在 factor 臂待 P2 随摘要提供（factor 臂不剪 A）')
-    }
-    return compactRegion(this as unknown as PruneTxHost, start, end, agent, signal)
+    // factor 臂只剪 R（A 永不入剪枝区间），没有"按区间剪"的语义：区间选择是图臂的
+    // 极大连续段逻辑，随 stage-2 一并退役。
+    throw new Error('[argp-factor] 2.0 factor-only 引擎不支持按区间手动压缩（请在 UI 用 /compact 全量压缩）')
   }
 
   /**
@@ -1551,7 +952,6 @@ export class ArgpGraphEngine extends CompactionEngine {
    * （CompactionAgentContext 无该成员）时首注跳过——下个有 steer 的压缩机会自然重试。
    */
   private async refreshFactorNoteSafe(agent: CompactionAgentContext): Promise<void> {
-    if (this.factor === null) return
     const steerFn = (agent as unknown as { steer?: (message: unknown) => unknown }).steer
     try {
       await this.factor.refreshVocabularyNote(agent.session, text => {
@@ -1576,7 +976,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     agent: CompactionAgentContext & { steer(message: unknown): unknown },
     incomingTokens = 0,
   ): Promise<void> {
-    if (this.factor === null) return
     // 词表 note 吞错自隔离：注入失败丢的是提示，不能把同钩子的压力剪一并带走。
     try {
       await this.factor.refreshVocabularyNote(agent.session, text => agent.steer(createUserMessage({
@@ -1598,49 +997,6 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
   }
 
-  /** 为手动 compactNow 选择**全部**可剪的极大连续 A/R 段（确定性、由旧到新）。
-   *
-   *  入选判据（与旧版一致，仅去掉"遇阻即停"）：段内原子必须
-   *  ① 是对话载体 A/R（U/X 不参剪，手动入口不剪骨架，见 compactRegion 的 P5 约束）；
-   *  ② 不落在 turnGuard（最近 N 轮）与 recencyGuard（surface 末尾 N 节点）保护窗口内。
-   *
-   *  收集**全部**极大连续段（不可在第一个不合格节点处早停——真实会话的 surface 被
-   *  用户消息切成「U A R A R U A R …」多段结构，早停会让手动 /compact 永远只剪最老
-   *  一小段，表现为"图剪压不动"），交给一笔 pruneIntervals 事务剪除。
-   */
-  private selectManualRanges(session: Session): { start: number; end: number }[] {
-    return selectManualRanges(this as unknown as PruneTxHost, session)
-  }
-
-  /** 手动多区间压缩：逐段复核边界后合并为一笔事务剪除。
-   *  边界复核与 compactRegion 同口径（配对平衡 / 段内不含 U/X / 段内有可剪原子），
-   *  任一区间不合格则**静默剔除该区间**（而非整体失败）——手动入口的语义是"能剪多少剪多少"。
-   *  返回 null = 全部区间都被剔除（无可剪内容），调用方据此显示 "No compactable history yet."。
-   */
-  private compactRegions(
-    ranges: { start: number; end: number }[],
-    agent: CompactionAgentContext,
-    signal: AbortSignal,
-  ): CompactionResult | null {
-    return compactRegions(this as unknown as PruneTxHost, ranges, agent, signal)
-  }
-
-  /** 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
-   *  tombstone 类型（2026-08-23 半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
-   *  占位墓碑（克隆原 R data、只改 tool-result block 的 inner text，保留 callId/isError/role/id
-   *  ——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400。 */
-  private pruneIntervals(
-    session: Session,
-    intervals: { seqs: number[]; chars: number; atoms: Atom[] }[],
-    semanticEdges: number,
-    candidateCount: number,
-    forced: boolean,
-    tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string })[],
-    summaryKind?: 'graph-prune' | 'tombstone-merge',
-  ): CompactionResult | null {
-    return pruneIntervals(this as unknown as PruneTxHost, session, intervals, semanticEdges, candidateCount, forced, tombstones, summaryKind)
-  }
-
   /**
    * A7 事务账目重建：resume 时从 append-only 日志扫描 compaction/start、compaction/prune、
    * compaction/end 事件重建 records/prunedNodeIndex/shadowedSeqsOf 状态；无 end 的 start 记 warn。
@@ -1650,7 +1006,6 @@ export class ArgpGraphEngine extends CompactionEngine {
   rebuildLedgerFromLog(): void {
     rebuildLedgerFromLog(this as unknown as LifecycleHost)
   }
-
 }
 
 export default ArgpGraphEngine

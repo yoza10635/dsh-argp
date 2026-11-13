@@ -1,43 +1,31 @@
 /**
- * 会话生命周期 + 构造期装配：
- *  - 构造期装配四函数中的三个：normalizeConfig（字段归一）/ registerSettings（UI 设置页注册）/
- *    mountPeratomStack（peratom 三管线自挂载 + maxOverflowRetries 提升 + citesObligation 解析）。
- *    （第四个 registerRecallTools 在 recall-tools.ts。）
- *  - 运行时方法：bindSession（统一绑定 + 账目懒重建）/ rebuildLedgerFromLog（A7 事务账目重建）/
- *    rearmReactive（反应式零候选重挂）/ compactNow（/compact 手动压缩入口）。
+ * 会话生命周期 + 构造期装配（2.0 factor-only）：
+ *  - 构造期：normalizeConfig（字段归一并拒坏形状）/ registerSettings（声明设置页 auto 表单）。
+ *  - 运行时：bindSession（统一绑定 + 账目懒重建）/ rebuildLedgerFromLog（A7 事务账目重建）。
  *
  * 函数经窄接口 LifecycleHost 触达引擎（`this as unknown as LifecycleHost`，编译期类型、
  * 运行时同一实例；方法引用经 host 派发回 class 薄编排方法，this 绑定语义不变）。
  * 构造期副作用顺序由 hub 构造器调用次序保证：normalizeConfig → registerSettings →
- * mountPeratomStack → registerRecallTools → systemPrompt sections → ctx.on。
+ * FactorEngine/ProseCondenser → registerRecallLabels → systemPrompt sections → ctx.on。
  *
  * 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema / NAMESPACE_PATTERN / ARG_SETTINGS_NS）
  * 在本模块：ArgpUserSettingsSchema 是运行时值（z.object 产物），若放在 hub 会迫使本模块
  * 运行时 import hub 形成环；hub 反向 import 本模块并 re-export，公共 API 不变
  * （index.ts 的 `export *` 透出）。
  *
- * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）；它是 hub 侧的宽接口
- * （引用 peratom 三管线 config），若放在本模块会迫使本模块 import peratom
- * 全部 config 类型，故按「深度依赖则留 hub」原则保留在 hub，本模块仅 type-only 引用。
+ * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { CompactionAgentContext, CompactionResult, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction'
-import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import z from '@deepseek-ai/schemastery'
-import type { Atom, AtomType, SemanticEdge, ArgpUserSettings } from './argp-types.js'
+import type { ArgpUserSettings } from './argp-types.js'
+import type { PrunedNodeInfo } from './session-state.js'
 import { sessionEvents, turnOf } from './log-access.js'
 import { classifyUserMessage } from './graph-build.js'
 import { pushBounded, DEFAULT_TELEMETRY_CAP } from './telemetry.js'
-import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_PASSES, DEFAULT_RETAIN_RATIO, DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from './constants.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_RETAIN_RATIO, DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { acquireTokenMeter, type TokenMeter } from './budget.js'
-import { PeratomCompressor, type PeratomCompressorConfig } from './peratom/compressor.js'
-import { CiteDeclarer, type CiteDeclarerConfig } from './peratom/cite-declarer.js'
-import { RecallZoom, type RecallZoomConfig } from './peratom/recall-zoom.js'
-import type { InferredEdgeOptions } from './token-ontology.js'
-import type { PrunedNodeInfo } from './prune-selection.js'
-import { selectManualRanges, compactRegions, buildTombstoneRedirect, type GraphPruneRecord, type PruneTxHost } from './prune-tx.js'
+import type { GraphPruneRecord } from './prune-tx.js'
 import type { ArgpGraphConfig } from './argp-graph-engine.js' // type-only：编译期擦除，无运行时环
 
 // ── 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema 经 hub re-export 维持公共 API）──
@@ -52,34 +40,28 @@ import type { ArgpGraphConfig } from './argp-graph-engine.js' // type-only：编
 // `@deepseek-ai/dsh-settings` resolves but exports only
 // SettingsConflictError / SettingsProvider / default / redactSecrets.
 // The `settings` SERVICE itself never changed, so we call
-// `settings.register(ns, schema, { base })` through `ctx.inject` — the
-// graceful-degradation boundary — and validate the namespace locally.
+// `settings.configure` through `ctx.inject` — the graceful-degradation boundary —
+// and validate the namespace locally.
 
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export const ARG_SETTINGS_KEY = 'dsh-argp'
 
 /**
- * 引擎设置 schema（schemastery）：设计-2.0 §3.4 旋钮名册 = **6 枚**（windowRatio/
- * retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
- * ＋ engine 判别式随行。
+ * 引擎设置 schema（schemastery）：2.0 旋钮名册 = **6 枚**
+ * （windowRatio/retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成 volatile
  * form；settings.register 已随 #4587 移除，本 schema 经 hub re-export 维持公共 API
  * 与文档口径）。两面键集必须一致。
  *
- * 旧五键（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）已退出名册：
- * schemastery 非 strict 解析（宿主实测未声明键原样透传）⇒ 老 profile 宽容读不炸；
- * graph 臂照旧消费它们（逐字不变契约），factor 臂构造期对非缺省值告警忽略
- * （normalizeConfig 内，焦点保护由 focalTurns 接管）。
- * engine 保留在 schema 但**卡不渲染**：非 volatile 键经 form 写被宿主 throw（实测），
- * 判别式只由 profile/patch 层写值。
+ * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）与
+ * engine 判别式在 2.0 一并退位：schemastery 非 strict 解析（宿主实测未声明键原样
+ * 透传）⇒ 老 profile 宽容读不炸；normalizeConfig 对非缺省旧值告警忽略。
  */
 export const ArgpUserSettingsSchema = z.object({
   windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO),
   retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO),
   charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN),
-  // schema 层 string + 构造期 violations 严拒（同 sortMode 先例；schemastery 无 enum）
-  engine: z.string().default('graph'),
   focalTurns: z.number().step(1).min(0).default(1),
   vocabTopN: z.number().step(1).min(1).default(10),
   recallLimit: z.number().step(1).min(1).default(5),
@@ -100,11 +82,11 @@ if (!NAMESPACE_PATTERN.test(ARG_SETTINGS_NS)) {
 
 /**
  * 窄宿主接口：本模块函数实际触达的引擎成员（字段 + 方法引用）。
- * 方法引用（shadowedSeqsOf/rebuildLedgerFromLog/restoreUsageAnchor/catalogText/bindSession）
+ * 方法引用（shadowedSeqsOf/rebuildLedgerFromLog/restoreUsageAnchor/bindSession）
  * 经 host 派发到 class 上的薄编排方法，运行时 this 仍是引擎实例。
  */
 export interface LifecycleHost {
-  // 构造期字段（normalizeConfig / registerSettings / mountPeratomStack 写入）
+  // 构造期字段（normalizeConfig 写入）
   windowTokens: number
   retainTokens: number
   explicitWindowTokens: boolean
@@ -113,65 +95,45 @@ export interface LifecycleHost {
   telemetryCap: number
   tokenMeterFn?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   tokenMeter: TokenMeter | undefined
-  degradationStrategy: 'lifecycle' | 'force' | 'fail'
-  turnBasis: 'semantic' | 'all'
   maxOverflowRetries: number
-  midTurnPruneEnabled: boolean
-  midTurnLegacyGuard: boolean
-  midTurnTurnGuard: number
-  reactiveRetries: number
-  continuationNotice: string
-  onOverflowCompress?: (session: Session) => Promise<void>
-  onPrePressureCompress?: (session: Session) => Promise<void>
-  closureWindowK: number
-  citeMinPrefixLen: number
-  overlapTheta: number
-  enableOverlapChain: boolean
-  injectEdges: ((atoms: Atom[], session?: Session) => SemanticEdge[]) | undefined
-  disableCiteEdges: boolean
-  disableInferredEdges: boolean
-  tombstoneMergeMinRun: number
-  inferredOpts: InferredEdgeOptions
-  peratomStack: {
-    compressor: PeratomCompressor | null
-    declarer: CiteDeclarer | null
-    zoom: RecallZoom | null
-  } | null
-  citesObligation: boolean
-  citesObligationAuto: boolean
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
-  // 运行时字段（bindSession / rebuildLedgerFromLog / rearmReactive / compactNow 读写）
+  // 运行时字段（bindSession / rebuildLedgerFromLog 读写）
   session: Session | null
   rebuiltCompactionIds: Set<string>
-  frozenCatalog: string | null
   auditWarnings: string[]
   records: GraphPruneRecord[]
   prunedNodeIndex: Map<number, PrunedNodeInfo>
-  reactivePending: WeakMap<Session, true>
-  compactSourceCommandId: CommandId | undefined
   // 方法引用
   bindRuntimeState: (session: Session) => void
   shadowedSeqsOf: (session: Session) => Set<number>
   rebuildLedgerFromLog: () => void
   restoreUsageAnchor: (session: Session) => void
-  catalogText: (maxItems?: number, snippetChars?: number, tokenBudget?: number) => string
   bindSession: (session: Session) => void
 }
 
+/** 1.x graph 臂旋钮（2.0 退位）：出现即告警忽略——老 profile 不炸但不静默。 */
+const RETIRED_GRAPH_KEYS: readonly string[] = [
+  'maxPasses', 'recencyGuard', 'turnGuard', 'minSpanChars', 'sortMode',
+  'midTurnPrune', 'midTurnActive', 'midTurnTurnGuard', 'continuationNotice', 'reactiveRetries',
+  'degradationStrategy', 'turnBasis', 'closureWindowK', 'citeMinPrefixLen', 'overlapTheta',
+  'enableOverlapChain', 'injectEdges', 'disableCiteEdges', 'disableInferredEdges',
+  'inferredMinTokenLen', 'inferredStopwordRatio', 'inferredMaxEdgesPerAtom', 'inferredWindowTurns',
+  'tombstoneMergeMinRun', 'citesObligation', 'peratom', 'onOverflowCompress', 'onPrePressureCompress',
+]
+
 /**
- * 构造期字段归一（纯字段赋值，无 ctx 副作用）：windowTokens/retainTokens 静态默认 + 顶层旋钮
- * 缺省 + 三级触发旋钮 + 推断边参数。字段赋值与任何 ctx 副作用无交互（settings 回调不读
- * 本批字段），故整体置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）
- * 是唯一的 ctx 读取，保持在 settings 注册之前。
+ * 构造期字段归一（纯字段赋值，无 ctx 副作用）：windowTokens/retainTokens 静态默认 +
+ * 顶层旋钮缺省。字段赋值与任何 ctx 副作用无交互（settings 回调不读本批字段），故整体
+ * 置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）是唯一的 ctx 读取，
+ * 保持在 settings 注册之前。
  */
 export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void {
-  // 0-8（1.10.2）：构造期配置形状校验——收集全部违例**一次性**抛出。此前错误形状静默
-  // 通过：skipPresets 非数组被 spread 成字符数组 = 永不匹配（preset 快照静默失效）、
+  // 构造期配置形状校验——收集全部违例**一次性**抛出。此前错误形状静默通过：
+  // skipPresets 非数组被 spread 成字符数组 = 永不匹配（preset 快照静默失效）、
   // NaN/Infinity 数值让预算与守卫静默偏移。cordis 对插件 config 不做 schema 校验
   // （YAML 手写层尤甚），形状责任在本插件。
-  // ⚠️ 只校验**构造期按裸值消费**的字段：windowRatio/retainRatio/recencyGuard/turnGuard/
-  // minSpanChars/charsPerToken/maxPasses/sortMode 八个设置页旋钮到达时是
-  // Volatile thunk 对象（经 settings 源驱动，见下方注册块），裸值校验对它们恒误报；
+  // ⚠️ 只校验**构造期按裸值消费**的字段：windowRatio/retainRatio/charsPerToken 等设置页
+  // 旋钮到达时是 Volatile thunk 对象（经 settings 源驱动），裸值校验对它们恒误报；
   // 它们的约束在 settings schema（z.number().min/max）与运行时 getter 兜底。
   const violations: string[] = []
   const checkNum = (v: unknown, name: string, opts: { min?: number; max?: number } = {}): void => {
@@ -187,18 +149,12 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   checkNum(config.retainTokens, 'retainTokens', { min: 1 })
   checkNum(config.reserveTokens, 'reserveTokens', { min: 0 })
   checkNum(config.telemetryCap, 'telemetryCap', { min: 1 })
-  checkNum(config.tombstoneMergeMinRun, 'tombstoneMergeMinRun', { min: 0 })
-  checkNum(config.closureWindowK, 'closureWindowK', { min: 0 })
-  checkNum(config.citeMinPrefixLen, 'citeMinPrefixLen', { min: 0 })
-  checkNum(config.overlapTheta, 'overlapTheta', { min: 0, max: 1 })
   checkNum(config.maxOverflowRetries, 'maxOverflowRetries', { min: 0 })
-  checkNum(config.midTurnTurnGuard, 'midTurnTurnGuard', { min: 0 })
-  checkNum(config.reactiveRetries, 'reactiveRetries', { min: 0 })
-  // focalTurns/vocabTopN/recallLimit：**裸值校验在此必误报**——
-  // P2-4 起它们标了 volatile，到达时是 Volatile 包装对象（与八枚旧旋钮同一坑，
-  // 见函数头注释）。约束在 static Config schema（min/step）与运行时 getter 兜底。
-  if (config.engine !== undefined && config.engine !== 'graph' && config.engine !== 'factor') {
-    violations.push('engine: expected "graph" | "factor", got ' + JSON.stringify(config.engine))
+  // focalTurns/vocabTopN/recallLimit：**裸值校验在此必误报**——它们是 Volatile 包装
+  // 对象（与旧旋钮同一坑）。约束在 static Config schema（min/step）与运行时 getter 兜底。
+  if (config.engine !== undefined && config.engine !== 'factor') {
+    ctx.logger.warn('[argp-factor] engine=' + JSON.stringify(config.engine)
+      + ' 已退役（2.0 = factor-only）：按 factor 引擎运行；老方案锁定在 npm latest 1.11.2')
   }
   if (config.skipPresets !== undefined
     && (!Array.isArray(config.skipPresets) || config.skipPresets.some(p => typeof p !== 'string'))) {
@@ -207,25 +163,21 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   if (violations.length > 0) {
     throw new Error('[argp-graph] invalid config (plugin will not activate): ' + violations.join('; '))
   }
-  // 老 graph 键宽容读 + 告警（§3.4 名册退位的五枚）：cordis 非 strict 合并（宿主
-  // 实测未声明键透传）⇒ 老 profile 不炸 = 宽容读。graph 臂照常消费它们（逐字不变
-  // 契约，不告警）；factor 臂不消费——值偏离缺省即判"用户写过"，如实告警忽略。
-  // volatile 包装经 get() 拆封（八枚旧旋钮到此处皆包装态）。
-  if (config.engine === 'factor') {
-    const legacyDefaults: Record<string, number | string> = {
-      maxPasses: DEFAULT_MAX_PASSES, recencyGuard: 4, turnGuard: 1, minSpanChars: 0, sortMode: 'density',
-    }
-    const touched: string[] = []
-    for (const [key, dft] of Object.entries(legacyDefaults)) {
-      const raw = (config as unknown as Record<string, unknown>)[key]
-      const value = raw !== null && typeof raw === 'object' && 'get' in (raw as object)
-        ? (raw as { get(): unknown }).get() : raw
-      if (value !== undefined && value !== dft) touched.push(key + '=' + String(value))
-    }
-    if (touched.length > 0) {
-      ctx.logger.warn('[argp-factor] 旧 graph 臂旋钮（' + touched.join(', ')
-        + '）在 factor 臂不消费：宽容读、已忽略；焦点保护位由 focalTurns 接管')
-    }
+  // 旧 graph 键宽容读 + 告警：cordis 非 strict 合并（宿主实测未声明键透传）⇒ 老 profile
+  // 不炸 = 宽容读；2.0 起这些键**全部**不再被消费（图臂退役），出现即告警，不让沉默
+  // 改变用户预期。volatile 包装经 get() 拆封。
+  const touched: string[] = []
+  for (const key of RETIRED_GRAPH_KEYS) {
+    const raw = (config as unknown as Record<string, unknown>)[key]
+    if (raw === undefined) continue
+    const value = raw !== null && typeof raw === 'object' && 'get' in (raw as object)
+      ? (raw as { get(): unknown }).get() : raw
+    if (value === undefined) continue
+    touched.push(key + '=' + String(Array.isArray(value) ? '[array]' : value))
+  }
+  if (touched.length > 0) {
+    ctx.logger.warn('[argp-factor] 旧 graph 臂旋钮（' + touched.join(', ')
+      + '）已随 1.x 图臂退役：宽容读、已忽略；焦点保护位由 focalTurns 接管')
   }
   // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
   // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。
@@ -233,47 +185,13 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
   host.retainTokens = config.retainTokens ?? DEFAULT_RETAIN_TOKENS
   host.explicitWindowTokens = config.windowTokens !== undefined
   host.explicitRetainTokens = config.retainTokens !== undefined
-  // 顶层旋钮（windowRatio/retainRatio/recencyGuard/turnGuard/minSpanChars/charsPerToken/
-  // maxPasses/sortMode）改由 ctx.inject(['settings']) 经 settings 源 thunk 驱动
-  // （见下方 settings 注册块），此处不再逐字段赋值；getter 读取 this.argpSettings。
   host.reserveTokens = config.reserveTokens ?? 0
   host.telemetryCap = config.telemetryCap ?? DEFAULT_TELEMETRY_CAP
   host.tokenMeterFn = config.measureTokens
   // tokenMeter 不作为 required inject（避免测试/最小化组合缺少该服务时构造失败），
   // 运行时尝试从 ctx 获取；真会话中 dsh-token-meter 已挂载即可使用。
   host.tokenMeter = acquireTokenMeter(ctx)
-  host.degradationStrategy = config.degradationStrategy ?? 'lifecycle'
-  // 默认 density（spike 18 离线 + spike 19 真实验证：同达成度下 recall 2→0、
-  // 保留集单位信息量更高；eff 同档大 token 先剪 = 分数背包贪心）。需回退可显式传 sortMode:'legacy'。
-  host.turnBasis = config.turnBasis ?? 'semantic'
   host.maxOverflowRetries = config.maxOverflowRetries ?? 1
-  // 三级触发（1.5.0）：① 轮初主动 ② 轮中压力剪（step>1，放宽 turnGuard）③ 截断后剪+续写。
-  // 轮中剪默认**开**：超额的来源是上一批 tool result（轮中），只在轮初判定的 L1 看不见它；
-  // 而轮中剪落在那个 pre-step 里，剪完同一步的请求即已瘦身 ⇒ 天然自动继续。
-  // 兼容 1.4.0 的 `midTurnActive`：true = 开+默认守卫（1.3.x 对照），false = 关。
-  host.midTurnPruneEnabled = config.midTurnPrune ?? config.midTurnActive ?? true
-  host.midTurnLegacyGuard = config.midTurnActive === true
-  host.midTurnTurnGuard = Math.max(0, config.midTurnTurnGuard ?? 0)
-  host.reactiveRetries = Math.max(0, config.reactiveRetries ?? 2)
-  host.continuationNotice = config.continuationNotice
-    ?? '[argp] 你上一条输出被宿主的输出预算截断了（不是你的错误）。上下文已压缩，请从截断处接着完成当前任务，不要重述已写内容。'
-  host.onOverflowCompress = config.onOverflowCompress
-  host.onPrePressureCompress = config.onPrePressureCompress
-  host.closureWindowK = config.closureWindowK ?? 2
-  // 默认 4：ASCII 词（如 "the"=3）被拒；CJK 双字（"读书"=2×2=4）放行（问题 5 修订）
-  host.citeMinPrefixLen = config.citeMinPrefixLen ?? 4
-  host.overlapTheta = config.overlapTheta ?? 0.8
-  host.enableOverlapChain = config.enableOverlapChain ?? false
-  host.injectEdges = config.injectEdges
-  host.disableCiteEdges = config.disableCiteEdges ?? false
-  // v1.2.0 组件 A（PROPOSAL-token-ontology）：推断边参数（默认启用，可单独关停）。
-  host.disableInferredEdges = config.disableInferredEdges ?? false
-  // v1.2.x §11.8①：tombstone 归并阈值（默认 8；显式 0 = 关闭，对照组实验用）。
-  if (config.tombstoneMergeMinRun !== undefined) host.tombstoneMergeMinRun = config.tombstoneMergeMinRun
-  if (config.inferredMinTokenLen !== undefined) host.inferredOpts.minTokenLen = config.inferredMinTokenLen
-  if (config.inferredStopwordRatio !== undefined) host.inferredOpts.stopwordRatio = config.inferredStopwordRatio
-  if (config.inferredMaxEdgesPerAtom !== undefined) host.inferredOpts.maxEdgesPerAtom = config.inferredMaxEdgesPerAtom
-  if (config.inferredWindowTurns !== undefined) host.inferredOpts.windowTurns = config.inferredWindowTurns
 }
 
 /**
@@ -302,108 +220,10 @@ export function registerSettings(ctx: Context, _host: LifecycleHost, _config: Ar
 }
 
 /**
- * P0 双引擎自挂载：**缺省即挂**（opt-out）——Stage-1 三管线在构造期挂载并接线
- * （与 mountPeratomStack 同拓扑：三管线 hook 注册进 ctx 事件总线，本引擎作为
- * ctx.compaction 接收 injectEdges / onOverflowCompress）。
- *
- * ⚠️ 默认值语义（2026-09-30 由 opt-in 反转为 opt-out）：`peratom` 缺省 = **挂**；
- * 只有显式 `peratom: false` / `peratom: null` 才不挂。反转理由是宿主的 patch 层语义：
- * 各层 config 是**整块替换**而非深合并（dsh-app-boot："A patch config replaces the whole
- * config"，层序 bundle → profile → home → CLI）。默认值若只写在 bundle patch 的 insert 行里，
- * 用户在设置页动任一旋钮（表单值写回 profile 的 cordis.patch.yml）就会整块冲掉 peratom，
- * 双引擎静默退回纯 Stage-2（0-LLM）——正是 §11.13.1 那个缺口复发的形态。
- * 判据落在代码里，则任何层只要不显式关停都保持挂载 ⇒ 安装即双引擎，无需手工挂载。
- *
- * ⚠️ 显式归一成对象：`peratom: true` 或缺省 ⇒ 按 `{}` 处理（三管线全开），
- * `false` / `null` ⇒ 不挂（YAML 关停写法，语义与反转前一致）。
- *
- * 含两个构造期派生赋值：maxOverflowRetries 缺省提升（挂 compressor 时 1→3）与
- * citesObligation auto 解析（declarer 已武装即关）——两者都依赖本函数先完成 peratomStack
- * 挂载，故一并收在本函数内（保持原构造器 line 617-662 的相对次序）。
- */
-export function mountPeratomStack(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void {
-  // 因子臂挂载策略（design-2.0 §3.2）：compressor/declarer/zoom 三管线**缺省全不挂**
-  // ——堵住"opt-out 缺省挂载"把 G7（0-LLM）口径破产的路。engine 键不可运行时改
-  // （static Config 非 volatile），本早退在构造期一次性生效。
-  if (config.engine === 'factor') {
-    host.log.info('[argp-factor] peratom 三管线（compressor/declarer/zoom）不挂载（factor 臂）')
-    host.citesObligation = false
-    host.citesObligationAuto = false
-    return
-  }
-  // 显式关停（YAML 关停写法）：false / null。
-  const peratomOff = config.peratom === false || config.peratom === null
-  // 显式开启：给了 peratom 且非关停（对象或 true）。
-  const peratomOn = config.peratom !== undefined && !peratomOff
-  // 调用方自带接线（高级 API：injectEdges / onOverflowCompress / onPrePressureCompress）。
-  // 仅在 peratom **缺省**时用它抑制自动挂载（尊重调用方的自装配，避免把别人的接线判成
-  // "显式传入"而忽略）；显式给了 peratom 时仍按 peratom 优先（下方告警），与反转前一致。
-  const explicitWiring = config.injectEdges !== undefined
-    || config.onOverflowCompress !== undefined
-    || config.onPrePressureCompress !== undefined
-  if (!peratomOff && (peratomOn || !explicitWiring)) {
-    const peratom = (typeof config.peratom === 'object' && config.peratom !== null) ? config.peratom : {}
-    if (peratomOn && explicitWiring) {
-      host.log.warn('[argp-graph] peratom block set; explicit injectEdges/onOverflowCompress ignored (wired internally)')
-    }
-    const compressor = peratom.compressor === false ? null : new PeratomCompressor(ctx, peratom.compressor ?? {})
-    const declarer = peratom.declarer === false ? null : new CiteDeclarer(ctx, peratom.declarer ?? {})
-    const zoom = peratom.zoom === false ? null : new RecallZoom(ctx, peratom.zoom ?? {})
-    if (declarer !== null) {
-      // F3（1.7.1）：端点 seq → 当前替身（墓碑）seq 的重定向表，喂给 buildInjectEdges。
-      // 失效戳取 records **尾条**的 compactionId（records 是 FIFO 有界队列，
-      // 达到 telemetryCap 后 length 恒定 ⇒ 不能用 length 当戳）。
-      let redirectTable: Map<number, number> | null = null
-      let redirectStamp = ''
-      const redirect = (seq: number): number | undefined => {
-        const tail = host.records[host.records.length - 1]
-        const stamp = tail === undefined ? '' : tail.compactionId
-        if (redirectTable === null || redirectStamp !== stamp) {
-          redirectTable = buildTombstoneRedirect(host.records)
-          redirectStamp = stamp
-        }
-        return redirectTable.get(seq)
-      }
-      host.injectEdges = (atoms, session) => declarer.buildInjectEdges(atoms, redirect, session)
-    }
-    if (compressor !== null) {
-      host.onOverflowCompress = async (session: Session): Promise<void> => {
-        // 溢出发生在当前 open turn 的请求上——第②步要降熵的正是它。closed-turn
-        // 口径会错压上一闭合轮（2026-08-29 review 中项），改用 open-turn 入口。
-        await compressor.compressOpenTurn(session)
-      }
-      // P6：轮内压力达标时先压缩 open turn 原子再图剪（与 onOverflowCompress 同入口，
-      // 区别只在触发条件：压力 vs 溢出错误）。
-      host.onPrePressureCompress = async (session: Session): Promise<void> => {
-        await compressor.compressOpenTurn(session)
-      }
-    }
-    host.peratomStack = { compressor, declarer, zoom }
-  }
-
-  // P4 修复（2026-08-29 review，严重项）：peratom 第②步（onOverflowCompress）挂载时，
-  // 重试上限缺省从 1 提到 3——否则事件#2（retries=1）在重试上限守卫处直接保留原错误，
-  // 三步序列的第②步在默认配置下永不触发（测试显式传 3/5 掩盖了缺口，生产挂载路径
-  // 无人设值）。显式配置始终优先；耗尽判定（retries≥2，见 request-error 钩子）独立于
-  // 本上限，第③步后照旧收束，不会多空转。未挂 compressor（第②步不存在）时维持 1。
-  if (config.maxOverflowRetries === undefined && host.onOverflowCompress !== undefined) {
-    host.maxOverflowRetries = 3
-  }
-
-  // 回复级 cites 义务 auto 口径：declarer 已武装（有 LLM 后端）→ 结构化旁路建边
-  // 接管，回复协议关闭；显式 true/false 覆盖。declarer 挂载但未武装时保持开启，
-  // 避免"两种边来源同时归零"（见 citesObligation 配置注释）。
-  // 2026-09-21 时序修复：autoLlm 兜底的 declarer 构造期未武装（路由要等真会话的
-  // agent/status 钩子才解析），构造期布尔无法覆盖它——auto 口径下 section 恒注册，
-  // 由 text 回调在 armed 翻转后动态返回 ''（见注册处）；显式覆盖保持静态语义。
-  host.citesObligationAuto = config.citesObligation === undefined
-  host.citesObligation = config.citesObligation ?? !(host.peratomStack?.declarer?.armed === true)
-}
-
-/**
- * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定
- * 都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：账目丢失仅日志在），
- * 懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds 去重保证。
+ * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded
+ * 首次绑定都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：
+ * 账目丢失仅日志在），懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds
+ * 去重保证。
  */
 export function bindSession(host: LifecycleHost, session: Session): void {
   if (host.session === session) return
@@ -418,29 +238,6 @@ export function bindSession(host: LifecycleHost, session: Session): void {
   // 此时内存锚点要么属于上一个 session（失效），要么为空 ⇒ 必须从日志恢复，
   // 否则压力检查静默退化为 chars 口径（详见 restoreUsageAnchor 注释）。
   host.restoreUsageAnchor(session)
-  // catalog 冻结（P6 note 施工①：快照域"进程"升格"压缩事务"）：首绑先从日志回放上一笔
-  // 压缩事务的快照（compaction/end 的 catalogText 字段，prune-tx 事务尾落账），无在案快照
-  // 才拍活的（首会话）。旧口径（每进程首绑重拍活值）在 headless 回合制下每轮换快照 →
-  // system 尾每轮变位 → 前缀缓存每轮全断（T-3 note 前缀炸弹案跨轮层实锤，补记-3b）；
-  // end 事件落账后 resume 回放同值 ⇒ 快照跨进程字节稳定，冻结域随压缩事务推进。
-  // 后续任何重绑（agent/pre-step 每步传来的 session 对象可能换新身份）或非事务时刻都不再
-  // 改写——1.0.2 的"只冻一次"防重跑语义保留，只是"一次"的边界从进程改为压缩事务。
-  if (host.frozenCatalog === null) {
-    const restored = lastCatalogSnapshotFromLog(session)
-    host.frozenCatalog = restored ?? host.catalogText(20, 70)
-  }
-}
-
-/** 日志尾向前找最近一条带 catalogText 的 compaction/end（P6 note 施工①：快照域=压缩事务）。 */
-function lastCatalogSnapshotFromLog(session: Session): string | null {
-  const events = sessionEvents(session)
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const e = events[i]
-    if (e === undefined || e.type !== 'compaction/end') continue
-    const t = (e.data as unknown as { catalogText?: unknown } | undefined)?.catalogText
-    if (typeof t === 'string') return t
-  }
-  return null
 }
 
 /**
@@ -476,7 +273,7 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
   host.shadowedSeqsOf(host.session)
   // 事件类型反查（问题 8）：从日志真实事件反推原子类型/轮次，不再一律占位 'A'/turn 0。
   // 分类口径与 atomize 一致：统一走 classifyUserMessage（先 data[argp].info → U，再 plugin 源 → X）。
-  const typeOfSeq = (seq: number): AtomType => {
+  const typeOfSeq = (seq: number): 'U' | 'A' | 'R' | 'X' => {
     const event = host.session === null ? undefined : sessionEvents(host.session)[seq]
     if (event === undefined) return 'X'
     if (event.type === 'user/message') return classifyUserMessage(event.data)
@@ -532,7 +329,7 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
     const intervalRecords = !isErrorEnd && intervalSeqs.length > 0
       ? [{ start: intervalSeqs[0] as number, end: intervalSeqs[intervalSeqs.length - 1] as number, tombstoneSeq: end.endSeq }]
       : []
-    const prunedAtoms: { id: number; type: AtomType; seq: number }[] = intervalSeqs.map(seq => ({ id: seq, type: typeOfSeq(seq), seq }))
+    const prunedAtoms: { id: number; type: 'U' | 'A' | 'R' | 'X'; seq: number }[] = intervalSeqs.map(seq => ({ id: seq, type: typeOfSeq(seq), seq }))
     pushBounded(host.records, {
       at: String((s.lifecycle as { at?: unknown }).at ?? ''),
       compactionId: s.compactionId,
@@ -562,46 +359,5 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
       }
     }
   }
-}
-
-/**
- * 反应式"零候选"重挂：把钳制信号留给下一次机会（下个 pre-step / 下一轮 turn-stopping），
- * 那时阶梯已 +1 ⇒ 守卫放宽，原本剪不动的局面（turnGuard 保护当前轮）才可能剪动。
- * 额度用尽则不再重挂（避免"每步白压"）。
- */
-export function rearmReactive(host: LifecycleHost, session: Session, used: number): void {
-  if (used < host.reactiveRetries) host.reactivePending.set(session, true)
-}
-
-/**
- * /compact 手动压缩入口（override CompactionEngine.compactNow）。
- * 统一绑定 + 账目懒重建后，选全部可剪极大段（selectManualRanges）合并为一笔事务剪除
- * （compactRegions）；runMaintenance 可用时经其执行（宿主维护窗口），否则直接跑。
- */
-export async function compactNow(
-  host: LifecycleHost,
-  agent: ManualCompactAgentContext,
-  signal: AbortSignal,
-  sourceCommandId?: CommandId,
-): Promise<CompactionResult | null> {
-  host.bindSession(agent.session) // A7（问题 3）：统一绑定 + 账目懒重建
-  signal.throwIfAborted()
-  // /compact 链路（command-compact 调用方传入 commandId）：透传给事务事件做
-  // presentation correlation（对齐 compaction-basic 的 sourceCommandId 语义）。
-  host.compactSourceCommandId = sourceCommandId
-  try {
-    const run = async (agentSignal: AbortSignal): Promise<CompactionResult | null> => {
-      const opSignal = AbortSignal.any([signal, agentSignal])
-      opSignal.throwIfAborted()
-      // 多段收集（2026-09-21 修复）：surface 被用户消息切成多段时，旧实现只剪最老一段。
-      const ranges = selectManualRanges(host as unknown as PruneTxHost, agent.session)
-      return compactRegions(host as unknown as PruneTxHost, ranges, agent, opSignal)
-    }
-    if (typeof agent.runMaintenance === 'function') {
-      return agent.runMaintenance(run)
-    }
-    return run(signal)
-  } finally {
-    host.compactSourceCommandId = undefined
-  }
+  void ends
 }

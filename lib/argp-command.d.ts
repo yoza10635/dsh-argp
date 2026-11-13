@@ -1,7 +1,7 @@
 /**
- * `/argp` 只读状态命令（1.10.0）。
+ * `/argp` 只读状态命令（1.10.0；2.0 factor-only 收窄）。
  *
- * 动机：ARGP 的全部状态（预算、剪枝台账、召回命中、cites 统计）都在引擎实例里，
+ * 动机：ARGP 的全部状态（预算、剪枝台账、召回命中）都在引擎实例里，
  * 但此前**没有任何人类可见的出口**——判断"压缩到底生效了没有"只能去翻日志。
  * 本命令把引擎的内观测面搬到一个 `/argp` 上，零模型交互、零副作用。
  *
@@ -15,8 +15,7 @@
  *
  * 2. **不新增 boot 期失败面**：宿主命令服务经嵌套 `ctx.inject(['commands'], ...)`
  *    获取（与 `session-lifecycle.registerSettings` 同款）。宿主没有 commands 服务时
- *    inject 回调永不执行 ⇒ 命令静默不注册，引擎其余部分照常工作。当前正在排查
- *    dsh.so 的 L5.2 web boot 失败，任何"缺服务即抛"的写法都会污染那边的归因。
+ *    inject 回调永不执行 ⇒ 命令静默不注册，引擎其余部分照常工作。
  *
  * 3. **宿主契约不自己复刻**：命令的注册/生命周期（`command/run` ↔ `command/done`）
  *    全部由宿主 `CommandRuntime` 负责，本模块只提供 `{name, description, handler}`
@@ -35,7 +34,7 @@ import { type UiLocale } from './ui-locale.js';
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
  */
-export declare const ARGP_STATUS_VERSION = "1.11.2";
+export declare const ARGP_STATUS_VERSION = "2.0.0-alpha.0";
 /** 命令名（不带斜杠）。UI 发现列表按此展示。 */
 export declare const ARGP_COMMAND_NAME = "argp";
 /** 命令描述（发现 UI 的一行说明）。 */
@@ -49,18 +48,12 @@ export declare const ARGP_COMMAND_DESCRIPTION = "Show ARGP context-compression s
  */
 export interface ArgpStatusHost extends BudgetHost {
     /**
-     * 会话运行时状态桶（批次 3-2：records/recallCalls/citeStats/prunedNodeIndex 改按
+     * 会话运行时状态桶（批次 3-2：records/recallCalls/prunedNodeIndex 改按
      * **发起命令的会话**取桶读取——旧字段是引擎焦点桶 getter，多会话下 /argp 显示的是
-     * 别的会话的账（跨会话残留）。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
+     * 别的会话的账（跨会话残留））。stateOf 返回完整 SessionRuntimeState（较 BudgetHost
      * 的窄 {resolvedWindowTokens} 型变宽，引擎真身满足）。
      */
     stateOf: (session: Session) => SessionRuntimeState;
-    /** 双引擎自挂载句柄（null = 纯 Stage-2 图引擎）。诊断"双引擎到底挂没挂"的唯一出口。 */
-    readonly peratomStack: {
-        compressor: unknown | null;
-        declarer: unknown | null;
-        zoom: unknown | null;
-    } | null;
     /** 在这些 preset 下引擎不生效（默认 ['minimal']）。 */
     readonly skipPresets: string[];
     /** 引擎当前绑定的会话（可能尚未绑定）。 */
@@ -78,8 +71,7 @@ export declare function registerArgpCommand(ctx: Context, host: ArgpStatusHost):
 /**
  * 渲染状态文本（分段详单）。纯函数，除 `measureTokens` 的读操作外无副作用。
  *
- * 段数自适应：无意义的段（如未挂 declarer 时的 cites 段）整段省略，
- * 宁可少一行也不输出恒为 0 的噪声。
+ * 段数自适应：无意义的段整段省略，宁可少一行也不输出恒为 0 的噪声。
  *
  * 多语言（1.11.x）：`locale` 由注册侧每次调用经 `resolveUiLocale` 现取
  * （settings `locale.preference`，缺省/异常回退英文）——设置页切语言后下一条
