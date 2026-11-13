@@ -239,10 +239,12 @@ test('CL7 小文本回落：净收益不足 ⇒ 归 shadow 最小桩', async () 
   }
 })
 
-test('CL8 文本族锁：夹剪文本带桩前缀且永不可合并', async () => {
+test('CL8 文本族锁：夹剪文本带桩前缀、永不可合并、禁引退役工具名', async () => {
   const t = clipText({ tool: 'bash', key: 'command:x', seq: 9, text: BIG_BASH })!
   assert.ok(t.startsWith(STUB_PREFIX), 'tagRsFromLog 排除判据覆盖夹剪文本')
   assert.equal(isMergeableTombstone(t), false, '非 [elided 空格族：consolidate 永不吞')
+  assert.ok(t.includes('recall_history(command:x)'), '有标签 ⇒ 指回 recall_history（模型可见通路必须真实存在）')
+  assert.ok(!t.includes('recall_pruned'), '禁引退役工具名（§1.6 假通道纪律）')
 })
 
 test('CL9 逃生口锁：只认 ARGP_FACTOR_CLIP==="1"', () => {
