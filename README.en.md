@@ -67,11 +67,15 @@ needle turn (T44) measures memory WITHOUT a recall channel, not compaction quali
 **bill 8.59M (+50%) / wall clock 60.6 min (+17%, back to native speed) / cache volume
 +65% (89.2M vs 54.2M) / peak 305K = 116% of the declared window**; 46/46 zero dead turns,
 zero wall hits, zero max-tokens.
-**Verdict: the egress gate is a cost optimizer, not just insurance** — the difference is
-**interception timing**: gate on = per-send arithmetic intercepts oversized sends and
+**Mechanical verdict holds; the magnitude awaits a paired rerun**: the difference is
+**interception timing** — gate on = per-send arithmetic intercepts oversized sends and
 compacts first; gate off = oversized requests **go out first** and wait for the turn-boundary
-trigger ⇒ every oversized send pays the full cache tax on the grown prefix (the bill
-decomposition matches the total delta item by item).
+trigger (this run shipped 4 oversized 280-305K requests the gate would have intercepted).
+⚠️ Magnitude downgrade: a rerun (egress0b, same config, T1-5) shows run1's step inflation
+**does not reproduce** (T03 35→23, back to the alpha5/rc3smoke cluster) — run1 was an
+outlier trajectory and the +50% bill carries single-draw variance; the structural claim
+(gate-off ships oversized sends) is separated from the exact magnitude, which needs a
+runtime-matched paired rerun (rc3smoke/egress0b, full 46 turns each).
 Runtime note: this endpoint's admission is **prefix-cache-aware** on the runtime path
 (cache-assisted 305K admitted, fresh peak only 47K; cache-less probes are rejected on total
 count) — the declared window 262,144 is effectively a fresh budget for the runtime path.
