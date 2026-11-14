@@ -52,7 +52,7 @@ rate and peak are actual request totals over the whole run:
 | Peak KV-resident context (cached_tokens caliber, vs declared window) | 78.9% (raw request size 80%) | 50.0% (raw 51%) | **98.4% (= window − 4,096 block-aligned, reproduced in both runs; raw request-size peak 116%)** |
 | Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label |
 | Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
-| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | 3/10 (human-graded: Q1/Q2/Q9 verbatim hits; remaining 7 unanswered, recall budget exhausted) |
+| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | **3/3 answered = 100% hit rate (human-graded quality score)**; coverage 3/10 — the other 7 were honestly declined with zero fabrication (recall budget exhausted) |
 | Hidden artifact suite (T0) | 19/20 | 18/20 | 17/20 (merge3 shape diff + plugin_error_isolated + cli_error_line_format) |
 
 Reading notes: n=1 per arm (single runs, not averages); wall clock includes day-vs-night
@@ -75,9 +75,12 @@ T0 note: all three failures are **unlocked-shape trajectory judgments** (merge3 
 unspecified — the test accepts 3 shapes, the model picked a 4th dataclass; the CB-code CLI
 error-line convention is beyond the delivered materials, which only define exception codes —
 alpha5 happened to over-deliver it; plugin_error_isolated is a family-wide shape miss) — not
-a compaction/recall quality regression. P45 note: the auto-grader's per-question extraction
-truncates at the header line, mislabeling 3 real hits as MISS; human grading uses the
-transcript verbatim. Future tags will be **2.0.0**.
+a compaction/recall quality regression. P45 note (human-graded): the auto-grader's per-question
+extraction truncates at the header line, mislabeling 3 real hits as MISS; human re-grading from
+the transcript verbatim — **all 3 answered questions (Q1/Q2/Q9) are verbatim hits, and the 7
+unanswered were honestly declined with zero fabrication**. The quality score is the answered hit
+rate **3/3 = 100%**; 3/10 is only recall-budget coverage (7 questions not reached), not a quality
+metric. Future tags will be **2.0.0**.
 
 **Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
 `ARGP_FACTOR_EGRESS=0` (the pre-send gate off; the budget trigger stays and fired 5× — all
