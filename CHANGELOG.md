@@ -50,7 +50,11 @@
   length-stop 链在本臂零触发——端点 admission 对运行时路径**前缀缓存感知**
   （cache-assisted 305K 放行、fresh 峭值仅 47K；无缓存探针按总量 400，探针
   `wallhit-probe3-admission.json` 四例在案），链的兜底价值在严格 admission 端点。
-  详见 README 对照表第 7 臂段与仓库报告 §12。
+  详见仓库报告 §12 与本文件上文。
+- **README 面向插件用户重构**（2026-11-15）：首屏收敛为安装 → 上手 → 设置 → 机制简版 →
+  实测对照；机制实现细节归位 `ARCHITECTURE.md`（新增 §11 评测/调试开关），七臂实验叙事
+  留在本 CHANGELOG；退役首屏概览图 `.github/assets/argp-overview.svg`。对照表经济面改为
+  miss/hit/output 分列 + DeepSeek 闲时参考定价（元）。
 
 ## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
 

@@ -255,3 +255,15 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 - 清洁批（2026-11-14）移除：13 个零引用导出、手动区间族（compactRegion/compactRegions/
   selectManualRanges/consolidateTombstones/ManualRangeHost，≈200 行死路径）、log-access 的
   1.x 日志视图族（≈140 行）、17 处迁移史注释；src 净 −~500 行，圈 >50 函数持平。
+
+## 11. 评测与调试开关（构造期快照，切换须重挂）
+
+面向评测对照与排障，普通使用不需要碰。环境变量在插件构造期读取，改了要重挂会话。
+
+| 变量 | 作用 |
+|---|---|
+| `ARGP_FACTOR_EGRESS=0` | 关出口闸（对照臂；结构效应 = 上下文天花板 305K vs 192K；缺省开 = 严格 admission 端点的 pre-send 防线） |
+| `ARGP_FACTOR_PRESSURE=1` | 恢复旧 pre-step 估算驱动压力剪（旧世界复现；与出口闸互斥） |
+| `ARGP_FACTOR_TIER=tiered` | 焦点分级策略档（hard/medium 焦点带；缺省 flat） |
+| `ARGP_FACTOR_CLIP=1` | C10 夹剪层（三态保留；缺省关） |
+| `ARGP_PERATOM_A2_DEBUG=<dir>` | LLM wire 落盘（默认脱敏；`_FULL=1` 才含正文） |
