@@ -32,7 +32,7 @@ dsh plugin --profile <name> add dsh-argp
 - 召回工具对模型自动可用：`recall_history`（按标签取回原文）、`list_labels`（浏览词表）。
 
 ```text
-ARGP 2.0.0-alpha.5 · engine: factor · preset: standard
+ARGP 2.0.0 · engine: factor · preset: standard
 budget: trigger 209.7k / retain 41.9k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
@@ -49,13 +49,13 @@ recall: 12 calls · 9 hits (75%)
 ## 它怎么工作
 
 - **剪枝（0 LLM）**：工具结果按实体身份贴标签（`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`），按"过期读、被新版取代、非焦点轮"确定性打分，可剪的换成一行标签桩；散文永远不剪，焦点轮受保护。
-- **散文浓缩**：插件唯一的 LLM 通路，只在压缩事务内、两道闸都过线时触发（散文占声明窗 ≥50%，且上下文 ≥ `windowRatio×窗`）；空输出或异常保原文。
+- **散文浓缩**：插件唯一的 LLM 通路，只在压缩事务内、两道闸都过线时触发（散文占声明窗 ≥50%，且上下文 ≥ 0.8×声明窗）；空输出或异常保原文。
 - **出口闸**：在请求发出前用 anchored 算术判断"这一发必然超窗"，是就不发——先压缩再发；provider 400 只作兜底。
 - **召回**：桩里带标签，原文从日志按标签逐字取回；两个召回工具共享单次 5% / 累计 10% 窗的字符预算，耗尽会显式说明。
 
 相比 LLM 摘要式压缩：剪枝同输入同输出、可复算；遗忘可撤销（原文一直在日志里）；历史只在压缩事务里改写，不会被逐轮重写打碎前缀缓存。事务协议、宿主兼容面与不变量见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
-## 实测对照（T24-J，2026-11-14/15，本地 Qwen3.8-Flash-Next）
+## 实测对照（2026-11-14/15，46 轮同款工作量，本地 Qwen3.8-Flash-Next）
 
 同一 46 轮工作量（同提示词、同材料、全串行单臂、同端点/模型/窗 262,144）；token 用量按 provider
 回报 usage 全部分解列示，并由三项折算出一行 DeepSeek 闲时参考定价（元）：
@@ -74,7 +74,7 @@ recall: 12 calls · 9 hits (75%)
 | 长程记忆（允许召回轮） | 7/10 | 2/10 | 8/10（补充召回轮） |
 | 隐藏工件套件（T0） | 19/20 | 18/20 | 20/20 |
 
-注：以上为**本地 Qwen3.8-Flash-Next**（声明窗 262,144）、同一 46 轮工作量、全串行单臂、每臂 n=1 的实测结果；token 按 provider 回报 usage 全程求和（miss=输入未命中，hit=输入命中，output=输出），参考价按 **DeepSeek 闲时 1 / 0.02 / 4 元每百万 tokens** 折算；v2.0.0 列为出口闸关配对臂 egress0b 的定谳值；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。长程记忆 v2.0.0：单轮 P45 只来得及答 3 问（3/3 全中，覆盖 3/10，余 7 问如实弃答零编造）；追加 3 个补充召回轮（T47–T49，每轮预算重置）补回 5 问 → **8/10**；剩余 Q8/Q10 因 p38/p42 标签缺失无法召回（如实答 C；Q10 的 CB-4104 仅来自代码侧佐证，按题意记 MISS）。1.x 的 7/10 来自 seq 直取召回栈（`recall`/`recall_detail`），能力真实，代价 2.4× 价格/2.3× 墙钟。T0 取 egress0（run1）工作区口径 **20/20**；egress0b 为 17/20（三失败均为未锁形态的轨迹判定：merge3 返回形态、CLI 错误行约定、plugin_error_isolated），差异属轨迹抽签、非质量回归。完整七臂数据与逐轮明细见 `CHANGELOG` 2.0.0-alpha.5。
+注：以上为**本地 Qwen3.8-Flash-Next**（声明窗 262,144）、同一 46 轮工作量、全串行单臂、每臂 n=1 的实测结果；token 按 provider 回报 usage 全程求和（miss=输入未命中，hit=输入命中，output=输出），参考价按 **DeepSeek 闲时 1 / 0.02 / 4 元每百万 tokens** 折算；v2.0.0 列为出口闸关配置的 46 轮实测；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。长程记忆 v2.0.0 按补充召回轮口径 **8/10**：单轮先答 3 问全中（覆盖 3/10），追加 3 个补充召回轮（每轮预算重置）补回 5 问；剩余 2 问因个别材料页未被标签覆盖而不可召回，模型如实答 C。1.x 的 7/10 来自 seq 直取召回栈（`recall`/`recall_detail`），能力真实，代价 2.4× 价格/2.3× 墙钟。T0 隐藏工件 20/20。完整对照数据与逐轮明细见 `CHANGELOG` 2.0.0。
 
 ## 模型要求
 
@@ -91,10 +91,10 @@ recall: 12 calls · 9 hits (75%)
 
 ## 开发与验证
 
-- `npm run check`：typecheck + smoke + 单测（275 测）+ 构建。
+- `npm run check`：typecheck + smoke + 单测（269 测）+ 构建。
 - 出口闸单测：`npm run test -- --test-name-pattern=EG-`。
 - 离线语料回放：`node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts`。
-- 46 轮对照的逐轮明细与七臂数据在 `CHANGELOG` 2.0.0-alpha.5；1.x 实验脚本归档在 `spike/retired-1x/`（不参与编译）。
+- 46 轮对照的逐轮明细见 `CHANGELOG` 2.0.0；1.x 实验脚本归档在 `spike/retired-1x/`（不参与编译）。
 
 ## 问题反馈
 

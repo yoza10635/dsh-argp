@@ -219,7 +219,7 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | 嵌套深度 | ≤ 4 | 参数数量 | ≤ 5 |
 | 函数长度 | ≤ 80 行 | | |
 
-### 2026-11-14 快照（2.0.0-alpha.4 + 清洁批：死代码/manual-range 族/历史注释清除后）
+### 2026-11-14 快照（2.0 清洁批：死代码/manual-range 族/历史注释清除后）
 
 度量工具同前（`scripts/analysis-extract.mjs` + `analysis-metrics.mjs`，TS 编译器 API）。
 口径：圈/认知 = 文件内全部函数**求和**；嵌套/单函数行 = 文件内**峰值**。"代码行"不含空行
@@ -248,7 +248,7 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
   （decide 193 行 / compactIfNeeded 136 行 / planProtocolGroups 100 行——决策与双闸编排）、
   `prune-tx.pruneIntervals`（340 行——带 `ended` 状态机的事务骨架，start/summary/逐区间
   replace/end + 事务后不变量审计 + 错误路径不可双 end）、`recall-labels` 的 recall_history
-  装配（285 行——alpha.4 四不变量）、`argp-graph-engine` 组合根（47 函数挂载全部宿主钩子）。
+  装配（285 行——召回面四不变量）、`argp-graph-engine` 组合根（47 函数挂载全部宿主钩子）。
 - **不做表演性拆分**：这三个大函数各自是一个凝聚事务/决策核，拆分收益（行数）远小于风险
   （15+ 变异锁回归、错误路径状态机断裂）。`argp-graph-engine.ts` 的体量是组合根设计
   （"引擎是唯一组合根，向下单向依赖"）的直接结果，非意外膨胀。

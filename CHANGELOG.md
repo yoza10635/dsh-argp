@@ -4,224 +4,46 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.4`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+> **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
-## [2.0.0-alpha.5] - 2026-11-14（关单审计回归锁 + EGRESS=0 裁断：出口闸价值定谳）
+## [2.0.0] - 2026-11-15（factor 引擎正式版：标签剪枝 + 散文浓缩 + 出口闸 + 零旋钮）
 
-> **未发布**（不发 npm、不 tag，仅入库 checkpoint，同 alpha.4 先例）。本版零 src/ 行为改动——
-> 全部增量是回归测试与实测文档；`lib/` 随构建重建。
-
-### Added
-
-- **关单审计回归锁**（GitHub 三张已关 issue 逐张对账的结果，两张有缺口已补）：
-  - **issue #1**（CitesStrip 给 assistant/message 写 `sourceEventSeqs` 与宿主 dsh-token-meter
-    语义冲突，1.1.0 修复）：宿主 0.1.5+ 的 `assertProvenance` 会 throw，但引擎调用点 try/catch
-    吞错、套件里唯一触达该路径的测试用 stub session——**无有效回归锁**。补：`strip-cites.test.ts`
-    两处断言「assistant/message replace 的 opts 不含 `sourceEventSeqs`」。变异验证：塞回字段
-    ⇒ 2红2绿（恰好落在加断言的两个测试）。
-  - **issue #2**（peratom flushEntry 写违规 compaction/summary，重启加载炸，1.7.0 双层修复）：
-    2.0 factor-only 重构退役旧栈时，契约移植进 `prune-tx`（写入侧守卫有
-    `compaction-tx-brackets` 锁），但**宿主验收层没有随契约迁移**（`createRestore` strict /
-    `assertV4RowAdmission` / `assertReleasedV4Relationships` 全仓零引用）——"写入合规 ⇒ 宿主
-    strict 重载不炸"这半边全盲。补：新增 `test/factor-v4-reload.test.ts`——
-    `pruneIntervals` 三种真实区间形态（单节点 / 跨轮多区间+逐区间 shadow-price 相邻 /
-    整轮 `[u..r]` checkpoint 墓碑）的发射日志**全过宿主原生完整加载链**（issue 点名的
-    validate.mjs 等价入口）；负控复刻旧 bug 发射序，宿主逐字拒绝
-    `shadowedSeqs do not name an exact current surface span`。变异验证：summary 发射移回
-    replace 循环之后（复刻 fatal ①）⇒ 3红3绿。施工附带实锤：宿主
-    `assertSourceEventReferences` 要求 replace 的 `sourceEventSeqs` 覆盖 span 内**每个**
-    surface 节点——生产区间恒为连续原子全列故无恙，约束已注释钉住。
-  - **issue #3**（preset 毒子路径，1.11.2）：`preset-patch-entries.test.ts` 白名单断言
-    完好（737cefa 变异双红在案），无需补。
-- **T24-J 第 7 臂 egress0**（出口闸价值裁断跑）：alpha5 同款 + `ARGP_FACTOR_EGRESS=0` +
-  length-stop 恢复链兜底，bench 克隆运行时（rc.3 asar 手术 + stub 双验证）。46/46 零死亡：
-  **bill 8.59M（较 alpha5 +50%）/ 墙钟 60.6min（+17%，慢回原生水平）/ cache 体积 +65%**
-  （89.2M vs 54.2M，账单分解逐项吻合）/ 峰值 305K = 申报窗 116%；零撞墙零 max-tokens，
-  **实跑 5 笔 0-LLM 组剪**（预算触发器仍在——门关的只是 pre-send 出口闸）。
-  **配对复跑定谳（egress0b 跑满 46 轮）**：471 步 / bill 5.815M / 43.3min 全落 rc.1 家族带，
-  vs alpha5 = +1.6% 噪声级（闲时口径 -5%）⇒ run1 的 +50% = 离群轨迹抽签（勤勉风格会话级
-  持续），非门关效应。**门关的结构性签名双臂复现：上下文天花板 ~305K**（305,101@T32 vs
-  305,008@T39，Δ0.03% 跨轨迹）vs 门开 191.7K——cache-aware 端点无害，严格端点即 400 入
-  溢出链（设计场景）。**出口闸定位终版：严格 admission 端点的 pre-send 防线 + 天花板压制，
-  非成本优化器**；缺省开推荐不变。质量分补课（人工核对 + 补充召回轮）：P45 单轮已答
-  3/3 全中（Q1/Q2/Q9 逐字命中 gold），未答 7 问如实弃答零编造；T47–T49 三个补充召回轮
-  （预算每轮重置）补回 5 问（Q3–Q7）⇒ **8/10**，余 Q8/Q10 为 p38/p42 标签缺失的真空洞
-  （如实答 C；Q10 的 CB-4104 仅代码侧佐证，按题意记 MISS）；auto 提取按行截断把 3 实
-  HIT 误记 MISS，工具修复挂起。T0 隐藏工件取 egress0（run1）口径 **20/20**
-  （egress0b=17/20，三失败 = 未锁形态轨迹判定，非质量回归）。
-  length-stop 链在本臂零触发——端点 admission 对运行时路径**前缀缓存感知**
-  （cache-assisted 305K 放行、fresh 峭值仅 47K；无缓存探针按总量 400，探针
-  `wallhit-probe3-admission.json` 四例在案），链的兜底价值在严格 admission 端点。
-  详见仓库报告 §12 与本文件上文。
-- **README 面向插件用户重构**（2026-11-15）：首屏收敛为安装 → 上手 → 零配置 → 机制简版 →
-  实测对照；机制实现细节归位 `ARCHITECTURE.md`（新增 §11 评测/调试开关），七臂实验叙事
-  留在本 CHANGELOG；退役首屏概览图 `.github/assets/argp-overview.svg`。对照表经济面改为
-  miss/hit/output 分列 + DeepSeek 闲时参考定价（元）。
-- **零旋钮化**（2026-11-15）：六枚设置旋钮（windowRatio/retainRatio/charsPerToken/
-  focalTurns/vocabTopN/recallLimit）端到端退役——`static Config` 与
-  `ArgpUserSettingsSchema` 置空、客户端设置卡与 controller/locale 字典删除、缺省值固化
-  `constants.ts`（0.8/0.2/3.5/1/10/5）；老 profile 同名键宽容透传 + 告警。零旋钮锁
-  ZK1–ZK4，变异三红三绿（回加旋钮/删告警/改常量各红一条）。
-
-## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
-
-> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha4 长跑（alpha.3/pkg9）暴露召回通道
-> 的三个实锚：预算按压缩纪元累计（73,400/73,400 用尽后同轮全空手）、模型猜相对路径标签
-> no-match 后放弃召回（T19/T30）、多标签实为并集排序而契约文案写"narrows"。本版按用户
-> 批准的 Kimi 方案（子代理对抗审查吸收：anyOf 缓办、装配四不变量、err-sig 不判死）施工。
+2.0 是 factor 引擎的干净形态：**工具结果按实体标签确定性剪枝（0 LLM）**、**散文只在压缩事务内一次性浓缩（唯一 LLM 通路、双闸把关）**、**出口闸保证必然超窗的请求根本不发出**；被剪原文永远留在 append-only 日志，可按标签 `recall_history` 逐字取回。
 
 ### Added
 
-- **recall_history 两级视图**：`view:"outline"`（每行确定性元数据 item= · turn · tool ·
-  verdict · 现算长度 · labels=，零 LLM、零正文，供宽查询先扫后取）| 缺省 `full`。full 改
-  **装配式**：目标 = min(perCallLimit, remaining)，装满→截断条目带 `item=<seq>, offset=<n>`
-  续读提示→余项如实计数；footer（全局 cursor）仍在钳位外拼。
-- **item 钻取**：`item=<rootSeq>` 单条取回（仅限先前召回回复列出的条目——item 必须 ∈ 被剪
-  账本，对 live seq 严拒；不是无标签 seq 召回通道）；`offset=<chars>` 条内续读；负 offset
-  严拒、越界如实。續读提示走 footer（钳位外，预算紧时不被吃）。
-- **`order` 三档**：relevant（缺省）| fresh（新→旧）| timeline（旧→新，episode 因果阅读序）。
-- **路径后缀归一**（alpha4 T19/T30 实锤修复）：精确/展开未命中的路径形标签做唯一后缀匹配
-  （document:/scope:，rel: 键剥离后同权），命中如实告知改写；多候选 fail-closed 列出绝不猜。
-- **召回预算跨轮重置**（用户裁定）：`budgetRecallText` 轮变归零（recallBudgetTurn 游标），
-  压缩归零保留双保险；耗尽文案改 "resets next turn"。`recallBudgetState` 纯读 + 轮变同步
-  （装配侧与钳位侧同一预算快照）。
-- **词表行内线索（R4 紧版）**：每行 `×N · last: <tool> <verdict> @t<turn> · err-sig K/M`；
-  err-sig 只**计数**不判死（errorish 是文本信号，宿主 failed 才标 failed——types.ts 纪律）；
-  去每行 hook（facet header 已指路）。list_labels 同步 + **scope 类别按需可见**
-  （缺省扫掠仍不含 scope）；list_labels 行内线索同款。
-- **空结果区分"无交集"**：全部标签解析成功仍零行 ⇒ 明示 "no item carries all of them"，
-  与"标签空想"（ignored 回显）区分，模型不再反复重查同一对。
+- **确定性标签组剪（0 LLM）**：工具结果按 `document` / `command` / `errorcode` / `scope` 贴标，按过期读、被新版取代、非焦点轮确定性打分；A+R 协议组整组离场（检查点占位），R-only 落空克隆；A 永不剪、U 受焦点保护；被剪账本按会话分桶。
+- **散文浓缩**：唯一 LLM 摘要通路，只在压缩事务内触发；双闸合取（散文占声明窗 ≥50% 且上下文 ≥0.8×声明窗）；one-shot 原生式，空输出或异常保原文。
+- **出口闸（缺省开）**：pre-step 用 anchored 算术判断必然超窗的请求，先压缩再发；输出预算三源取 max；provider 400 仅作兜底。冷 resume 从日志回填声明窗，首召回懒重放账本。
+- **召回面**：`recall_history` / `list_labels`（标签制，无 seq 通道）；真 AND 语义、outline/item/offset 两级视图、order 三档、路径后缀归一、预算跨轮重置；空结果、未命中、预算耗尽均显式说明。
+- **零旋钮**：设置页与六枚旋钮（windowRatio / retainRatio / charsPerToken / focalTurns / vocabTopN / recallLimit）全部退役，缺省值固化（0.8 / 0.2 / 3.5 / 1 / 10 / 5）；老 profile 同名键宽容读 + 告警。
+- **回归锁**：历史 issue #1（cites 剥离的 provenance 冲突）与 #2（compaction/summary 宿主 strict 重载）补验收层锁，含宿主完整加载链与负控。
+- **实测（46 轮同款工作量，本地 Qwen3.8-Flash-Next）**：墙钟 43.3min；miss 1.363M / hit 60.06M / output 0.283M；DeepSeek 闲时参考价 3.69 元；前缀缓存命中 0.978；声明窗上下文利用率 98.4%；T0 隐藏工件 20/20；长程记忆补充召回轮 8/10。vs 1.11.2：账单 −56%、墙钟 −62%。回归 269 测（267 过 / 2 skip），typecheck / smoke / build 全绿。
 
 ### Changed
 
-- **多标签查询语义 = 真 AND**（反转旧"并集 + 命中数排序"）：候选必须携带全部在场标签；
-  不在账本的标签剔除回显、不参与求交（空想标签不杀死查询）。契约行同步改写
-  （"intersecting narrows"从假话变真话 + outline/item 指引），新增契约长度上界锁。
-- recall_history 工具描述重写（AND/view/order/item/offset 全量契约）。
+- **引擎收窄为 factor-only**：graph 臂与 peratom 三管线退役；`compactRegion` 在 factor 下明确拒绝；构造面保留显式 `windowTokens` / `retainTokens`。
+- **压缩动作序**：先组剪、后原生 pruner 二次收紧；pruner 切片可在下一笔整组驱逐；焦点尾窗降级（最新轮占比 ≥50% 且组数 >10 时收窄到最新 10 组）。
+- **触发收敛**：破坏性改写只认手动 `/compact` 与 provider 400；pre-step 估算驱动压力剪退为 `ARGP_FACTOR_PRESSURE=1` 对照口。
+- **README 面向插件用户重构**：安装 → 上手 → 零配置 → 机制简版 → 实测对照；实现细节归位 `ARCHITECTURE.md`；退役首屏概览图。
 
-### Tests
+### Fixed
 
-- 275 测：273 过 / 0 败 / 2 skip（live 需环境）。
-- 反演：factor-ledger T3（交集优先 → 真 AND + 剔除标签不缩小结果集固化）；
-  CR3 数行数改单标签多条目（AND 下九标签交集为空）；recall T2 `hit=` → `labels=`；
-  词表饥饿边界 120 → 60（R4 紧行后单行变短）。
-- 新锁：ML7 后缀归一、ML8 预算轮变归零、ML9 outline 分支、ML10 item 账本校验、
-  ML11 装配式 full（截断提示存活 + 单次记账 used=返回长度）、ML12 词表线索
-  （errorish 只计数不判死）；契约长度 < 1700。
-- 变异（cp 快照回滚）：ML9/ML10/ML11/ML12 摘除全红。
-
-- **清洁批（同日，用户令"避免任何冗余代码、历史性注释、死代码、上帝文件"）**：删除 13 个
-  零引用导出（log-access 的 1.x 日志视图族 recallFromLog/formatRecallOutcome/queryLogRange/
-  formatLogRow 等 ≈140 行、constants 的 graph-era 缺省锚、tombstone-text 的闭包墓碑写侧、
-  peratom 残件 SPLIT_THRESHOLD_CHARS/serializeWireTools、clipNetGainChars）+ 手动区间死路径
-  整族（prune-tx 的 compactRegion/compactRegions/selectManualRanges/consolidateTombstones/
-  ManualRangeHost/PruneTxHost.tombstoneMergeMinRun + 引擎成员，≈200 行——2.0 factor 的
-  engine.compactRegion 直接拒发，该族零调用方）+ 17 处迁移史注释（保留容读契约/活旋钮名册/
-  纪律引用）。src 净 −~500 行；typecheck + 275 测全绿。
-- **撞墙探针勘误**（裸端点实测，报告 §11）：400 admission 拒绝 0.11-0.23s 且计数为 prompt
-  单独；prompt+mct 联合超窗照跑并被服务端钳位到窗−prompt（精确到 token）——R2
-  「273,639=prompt+65,536」误读在出口闸注释中修正。length-stop 恢复链接线在宿主仓
-  （llm-pi-ai mapStopReason 接 isRecoverableLength），argp 侧零改动。
-
-## [2.0.0-alpha.3] - 2026-11-14（压缩动作改序：先组剪后 pruner + 切片可整组驱逐）
-
-> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha3 长跑（alpha.2/pkg8）46/46 完赛，
-> 但暴露两个问题：pruner 切片不可再剪（终态 63.5% surface 是永久配重，bill +25.7%）、
-> 压缩率跌到 62.1%。本版按用户裁定调整机制。
-
-### Changed
-
-- **压缩动作序反转**：`compactIfNeeded` 从「pruner 预剪 → re-measure → 组剪补缺口」改为
-  「**组剪（alpha2 口径，目标 = 真实缺口，整组归零）→ 原生 pruner 二次收紧剩余大 R**」。
-  pruner 专打组剪动不了的部分（焦点/open 轮 read、A 仍存活的 R），不再把大 R 先变成
-  派生克隆而让组剪整组驱逐失效。`compactNow`（手动）同步改为组剪 → pruner。
-- pruner 的 `compaction/prune` 事件现在落在 `compaction/end` 之后，仍不并进组剪事务账；
-  `shadowedSeqsOf` 照常计入。
-- **切片可整组驱逐（修 alpha3 残留配重 P1）**：`stubSeqs` 不再要求文本空/桩前缀——
-  「replace 克隆 ∧ root 已 shadowed」一律算 stub，覆盖 R-only 空克隆与 pruner 的
-  head/middle/tail 切片；下一笔组剪可把切片所属 A+R 组整组送走。alpha3 实测终态
-  42 个切片 / 216,678 chars（63.5% surface）、全跑平均 129,470 chars/步配重。
-
-### Tests
-
-- `factor-native-prune.test.ts`：NP5 锁 pruner 事件必须在 `compaction/end` 之后；
-  NP7 锁组剪目标按真实缺口（pruner 不再缩小目标）且调用顺序 = factor→pruner；
-  NP8 锁切片在下一笔压缩可整组驱逐。累计 267 测：265 过 / 0 败 / 2 skip。
-- 变异（cp 快照回滚）：pruner 挪回组剪之前 ⇒ NP5/NP7 红；摘切片 stub 判据 ⇒ NP8 红。
-
-## [2.0.0-alpha.2] - 2026-11-13（A+R 协议组剪 + 原生 pruner 同笔 + 焦点尾窗）
-
-> **未发布**（不发 npm、不 tag，仅入库 checkpoint）。`2.0.0-alpha.1` 是 T24-J bench 构建号（pkg6：组剪 + compact-checkpoint），从未不可变发布，内容并入本版；alpha2 长跑成绩（46/46、7 笔组剪 750,996 tok、peak 191,235）见 `C:/workspace/tmp/cb-bench/t24j/marathon/REPORT-alpha-longrun.md` §6.2。
-
-### Added
-
-- **A+R 协议组剪（0-LLM，factor 事务内）**：tool-call A 与它全部 callId 的 R 作为闭包整体离场——所有 R 必须已 selected/stub（有 live R 则 A 不动）、区间连续（不连续退回 R-only）；旧 A+桩（K pack）一并回收；中断组 forcedFirst。释放量含 A args。剪除落点为宿主原生 **compact-checkpoint `user/message`**（`source.kind='compact-checkpoint'`，文本 `已压缩剪枝次要原子`；v4 fold 在压缩边界合法，空 `developer` 因未开 step 会写坏会话——alpha2 首跑 T9/T10 `SessionFormatError` 实锤）。R-only 仍落空 `tool/result` 克隆。R 标签入账本，`recall_history(labels)` 可取回。T34 冻结态重放：286 组 / 339,363 chars。
-- **toolResultPruner 全局预剪（与组剪同一笔压缩）**：`compactIfNeeded` 内先调宿主 `toolResultPruner`（默认 8192 chars 阈 → head 4096 + `[... tool result middle pruned ...]` + tail 1024，只改 `tool/result` text），re-measure 后组剪只补剩余 deficit；服务缺失/无 open turn/异常均 no-op。pruner 的 `compaction/prune` 落在 `compaction/start` 之前，不并进组剪事务账。
-- **焦点尾窗降级**：最新轮 A/R 字符占比 ≥50% 且该轮协议组数 >10 ⇒ 焦点从整轮收窄为最新 **10 个 A+R 组**；`focalNonRegenerable`/`focalDocStrong`/`focalBand`/`superseded` 按 `inFocus` 收窄，`failureNoFollowR` 收窄为 `openTurn && (!escalated || inFocus)`，组剪按 `focusSeqs` 守卫（open 轮焦点外旧组可离场）。未触发时判据字节不变。
-- **出口闸硬校验**：`compactIfNeeded` 后二次测量；仍 ≥ 声明窗 ⇒ pre-step `{kind:'reject'}`、400 恢复路径 `next()`（不重发同一超窗请求）。
-- **散文层还原原始设计**：散文闸分子与摘要输入 = U + 每轮 final textA，**不含 toolCallA**；摘要请求不喂 CALL/RESULT；`swallowableX` 吞 factor 检查点占位。
-
-### Changed
-
-- `planProtocolGroups` 选项收窄为 `{protectFromTurn, openTurn, focusSeqs, stubSeqs, attachmentSeqs}`；`FocusTailPlan`/`planFocusTail` 导出。
-- 组剪/散文事务摘要文案改正（去“空 developer”、去退役工具名）。
-
-### Tests
-
-- 新增 `factor-group-prune.test.ts`（G1–G10/EG-14/14b/T14/⑧⑨）、`factor-focus-tail.test.ts`（FT1–FT6）、`factor-native-prune.test.ts`（NP1–NP7）。累计 266 测：264 过 / 0 败 / 2 skip。
-- 变异锁（cp 快照回滚）：组剪摘除、闭包放宽、占位形改 developer、逐笔 7 条（pruner 调用/cap/focusGate/focusSeqs/open 收窄/re-measure/share 阈值）全红后还原。
-
-## [2.0.0-alpha.0] - 2026-11-13（factor-only 形态：1.x 图引擎全面退役）
-
-> **未发布**（不发 npm、不 tag，仅入库工作树 checkpoint）。2.x = factor 的干净形态（用户裁定 2026-11-13）；老方案锁定 npm latest **1.11.2** 不动。与 1.11.2 / 原生摘要的对比测试改到本 alpha 就绪后执行（R2 修后世界的对照因旧世界污染作废）。
-
-### Added
-
-- **§9.37 出口闸（缺省开）**：pre-step 确定性容量算术——anchored 投影（含本步 claim 增量）≥ 声明窗 − 输出预算 − 2% 提前量 ⇒ **请求根本不发**，先走标准压缩事务；输出预算三源取 max（`agent.options.maxTokens` / `agent/request` 观测 / `resolveModelInfo().defaultMaxTokens`），全缺退 0.25×窗。400 overflow 保留为兜底网。`ARGP_FACTOR_EGRESS=0` 仅作修前/修后对照臂。
-- **冷 resume 声明窗回填**（R2 实锤 4×400 死流）：`bindSession` 反向扫日志回填 `declaredContextWindows`，`egressGate` 再兜底 `session.requestContext()`；`EG-13/13b` 双锁（M11/M12 变异验证）。
-- **recall_history / list_labels 召回面**（标签制）：标签交集、cursor/epoch 分页、未命中如实回显、字符预算与每轮安全阀；`/argp` 召回段复用同一观测。
-- **散文浓缩链**（唯一 LLM 摘要通路）：事务内双闸（散文占比 ≥50% + anchored ctx ≥ `windowRatio×声明窗`），one-shot 原生式，空输出保原文。
-
-### Changed
-
-- **引擎收窄为 factor-only**：构造器不再有 graph 臂；`compactIfNeeded` 删除整段图剪分支；`compactRegion` 在 factor 下明确拒绝；pre-step 只保留出口闸/浓缩闸二（旧估算驱动压力剪退到 `ARGP_FACTOR_PRESSURE=1` 对照口）。
-- **设置名册收窄到 6 枚**（windowRatio/retainRatio/charsPerToken/focalTurns/vocabTopN/recallLimit）；`engine` 判别式与 1.x 五键退位，老 profile 宽容读 + 告警忽略。
-- **`/argp`**：引擎形态恒报 `factor`，删除 `graph+peratom` 与 cites 段；日志读取改走 `sessionEvents`（不再直接 `snapshotSession`）；版本号 2.0.0-alpha.0。
-- **构建**：`npm run build` 先清空 `lib/` 再编译（防止退役模块的陈旧产物随包分发）。
-- **bundle patch**：`insert` 行去掉 `maxPasses`/`recencyGuard`（graph 时代旋钮）。
-
-### Fixed（2026-11-13 整体逻辑审查，13 条变异锁）
-
-- **召回安全阀退化为整会话永久闸**：`recallCallsThisTurn` 自 turn/start 归零分支被删后再无归零，20 次后 `recall_history` 永久拒绝；改为按日志轮号自同步归零（两工具共享），headless 同径。
-- **被剪账本跨会话串台**（P0）：`FactorLedger` 是引擎单例而键是会话内 seq——A 的标签在 B 会话取到 B 的无关事件；改为 `ledgerOf(session)` 按会话分桶（`ledger` getter 仅诊断/单会话测试兼容）。
-- **焦点重绑重放账目**：`bindSession` 清 `rebuiltCompactionIds` 导致 A→B→A 后 records 重复追加；去掉 clear（per-session 桶已结构性隔离）。
-- **事务后锚点被旧 usage 复活**：切回会话时 `restoreUsageAnchor` 用日志里压缩前的 usage 覆盖事务后估算 ⇒ 出口闸误判、整段重剪；内存桶已有锚点即早退。
-- **measureTokens 漏掉锚点事件本身**（assistant 消息属于下一请求）：增量比较改 `>=`；事务后锚点取 `session.seq` 而非末尾 surface 节点（防检查点被二次计入）。
-- **skipPresets 不覆盖 pre-step 通道**：出口闸/浓缩闸二/压力逃生口在钩子内直调事务，minimal preset 仍会被浓缩改写；钩子最先统一退场。
-- **空转也刷新词表 note**：note 的 replace 增长 `replaceGeneration`，被 400 恢复误判"已减量"而重发超窗请求；只在真有事务时刷新。
-- **散文闸一分母错误**：用缩放后触发线（0.8W）当分母，50% 线实际降到 40% 声明窗；改用声明窗。
-- **散文 span 跨非原子表面节点**：`sourceEventSeqs` 缺 system/message 等节点，宿主 replace 直接 throw（LLM 已付费）；非原子节点改为硬洞。
-- **散文 partial-only 白付 LLM + 指针指向退役工具**：仅散点时不再调用 LLM（指针不可召回，保原文）；`seqRangePointer` 去 `recall_pruned`，改 factor 指针族。
-- **factor 指针墓碑不可吞**：中断轮墓碑（无 recall_pruned）永久卡住清扫式浓缩；新增 `isFactorTombstoneText` 并入可吞/原文展开集合。
-- **clip 文案指向退役工具**（`recall_pruned`）：有标签改 `recall_history(label)`，无标签如实说明"不可按标签召回"（CL8 变异锁）。
-- **staleness 误判**：end_line 被当 limit（10..20 读成 [10,30)）；读失败（结构化 isError）不再充当覆盖证据；cwd 改从 `session.header` 取（宿主 header 不进事件日志，相对路径标签不再退化成 `rel:`）。
-- **文本+附件混合 R 被文本桩吞**：附件判据递归 tool-result 嵌套 content，混合 R 硬保护（散文 probe 同源）。
-- **error-end 事务的 prune 声称入 shadowed 账**：replace 中途抛错后 live 节点被谎报已剪、永久跳过；`scanShadowedSeqs` 与增量账本改为事务感知（成功 end 才入账）。
-- **/argp 口径**：retain 改回 `trigger×retainRatio`（不再用 visible×ratio）；measureTokens 改读**命令会话**的锚点桶（不再串焦点会话）。
-- **epoch 漂移游标未归零**：说"re-sorted from scratch"却按旧 offset 切新排序；漂移时从 0 开始（负/越界游标夹取）。
-- **list_labels 白嫖安全阀**：与 recall_history 共用 per-turn 上限；续读 footer 不再被预算截断吃掉。
-- **冷 resume 首召回账本为空**（2026-11-13 headless 冒烟实锤）：账本只在 compact/decide 时重放日志，新进程首召回 `list_labels` 报 0 条、`recall_history` 永远 no match；召回入口改 `ledgerForRecall` 懒重放（每会话每进程一次，rootSeq 去重幂等）。
+- 召回安全阀退化为整会话永久闸（按轮自同步归零）；被剪账本跨会话串台（按会话分桶）。
+- 焦点重绑重放账目重复；事务后锚点被旧 usage 复活；measureTokens 漏掉锚点事件。
+- skipPresets 不覆盖 pre-step 通道；空转刷新词表 note 导致 400 恢复误判。
+- 散文闸一分母错误（改用声明窗）；散文 span 跨非原子节点；partial-only 白付 LLM；factor 墓碑不可吞；clip 文案指向退役工具。
+- staleness 误判（end_line 当 limit、读失败当覆盖证据、cwd 来源错误）；文本+附件混合 R 被文本桩吞。
+- error-end 事务的 prune 误入 shadowed 账；epoch 漂移游标未归零；list_labels 绕过安全阀；冷 resume 首召回账本为空。
 
 ### Removed
 
-- **Stage-1 三管线**：`peratom/compressor|cite-declarer|recall-zoom|gate|mount|flush|prompt|collect|compressor-types|decision|split`（保留 `peratom/llm-adapter` 与 `peratom/types`）。
-- **Stage-2 图剪**：`prune-selection`、`token-ontology`、`recall-tools`；`graph-build` 裁到 `atomize`/`classifyUserMessage`/`looksAskText`/`extractCites`；`recall` 裁到 `shadowedSeqsOf`/`budgetRecallText`。
-- **测试**：`token-ontology.test.ts`、旧 `peratom-llm-adapter.test.ts`（压缩器/声明器接线部分）退役（留档 `C:\workspace\tmp\dsh-argp-retired-tests`）；新增 `llm-adapter.test.ts` 锁适配器契约；`config-roster` 改锁 2.0 语义。累计旧栈测试退役 43 个，现存 237 测（235 过 / 0 败 / 2 skip）。
-- **1.x 实验脚本**移入 `spike/retired-1x/`（33–44、47）与 `scripts/retired-1x/`（不参与编译）。
+- Stage-1 三管线（compressor / declarer / recall-zoom / gate / mount / flush / prompt / collect 等）与 Stage-2 图剪（prune-selection / token-ontology / recall-tools）。
+- 旧栈测试与 1.x 实验脚本（归档 `spike/retired-1x/`，不参与编译）。
 
 ### 读侧兼容（保留）
 
-- 老墓碑文法 v1.3.x–v1.7.x；老 `data.argpCites` 忽略读（三种历史形状归一）；`prune-tx` 的 tool/result 克隆配对契约。
+- 老墓碑文法（v1.3.x–v1.7.x）、老 `data.argpCites`（三种历史形状归一）、`prune-tx` 的 tool/result 克隆配对契约；老日志可读，2.0 不再生成这些形态。
 
 ## [1.11.2] - 2026-11-09（hotfix：preset 死子路径条目炸新建会话，issue #3）
 

@@ -32,7 +32,7 @@ dsh plugin --profile <name> add dsh-argp
 - Two recall tools are automatically available to the model: `recall_history` (verbatim text by label) and `list_labels` (vocabulary browser).
 
 ```text
-ARGP 2.0.0-alpha.5 · engine: factor · preset: standard
+ARGP 2.0.0 · engine: factor · preset: standard
 budget: trigger 209.7k / retain 41.9k · now 88.4k (source=anchored)
 prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
@@ -50,13 +50,13 @@ profiles are tolerated with a warning and ignored; behavior always follows the f
 ## How it works
 
 - **Eviction (0 LLM)**: tool results get entity labels (`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`); deterministic staleness (superseded reads, newer versions, non-focal turns) scores them, and evictable ones become a one-line labeled stub. Prose is never evicted; focal turns are protected.
-- **Prose condensation**: the plugin's only LLM path, transaction-only, fired only when both gates pass (prose ≥50% of the declared window AND context ≥ `windowRatio×window`); empty output or failure keeps the original.
+- **Prose condensation**: the plugin's only LLM path, transaction-only, fired only when both gates pass (prose ≥50% of the declared window AND context ≥ 0.8× the declared window); empty output or failure keeps the original.
 - **Egress gate**: before a request is sent, anchored arithmetic decides whether it would necessarily overflow — if so it is not sent; compress first, then send. Provider 400 is the last-resort net.
 - **Recall**: stubs carry labels; the original text comes back verbatim from the log by label. Both recall tools share a character budget (5% per call / 10% cumulative of the window) and state exhaustion explicitly.
 
 Compared with LLM-summary compaction: eviction is deterministic and recomputable; forgetting is reversible (the original never leaves the log); history is rewritten only inside compaction transactions, so the prefix cache is not shredded by per-turn rewrites. Transaction protocol, host-compat surface and invariants live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Measured comparison (T24-J, 2026-11-14/15, local Qwen3.8-Flash-Next)
+## Measured comparison (2026-11-14/15, same 46-turn workload, local Qwen3.8-Flash-Next)
 
 The same 46-turn workload (same prompts, same materials, fully serial single-arm, same
 endpoint/model/window 262,144); provider-reported token usage is broken out into its three
@@ -76,7 +76,7 @@ components, which one consolidated row folds into a DeepSeek off-peak reference 
 | Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (supplementary recall turns) |
 | Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 |
 
-Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — same 46-turn workload, fully serial single-arm, n=1 per arm; token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion), and the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**. The v2.0.0 column is the egress-gate-off paired arm egress0b's settled values; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context. Long-term memory for v2.0.0: the single P45 turn only got through 3 questions (3/3 verbatim, coverage 3/10; the other 7 were honestly declined with zero fabrication); 3 supplementary recall turns (T47–T49, budget reset each turn) recovered 5 more → **8/10**; Q8/Q10 remain unreachable because p38/p42 labels are missing from the ledger (honest C; Q10's CB-4104 appears only as code-side evidence, scored MISS by the question's intent). 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock. T0 uses the egress0 (run1) workspace caliber: **20/20**; egress0b scored 17/20 (all three failures are unlocked-shape trajectory judgments: merge3 return shape, CLI error-line convention, plugin_error_isolated) — a trajectory draw, not a quality regression. Full seven-arm data and per-turn detail live in `CHANGELOG` 2.0.0-alpha.5.
+Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — same 46-turn workload, fully serial single-arm, n=1 per arm; token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion), and the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**. The v2.0.0 column is the 46-turn run with the egress gate off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context. Long-term memory for v2.0.0 is **8/10** on the supplementary-recall caliber: the first turn answered 3/3 (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more; the remaining 2 are unreachable because some material pages were never label-covered, and the model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock. Hidden artifact suite (T0): 20/20. Full comparison data and per-turn detail live in `CHANGELOG` 2.0.0.
 
 ## Model requirements
 
@@ -96,7 +96,7 @@ Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — sam
 - `npm run check`: typecheck + smoke + unit tests (275) + build.
 - Egress-gate tests: `npm run test -- --test-name-pattern=EG-`.
 - Offline corpus replay: `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts`.
-- Per-turn detail and seven-arm data for the 46-turn comparison live in `CHANGELOG` 2.0.0-alpha.5; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
+- Per-turn detail for the 46-turn comparison lives in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
 
 ## Feedback
 
