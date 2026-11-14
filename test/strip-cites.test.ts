@@ -32,6 +32,12 @@ test('strips trailing {"cites":[...]} from the last text block and stashes argpC
   assert.equal(content[0]!.text, 'Here is the answer.', 'cites JSON must be gone from text')
   assert.deepEqual(a.data.argpCites, [{ text: 'earlier claim A', level: 'supporting' }], 'cites preserved in argpCites (V6 graded)')
   assert.equal((a.opts as { surfaceOp: { op: string; startSeq: number; endSeq: number } }).surfaceOp.op, 'replace')
+  // issue #1 回归锁（2026-11-14）：assistant/message 的 replace **不得携带 sourceEventSeqs**
+  // ——宿主 dsh-token-meter 把该字段按「由哪些 assistant/chunk 拼成」解释，写了它该会话计量
+  // 永久抛错、压缩失效。宿主 0.1.5+ 的 assertProvenance 会 throw，但引擎调用点 try/catch 吞错
+  // （argp-graph-engine.ts），套件里只有本 stub 测试直达此路径 ⇒ 必须在此断言锁死。
+  assert.ok(!('sourceEventSeqs' in (a.opts as object)),
+    'assistant/message replace 不得携带 sourceEventSeqs（issue #1：与 dsh-token-meter 语义冲突）')
 })
 
 test('no-op when message has no trailing cites block', () => {
@@ -78,4 +84,6 @@ test('preserves tool-call blocks and only trims the trailing text block', () => 
   assert.equal(content[1]!.type, 'tool-call')
   assert.equal(content[2]!.text, 'Done.', 'only the last text block is trimmed')
   assert.deepEqual(appends[0]!.data.argpCites, [{ text: 'call_1', level: 'supporting' }])
+  assert.ok(!('sourceEventSeqs' in (appends[0]!.opts as object)),
+    'assistant/message replace 不得携带 sourceEventSeqs（issue #1）')
 })
