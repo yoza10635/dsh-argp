@@ -71,13 +71,12 @@ components, which one consolidated row folds into a DeepSeek off-peak reference 
 | Output tokens (output) | 0.343M | 0.378M | 0.283M |
 | Prefix cache hit rate | 0.833 | 0.956 | 0.978 |
 | **DeepSeek off-peak reference price** | **11.58 元** | **4.36 元** | **3.69 元** |
-| Peak KV-resident context (share of declared window) | 78.9% | 50.0% | 98.4% |
-| Forgetting reversible | ✗ | ✗ | ✓ `recall_history` byte-for-byte by label |
-| Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
-| Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 3/3 = 100% |
-| Hidden artifact suite (T0) | 19/20 | 18/20 | 17/20 |
+| Declared-window context utilization | 78.9% | 50.0% | 98.4% |
+| Forgetting reversible | ✓ `recall`/`recall_detail` | ✗ | ✓ `recall_history` byte-for-byte by label |
+| Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (supplementary recall turns) |
+| Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 |
 
-Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — same 46-turn workload, fully serial single-arm, n=1 per arm; token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion), and the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**. The v2.0.0 column is the egress-gate-off paired arm egress0b's settled values; peak is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context; long-term memory for v2.0.0 is scored on the answered set (**3/3 = 100%**; 3/10 is recall-budget coverage — the 7 unanswered were honestly declined with zero fabrication), and all three T0 failures are unlocked-shape trajectory judgments. Full seven-arm data and per-turn detail live in `CHANGELOG` 2.0.0-alpha.5.
+Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — same 46-turn workload, fully serial single-arm, n=1 per arm; token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion), and the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**. The v2.0.0 column is the egress-gate-off paired arm egress0b's settled values; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context. Long-term memory for v2.0.0: the single P45 turn only got through 3 questions (3/3 verbatim, coverage 3/10; the other 7 were honestly declined with zero fabrication); 3 supplementary recall turns (T47–T49, budget reset each turn) recovered 5 more → **8/10**; Q8/Q10 remain unreachable because p38/p42 labels are missing from the ledger (honest C; Q10's CB-4104 appears only as code-side evidence, scored MISS by the question's intent). 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock. T0 uses the egress0 (run1) workspace caliber: **20/20**; egress0b scored 17/20 (all three failures are unlocked-shape trajectory judgments: merge3 return shape, CLI error-line convention, plugin_error_isolated) — a trajectory draw, not a quality regression. Full seven-arm data and per-turn detail live in `CHANGELOG` 2.0.0-alpha.5.
 
 ## Model requirements
 
