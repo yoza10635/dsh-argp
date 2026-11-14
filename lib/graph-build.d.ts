@@ -2,9 +2,7 @@
  * ARGP 原子化模块（2.0 factor-only 收窄）：atomize + cites 提取（extractCites）+
  * user 分类（classifyUserMessage）+ ask 检测（looksAskText）。
  *
- * 1.x 的建图部分（buildGraph / findVersionDuplicates / n-gram 索引 / 前缀守卫 /
- * 行重叠归链）随 stage-2 图臂退役；读侧仍保留 `data.argpCites` 的归一化读
- * （历史会话的 A 原子在 atomize 里照旧取用，见下）。
+ * 读侧保留 `data.argpCites` 的归一化读（历史会话的 A 原子在 atomize 里照旧取用，见下）。
  *
  * 循环 import 规避：本模块**不** import hub 运行时。atomize 接收窄接口
  * {@link GraphBuildHost} 而非具体 class；hub 的 class 以

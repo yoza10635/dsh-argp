@@ -4,7 +4,7 @@
 
 > **版本号说明**：1.3.2 为 npm 孤儿版本（bump 事务延迟完成上了 registry，unpublish 被 bypass-2FA 政策拒），`latest` 已指回 1.3.1；1.3.2 号永久作废，下一版直接 **1.3.3**。**1.7.1 从未发布**（无 tag、未上 registry，仅存在于工作树），其内容并入 **1.8.0-beta.0**，该版本号永久作废。
 
-> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.3`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
+> **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.4`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
 
 ## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
 
@@ -52,6 +52,19 @@
   ML11 装配式 full（截断提示存活 + 单次记账 used=返回长度）、ML12 词表线索
   （errorish 只计数不判死）；契约长度 < 1700。
 - 变异（cp 快照回滚）：ML9/ML10/ML11/ML12 摘除全红。
+
+- **清洁批（同日，用户令"避免任何冗余代码、历史性注释、死代码、上帝文件"）**：删除 13 个
+  零引用导出（log-access 的 1.x 日志视图族 recallFromLog/formatRecallOutcome/queryLogRange/
+  formatLogRow 等 ≈140 行、constants 的 graph-era 缺省锚、tombstone-text 的闭包墓碑写侧、
+  peratom 残件 SPLIT_THRESHOLD_CHARS/serializeWireTools、clipNetGainChars）+ 手动区间死路径
+  整族（prune-tx 的 compactRegion/compactRegions/selectManualRanges/consolidateTombstones/
+  ManualRangeHost/PruneTxHost.tombstoneMergeMinRun + 引擎成员，≈200 行——2.0 factor 的
+  engine.compactRegion 直接拒发，该族零调用方）+ 17 处迁移史注释（保留容读契约/活旋钮名册/
+  纪律引用）。src 净 −~500 行；typecheck + 275 测全绿。
+- **撞墙探针勘误**（裸端点实测，报告 §11）：400 admission 拒绝 0.11-0.23s 且计数为 prompt
+  单独；prompt+mct 联合超窗照跑并被服务端钳位到窗−prompt（精确到 token）——R2
+  「273,639=prompt+65,536」误读在出口闸注释中修正。length-stop 恢复链接线在宿主仓
+  （llm-pi-ai mapStopReason 接 isRecoverableLength），argp 侧零改动。
 
 ## [2.0.0-alpha.3] - 2026-11-14（压缩动作改序：先组剪后 pruner + 切片可整组驱逐）
 

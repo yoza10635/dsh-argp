@@ -2,9 +2,8 @@
  * ARGP 召回模块（2.0 factor-only 收窄）：被遮蔽 seq 增量账本（shadowedSeqsOf）+
  * 召回字数预算（budgetRecallText）。
  *
- * 1.x 图时代的 catalogText / recallQuery / recall / recallAnyState / nodeState /
- * latestTurnOf / noteRecallHit 随 stage-2 图臂退役；factor 召回面（recall_history /
- * list_labels）直接走 log-access 的字节级取回，本模块只留两条共享语义：
+ * factor 召回面（recall_history / list_labels）直接走 log-access 的字节级取回，
+ * 本模块只留两条共享语义：
  * "被剪账本 = compaction/prune.shadowedSeqs 的投影" 与 "召回字符预算"。
  *
  * 循环 import 规避：本模块**不** import hub 运行时。需要读/写引擎可变字段的函数接收

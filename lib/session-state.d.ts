@@ -4,8 +4,7 @@ import type { CiteStats } from './graph-build.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 import type { NodeState } from './log-access.js';
 /**
- * 已剪节点目录条目（seq -> 元数据）。原定义在 prune-selection（图剪选择器），
- * 2.0 随选择器退役迁入本叶子——账本重建与 /argp 仍读它。
+ * 已剪节点目录条目（seq -> 元数据）。账本重建与 /argp 仍读它。
  */
 export interface PrunedNodeInfo {
     seq: number;

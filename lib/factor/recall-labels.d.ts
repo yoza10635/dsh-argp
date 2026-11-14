@@ -1,7 +1,6 @@
 /**
  * 因子臂召回面（design-2.0 §1.4/§3.2）：`recall_history` + `list_labels` 两个
- * defineTool——2.0 factor-only 引擎**只挂这两个**；1.x graph 臂的
- * recall_pruned/list_pruned/recall 已随图臂退役。
+ * defineTool——2.0 factor-only 引擎**只挂这两个**。
  *
  * 口径：
  *  - 入口是**标签**不是 seq——factor 桩只写标签（seq 不进 prompt 是 §1.2 物理下限的
@@ -13,8 +12,8 @@
  *    说明、压缩事务归零）——发现类工具 list_labels 同付费（0-4 教训：白嫖通道会把
  *    预算挤占面变成发现面本身）。
  *
- * 会话解析与防循环安全阀原在 recall-tools（已退役），2.0 起单点落在本文件——
- * 两个工具共用这一个 resolveSession/上限，不得各写一份。
+ * 会话解析与防循环安全阀单点落在本文件——两个工具共用这一个 resolveSession/上限，
+ * 不得各写一份。
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';

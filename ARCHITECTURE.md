@@ -219,40 +219,39 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | 嵌套深度 | ≤ 4 | 参数数量 | ≤ 5 |
 | 函数长度 | ≤ 80 行 | | |
 
-### 2026-11-13 快照（2.0.0-alpha.0 + 逻辑审查修复；单函数 max；超预算项加粗）
+### 2026-11-14 快照（2.0.0-alpha.4 + 清洁批：死代码/manual-range 族/历史注释清除后）
 
-度量工具：TypeScript 编译器 API（`scripts/analysis-extract.mjs` + `analysis-metrics.mjs`，
-口径同下表注）。"文件代码行"不含空行与纯注释；"总行"接近编辑器所见。
+度量工具同前（`scripts/analysis-extract.mjs` + `analysis-metrics.mjs`，TS 编译器 API）。
+口径：圈/认知 = 文件内全部函数**求和**；嵌套/单函数行 = 文件内**峰值**。"代码行"不含空行
+与纯注释。src 34 文件 / 280 函数；圈 >50 的函数 10 个、认知 >60 的 14 个、嵌套 >6 的 8 个。
 
-| 文件 | 圈 | 认知 | 嵌套 | 函数代码行 | 文件代码行/总行 |
-|---|---|---|---|---|---|
-| `src/factor/engine.ts` | **96** | **220** | **5** | **171** | **460**/667 |
-| `src/prune-tx.ts` | **60** | **116** | **5** | **230** | **430**/631 |
-| `src/argp-graph-engine.ts` | **53** | **97** | **5** | **138** | **606**/1040 |
-| `src/factor/recall-labels.ts` | **38** | **83** | **5** | **132** | 177/242 |
-| `src/session-lifecycle.ts` | **37** | **86** | **6** | **95** | 219/365 |
-| `src/factor/prose-condenser.ts` | **42** | **100** | **5** | **92** | 390/555 |
-| `src/factor/tag-extract.ts` | **33** | **76** | **6** | **82** | 166/221 |
-| `src/argp-command.ts` | **30** | **45** | 3 | 54 | 148/250 |
-| `src/graph-build.ts` | **28** | **110** | **7** | 64 | 98/178 |
-| `src/preset-cleaner.ts` | **21** | **81** | **7** | 62 | 186/311 |
-| `src/factor/factor-ledger.ts` | **20** | **49** | **7** | 57 | 273/373 |
-| `src/log-access.ts` | **20** | **54** | **7** | 40 | 289/471 |
-| `src/peratom/llm-adapter.ts` | **20** | **51** | **5** | 57 | 173/299 |
-| `src/budget.ts` | **19** | **32** | **5** | 57 | 143/231 |
-| `src/client/argp-config-card.ts` | **15** | 24 | 2 | **144** | 365/405 |
-| `src/factor/factor-atoms.ts` | **15** | **36** | 4 | 32 | 183/254 |
-| `src/factor/retention-score.ts` | **14** | **26** | 4 | 50 | 110/182 |
-| `src/cites-strip.ts` | **13** | **33** | **7** | 30 | 52/97 |
-| `src/client/argp-config-controller.ts` | 11 | 21 | 4 | 20 | 366/547 |
-| 其余 13 个 src 文件 | ≤10 | ≤18 | ≤4 | ≤34 | 均 ≤ 159 |
+| 文件 | 函数 | 圈(Σ) | 认知(Σ) | 嵌套(max) | 单函数行(max) | 代码行/总行 |
+|---|---:|---:|---:|---:|---:|---|
+| `src/factor/engine.ts` | 26 | **329** | **709** | 5 | **221** | 743/1025 |
+| `src/factor/recall-labels.ts` | 5 | **89** | **224** | 5 | **285** | 293/389 |
+| `src/prune-tx.ts` | 5 | 85 | 164 | 5 | **340** | 316/470 |
+| `src/argp-graph-engine.ts` | 47 | **237** | 388 | 5 | **237** | 691/1165 |
+| `src/graph-build.ts` | 4 | 31 | 114 | **7** | 84 | 107/187 |
+| `src/factor/prose-condenser.ts` | 16 | 45 | 102 | 5 | 113 | 410/577 |
+| `src/session-lifecycle.ts` | 7 | 37 | 86 | 6 | 115 | 219/365 |
+| `src/preset-cleaner.ts` | 5 | 21 | 81 | **7** | 65 | 186/311 |
+| `src/factor/tag-extract.ts` | 8 | 33 | 76 | 6 | 93 | 166/221 |
+| `src/factor/factor-ledger.ts` | 19 | 21 | 58 | **7** | 68 | 321/460 |
+| `src/log-access.ts` | 14 | 20 | 54 | **7** | 38 | 172/325 |
+| `src/peratom/llm-adapter.ts` | 5 | 20 | 51 | 5 | 70 | 161/274 |
+| `src/argp-command.ts` | 26 | 30 | 45 | 3 | 68 | 148/249 |
+| 其余 21 个 src 文件 | — | ≤19 | ≤43 | ≤7 | ≤147 | 最大 543（config-controller），均 ≤ 365 |
 
-**2.0 读法（诚实记录）**：
+**读法（诚实记录）**：
 
-- 复杂度**总量大幅下降**：退役文件（peratom 管线、图形选择器、token 本体）整文件消失，
-  `argp-graph-engine.ts` 总行 1,646 → 1,012；
-- 复杂度**没有消失，而是集中**：`factor/engine.ts` 的 `planPrune`/`compactIfNeeded` 与
-  `prune-tx.pruneIntervals` 承接了全部剪枝选择/事务细节，是全库仅有的两处超 60；
-- 圈 ≤10 的验收线**未达成**（2.0 也未以"全部达标"为目标——本轮目标是形态收窄）。
-  后续若要压：优先把 `factor/engine.ts` 的打分/选择拆成纯函数，`pruneIntervals` 的
-  区间发射循环抽独立模块。
+- 复杂度集中在四处，全部是**变异锁覆盖的核心算法/事务骨架**：`factor/engine.ts`
+  （decide 193 行 / compactIfNeeded 136 行 / planProtocolGroups 100 行——决策与双闸编排）、
+  `prune-tx.pruneIntervals`（340 行——带 `ended` 状态机的事务骨架，start/summary/逐区间
+  replace/end + 事务后不变量审计 + 错误路径不可双 end）、`recall-labels` 的 recall_history
+  装配（285 行——alpha.4 四不变量）、`argp-graph-engine` 组合根（47 函数挂载全部宿主钩子）。
+- **不做表演性拆分**：这三个大函数各自是一个凝聚事务/决策核，拆分收益（行数）远小于风险
+  （15+ 变异锁回归、错误路径状态机断裂）。`argp-graph-engine.ts` 的体量是组合根设计
+  （"引擎是唯一组合根，向下单向依赖"）的直接结果，非意外膨胀。
+- 清洁批（2026-11-14）移除：13 个零引用导出、手动区间族（compactRegion/compactRegions/
+  selectManualRanges/consolidateTombstones/ManualRangeHost，≈200 行死路径）、log-access 的
+  1.x 日志视图族（≈140 行）、17 处迁移史注释；src 净 −~500 行，圈 >50 函数持平。

@@ -17,8 +17,6 @@ export declare const CLIP_OVERHEAD_CHARS = 160;
 export declare const CLIP_MIN_SAVING_CHARS = 2000;
 /** 夹剪一枚固定占用的字符数（头+尾+结构线）；planPrune 的收益核算按此扣除。 */
 export declare function clipReserveChars(family: ClipFamily): number;
-/** 该尺寸入剪时的净释放（字符）：夹剪成员按净量入目标账。 */
-export declare function clipNetGainChars(sizeChars: number, family: ClipFamily): number;
 /** 夹剪文本识别标记（clipText 首行固定形态；遥测计数用，勿改 clipText 结构线）。 */
 export declare const CLIP_MARK: string;
 export interface ClipEmitInput {

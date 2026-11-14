@@ -48,22 +48,6 @@ export declare const TOMBSTONE_PREFIX = "[elided";
 /** tool 占位墓碑前缀（冒号形态）——`isMergeableTombstoneText` 的"不可合并"判别子。 */
 export declare const TOOL_TOMBSTONE_PREFIX = "[elided:";
 /**
- * 墓碑长度安全阀（G1 终止态排除的例外上限）。
- *
- * G1 把"文本已是墓碑"当作**终止态**（再剪一次仍产出墓碑 = 收益 0，实测占全部 replace
- * 的 76.2%）。但极长墓碑若被一律排除会**卡住地板**：长度是"还有东西可丢"的弱信号，
- * 超长说明它本身承载可观字符（闭包墓碑曾内联整行 rootPreview，无上限）。
- * ⇒ 超过本阈值的墓碑仍允许参剪（宁少剪，不卡地板；少剪是安全方向）。
- */
-export declare const TOMBSTONE_MAX_CHARS = 200;
-/**
- * 闭包墓碑里 root 预览的截断长度。
- *
- * 不截断时 root 预览可整行内联 ⇒ 单条闭包墓碑可达数千字符，既抬地板又让 G1 的长度
- * 安全阀失效。截断后闭包墓碑回到百字符内。
- */
-export declare const CLOSURE_ROOT_PREVIEW_MAX_CHARS = 40;
-/**
  * tool 占位墓碑（剪 R 而保留 issuer A 时使用）。
  *
  * 保留 `callId` 配对是**协议硬要求**（`assertToolResultRewrite` 只允许改 inner text），
@@ -73,10 +57,6 @@ export declare const CLOSURE_ROOT_PREVIEW_MAX_CHARS = 40;
 export declare function toolTombstone(originalSeq: number): string;
 /** 单节点/区间 user 墓碑（`start === end` 时退化为单节点形态）。 */
 export declare function seqRangeTombstone(start: number, end: number): string;
-/** 闭包墓碑（整段闭包生命周期退休）。`rootPreview` 为空串时省略 root 片段。 */
-export declare function closureTombstone(closureId: string, start: number, end: number, rootPreview: string): string;
-/** 聚合墓碑（tombstone-merge：多条墓碑归并为一条）。 */
-export declare function consolidatedTombstone(count: number, start: number, end: number): string;
 /**
  * factor 臂中断轮半截 A 的 user 墓碑（P6-③ 裁定 3）。不引 `recall_pruned`——factor 臂
  * 无该通道（假通道纪律同 factor 桩"禁引退役工具名"）；原文在 append-only 日志按 seq 检索。
@@ -103,15 +83,6 @@ export declare function isToolTombstoneText(text: string): boolean;
  * 摘要，仍含信息，应当可继续被剪。
  */
 export declare function isTombstoneText(text: string): boolean;
-/**
- * 宽松旧版墓碑判据（**只允许与 replace 事件锚串联使用**）：墓碑前缀 + `recall_pruned(`
- * + ARGP 自我标识（`pruned by ARGP` / `旧版本结果已压缩` / `tombstone-merge`）。
- *
- * 用途：覆盖枚举不到的**历史中间版本**墓碑（1.4–1.6 的闭包/聚合措辞微调过多次）。
- * 它们全部是 replace 事件，事件锚已排除伪造；宽松文本只影响"真墓碑漏认"方向
- * （漏认 ⇒ 空转回归，宁可宽认）。**禁止**脱离事件锚单独使用本判据。
- */
-export declare function isLooseLegacyTombstoneText(text: string): boolean;
 /**
  * 是否为**可合并**墓碑（`consolidateTombstones` 的判据）。
  *

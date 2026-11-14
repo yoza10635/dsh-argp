@@ -5,9 +5,8 @@
  * 浓缩闸二）、溢出 400 恢复、手动 `/compact`、`/argp` 只读状态。
  * 事务内核 = factor 引擎（R 贴标剪枝，0-LLM）+ 散文浓缩（唯一 LLM 摘要通路）。
  *
- * 1.x 的 stage-2 图剪（建图/闭包/版本链/cites 边/catalog/list_pruned 召回面）已整体
- * 退役：老方案锁定在 npm latest 1.11.2（tag v1.11.2）。读侧兼容保留：老墓碑文法、
- * 老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result 克隆配对契约。
+ * 读侧兼容：老墓碑文法、老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result
+ * 克隆配对契约（老会话档案可回放）。
  *
  * 循环 import 规约：引擎是唯一组合根，向下单向依赖各功能模块；各模块经窄接口
  * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
@@ -19,7 +18,7 @@ import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
-export type { NodeState, LogRow, LogRowType } from './log-access.js';
+export type { NodeState } from './log-access.js';
 export { eventText } from './log-access.js';
 import type { Atom } from './argp-types.js';
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js';
@@ -176,8 +175,6 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly tokenMeter;
     /** 遥测数组容量上限（P4.5：records/recallCalls/auditWarnings 有界）。 */
     readonly telemetryCap: number;
-    /** prune-tx 接口成员（factor 事务不读；图时代的墓碑归并阈值，保留默认值供旧骨架）。 */
-    readonly tombstoneMergeMinRun = 8;
     get records(): GraphPruneRecord[];
     get recallCalls(): {
         seq: number;
@@ -413,7 +410,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     /**
      * factor 臂轮内维护（**仅 ARGP_FACTOR_PRESSURE=1 逃生口**，P6-④ 前旧世界复现）：
      * 先词表 note（旧时机 = 每 pre-step），后压力剪（估算驱动）。缺省路径（收敛后）不进本函数
-     * ——压力剪退役、note 迁压缩事务收尾（refreshFactorNoteSafe）。
+     * ——note 已迁压缩事务收尾（refreshFactorNoteSafe）。
      */
     private factorPressure;
     /**

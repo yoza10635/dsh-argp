@@ -63,12 +63,6 @@ export declare function eventTextOf(event: SessionEvent): string;
  */
 export declare function detectOpenTurn(session: Session): number | null;
 /**
- * 主链 reasoningEffort：从最近一条携带 `config.reasoningEffort` 的 `request/header`
- * 事件重建（LlmCallConfig 无 chat_template_kwargs 字段，只有 reasoningEffort——
- * 故从它重建，非读现成 ctk）。无声明返回 undefined。
- */
-export declare function mainChainReasoningEffort(session: Session): string | undefined;
-/**
  * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
  *
  * 分工约定：**ARGP 内部模型（原子、区间、账目、预算）一律用裸 `number`**——内部要做
@@ -151,55 +145,3 @@ export declare function nodeStateOf(session: Session, seq: number, isShadowed: (
 export declare function resolveRootSeqs(events: readonly {
     surfaceOp?: unknown;
 }[], seq: number): number[];
-export type RecallOutcome = {
-    ok: true;
-    state: NodeState;
-    text: string;
-} | {
-    ok: false;
-    reason: 'out-of-range';
-    total: number;
-} | {
-    ok: false;
-    reason: 'no-text';
-    state: NodeState;
-};
-/**
- * 按 seq 从 append-only 日志取回原文，不再要求节点属于 pruned 集合。
- * 只有越界（日志里没有这个 seq）才算失败。
- */
-export declare function recallFromLog(session: Session, seq: number, isShadowed: (seq: number) => boolean, textOf: (session: Session, seq: number) => string): RecallOutcome;
-/** 状态标签行：模型必须知道取回内容当前是否可见，才能正确执行引用契约。 */
-export declare function stateHeader(seq: number, state: NodeState): string;
-/** 把 RecallOutcome 渲染成工具返回文本。budget 用于对正文套字数预算。 */
-export declare function formatRecallOutcome(toolName: string, seq: number, outcome: RecallOutcome, budget?: (text: string) => string): string;
-/** 日志行的展示类型（比 AtomType 多 T=tool/call 与 other，因为区间模式会扫到非 surface 事件）。 */
-export type LogRowType = 'U' | 'A' | 'R' | 'X' | 'T' | 'other';
-export declare function logRowType(eventType: string, data: Record<string, unknown> | undefined): LogRowType;
-export interface LogRow {
-    seq: number;
-    type: LogRowType;
-    turn: number;
-    state: NodeState;
-    firstLine: string;
-}
-export interface LogRangeQuery {
-    fromSeq: number;
-    toSeq: number;
-    turn?: number;
-    type?: string;
-    keyword?: string;
-    limit: number;
-}
-export interface LogRangeResult {
-    rows: LogRow[];
-    scanned: number;
-    truncated: boolean;
-}
-/**
- * 区间发现原语：列出 [fromSeq..toSeq] 内所有有正文的日志节点（含 live / off-surface）。
- * 这是 (b) 里容易被漏掉的一半 —— 去门控只解决"知道 seq 就能取"，区间模式解决
- * "模型怎么知道被窗口丢掉的节点的 seq"，把 list 从「剪枝清单」升级为「可见窗口补集查询」。
- */
-export declare function queryLogRange(session: Session, query: LogRangeQuery, isShadowed: (seq: number) => boolean, textOf: (session: Session, seq: number) => string): LogRangeResult;
-export declare function formatLogRow(row: LogRow, extra?: string): string;

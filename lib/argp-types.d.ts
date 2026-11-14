@@ -5,8 +5,7 @@
  * 唯一依赖是 `cites-strip` 的 `ParsedCite`（type-only import，编译期擦除；
  * cites-strip 本身是零依赖叶子），故运行时零依赖、类型图无环。
  *
- * 2.0 factor-only：图臂的边类型（SemanticEdge/DeterministicEdge/EdgeLevel/EDGE_WEIGHTS）
- * 随 stage-2 图剪退役；Atom 保留 cites 字段——读侧仍要解析历史 `data.argpCites`。
+ * Atom 保留 cites 字段——读侧仍要解析历史 `data.argpCites`（老会话回放）。
  *
  * 留在 hub 的类型：`ArgpGraphConfig`（构造配置面），按「深度依赖则留 hub」原则保留在
  * 引擎侧（它引用引擎的旋钮面，迁入本叶子会形成类型环）。

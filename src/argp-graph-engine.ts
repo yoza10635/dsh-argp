@@ -5,9 +5,8 @@
  * 浓缩闸二）、溢出 400 恢复、手动 `/compact`、`/argp` 只读状态。
  * 事务内核 = factor 引擎（R 贴标剪枝，0-LLM）+ 散文浓缩（唯一 LLM 摘要通路）。
  *
- * 1.x 的 stage-2 图剪（建图/闭包/版本链/cites 边/catalog/list_pruned 召回面）已整体
- * 退役：老方案锁定在 npm latest 1.11.2（tag v1.11.2）。读侧兼容保留：老墓碑文法、
- * 老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result 克隆配对契约。
+ * 读侧兼容：老墓碑文法、老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result
+ * 克隆配对契约（老会话档案可回放）。
  *
  * 循环 import 规约：引擎是唯一组合根，向下单向依赖各功能模块；各模块经窄接口
  * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
@@ -27,7 +26,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
-export type { NodeState, LogRow, LogRowType } from './log-access.js'
+export type { NodeState } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
 // 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
@@ -251,8 +250,6 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   /** 遥测数组容量上限（P4.5：records/recallCalls/auditWarnings 有界）。 */
   readonly telemetryCap!: number
-  /** prune-tx 接口成员（factor 事务不读；图时代的墓碑归并阈值，保留默认值供旧骨架）。 */
-  readonly tombstoneMergeMinRun = 8
   // ---------------------------------------------------------------------
   // 会话运行时状态（1-1 起按会话分桶）：以下成员住在 SessionRuntimeState
   //（WeakMap<Session> 分桶，见 sessionStates/stateOf）。引擎上的 getter/setter 是
@@ -361,7 +358,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.pressureTriggerEnabled = resolvePressureTriggerEnabled()
     // §9.37 出口闸：缺省开（撞墙重试重灌链根除），ARGP_FACTOR_EGRESS=0 仅关给对照臂。
     this.egressEnabled = resolveEgressEnabled()
-    // 2.0 召回面 = recall_history / list_labels（标签制）；图时代三件套已退役。
+    // 召回面 = recall_history / list_labels（标签制）。
     registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
     this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩 + 出口闸；召回面 = recall_history/list_labels')
     // /argp 状态命令：只读出口，放在工具注册之后（依赖 commands 服务，缺失时
@@ -456,8 +453,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= this.maxOverflowRetries) return next()
-      // 2.0：溢出恢复只剩一步（forcePrune 后 retry）。1.x 的 per-atom 第②步随
-      // peratom 管线退役；重试上限缺省 1（对齐官方 compaction-basic）。
+      // 溢出恢复只剩一步（forcePrune 后 retry）；重试上限缺省 1（对齐官方 compaction-basic）。
       const session = agent.session
       const genBefore = session.surface.replaceGeneration
       let result: CompactionResult | null
@@ -1098,8 +1094,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     _agent: CompactionAgentContext,
     _signal?: AbortSignal,
   ): Promise<CompactionResult> {
-    // factor 臂只剪 R（A 永不入剪枝区间），没有"按区间剪"的语义：区间选择是图臂的
-    // 极大连续段逻辑，随 stage-2 一并退役。
+    // factor 臂只剪 R（A 永不入剪枝区间），没有"按区间剪"的语义。
     throw new Error('[argp-factor] 2.0 factor-only 引擎不支持按区间手动压缩（请在 UI 用 /compact 全量压缩）')
   }
 
@@ -1128,7 +1123,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /**
    * factor 臂轮内维护（**仅 ARGP_FACTOR_PRESSURE=1 逃生口**，P6-④ 前旧世界复现）：
    * 先词表 note（旧时机 = 每 pre-step），后压力剪（估算驱动）。缺省路径（收敛后）不进本函数
-   * ——压力剪退役、note 迁压缩事务收尾（refreshFactorNoteSafe）。
+   * ——note 已迁压缩事务收尾（refreshFactorNoteSafe）。
    */
   private async factorPressure(
     agent: CompactionAgentContext & { steer(message: unknown): unknown },

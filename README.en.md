@@ -36,6 +36,31 @@ Summarizer-style compaction (an LLM rewriting history) pays three prices:
 
 The factor engine's answer: **eviction is deterministic** — same input, same output, 0 LLM, recomputable; **forgetting is reversible** — a stub is one label line, the original comes back byte-for-byte from the append-only log; **the LLM does the one thing it is good at** — prose condensation, only inside a transaction, only when both gates pass.
 
+## Three-scheme measured comparison (T24-J, six arms, 2026-11-14)
+
+The same 46-turn workload (same prompts, same materials, fully serial single-arm, same
+endpoint/model/window 262,144); per-turn bill = `miss + 0.06×cache + 3×output`; cache-hit
+rate and peak are actual request totals over the whole run:
+
+| Dimension | 1.x legacy (1.11.2 graph+peratom) | Native (host compaction-basic) | **2.x factor** |
+|---|---|---|---|
+| Compaction mechanism | LLM summaries ×6 + continuous prune rewrites ×768 + system-head rewrite every turn | est-driven pre-clamp prune ×45 + LLM summaries ×6 (every 5-6 turns) | **deterministic label group-prune (0 LLM)** + prose condensation dual gate + egress gate |
+| Wall clock | 114.7 min | 61.8 min | **49.4–51.6 min (−57%)** |
+| Bill | 13.09M | 5.72M | **5.39–5.72M (−59% vs 1.x)** |
+| Prefix cache hit | 0.833 (head rewrites wipe the cache every turn) | 0.956 | **0.970–0.974** |
+| Peak real-context utilization | 80% (no output reserve, 51K short of a 400) | 51% (est trigger fires early, half the declared window unused) | **73–74%** (egress-gate precise reserve) |
+| Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label |
+| Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
+| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | 6/10 (label recall, 1× the cost) |
+| Hidden artifact suite | 19/20 | 18/20 | 19–20/20 |
+
+Reading notes: n=1 per arm (single runs, not averages); wall clock includes day-vs-night
+server noise (±7%, controlled with compaction-free turns); 1.x's P45 edge comes from its
+seq-addressed recall stack — a real capability, at a disproportionate price; the no-tools
+needle turn (T44) measures memory WITHOUT a recall channel, not compaction quality
+(wording experiment in the report §6.6). Full six-arm data lives in the CHANGELOG
+(2.0.0-alpha.4) and the repository reports.
+
 ## How it works
 
 ### Compaction transaction (prune-tx)
@@ -108,8 +133,8 @@ recall: 12 calls · 9 hits (75%)
 
 ## Verification
 
-- **T24-J R1 (2026-11-13, four arms × 46 turns, 1M window)**: all four arms finished; with the double-compaction order (factor prune → prose condense) 53–96% of entering prose was condensed, all over the line; the clean-window cost of the cand arm was +41%, attributed to that benchmark's domain corpus (tool surface 13.5%) — the real-domain corpus has an 86.5% tool surface. **The 2.0-alpha comparison vs 1.11.2 / native summarizer runs once alpha is ready** (the R2 fixed-world comparison was invalidated by the contaminated old-world run).
-- **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (237 tests, 235 pass / 0 fail / 2 skipped) + build; egress tests EG-1…13b include the cold-resume backfill lock.
+- **T24-J six-arm comparison (2026-11-14, 46 turns × 6 arms, all serial finishers)**: alpha2/alpha3/alpha4/alpha5 (2.0 factor generations) + native compaction-basic + the 1.11.2 legacy scheme, identical turns2 protocol — the source of the table above; every 2.0 generation finished with zero dead turns and zero 400s; recall face v2 (alpha.4) achieved zero empty label mismatches, the per-turn recall-budget reset was used by the model in production, and long-term memory hit 6/10, the best factor result.
+- **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (275 tests, 273 pass / 0 fail / 2 skipped) + build; egress tests EG-1…14b include the cold-resume backfill lock; recall-face v2 assembly invariants and the per-turn budget reset have mutation locks.
 - Historical 1.x graph-engine measurements (four-arm 7/7 probes, 50-turn t-long, etc.) are in the CHANGELOG and git history; they are **not 2.0 numbers** and must not be quoted as such.
 
 ## Known limits
@@ -123,7 +148,7 @@ recall: 12 calls · 9 hits (75%)
 
 | Experiment | Command | What it verifies |
 |---|---|---|
-| Full gate | `npm run check` | typecheck / spike types / smoke / 237 tests / build |
+| Full gate | `npm run check` | typecheck / spike types / smoke / 275 tests / build |
 | Egress unit tests | `npm run test -- --test-name-pattern=EG-` | three-source budget, cold resume, hatch exclusivity |
 | Corpus replay | `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts` | offline replay (skips gracefully when the corpus dir is absent) |
 

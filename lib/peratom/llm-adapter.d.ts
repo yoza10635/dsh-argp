@@ -55,15 +55,3 @@ export interface WireLogger {
     debug: (msg: string) => void;
 }
 export declare function serializeWireMessages(messages: readonly Message[], logger?: WireLogger): Record<string, unknown>[];
-/**
- * dsh-llm `ToolSchema[]` → OpenAI wire tools。
- *
- * 🔴 必须与 pi-ai openai-completions 的 tools 序列化**逐字节一致**（tools 在 prompt
- * 头部，任何差异 → 整段前缀分叉 → KV 全废）。pi-ai 行为（constrained-sampling.js
- * + openai-completions.js 实测）：标准工具（无 constrainedSampling）
- * `resolveJsonSchemaStrictSampling` 返回 undefined → wire 带 **`strict: false`**、
- * `parameters` 原样透传（`getJsonSchemaToolParameters` 仅 strict===true 时改写）。
- * 字段序 = agent 真身 wire 实测序：name, description, parameters, strict。
- * （2026-09-18 A-2 落地实锤：漏掉 `strict` 使 LCP 从 100% 塌到 454。）
- */
-export declare function serializeWireTools(tools: readonly ToolSchema[] | undefined): Record<string, unknown>[] | undefined;

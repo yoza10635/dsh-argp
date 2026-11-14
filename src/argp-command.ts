@@ -200,8 +200,7 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
     ? host.windowTokens
     : (st !== null ? st.resolvedWindowTokens : DEFAULT_WINDOW_TOKENS)
   // 与 budget.scaleBudgets 同口径：retain = trigger × retainRatio（比例值），显式值走
-  // capRetain 绝对上界。旧公式（visibleChars × ratio）随图臂退役——它把"可压缩内容"
-  // 当基数，小 surface 会话会报出比引擎实际目标低一个数量级的 retain。
+  // capRetain 绝对上界（小 surface 会话的 retain 不因基数取法被低报一个数量级）。
   let retain: number
   let capNote = ''
   if (host.explicitRetainTokens) {

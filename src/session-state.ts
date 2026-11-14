@@ -12,8 +12,7 @@
  * 读"当前焦点会话"的桶（sync 期间焦点不可变，安全）；**异步路径**（召回工具执行、
  * 账本重建）显式线程 session，不得依赖焦点指针。
  *
- * 2.0（factor-only）：图臂专属字段（边集/闭包/frozen catalog/守卫覆盖/关键词召回统计）
- * 随 stage-2 图剪退役；保留的全是 factor 事务与本会话可观测面实际读写的字段。
+ * 保留的全是 factor 事务与本会话可观测面实际读写的字段。
  *
  * 依赖方向：本模块是**类型叶子**——只 import type 与无依赖的 constants 常量，
  * 无运行时依赖、无环。
@@ -26,8 +25,7 @@ import type { GraphPruneRecord } from './prune-tx.js'
 import type { NodeState } from './log-access.js'
 
 /**
- * 已剪节点目录条目（seq -> 元数据）。原定义在 prune-selection（图剪选择器），
- * 2.0 随选择器退役迁入本叶子——账本重建与 /argp 仍读它。
+ * 已剪节点目录条目（seq -> 元数据）。账本重建与 /argp 仍读它。
  */
 export interface PrunedNodeInfo {
   seq: number

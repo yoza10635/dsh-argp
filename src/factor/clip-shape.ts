@@ -58,11 +58,6 @@ export function clipReserveChars(family: ClipFamily): number {
   return s.head + s.tail + CLIP_OVERHEAD_CHARS
 }
 
-/** 该尺寸入剪时的净释放（字符）：夹剪成员按净量入目标账。 */
-export function clipNetGainChars(sizeChars: number, family: ClipFamily): number {
-  return Math.max(0, sizeChars - clipReserveChars(family))
-}
-
 /** 夹剪文本识别标记（clipText 首行固定形态；遥测计数用，勿改 clipText 结构线）。 */
 export const CLIP_MARK = STUB_PREFIX + ' clip '
 

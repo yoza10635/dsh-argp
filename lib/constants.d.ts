@@ -34,8 +34,6 @@ export declare const HOST_CHARS_PER_TOKEN = 4;
  * 双重验锁：摘掉任一发射点的本函数调用必须变红。
  */
 export declare function shadowedTokensOf(chars: number): number;
-/** A 形态前缀预算（token）。peratom compressor/declarer prefixBudgetTokens 缺省锚。 */
-export declare const DEFAULT_PREFIX_BUDGET_TOKENS = 132000;
 /** 触发线占上下文比例（windowTokens 未显式指定时按 contextWindow × 此比例解析）。 */
 export declare const DEFAULT_WINDOW_RATIO = 0.8;
 /** 保留目标占触发线比例（retainTokens 未显式指定时按 windowTokens × 此比例解析）。 */
@@ -65,10 +63,6 @@ export declare const DEFAULT_LLM_TIMEOUT_MS = 180000;
  * 传空数组 = 关闭本门控，退回 v1.6.0 行为（这些消息照旧进候选）。
  */
 export declare const DEFAULT_SKIP_CONTEXT_FORMS: readonly string[];
-/** 贪心剪枝最大 pass 数（graph 引擎 maxPasses 缺省锚）。
- *  2026-09-22：由 16 提到 10000——剪枝循环正常靠「压缩率达标 / 全保护 / 无进展」自然终止，
- *  此值退化为纯安全上限（防极端空转），不再作为「每次压缩只剪 16 组」的增量节流阀。 */
-export declare const DEFAULT_MAX_PASSES = 10000;
 /**
  * 焦点文档 hard 宽度熔断阈值（design-2.0 §2.5 v1.1 用户裁定 + spike54 宽度账）：
  * tiered 模式下焦点文档全枚 hard，但若其 hard 候选字节占比超过本阈值，说明焦点
