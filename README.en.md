@@ -8,9 +8,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: prunes only stale, superseded, out-of-focus tool results; pruned originals come back verbatim by label; over-window requests are compacted before sending.
+**Long sessions fill the window, and per-turn LLM summaries are expensive while shredding the prefix cache.** This plugin is a context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): only stale, superseded, out-of-focus tool results are pruned deterministically by entity label (0 LLM); pruned originals stay in the log and come back verbatim by label; conversation prose is summarized only inside compaction transactions; requests about to overflow the window are **compressed before sending**.
 
-> The 1.x graph engine is retired: the old scheme is frozen at npm **`1.11.2`** (tag `v1.11.2`). 2.x maintains only the factor engine; graph-era knobs in old profiles are tolerated with a warning.
+46-turn benchmark: 43.3 min wall clock · ¥3.69 DeepSeek off-peak reference price · 0.978 prefix cache hit (n=1, see table notes).
 
 ## Install
 
@@ -18,7 +18,7 @@
 dsh plugin --profile <name> add dsh-argp
 ```
 
-**Mounted on install, no manual wiring**: the package ships its own bundle patch (disables the stock `compaction-basic` and mounts this plugin); the profile layer only carries config overrides.
+**Works out of the box, no manual wiring**: the package ships its own bundle patch (disables the stock `compaction-basic` and mounts this plugin); the profile layer only carries config overrides.
 
 **Host requirement**: DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0` (prereleases participate in matching; the current latest `0.2.2-rc.3` is tested).
 
@@ -30,7 +30,7 @@ dsh plugin --profile <name> add dsh-argp
 
 - Type **`/argp`** in a session: budget, trigger line, prune and recall stats.
 - **`/compact`**: run one manual compaction (full prune + prose condensation).
-- Compaction is automatic: when context approaches the window, the egress gate stops the over-window request, runs the standard compaction transaction, then sends; provider 400 remains the last-resort net.
+- Automatic compaction: when a request is about to overflow the window, the standard compaction transaction runs first, then the request is sent; provider 400 remains the last-resort net.
 - Two recall tools are automatically available to the model: `recall_history` (verbatim text by label) and `list_labels` (vocabulary browser).
 
 ```text
@@ -40,20 +40,17 @@ prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
 ```
 
-`source=anchored` means usage is anchored to provider-reported truth; `ARGP inactive` means the session hit `skipPresets`.
-
-## Zero configuration
-
-Since 2.0.0 there are no settings knobs: the six strategy values are fixed at a trigger
-line of 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn,
-10 vocabulary rows per category, and 5 default recall items. Same-named keys in old
-profiles are tolerated with a warning and ignored; behavior always follows the fixed defaults.
+`source=anchored` means usage is anchored to provider-reported truth (the most accurate); `ARGP inactive` means the session hit `skipPresets`.
 
 ## How it works
 
+All strategy values are fixed — **zero knobs** (no settings page): trigger line 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn, 10 vocabulary rows per category, 5 default recall items; same-named keys in old profiles are tolerated with a warning.
+
+**Governing principle: tool results may be pruned; conversation prose is only touched inside compaction transactions.**
+
 - **Eviction (0 LLM)**: tool results get entity labels (`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`); deterministic staleness (superseded reads, newer versions, non-focal turns) scores them, and evictable ones become a one-line labeled stub. Prose is never evicted; focal turns are protected.
 - **Prose condensation**: the plugin's only LLM path, transaction-only, fired only when both gates pass (prose ≥50% of the declared window AND context ≥ 0.8× the declared window); empty output or failure keeps the original.
-- **Egress gate**: before a request is sent, anchored arithmetic decides whether it would necessarily overflow — if so it is not sent; compress first, then send. Provider 400 is the last-resort net.
+- **Pre-send overflow check (compress first, then send)**: before a request is sent, anchored arithmetic decides whether it would necessarily overflow — if so it is not sent; compress first, then send. Provider 400 is the last-resort net.
 - **Recall**: stubs carry labels; the original text comes back verbatim from the log by label. Both recall tools share a character budget (5% per call / 10% cumulative of the window) and state exhaustion explicitly. After compaction, the vocabulary note tells the model to recall by label.
 
 Compared with LLM-summary compaction: eviction is deterministic and recomputable; forgetting is reversible (the original never leaves the log); history is rewritten only inside compaction transactions, so the prefix cache is not shredded by per-turn rewrites. Transaction protocol, host-compat surface and invariants live in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -82,13 +79,13 @@ Note:
 
 - **Base**: local Qwen3.8-Flash-Next (declared window 262,144), same 46-turn workload, fully serial single-arm, n=1 per arm.
 - **Token and price caliber**: token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion); the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**.
-- **v2.0.0 column**: the 46-turn run with the egress gate off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
+- **v2.0.0 column**: the 46-turn run with the pre-send overflow check off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
 - **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable because some material pages were never label-covered, and the model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
 - **T0**: hidden artifact suite 20/20; full comparison data and per-turn detail live in `CHANGELOG` 2.0.0.
 
 ## Model requirements
 
-- **Eviction and the egress gate do not depend on the model**: identical behavior on any model (0 LLM determinism).
+- **Eviction and the pre-send overflow check do not depend on the model**: identical behavior on any model (0 LLM determinism).
 - **Prose condensation** needs an LLM route for the compaction purpose; by default it follows the host's `agent.options`. If the route is unavailable, condensation is disabled, zero network, originals kept. Condensation quality scales with instruction-following, but the failure direction is always "condense less".
 - Labels come from tool arguments and outputs; the model is not required to emit any citation protocol.
 
@@ -102,8 +99,12 @@ Note:
 ## Development & verification
 
 - `npm run check`: typecheck + smoke + unit tests (269) + build.
-- Egress-gate tests: `npm run test -- --test-name-pattern=EG-`.
+- Pre-send overflow check tests: `npm run test -- --test-name-pattern=EG-`.
 - Per-turn detail for the 46-turn comparison lives in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
+
+## Upgrading from 1.x
+
+The 1.x graph engine is retired: the old scheme is frozen at npm **`1.11.2`** (tag `v1.11.2`). 2.x maintains only the factor engine; graph-era knobs in old profiles are tolerated with a warning, and the historical CHANGELOG is kept.
 
 ## Feedback
 

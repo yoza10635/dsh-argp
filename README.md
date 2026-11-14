@@ -8,9 +8,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh 的上下文压缩插件**（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）：只剪过时、被取代、非焦点轮的工具结果，剪掉的原文按标签逐字可取回；必超窗的请求**先压后发**。
+**长会话吃满窗口，逐轮 LLM 摘要贵且打碎前缀缓存。** 本插件是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的上下文压缩插件：只把「过时、被取代、非焦点轮」的工具结果按实体标签**确定性剪掉（0 LLM）**，剪掉的原文留在日志、按标签逐字取回；对话正文只在压缩事务内做 LLM 摘要；请求即将超窗时**先压缩再发送**。
 
-> 1.x 图引擎已退役：老方案冻结在 npm **`1.11.2`**（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 里的 graph 旋钮会被宽容读取并告警忽略。
+46 轮实测：墙钟 43.3 min · DeepSeek 闲时参考价 3.69 元 · 前缀缓存命中 0.978（n=1，口径见表后注）。
 
 ## 安装
 
@@ -18,7 +18,7 @@
 dsh plugin --profile <name> add dsh-argp
 ```
 
-**安装即挂，无需手工配置**：插件包自带 bundle patch（关掉宿主自带的 `compaction-basic` 并挂载本插件），profile 层只做配置覆盖。
+**装完即用，无需手工配置**：插件包自带 bundle patch（关掉宿主自带的 `compaction-basic` 并挂载本插件），profile 层只做配置覆盖。
 
 **宿主要求**：DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0`（预发布参与匹配；当前最新 `0.2.2-rc.3` 已实测）。
 
@@ -30,7 +30,7 @@ dsh plugin --profile <name> add dsh-argp
 
 - 会话里输入 **`/argp`**：查看预算、触发线、剪枝与召回统计。
 - **`/compact`**：手动压缩一次（全量剪 + 散文浓缩）。
-- 自动压缩：上下文接近窗口时，出口闸先拦下超窗请求 → 执行标准压缩事务 → 再发；provider 400 只作最后兜底。
+- 自动压缩：请求即将超窗时，先执行标准压缩事务再发送；provider 400 只作最后兜底。
 - 召回工具对模型自动可用：`recall_history`（按标签取回原文）、`list_labels`（浏览词表）。
 
 ```text
@@ -40,19 +40,17 @@ prunes: 7 · last 3 ranges / 41 items / 12.8k→3.1k · pruned index 156
 recall: 12 calls · 9 hits (75%)
 ```
 
-`source=anchored` 表示占用锚定在 provider 回报的真实 usage；`ARGP inactive` 表示命中 `skipPresets`。
-
-## 零配置
-
-2.0.0 起没有设置页旋钮：六项策略值固定为触发线 0.8×声明窗、保留目标 0.2、估算 3.5
-字符/token、焦点 1 轮、词表每类 10 行、召回缺省 5 条。老 profile 里的同名键会被宽容
-读取并告警忽略，行为始终按固化缺省运行。
+`source=anchored` 表示占用锚定在 provider 回报的真实 usage（最准）；`ARGP inactive` 表示命中 `skipPresets`。
 
 ## 它怎么工作
 
+全部策略值固化、**零旋钮**（无设置页）：触发线 0.8×声明窗、保留目标 0.2、估算 3.5 字符/token、焦点 1 轮、词表每类 10 行、召回缺省 5 条；老 profile 同名键宽容读 + 告警。
+
+**总原则：工具结果可剪，对话正文只在压缩事务内动。**
+
 - **剪枝（0 LLM）**：工具结果按实体身份贴标签（`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`），按"过期读、被新版取代、非焦点轮"确定性打分，可剪的换成一行标签桩；散文永远不剪，焦点轮受保护。
 - **散文浓缩**：插件唯一的 LLM 通路，只在压缩事务内、两道闸都过线时触发（散文占声明窗 ≥50%，且上下文 ≥ 0.8×声明窗）；空输出或异常保原文。
-- **出口闸**：在请求发出前用 anchored 算术判断"这一发必然超窗"，是就不发——先压缩再发；provider 400 只作兜底。
+- **超窗预检（先压后发）**：在请求发出前用 anchored 算术判断"这一发必然超窗"，是就不发——先压缩再发；provider 400 只作兜底。
 - **召回**：桩里带标签，原文从日志按标签逐字取回；两个召回工具共享单次 5% / 累计 10% 窗的字符预算，耗尽会显式说明。压缩后词表 note 会提示模型按标签召回。
 
 相比 LLM 摘要式压缩：剪枝同输入同输出、可复算；遗忘可撤销（原文一直在日志里）；历史只在压缩事务里改写，不会被逐轮重写打碎前缀缓存。事务协议、宿主兼容面与不变量见 [ARCHITECTURE.md](ARCHITECTURE.md)。
@@ -80,13 +78,13 @@ recall: 12 calls · 9 hits (75%)
 
 - **数据基座**：本地 Qwen3.8-Flash-Next（声明窗 262,144）、同一 46 轮工作量、全串行单臂、每臂 n=1。
 - **token 与价格口径**：token 按 provider 回报 usage 全程求和（miss=输入未命中，hit=输入命中，output=输出）；参考价按 **DeepSeek 闲时 1 / 0.02 / 4 元每百万 tokens** 折算。
-- **v2.0.0 列**：出口闸关配置的 46 轮实测；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。
+- **v2.0.0 列**：超窗预检关闭配置的 46 轮实测；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。
 - **长程记忆**：v2.0.0 单轮先答 3 问全中（覆盖 3/10），追加 3 个补充召回轮（每轮预算重置）补回 5 问 → **8/10**；剩余 2 问因个别材料页未被标签覆盖而不可召回，模型如实答 C。1.x 的 7/10 来自 seq 直取召回栈（`recall`/`recall_detail`），能力真实，代价 2.4× 价格/2.3× 墙钟。
 - **T0**：隐藏工件 20/20；完整对照数据与逐轮明细见 `CHANGELOG` 2.0.0。
 
 ## 模型要求
 
-- **剪枝与出口闸不依赖模型**：任何模型上行为一致（0 LLM 确定性）。
+- **剪枝与超窗预检不依赖模型**：任何模型上行为一致（0 LLM 确定性）。
 - **散文浓缩**需要一条 compaction 用途的 LLM 路由，缺省自动跟随宿主 `agent.options`；路由不可用时浓缩自动关闭、零网络、保原文。浓缩质量随模型指令遵循能力缩放，失败方向永远是"少压"。
 - 标签来自工具参数与输出，不要求模型配合输出任何引用协议。
 
@@ -100,8 +98,12 @@ recall: 12 calls · 9 hits (75%)
 ## 开发与验证
 
 - `npm run check`：typecheck + smoke + 单测（269 测）+ 构建。
-- 出口闸单测：`npm run test -- --test-name-pattern=EG-`。
+- 超窗预检单测：`npm run test -- --test-name-pattern=EG-`。
 - 46 轮对照的逐轮明细见 `CHANGELOG` 2.0.0；1.x 实验脚本归档在 `spike/retired-1x/`（不参与编译）。
+
+## 从 1.x 升级
+
+1.x 图引擎已退役：老方案冻结在 npm **`1.11.2`**（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 里的 graph 旋钮会被宽容读取并告警忽略，历史 CHANGELOG 保留。
 
 ## 问题反馈
 
