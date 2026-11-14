@@ -36,9 +36,11 @@
 - **T24-J 第 7 臂 egress0**（出口闸价值裁断跑）：alpha5 同款 + `ARGP_FACTOR_EGRESS=0` +
   length-stop 恢复链兜底，bench 克隆运行时（rc.3 asar 手术 + stub 双验证）。46/46 零死亡：
   **bill 8.59M（较 alpha5 +50%）/ 墙钟 60.6min（+17%，慢回原生水平）/ cache 体积 +65%**
-  （89.2M vs 54.2M，账单分解逐项吻合）/ 峰值 305K = 申报窗 116%；**全程零压缩零撞墙**
-  零 max-tokens。**裁定：出口闸 = 成本优化器而非纯保险**（预测性压缩保持前缀小 ⇒ 每轮
-  cache 税小；无闸放任上下文单调生长），`ARGP_FACTOR_EGRESS` 缺省开为唯一合算配置。
+  （89.2M vs 54.2M，账单分解逐项吻合）/ 峰值 305K = 申报窗 116%；零撞墙零 max-tokens，
+  **实跑 5 笔 0-LLM 组剪**（预算触发器仍在——门关的只是 pre-send 出口闸）。
+  **裁定：出口闸 = 成本优化器而非纯保险**（差别在拦截时机：门开逐发送拦截压缩先行；门关
+  超限请求先发出再等轮界，grown 前缀 cache 税全额入账），`ARGP_FACTOR_EGRESS` 缺省开为
+  唯一合算配置。
   length-stop 链在本臂零触发——端点 admission 对运行时路径**前缀缓存感知**
   （cache-assisted 305K 放行、fresh 峭值仅 47K；无缓存探针按总量 400，探针
   `wallhit-probe3-admission.json` 四例在案），链的兜底价值在严格 admission 端点。

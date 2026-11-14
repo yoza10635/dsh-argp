@@ -62,15 +62,16 @@ needle turn (T44) measures memory WITHOUT a recall channel, not compaction quali
 (2.0.0-alpha.4) and the repository reports.
 
 **Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
-`ARGP_FACTOR_EGRESS=0` (gate off) with the length-stop recovery chain as backstop:
+`ARGP_FACTOR_EGRESS=0` (the pre-send gate off; the budget trigger stays and fired 5× — all
+0-LLM group prunes) with the length-stop recovery chain as backstop:
 **bill 8.59M (+50%) / wall clock 60.6 min (+17%, back to native speed) / cache volume
 +65% (89.2M vs 54.2M) / peak 305K = 116% of the declared window**; 46/46 zero dead turns,
-**zero compactions** the whole run (gate off ⇒ no predictive compaction; the fresh-counting
-wall is far away ⇒ nothing to trigger reactive compaction), zero wall hits, zero max-tokens.
-**Verdict: the egress gate is a cost optimizer, not just insurance** — predictive compaction
-keeps the prefix small ⇒ low per-turn cache tax ⇒ low bill; gate-free lets the context grow
-monotonically and every turn pays the cache tax on the whole history (the bill decomposition
-matches the total delta item by item).
+zero wall hits, zero max-tokens.
+**Verdict: the egress gate is a cost optimizer, not just insurance** — the difference is
+**interception timing**: gate on = per-send arithmetic intercepts oversized sends and
+compacts first; gate off = oversized requests **go out first** and wait for the turn-boundary
+trigger ⇒ every oversized send pays the full cache tax on the grown prefix (the bill
+decomposition matches the total delta item by item).
 Runtime note: this endpoint's admission is **prefix-cache-aware** on the runtime path
 (cache-assisted 305K admitted, fresh peak only 47K; cache-less probes are rejected on total
 count) — the declared window 262,144 is effectively a fresh budget for the runtime path.
