@@ -22,7 +22,7 @@ export interface CallInfo {
 /** tool/call 事件 + A 事件内嵌 tool-call 块 双形态索引（先到者胜）。 */
 export declare function indexCalls(events: readonly EventLike[]): Map<string, CallInfo>;
 /**
- * R 事件文本投影：text 块 + tool-result 嵌套 content 递归（spike48 首轮病灶锁）。
+ * R 事件文本投影：text 块 + tool-result 嵌套 content 递归（P0 首轮病灶锁）。
  * capChars 只影响 errorish 文本信号与 sizeChars 的口径（大输出照样被 size 键排前）。
  */
 export declare function resultTextOf(e: EventLike, capChars?: number): string;

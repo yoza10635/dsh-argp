@@ -142,6 +142,8 @@ test('首注：steer notice 一条词表 note；宿主归类 X（进请求不参
   const ev = evs(session).find(e => e.seq === noteSeq)
   assert.ok(ev !== undefined)
   assert.ok((firstBlockOf(ev)?.text ?? '').includes('document:c:/proj/a.ts'), '词表内容 = 被剪账本标签')
+  assert.ok((firstBlockOf(ev)?.text ?? '').includes('recall_history'), 'note 携带召回引导（2.0.0 替代 system 契约）')
+  assert.ok((firstBlockOf(ev)?.text ?? '').includes('self-contained'), 'note 携带自包含答复引导')
   assert.equal(ev.data?.source?.kind, 'argp', 'notice 归类：宿主按 X 处理（不参剪、UI 不伪装用户输入）')
   assert.equal(ev.data?.source?.form, 'notice')
   const atom = internals.atomize(session).find(a => a.seq === noteSeq)

@@ -111,12 +111,8 @@ test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）
     return out
   }
   const fs = await sectionsOf(f.ctx)
-  const contract = fs.get('argp-contract') ?? ''
-  assert.ok(contract.includes('recall_history') && contract.includes('vocabulary'), 'factor 契约指标签通道')
-  assert.ok(!contract.includes('[已剪·因子'), '契约不再承诺 stub 文本（2026-11-13 组剪后零指针）')
-  assert.ok(!contract.includes('recall_pruned') && !contract.includes('list_pruned'), '契约禁引退役工具名（假通道）')
+  assert.ok(!fs.has('argp-contract'), '2.0.0 起契约不驻 system 前缀（随词表 note 在首次压缩后注入）')
   assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
-  assert.ok(contract.length < 1700, '契约行长度上界（H.2 防膨胀锁；2026-11-14 实测 ~1530）')
 })
 
 test('recall_history：标签交集 → 日志 append 根源原文；state/hit 标记齐、桩文本不冒充', async () => {

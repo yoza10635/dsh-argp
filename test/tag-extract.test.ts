@@ -47,7 +47,7 @@ test('grep: path 进 scope 不进 document；edit: writeish + document', () => {
   assert.equal(e.writeish, true)
 })
 
-test('命令族: cd 前缀/环境赋值/sudo 剥离；多行取首行；pwsh 在列（spike48 回归锁）', () => {
+test('命令族: cd 前缀/环境赋值/sudo 剥离；多行取首行；pwsh 在列（P0 回归锁）', () => {
   const b = extractTags({ tool: 'bash', rawArgs: { command: 'cd /tmp/x && sudo FOO=1 npm run build\ngit status' }, resultText: '', sessionCwd: CWD })
   assert.deepEqual(b.commands, ['command:npm'])
   assert.ok(b.scopes.includes('/tmp/x'))

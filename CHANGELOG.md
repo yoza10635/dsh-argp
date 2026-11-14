@@ -25,6 +25,7 @@
 - **引擎收窄为 factor-only**：graph 臂与 peratom 三管线退役；`compactRegion` 在 factor 下明确拒绝；构造面保留显式 `windowTokens` / `retainTokens`。
 - **压缩动作序**：先组剪、后原生 pruner 二次收紧；pruner 切片可在下一笔整组驱逐；焦点尾窗降级（最新轮占比 ≥50% 且组数 >10 时收窄到最新 10 组）。
 - **触发收敛**：破坏性改写只认手动 `/compact` 与 provider 400；pre-step 估算驱动压力剪退为 `ARGP_FACTOR_PRESSURE=1` 对照口。
+- **引导位置**：模型侧压缩/召回说明从 system 前缀常驻改为随词表 note 在首次压缩后注入；`recall_history` 工具描述精简——固定开销约省 600+ tokens/请求。
 - **README 面向插件用户重构**：安装 → 上手 → 零配置 → 机制简版 → 实测对照；实现细节归位 `ARCHITECTURE.md`；退役首屏概览图。
 
 ### Fixed

@@ -160,6 +160,15 @@ interface SessionFactorState {
 /** 词表 note 的行首标记（单一事实源在 constants.ts；此处保留 re-export 供既有测试/调用方）。 */
 export { VOCAB_NOTE_MARKER }
 
+/**
+ * 词表 note 的模型侧引导（2.0.0 起替代 system 前缀常驻契约）：
+ * 只在**首次压缩事务后**随词表 note 出现——压缩前没有被剪内容，无需指引；
+ * note 本就随 epoch 重写，不额外制造前缀缓存断点。
+ */
+const VOCAB_NOTE_GUIDE = 'Pruned atoms remain in the append-only log. If an answer depends on content no longer visible, recall it with recall_history using the labels below — never reconstruct from memory. Replies must be self-contained: restate facts, do not point at earlier context.'
+
+const vocabNoteText = (labels: string): string => VOCAB_NOTE_MARKER + '\n' + VOCAB_NOTE_GUIDE + '\n' + labels
+
 export interface ProtocolGroup {
   aSeq: number
   rSeqs: number[]
@@ -974,11 +983,11 @@ export class FactorEngine {
         st.vocabNoteSeq = found
         // resume 找回指针 ≠ note 内容是最新：与当前渲染逐字比对，一致才认账本版本；
         // 否则标脏（-1）让本次刷新重写——盲目认 epoch 会把崩溃前漏刷的剪枝当成已渲染。
-        st.vocabEpoch = eventText(session, found) === VOCAB_NOTE_MARKER + '\n' + text ? ledger.epoch : -1
+        st.vocabEpoch = eventText(session, found) === vocabNoteText(text) ? ledger.epoch : -1
       }
     }
     if (st.vocabNoteSeq === null) {
-      await steer(VOCAB_NOTE_MARKER + '\n' + text)
+      await steer(vocabNoteText(text))
       // steer 落盘形态由宿主决定（auto-continue 先例：steer 即 append）——指针以
       // **标记回溯**为准；steer 未落盘（异常宿主）则不记指针，下轮自然重试。
       const seq = lastVocabNoteSeq(sessionEvents(session) as unknown as EventLike[])
@@ -991,7 +1000,7 @@ export class FactorEngine {
       return
     }
     if (st.vocabEpoch === ledger.epoch) return
-    const note = VOCAB_NOTE_MARKER + '\n' + text
+    const note = vocabNoteText(text)
     // 裸 replace（无相邻 compaction/prune 配对）合法的前提 = 此刻无 armed claim：
     // token-meter 投影只在 claim 悬着且范围不符时 throw（"no adjacent shadow price"），
     // 无 claim 的单节点 replace 自折叠（cites-strip / U-info 副本同形态生产先例）。

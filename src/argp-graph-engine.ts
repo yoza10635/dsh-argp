@@ -143,15 +143,10 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
 const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
 
 /**
- * factor 压缩契约（design-2.0 §1.6/§3.2）：召回面只有 recall_history/list_labels
- * （标签制，无 seq 通道），退役工具名一字不提。纯静态——不引用运行时状态
- * （前缀缓存纪律：system 块任何字节变化都会让整块 KV 失效）。
+ * factor 压缩的模型侧引导（2.0.0 起**不在 system 前缀常驻**）：随词表 note 在首次
+ * 压缩事务后注入（`VOCAB_NOTE_GUIDE`，见 factor/engine.ts）——压缩前无被剪内容，
+ * 无需指引；压缩时 note 本就随 epoch 重写，不额外制造缓存断点。
  */
-const FACTOR_CONTRACT_TEXT = 'Context compression (ARGP factor engine):\n'
-  + 'Your visible context is a pruned view of the full conversation. Older tool calls and results may have been removed from the visible transcript; a short "已压缩剪枝次要原子" checkpoint message marks where old secondary tool atoms were compacted (it carries no recall pointer). The full originals remain in the append-only log and are addressed by entity labels. A vocabulary section elsewhere lists the pruned labels. Absence from the visible context never means it was never said.\n'
-  + '- Every reply must be self-contained plain text: state facts, conclusions, and content directly in natural language. Never answer by pointing at earlier context items instead of restating the needed content.\n'
-  + '- When your answer depends on content no longer visible, recover it before answering — never reconstruct missing facts from memory. Call recall_history with the label(s) the vocabulary shows verbatim (document:<path> / command:<family> / errorcode:<CODE>); several labels require ALL of them to match the same item — if nothing comes back, drop a label rather than retrying the same pair. For wide result sets start with view:"outline" (one metadata line per item), then fetch text; item=<rootSeq> from an earlier recall reply fetches one item, offset continues a truncated one. There is no seq-based recall for arbitrary events — item= only addresses items a recall reply surfaced.\n'
-  + '- When you cannot remember the exact label, call list_labels(category) to see the real vocabulary instead of guessing one.\n'
 
 /**
  * 宿主原生 `toolResultPruner` 的窄接口（`@deepseek-ai/dsh-compaction-tool-result-pruner`）。
@@ -170,7 +165,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   static Config = z.object({})
 
-  static inject = ['tools', 'systemPrompt']
+  static inject = ['tools']
 
   /** 2.0 因子引擎（构造期恒装配、会话内不变）。 */
   private readonly factor!: FactorEngine
@@ -320,14 +315,8 @@ export class ArgpGraphEngine extends CompactionEngine {
     // inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
     registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
 
-    // 压缩/恢复契约（静态部分）：只负责“视图可能被剪 + 必要时用 recall_history 找回”。
-    // 本 section 的 text 必须是纯静态（不引用引擎运行时状态）——否则每轮变化会破坏
-    // system message 前缀，使 KV/prefix cache 从本位置起全部失效。
-    ctx.systemPrompt.section({
-      name: 'argp-contract',
-      order: 150,
-      text: () => FACTOR_CONTRACT_TEXT,
-    })
+    // 压缩/恢复引导不在 system 前缀常驻：词表 note 在首次压缩事务后注入
+    // （VOCAB_NOTE_GUIDE），前缀保持稳定，且 note 本就只在压缩时变化。
 
     ctx.on('session/event', (session, event) => {
       // 声明窗口缓存（真环境联调实证）：request/context 事件携带适配器声明的
@@ -720,7 +709,7 @@ export class ArgpGraphEngine extends CompactionEngine {
    */
   private activePresetOf(session: Session): string | null | undefined {
     // 经 ctx.get() 读取（reflect 层"无需 inject"的读法）：直接属性访问 ctx.sessionProjections
-    // 会抛 "cannot get property … without inject"（本插件 static inject 只声明 tools/systemPrompt）。
+    // 会抛 "cannot get property … without inject"（本插件 static inject 只声明 tools）。
     // sessionProjections 是 dsh-base 的核心服务（恒在）；服务缺失时 get() 返回 undefined，安全降级。
     const projections = (this.ctx as unknown as {
       get?: (name: string) => { stateOf: (session: Session, key: string) => string | null | undefined } | undefined

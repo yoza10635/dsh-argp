@@ -60,7 +60,7 @@ export function indexCalls(events: readonly EventLike[]): Map<string, CallInfo> 
 }
 
 /**
- * R 事件文本投影：text 块 + tool-result 嵌套 content 递归（spike48 首轮病灶锁）。
+ * R 事件文本投影：text 块 + tool-result 嵌套 content 递归（P0 首轮病灶锁）。
  * capChars 只影响 errorish 文本信号与 sizeChars 的口径（大输出照样被 size 键排前）。
  */
 export function resultTextOf(e: EventLike, capChars = 32_768): string {
