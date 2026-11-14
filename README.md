@@ -1,6 +1,6 @@
 [English](README.en.md) | 中文
 
-# dsh-argp — 因子引擎上下文压缩：非焦点确定性剪枝 + 事务内散文浓缩 + 出口闸
+# dsh-argp — 实体标签上下文压缩：工具结果按标签确定性剪枝（0 LLM）+ 对话正文压缩时 LLM 摘要
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,7 +8,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh 的上下文压缩插件**（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）：安装即挂、零配置。
+**dsh 的上下文压缩插件**（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）：只剪过时、被取代、非焦点轮的工具结果，剪掉的原文按标签逐字可取回；必超窗的请求**先压后发**。
 
 > 1.x 图引擎已退役：老方案冻结在 npm **`1.11.2`**（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 里的 graph 旋钮会被宽容读取并告警忽略。
 

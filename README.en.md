@@ -1,6 +1,6 @@
 [中文](README.md) | English
 
-# dsh-argp — factor-engine context compaction: non-focal deterministic pruning + in-transaction prose condensation + egress gate
+# dsh-argp — entity-label context compaction: deterministic label pruning of tool results (0 LLM) + LLM prose summaries at compaction time
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,7 +8,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: install-and-go, zero configuration.
+**A context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: prunes only stale, superseded, out-of-focus tool results; pruned originals come back verbatim by label; over-window requests are compacted before sending.
 
 > The 1.x graph engine is retired: the old scheme is frozen at npm **`1.11.2`** (tag `v1.11.2`). 2.x maintains only the factor engine; graph-era knobs in old profiles are tolerated with a warning.
 
