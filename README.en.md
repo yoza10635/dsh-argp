@@ -40,18 +40,12 @@ recall: 12 calls · 9 hits (75%)
 
 `source=anchored` means usage is anchored to provider-reported truth; `ARGP inactive` means the session hit `skipPresets`.
 
-## Settings (6 knobs)
+## Zero configuration
 
-Settings → Plugins → the ARGP card; changes apply immediately (volatile, no restart):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `windowRatio` | 0.8 | Trigger line = declared window × this (shared by the egress gate / condense gate 2) |
-| `retainRatio` | 0.2 | Retained target after compaction = trigger line × this |
-| `charsPerToken` | 3.5 | Chars→token estimate ratio (anchored usage wins when present) |
-| `focalTurns` | 1 | Focal turns: tool results in the newest N turns are never evicted |
-| `vocabTopN` | 10 | Rows per category in the vocabulary note (the rest via `list_labels`) |
-| `recallLimit` | 5 | Default items `recall_history` returns (max 20) |
+Since 2.0.0 there are no settings knobs: the six strategy values are fixed at a trigger
+line of 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn,
+10 vocabulary rows per category, and 5 default recall items. Same-named keys in old
+profiles are tolerated with a warning and ignored; behavior always follows the fixed defaults.
 
 ## How it works
 

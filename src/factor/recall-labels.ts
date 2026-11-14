@@ -22,6 +22,7 @@ import type { SessionRuntimeState } from '../session-state.ts'
 import { nodeStateOf, rawEventText, sessionEvents } from '../log-access.ts'
 import { currentTurnOf, recallBudgetState } from '../recall.ts'
 import { pushBounded } from '../telemetry.ts'
+import { DEFAULT_RECALL_LIMIT } from '../constants.ts'
 import { VOCAB_FACETS, facetOfKey, type VocabFacet } from './factor-ledger.ts'
 import type { FactorEngine } from './engine.ts'
 
@@ -37,8 +38,6 @@ export interface RecallLabelsHost {
   charsPerToken: number
   /** 观测数组容量上限（recallCalls 有界，/argp 报数用）。 */
   telemetryCap: number
-  /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */
-  recallLimitOf?: () => number
 }
 
 /**
@@ -222,8 +221,9 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           unknown.splice(unknown.indexOf(w), 1)
         }
       }
-      // 默认档 = recallLimit 旋钮（活读，volatile）；未接线时保持 P2-1 固定默认 5。
-      const limit = Math.max(1, Math.min(20, a.limit ?? host.recallLimitOf?.() ?? 5))
+      // 缺省档 = 固化 DEFAULT_RECALL_LIMIT（原 recallLimit 旋钮已随 2.0.0 退役；
+      // 5 = P2-1 已测口径逐字保持）；模型可显式传 limit，上限 20。
+      const limit = Math.max(1, Math.min(20, a.limit ?? DEFAULT_RECALL_LIMIT))
       const view = a.view === 'outline' ? 'outline' : 'full'
       const order = a.order === 'fresh' || a.order === 'timeline' ? a.order : 'relevant'
       const q = ledger.queryPruned({ labels: [...keys], limit, order, cursor: a.cursor, epoch: a.epoch })

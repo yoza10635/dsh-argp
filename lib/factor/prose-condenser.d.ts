@@ -49,7 +49,7 @@ export declare function planProseEviction(atoms: readonly Atom[], probes: Readon
 /** 浓缩节点文本（标记行在前：resume 找回与统计识别按 startsWith 判）。 */
 export declare function proseCheckpointText(summary: string): string;
 export interface ProseCondenserConfig {
-    /** 焦点轮数（焦点轮不入驱逐池；同 FactorEngine 口径）。设置卡旋钮 → 引擎侧传 getter 活读。 */
+    /** 焦点轮数（焦点轮不入驱逐池；同 FactorEngine 口径）。2.0.0 零旋钮：装配面传固化常量 getter。 */
     focalTurns?: number | (() => number);
     /** LLM 超时（缺省 180s）。 */
     llmTimeoutMs?: number;

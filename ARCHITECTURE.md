@@ -195,7 +195,7 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
 | `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
 | `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale |
-| `client/*` | 设置卡片（6 旋钮暂存表单 + locale 包）+ 聊天渲染的 cites 尾清扫 | cites-strip |
+| `client/*` | 聊天渲染的 cites 尾清扫（2.0.0 起设置卡随六枚旋钮退役） | cites-strip |
 
 ## 9. 关键不变式清单
 
@@ -258,7 +258,10 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 
 ## 11. 评测与调试开关（构造期快照，切换须重挂）
 
-面向评测对照与排障，普通使用不需要碰。环境变量在插件构造期读取，改了要重挂会话。
+2.0.0 起**没有设置页旋钮**：原六枚（windowRatio/retainRatio/charsPerToken/focalTurns/
+vocabTopN/recallLimit）端到端退役，缺省值固化在 `constants.ts`；老 profile 同名键宽容
+透传 + 告警。本节仅列评测/调试用环境变量，普通使用不需要碰。环境变量在插件构造期读取，
+改了要重挂会话。
 
 | 变量 | 作用 |
 |---|---|

@@ -21,7 +21,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { detectOpenTurn, eventText, rawEventText, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
-import { FACTOR_COMPACTED_MARKER, FOCAL_DOC_HARD_WIDTH_RATIO, FOCUS_GROUP_CAP, FOCUS_TURN_SHARE_THRESHOLD, VOCAB_NOTE_MARKER } from '../constants.ts'
+import { DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACTOR_COMPACTED_MARKER, FOCAL_DOC_HARD_WIDTH_RATIO, FOCUS_GROUP_CAP, FOCUS_TURN_SHARE_THRESHOLD, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
@@ -34,9 +34,9 @@ import { READ_TOOLS } from './tag-extract.ts'
 import type { FileSnapshot } from './types.ts'
 
 export interface FactorEngineConfig {
-  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。设置卡旋钮 → 引擎侧传 getter 活读（volatile 语义）。 */
+  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。2.0.0 零旋钮：ArgpGraphEngine 传固化常量 getter；直接构造（测试/评测）可传值。 */
   focalTurns?: number | (() => number)
-  /** 词表每类 topN（§1.4）。设置卡旋钮 → 引擎侧传 getter 活读。 */
+  /** 词表每类 topN（§1.4）。2.0.0 零旋钮：装配面传固化常量 getter；直接构造可传值。 */
   vocabTopN?: number | (() => number)
   /** sticky 闭集观察窗（轮）。 */
   stickyWindowTurns?: number
@@ -44,7 +44,7 @@ export interface FactorEngineConfig {
   vocabBudgetChars?: number
   /**
    * 焦点分级策略档（§2.5 提案栈 v1.1/v1.4）。**内部裸项，严禁进 static Config
-   * schema**（设置卡零新键由 CR5/CR6/preset 精确键锁机器化保证）：
+   * schema**（零旋钮面由 ZK1/preset 键锁机器化保证）：
    *  - 'flat'（缺省）：现行为字节级不变；
    *  - 'tiered'：焦点文档全枚 hard（宽度熔断兜底 FOCAL_DOC_HARD_WIDTH_RATIO）
    *    + superseded 焦点豁免（v1.4）+ 裸 errorcode 焦点降出 hard（v1.2 路由）。
@@ -59,7 +59,7 @@ export interface FactorEngineConfig {
 
 /**
  * focalTiered 的 env 逃生口（T-3 两臂实跑唯一触达通道）：tiered 是策略档，
- * 禁入 static Config/设置卡（P5-b 裁定，CR5/CR6/preset 键锁不变），生产装配路径
+ * 禁入 static Config（P5-b 裁定，ZK1/preset 键锁不变），生产装配路径
  * 缺省恒 flat——要跑 tiered 臂只能经此 env。非法值 ⇒ flat（缺省安全）；
  * 生效=构造快照（档切换=策略文档换版，须重挂引擎，不做活读）。
  */
@@ -79,8 +79,8 @@ export function resolvePressureTriggerEnabled(env: NodeJS.ProcessEnv = process.e
 }
 
 /**
- * C10 夹剪层评测逃生口（focalTiered 同款纪律：禁入 static Config/设置卡，
- * CR5/CR6/preset 键锁不变，env 是唯一通道）：缺省关=shadow 二态（R1 行为字节
+ * C10 夹剪层评测逃生口（focalTiered 同款纪律：禁入 static Config，
+ * ZK1/preset 键锁不变，env 是唯一通道）：缺省关=shadow 二态（R1 行为字节
  * 不变）；env 置 1 开启三态（归位见 planPrune.clipOrder，剪形见 clip-shape.ts）。
  * 生效=构造快照（层切换=策略文档换版，须重挂引擎）。非法值 ⇒ 关（缺省安全）。
  */
@@ -379,14 +379,13 @@ export class FactorEngine {
 
   constructor(host: FactorEngineHost, config: FactorEngineConfig = {}) {
     this.host = host
-    // 裸值/getter 双形归一（同 PruneTxHost 方法引用惯例）：引擎侧传 getter = 活读
-    // volatile 旋钮（P2-4 设置卡，宿主实测写非 volatile 键会被拒 ⇒ 可写键必须 getter
-    // 化）；测试传裸值 = 固定值。
+    // 裸值/getter 双形归一：装配面传 getter（2.0.0 起 ArgpGraphEngine 传固化常量
+    // getter）；测试传裸值 = 固定值。设置页旋钮已退役，不再有 volatile 活读路径。
     const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
       typeof v === 'function' ? v : () => v ?? d
     this.cfg = {
-      focalTurns: asGetter(config.focalTurns, 1),
-      vocabTopN: asGetter(config.vocabTopN, 10),
+      focalTurns: asGetter(config.focalTurns, DEFAULT_FOCAL_TURNS),
+      vocabTopN: asGetter(config.vocabTopN, DEFAULT_VOCAB_TOP_N),
       stickyWindowTurns: config.stickyWindowTurns ?? 8,
       vocabBudgetChars: config.vocabBudgetChars ?? 4000,
       focalTiered: config.focalTiered ?? 'flat',

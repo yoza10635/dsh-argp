@@ -31,25 +31,11 @@ export interface Atom {
 }
 
 /**
- * UI 设置页旋钮名册（design-2.0 §3.4，2.0 = **6 枚**）：Settings → Plugins →
- * ARGP 卡片读写的面。真实校验/表单源是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫
- * static Config 的 volatile 字段；settings.register 已随 #4587 移除），本类型与
- * `ArgpUserSettingsSchema` 保持同键集（公共 API 与文档口径）。
+ * UI 设置页旋钮名册（2.0.0 起**零旋钮**）：Settings → Plugins 不再提供 ARGP
+ * 设置卡，六枚旧旋钮（windowRatio/retainRatio/charsPerToken/focalTurns/
+ * vocabTopN/recallLimit）全部退役，缺省值固化在 constants.ts。本类型与
+ * `ArgpUserSettingsSchema` 保持同键集（空集，公共 API 与文档口径）。
  *
- * 1.x graph 五键（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode）与 engine
- * 判别式已退位：老 profile 宽容读+告警，见 normalizeConfig。
+ * 老 profile 的同名键宽容读+告警忽略，见 normalizeConfig（RETIRED_KNOB_KEYS）。
  */
-export interface ArgpUserSettings {
-  /** 触发线 = contextWindow × windowRatio。 */
-  windowRatio: number
-  /** 压缩保留目标 = 触发线 × retainRatio。 */
-  retainRatio: number
-  /** 字符/token 估算比（provider usage 锚点在位时以其为准）。 */
-  charsPerToken: number
-  /** factor 焦点轮数（§2.5）。 */
-  focalTurns: number
-  /** factor 词表每类 topN（§1.4）。 */
-  vocabTopN: number
-  /** factor recall_history 缺省 limit（§P0 宽度实测；现默认 5，上限 20）。 */
-  recallLimit: number
-}
+export interface ArgpUserSettings {}

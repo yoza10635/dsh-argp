@@ -48,6 +48,15 @@ export const DEFAULT_WINDOW_RATIO = 0.8
 /** 保留目标占触发线比例（retainTokens 未显式指定时按 windowTokens × 此比例解析）。 */
 export const DEFAULT_RETAIN_RATIO = 0.2
 
+/** 焦点轮数缺省（2.0.0 起零旋钮：原 focalTurns 设置项退役，缺省固化）。 */
+export const DEFAULT_FOCAL_TURNS = 1
+
+/** 词表 note 每类行数缺省（原 vocabTopN 设置项退役，缺省固化）。 */
+export const DEFAULT_VOCAB_TOP_N = 10
+
+/** recall_history 缺省条数（原 recallLimit 设置项退役；沿用 P2-1 已测口径 5）。 */
+export const DEFAULT_RECALL_LIMIT = 5
+
 /** LLM 调用超时（ms）。peratom compressor/declarer timeoutMs 缺省锚（P4.3 统一）。 */
 export const DEFAULT_LLM_TIMEOUT_MS = 180_000
 
@@ -79,7 +88,7 @@ export const DEFAULT_SKIP_CONTEXT_FORMS: readonly string[] = ['relay', 'notice']
  * 焦点文档 hard 宽度熔断阈值（design-2.0 §2.5 v1.1 用户裁定 + spike54 宽度账）：
  * tiered 模式下焦点文档全枚 hard，但若其 hard 候选字节占比超过本阈值，说明焦点
  * 面过宽（实测语料 8.3%，留足余量），退化为**每文档最新一枚**——保险不反噬预算。
- * 内部常量，不进设置卡（preset/CR 键集锁零新键）。
+ * 内部常量，不进 static Config（零旋钮锁 ZK1 / preset 键锁）。
  */
 export const FOCAL_DOC_HARD_WIDTH_RATIO = 0.15
 

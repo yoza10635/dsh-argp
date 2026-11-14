@@ -35,7 +35,7 @@ import type { Atom } from '../argp-types.ts'
 import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
 import { classifyUaAtom, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
 import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
-import { FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
+import { DEFAULT_FOCAL_TURNS, FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { autoDshLlmSpec, completeViaDshLlm, type AgentRouteHint } from '../peratom/llm-adapter.ts'
 
 /** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
@@ -259,7 +259,7 @@ export function proseCheckpointText(summary: string): string {
 }
 
 export interface ProseCondenserConfig {
-  /** 焦点轮数（焦点轮不入驱逐池；同 FactorEngine 口径）。设置卡旋钮 → 引擎侧传 getter 活读。 */
+  /** 焦点轮数（焦点轮不入驱逐池；同 FactorEngine 口径）。2.0.0 零旋钮：装配面传固化常量 getter。 */
   focalTurns?: number | (() => number)
   /** LLM 超时（缺省 180s）。 */
   llmTimeoutMs?: number
@@ -286,7 +286,7 @@ export class ProseCondenser {
     const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
       typeof v === 'function' ? v : () => v ?? d
     this.cfg = {
-      focalTurns: asGetter(config.focalTurns, 1),
+      focalTurns: asGetter(config.focalTurns, DEFAULT_FOCAL_TURNS),
       llmTimeoutMs: config.llmTimeoutMs ?? PROSE_LLM_TIMEOUT_MS,
       complete: config.complete,
     }

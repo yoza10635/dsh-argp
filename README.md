@@ -40,18 +40,11 @@ recall: 12 calls · 9 hits (75%)
 
 `source=anchored` 表示占用锚定在 provider 回报的真实 usage；`ARGP inactive` 表示命中 `skipPresets`。
 
-## 设置（6 个旋钮）
+## 零配置
 
-Settings → Plugins → ARGP 卡片，改完即生效（volatile，无需重启）：
-
-| 键 | 缺省 | 含义 |
-|---|---|---|
-| `windowRatio` | 0.8 | 触发线 = 声明窗 × 该值（出口闸 / 浓缩闸二共用） |
-| `retainRatio` | 0.2 | 压缩后保留目标 = 触发线 × 该值 |
-| `charsPerToken` | 3.5 | 字符→token 估算比（anchored usage 在场时以其为准） |
-| `focalTurns` | 1 | 焦点轮数：最新 N 轮的工具结果永不被剪 |
-| `vocabTopN` | 10 | 词表 note 每类最多列几行（其余经 `list_labels` 可查） |
-| `recallLimit` | 5 | `recall_history` 的缺省取回条数（上限 20） |
+2.0.0 起没有设置页旋钮：六项策略值固定为触发线 0.8×声明窗、保留目标 0.2、估算 3.5
+字符/token、焦点 1 轮、词表每类 10 行、召回缺省 5 条。老 profile 里的同名键会被宽容
+读取并告警忽略，行为始终按固化缺省运行。
 
 ## 它怎么工作
 

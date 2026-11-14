@@ -12,7 +12,7 @@
  * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
  * 编译期断言、运行时同一实例。
  */
-import type { Context, Volatile } from '@deepseek-ai/cordis'
+import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import type {
@@ -32,7 +32,7 @@ export { eventText } from './log-access.js'
 // 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
 import type { Atom, ArgpUserSettings } from './argp-types.js'
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js'
-import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_RETAIN_RATIO, DEFAULT_WINDOW_RATIO } from './constants.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_FOCAL_TURNS, DEFAULT_RETAIN_RATIO, DEFAULT_VOCAB_TOP_N, DEFAULT_WINDOW_RATIO } from './constants.js'
 import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
 export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
@@ -59,40 +59,22 @@ import { normalizeConfig, registerSettings, bindSession, rebuildLedgerFromLog, A
 export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js'
 
 /**
- * 解析后的设置页旋钮（dsh 0.1.7+ 的 `Config` 形状）。与下面 `static Config` schema
- * 一一对应：schema 负责校验 + 表单生成，本 interface 负责引擎侧的读取类型。
- * 每个字段标 `Volatile<T>` = "无需重新挂载即可变化"，引擎经 `.get()` 读实时值。
- */
-export interface ArgpLiveConfig {
-  windowRatio: Volatile<number>
-  retainRatio: Volatile<number>
-  charsPerToken: Volatile<number>
-  // 2.0 设置卡旋钮（design-2.0 §3.4 名册）：引擎侧一律 getter 活读（宿主实测：
-  // configForms.set 对非 volatile 键直接 throw「not volatile」⇒ 卡片可写=volatile）。
-  focalTurns: Volatile<number>
-  vocabTopN: Volatile<number>
-  recallLimit: Volatile<number>
-}
-
-/**
  * 引擎构造配置（2.0 factor-only 面）。
  *
- * 保留的键 = factor 事务与本会话可观测面实际消费的字段；1.x graph 臂的旋钮
- * （maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/cites/推断边/peratom…）
- * 已退位——cordis 非 strict 合并仍会把它们透传进来，normalizeConfig 宽容读 + 告警忽略
- * （老 profile 不炸，但不静默改变预期）。
+ * **2.0.0 起零旋钮**：原六枚设置项（windowRatio/retainRatio/charsPerToken/focalTurns/
+ * vocabTopN/recallLimit）已退役，缺省值固化在 constants.ts（0.8/0.2/3.5/1/10/5）；
+ * 老 profile 里的同名键由 normalizeConfig 宽容读 + 告警忽略。构造面保留显式
+ * windowTokens/retainTokens（bench/高级部署按 token 直给，不依赖比例旋钮）。
+ *
+ * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/
+ * cites/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
+ * normalizeConfig 宽容读 + 告警忽略（老 profile 不炸，但不静默改变预期）。
  */
 export interface ArgpGraphConfig {
-  /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × windowRatio（默认 0.8）。 */
+  /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × 0.8。 */
   windowTokens?: number
-  /** 保留目标（token）。不传时默认 = 触发线 × retainRatio（默认 0.2，压缩率 1/5）。 */
+  /** 保留目标（token）。不传时默认 = 触发线 × 0.2（压缩率 1/5）。 */
   retainTokens?: number
-  /** 触发线占上下文比例（默认 0.8；仅当 windowTokens 未显式指定时生效）。 */
-  windowRatio?: number
-  /** 保留目标占触发线比例（默认 0.2；仅当 retainTokens 未显式指定时生效）。 */
-  retainRatio?: number
-  /** 字符/token 估算比（默认 3.5；provider usage 锚点在位时以其为准）。 */
-  charsPerToken?: number
   /** 触发保留余量（token）；默认 0。windowTokens 会先减去该值作为触发线。 */
   reserveTokens?: number
   /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
@@ -108,12 +90,6 @@ export interface ArgpGraphConfig {
    * 设为 `[]` 关闭该行为（所有 preset 下都生效）。
    */
   skipPresets?: string[]
-  /** 焦点轮数（§2.5，设置卡旋钮的构造期缺省）。 */
-  focalTurns?: number
-  /** 词表每类 topN（§1.4，设置卡旋钮的构造期缺省）。 */
-  vocabTopN?: number
-  /** recall_history 缺省 limit（P0 宽度实测 p50=8；现默认 5 沿用 P2-1 已测口径）。 */
-  recallLimit?: number
   /** 2.0 判别式仅剩 'factor'：旧的 'graph' 值宽容读但在构造期告警并按 factor 运行。 */
   engine?: 'factor'
 }
@@ -187,28 +163,14 @@ interface NativeToolResultPruner {
 
 export class ArgpGraphEngine extends CompactionEngine {
   /**
-   * UI 设置页可调旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
-   * 表单，不再接受 `settings.register(ns, schema, { base })` —— 该 API 在宿主
-   * 0.1.7（#4587，`profile-owned-live-configuration`）已移除。字段标 `.volatile()`
-   * 表示"无需重新挂载即可变化"，引擎侧每次经 `config.x.get()` 读当前值。
-   *
-   * 2.0 名册 = 6 枚（design-2.0 §3.4）：3 枚引擎通用（windowRatio/retainRatio/
-   * charsPerToken）+ 3 枚 factor（focalTurns/vocabTopN/recallLimit）。1.x graph 五键与
-   * engine 判别式退位（设置卡不再渲染，profile 里的老值宽容读+告警，见 normalizeConfig）。
+   * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
+   * 表单；本插件**不提供任何可调旋钮**——2.0.0 起六枚设置项全部退役，缺省值按
+   * constants.ts 固化（0.8/0.2/3.5/1/10/5），行为由确定性信号驱动。
+   * 老 profile 的同名键经 cordis 非 strict 合并透传、normalizeConfig 告警忽略。
    */
-  static Config = z.object({
-    windowRatio: z.number().min(0.1).max(1).default(DEFAULT_WINDOW_RATIO).volatile(),
-    retainRatio: z.number().min(0.05).max(1).default(DEFAULT_RETAIN_RATIO).volatile(),
-    charsPerToken: z.number().min(0.5).max(8).default(DEFAULT_CHARS_PER_TOKEN).volatile(),
-    focalTurns: z.number().step(1).min(0).default(1).volatile(),
-    vocabTopN: z.number().step(1).min(1).default(10).volatile(),
-    recallLimit: z.number().step(1).min(1).default(5).volatile(),
-  })
+  static Config = z.object({})
 
   static inject = ['tools', 'systemPrompt']
-
-  /** Cordis 解析出的设置页旋钮引用（volatile 字段经 `.get()` 读实时值）。 */
-  private readonly args!: ArgpLiveConfig
 
   /** 2.0 因子引擎（构造期恒装配、会话内不变）。 */
   private readonly factor!: FactorEngine
@@ -235,15 +197,12 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 已就"toolResultPruner 缺失"记过日志的会话（每会话一次，防压缩事务刷屏）。 */
   private readonly nativePrunerMissingLogged = new WeakSet<Session>()
   /**
-   * 旋钮读取点（dsh 0.1.7+）：直接读 Cordis 解析出的 volatile 引用，用户经设置页写入
-   * 后下一次 `.get()` 即为新值（`profile-owned-live-configuration` 要求的"消费者在操作时
-   * 读取其引用"）。构造期快照字段 `argpSettings` 随旧 `settings.register` 一并移除。
+   * 2.0.0 起零旋钮：以下读取点返回 constants.ts 的固化缺省（原设置页六枚旋钮已退役）。
+   * 显式 windowTokens/retainTokens 仍走构造配置；比例与估算口径不再可调。
    */
-  get windowRatio(): number { return this.args.windowRatio.get() }
-  get retainRatio(): number { return this.args.retainRatio.get() }
-  get charsPerToken(): number { return this.args.charsPerToken.get() }
-  /** recallLimit 旋钮活读（RecallLabelsHost 接线；缺省 5 = P2-1 已测口径）。 */
-  recallLimitOf(): number { return this.args.recallLimit.get() }
+  get windowRatio(): number { return DEFAULT_WINDOW_RATIO }
+  get retainRatio(): number { return DEFAULT_RETAIN_RATIO }
+  get charsPerToken(): number { return DEFAULT_CHARS_PER_TOKEN }
   readonly maxOverflowRetries!: number
   /** dsh token-meter 服务；真会话中可用时优先用于 token 测量和 contextWindow 探测。 */
   private readonly tokenMeter!: TokenMeter | undefined
@@ -327,9 +286,6 @@ export class ArgpGraphEngine extends CompactionEngine {
 
   constructor(ctx: Context, config: ArgpGraphConfig = {}) {
     super(ctx)
-    // 设置页旋钮引用：Cordis 已按 `static Config` 校验并把 volatile 字段解析为引用，
-    // 引擎全程经 `this.args.X.get()` 读（构造期不快照），故 UI 写入即时生效。
-    this.args = config as unknown as ArgpLiveConfig
     // 结构化日志门面（2026-08-29 review 轻微项）：替换裸 console 直调，日志进宿主
     // 统一管道（ctx.logger 门面；warn/error/info 三级均被 cordis logger 支持）。
     this.log = ctx.logger
@@ -337,11 +293,10 @@ export class ArgpGraphEngine extends CompactionEngine {
     this.skipPresets = [...(config.skipPresets ?? DEFAULT_SKIP_PRESETS)]
     normalizeConfig(ctx, this as unknown as LifecycleHost, config)
     registerSettings(ctx, this as unknown as LifecycleHost, config)
-    // 旋钮经 getter 活读（args 里这三枚已被 static Config 标 volatile，见 §3.4 注释）：
-    // 设置页改动免重挂即生效（宿主 loader 对纯 volatile 变化走 _commitVolatile）。
+    // 旋钮已退役（2.0.0 零旋钮）：焦点/词表口径用 constants.ts 固化缺省。
     this.factor = new FactorEngine(this as unknown as FactorEngineHost, {
-      focalTurns: () => this.args.focalTurns.get(),
-      vocabTopN: () => this.args.vocabTopN.get(),
+      focalTurns: () => DEFAULT_FOCAL_TURNS,
+      vocabTopN: () => DEFAULT_VOCAB_TOP_N,
       // 策略档 env 逃生口（T-3 两臂实跑）：缺省 flat=现行为字节不变，
       // 禁入 static Config ⇒ env 是生产触达 tiered 的唯一通道（resolveFocalTiered 注释）。
       focalTiered: resolveFocalTiered(),
@@ -352,7 +307,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // （compactIfNeeded——overflow 或出口闸驱进的 'pressure' 且闸二 ctx 线补检通过 /
     // compactNow 免闸二；估算驱动零触达）。
     this.prose = new ProseCondenser(ctx, this as unknown as PruneTxHost, {
-      focalTurns: () => this.args.focalTurns.get(),
+      focalTurns: () => DEFAULT_FOCAL_TURNS,
     })
     // 触发收敛逃生口：构造期快照 env（档位语义同 resolveFocalTiered——策略切换须重挂引擎）。
     this.pressureTriggerEnabled = resolvePressureTriggerEnabled()

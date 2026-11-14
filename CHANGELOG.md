@@ -51,10 +51,15 @@
   （cache-assisted 305K 放行、fresh 峭值仅 47K；无缓存探针按总量 400，探针
   `wallhit-probe3-admission.json` 四例在案），链的兜底价值在严格 admission 端点。
   详见仓库报告 §12 与本文件上文。
-- **README 面向插件用户重构**（2026-11-15）：首屏收敛为安装 → 上手 → 设置 → 机制简版 →
+- **README 面向插件用户重构**（2026-11-15）：首屏收敛为安装 → 上手 → 零配置 → 机制简版 →
   实测对照；机制实现细节归位 `ARCHITECTURE.md`（新增 §11 评测/调试开关），七臂实验叙事
   留在本 CHANGELOG；退役首屏概览图 `.github/assets/argp-overview.svg`。对照表经济面改为
   miss/hit/output 分列 + DeepSeek 闲时参考定价（元）。
+- **零旋钮化**（2026-11-15）：六枚设置旋钮（windowRatio/retainRatio/charsPerToken/
+  focalTurns/vocabTopN/recallLimit）端到端退役——`static Config` 与
+  `ArgpUserSettingsSchema` 置空、客户端设置卡与 controller/locale 字典删除、缺省值固化
+  `constants.ts`（0.8/0.2/3.5/1/10/5）；老 profile 同名键宽容透传 + 告警。零旋钮锁
+  ZK1–ZK4，变异三红三绿（回加旋钮/删告警/改常量各红一条）。
 
 ## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
 

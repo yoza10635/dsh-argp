@@ -31,8 +31,6 @@ export interface RecallLabelsHost {
     charsPerToken: number;
     /** 观测数组容量上限（recallCalls 有界，/argp 报数用）。 */
     telemetryCap: number;
-    /** recallLimit 旋钮活读（P2-4 设置卡；缺省 ⇒ 5，与 P2-1 固定默认逐字一致）。 */
-    recallLimitOf?: () => number;
 }
 /**
  * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
