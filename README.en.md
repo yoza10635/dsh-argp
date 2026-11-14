@@ -67,15 +67,17 @@ needle turn (T44) measures memory WITHOUT a recall channel, not compaction quali
 **bill 8.59M (+50%) / wall clock 60.6 min (+17%, back to native speed) / cache volume
 +65% (89.2M vs 54.2M) / peak 305K = 116% of the declared window**; 46/46 zero dead turns,
 zero wall hits, zero max-tokens.
-**Mechanical verdict holds; the magnitude awaits a paired rerun**: the difference is
-**interception timing** — gate on = per-send arithmetic intercepts oversized sends and
-compacts first; gate off = oversized requests **go out first** and wait for the turn-boundary
-trigger (this run shipped 4 oversized 280-305K requests the gate would have intercepted).
-⚠️ Magnitude downgrade: a rerun (egress0b, same config, T1-5) shows run1's step inflation
-**does not reproduce** (T03 35→23, back to the alpha5/rc3smoke cluster) — run1 was an
-outlier trajectory and the +50% bill carries single-draw variance; the structural claim
-(gate-off ships oversized sends) is separated from the exact magnitude, which needs a
-runtime-matched paired rerun (rc3smoke/egress0b, full 46 turns each).
+**Paired rerun settles it (egress0b, same profile/env/runtime, full 46 turns)**: 471 steps /
+bill 5.815M / wall 43.3 min — all inside the rc.1 family band, **+1.6% vs alpha5 (noise level;
+-5% under DeepSeek off-peak pricing)** ⇒ run1's +50% was an outlier trajectory (a session-wide
+"diligent forensics" style draw — T03 case study), not a gate effect. The gate-off structural
+signature **reproduced across both runs**: a context ceiling of ~305K (run1 T32 = 305,101 /
+egress0b T39 = 305,008, Δ0.03% across trajectories — the trigger line + within-turn protocol
+growth as a deterministic combination) vs 191.7K gate-on; harmless on this cache-aware
+endpoint (fresh peak 47K far from the fresh wall), fatal-then-rescued on a strict-admission
+endpoint (400 → overflow chain, the designed scenario). **Final gate positioning: a pre-send
+line of defense for strict-admission endpoints plus ceiling control; NOT a cost optimizer**
+(economics are a wash on cache-aware endpoints). `ARGP_FACTOR_EGRESS` default-on stands. 
 Runtime note: this endpoint's admission is **prefix-cache-aware** on the runtime path
 (cache-assisted 305K admitted, fresh peak only 47K; cache-less probes are rejected on total
 count) — the declared window 262,144 is effectively a fresh budget for the runtime path.
@@ -136,7 +138,7 @@ Settings → Plugins → ARGP card (all volatile; changes apply live, no restart
 
 | Variable | Effect |
 |---|---|
-| `ARGP_FACTOR_EGRESS=0` | Disable the egress gate (comparison arm; **measured bill +50% / wall +17%** — the gate is a cost optimizer, keep the default on) |
+| `ARGP_FACTOR_EGRESS=0` | Disable the egress gate (comparison arm; structural effect = context ceiling 305K vs 192K, economics a wash — default on = the pre-send line of defense for strict-admission endpoints) |
 | `ARGP_FACTOR_PRESSURE=1` | Restore legacy pre-step estimate-driven pressure pruning (old-world reproduction) |
 | `ARGP_FACTOR_TIER=tiered` | Focal tiering strategy (hard/medium focal bands; default flat) |
 | `ARGP_FACTOR_CLIP=1` | C10 clip layer (three-state retention; default off) |
