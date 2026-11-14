@@ -36,58 +36,57 @@ Summarizer-style compaction (an LLM rewriting history) pays three prices:
 
 The factor engine's answer: **eviction is deterministic** — same input, same output, 0 LLM, recomputable; **forgetting is reversible** — a stub is one label line, the original comes back byte-for-byte from the append-only log; **the LLM does the one thing it is good at** — prose condensation, only inside a transaction, only when both gates pass.
 
-## Three-scheme measured comparison (T24-J, 2026-11-14/15; the v2.0.0 column = gate-off paired settled values)
+## Three-scheme measured comparison (T24-J, 2026-11-14/15)
 
 The same 46-turn workload (same prompts, same materials, fully serial single-arm, same
-endpoint/model/window 262,144); per-turn bill = `miss + 0.06×cache + 3×output`; cache-hit
-rate and peak are actual request totals over the whole run:
+endpoint/model/window 262,144); provider-reported token usage is broken out into its three
+components, which one consolidated row folds into a DeepSeek off-peak reference price (in 元):
 
 | Dimension | v1.11.2 | Native (host compaction-basic) | v2.0.0 |
 |---|---|---|---|
-| Compaction mechanism | LLM summaries ×6 + contiguous-prune rewrites ×768 + system-head rewrite every turn | est-driven pre-clamp prune ×45 + LLM summaries ×6 (every 5-6 turns) | **Deterministic label group-prune (0 LLM)** + prose-condense dual gates + turn-boundary budget trigger; egress gate off (paired-arm config) |
-| Wall clock | 114.7 min | 61.8 min | **43.3 min (−62% vs 1.x)** |
-| Bill (miss+0.06c+3o) | 13.09M | 5.72M | **5.815M (−56% vs 1.x; vs native +1.7%, noise level)** |
-| Bill (DeepSeek off-peak 1/.02/4) | 11.58M | 4.36M | **3.69M (−68% vs 1.x; −15% vs native, lowest overall)** |
-| Prefix cache hit | 0.833 (head rewrites wipe the cache every turn) | 0.956 | **0.978** |
-| Peak KV-resident context (cached_tokens caliber, vs declared window) | 78.9% (raw request size 80%) | 50.0% (raw 51%) | **98.4% (= window − 4,096 block-aligned, reproduced in both runs; raw request-size peak 116%)** |
-| Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label |
+| Compaction mechanism | LLM summaries + contiguous-prune rewrites + system-head rewrite every turn | est-driven pre-clamp prune + periodic LLM summaries | **Deterministic label group-prune** + prose-condense dual gates + turn-boundary budget trigger |
+| Wall clock | 114.7 min | 61.8 min | 43.3 min |
+| Input miss tokens (miss) | 9.287M | 1.979M | 1.363M |
+| Input hit tokens (hit) | 46.21M | 43.49M | 60.06M |
+| Output tokens (output) | 0.343M | 0.378M | 0.283M |
+| Prefix cache hit rate | 0.833 | 0.956 | 0.978 |
+| **DeepSeek off-peak reference price** | **11.58 元** | **4.36 元** | **3.69 元** |
+| Peak KV-resident context (share of declared window) | 78.9% | 50.0% | 98.4% |
+| Forgetting reversible | ✗ | ✗ | ✓ `recall_history` byte-for-byte by label |
 | Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
-| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | **3/3 answered = 100% hit rate (human-graded quality score)**; coverage 3/10 — the other 7 were honestly declined with zero fabrication (recall budget exhausted) |
-| Hidden artifact suite (T0) | 19/20 | 18/20 | 17/20 (merge3 shape diff + plugin_error_isolated + cli_error_line_format) |
+| Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 3/3 = 100% |
+| Hidden artifact suite (T0) | 19/20 | 18/20 | 17/20 |
 
-Reading notes: n=1 per arm (single runs, not averages); wall clock includes day-vs-night
-server noise (±7%, controlled with compaction-free turns); 1.x's P45 edge comes from its
-seq-addressed recall stack — a real capability, at a disproportionate price; the no-tools
-needle turn (T44) measures memory WITHOUT a recall channel, not compaction quality
-(wording experiment in the report §6.6). Full seven-arm data lives in the CHANGELOG
-(2.0.0-alpha.5) and the repository reports §12–13.
-The v2.0.0 column = egress0b paired settled values (same profile/env/runtime, full 46 turns;
-**gate-off config**; the gate-on default family band 43.8–51.6 min / 5.39–6.62M is in report
-§6–9); single-run conclusions must pass three checks (per-turn band → same-config rerun →
-paired full run); run1 (+50% bill) is archived as the outlier-trajectory upper bound and is
-not tabulated. Peak-caliber note (user ruling 2026-11-15): context is counted via the server's
-**cached_tokens (KV-resident prefix)** — no arm ever exceeded the window (v2.0.0 = 258,048 =
-window − 4,096 block-aligned, reproduced token-for-token in both runs; gate-on family
-71.9–72.7%); the raw request size (cached+fresh) peaked at 305K/116% — that is request size
-only, and how the server handles its position semantics is endpoint-internal (admission
-counts raw; the arm window vs probe window behaved inconsistently, pending operator review).
-T0 note: all three failures are **unlocked-shape trajectory judgments** (merge3 return type
-unspecified — the test accepts 3 shapes, the model picked a 4th dataclass; the CB-code CLI
-error-line convention is beyond the delivered materials, which only define exception codes —
-alpha5 happened to over-deliver it; plugin_error_isolated is a family-wide shape miss) — not
-a compaction/recall quality regression. P45 note (human-graded): the auto-grader's per-question
-extraction truncates at the header line, mislabeling 3 real hits as MISS; human re-grading from
-the transcript verbatim — **all 3 answered questions (Q1/Q2/Q9) are verbatim hits, and the 7
-unanswered were honestly declined with zero fabrication**. The quality score is the answered hit
-rate **3/3 = 100%**; 3/10 is only recall-budget coverage (7 questions not reached), not a quality
-metric. Future tags will be **2.0.0**.
+Note: these are measured results on **local Qwen3.8-Flash-Next** (declared window 262,144) —
+same 46-turn workload, same prompts/materials, fully serial single-arm, n=1 per arm; token
+counts are provider-reported usage summed over the run (miss = uncached input, hit = cached
+input/cached_tokens, output = completion); the reference price folds them at **DeepSeek off-peak
+rates per 1M tokens: 1 元 uncached input, 0.02 元 cached input, 4 元 output**. The v2.0.0 column
+is the egress-gate-off (`ARGP_FACTOR_EGRESS=0`) paired arm egress0b's settled values (same
+profile/env/runtime, full 46 turns; the gate-on default family band 43.8–51.6 min / 5.39–6.62M
+is in report §6–9); single-run conclusions passed three checks (per-turn band → same-config
+rerun → paired full run), and run1 (+50%) is archived as the outlier-trajectory upper bound, not
+tabulated. Peak is the server's cached_tokens (KV-resident prefix) as a share of the declared
+window — no arm exceeded the window (v2.0.0 = 258,048 = window − 4,096 block-aligned, reproduced
+in both runs; the raw request size peaked at 305K/116%, which is request size only, not context;
+admission-count semantics pending endpoint-operator review). Long-term memory (P45) for v2.0.0
+is scored on the answered set: 3/3 answered (Q1/Q2/Q9) are verbatim hits and the 7 unanswered
+were honestly declined with zero fabrication; 3/10 is recall-budget coverage only (the
+auto-grader's truncating extraction mislabeled real hits as MISS; human-graded). 1.x's 7/10 comes
+from its seq-addressed recall stack (a real capability, at 2.4× the price and 2.3× the wall
+clock); the material-needle turn (T44) is a no-tools, no-recall-channel memory test. All three
+T0 failures are **unlocked-shape trajectory judgments** (merge3 return shape unspecified, the
+CB-code CLI error-line convention beyond the delivered materials, plugin_error_isolated a
+family-wide miss) — not compaction/recall quality regressions. Wall clock includes day-vs-night
+server noise (±7%, controlled with compaction-free turns). Full seven-arm data and per-turn detail
+live in `CHANGELOG` 2.0.0-alpha.5 and report §12–13; future tags will be **2.0.0**.
 
 **Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
 `ARGP_FACTOR_EGRESS=0` (the pre-send gate off; the budget trigger stays and fired 5× — all
 0-LLM group prunes) with the length-stop recovery chain as backstop:
-**bill 8.59M (+50%) / wall clock 60.6 min (+17%, back to native speed) / cache volume
-+65% (89.2M vs 54.2M) / peak 305K = 116% of the declared window**; 46/46 zero dead turns,
-zero wall hits, zero max-tokens.
+**bill 8.59M (miss+0.06×cache+3×output caliber, +50%) / wall clock 60.6 min (+17%, back to
+native speed) / cache volume +65% (89.2M vs 54.2M) / raw request-size peak 305K (116% of the
+declared window, not context)**; 46/46 zero dead turns, zero wall hits, zero max-tokens.
 **Paired rerun settles it (egress0b, same profile/env/runtime, full 46 turns)**: 471 steps /
 bill 5.815M / wall 43.3 min — all inside the rc.1 family band, **+1.6% vs alpha5 (noise level;
 -5% under DeepSeek off-peak pricing)** ⇒ run1's +50% was an outlier trajectory (a session-wide
