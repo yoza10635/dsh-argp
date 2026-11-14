@@ -841,8 +841,12 @@ export class ArgpGraphEngine extends CompactionEngine {
    * 每轮新进程时首轮唯一可得；②requestMaxTokens 观测（agent/request 瀑布，本进程
    * step≥2 才有）；③`llm.resolveModelInfo().defaultMaxTokens`——请求缺 maxTokens 时
    * llm 服务在瀑布**之后**注入（resolveCallWithInfo 实证），②对它失明、①会被
-   * adapterDefaults 剥除。三源全缺（注册面不可见的端点缺省 mct——R2 实锤
-   * request=prompt+65,536）才退 DEFAULT_EGRESS_OUTPUT_RATIO×声明窗。
+   * adapterDefaults 剥除。三源全缺（端点缺省 mct 在请求面不可见）才退
+   * DEFAULT_EGRESS_OUTPUT_RATIO×声明窗。2026-11-14 撞墙探针勘误：本端点 400 计数是
+   * prompt 单独（288,292 与显式 max_tokens=1024 同数），prompt+65,536 联合超窗**照跑**
+   * 并被服务端钳位到窗−prompt（精确到 token）——R2「273,639=prompt+65,536」系误读；
+   * 预留 mct 的依据改为「严格 provider 强制 prompt+mct≤窗 + 钳位区是静默截断区
+   * （T23）」，不再是「本端点按 prompt+mct 拒收」。
    * 逃生口互斥（审查 F5）：ARGP_FACTOR_PRESSURE=1 的"旧世界字节级复现"契约要求本闸
    * 不挂（调用点门控）——两 env 各管各的对照世界，不叠乘。
    * 400 overflow 通路保留为最后兜底（网不拆：声明窗未知/断锚/剪空/线≤0 → 照发，由

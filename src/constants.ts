@@ -115,9 +115,11 @@ export const FOCUS_TURN_SHARE_THRESHOLD = 0.5
  * §9.37 出口闸：输出预算三档源的最后一档——`agent.options.maxTokens`（装配期声明，
  * 宿主 buildRequest 正是拿它发请求，新进程首轮也可读）与 requestMaxTokens 观测
  * （agent/request 瀑布）皆缺位时，按声明窗 × 本比例预留生成空间。
- * 0.25 的依据：请求省略 maxTokens 时**服务端自己的默认 mct** 照样吃窗（R2 端点缺省
- * 65536=0.25×262144，400 死流的 request=273,639=prompt+65,536 分毫吻合），这一档
- * 在请求面完全隐形——观测档永远抓不到它。宁多留：漏留=撞墙 400/钳位全量重灌，
+ * 0.25 的依据：请求省略 maxTokens 时**服务端自己的默认 mct** 仍占生成预算
+ * （R2 端点缺省 65536=0.25×262144；2026-11-14 撞墙探针勘误：400 计数是 prompt
+ * 单独、钳位在窗−prompt 精确发生——预留 mct 的依据是严格 provider 强制
+ * prompt+mct≤窗与钳位静默截断区，非「本端点按 prompt+mct 拒收」）。这一档在
+ * 请求面完全隐形——观测档永远抓不到它。宁多留：漏留=撞墙 400/钳位静默截断，
  * 多留=早一点剪（可召回），代价不对称。
  */
 export const DEFAULT_EGRESS_OUTPUT_RATIO = 0.25
