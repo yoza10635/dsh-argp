@@ -20,6 +20,8 @@ dsh plugin --profile <name> add dsh-argp
 
 **Mounted on install, no manual wiring**: the package ships its own bundle patch (disables the stock `compaction-basic` and mounts this plugin); the profile layer only carries config overrides.
 
+**Host requirement**: DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0` (prereleases participate in matching; the current latest `0.2.2-rc.3` is tested).
+
 > **Installing within 24 hours of a release? Pin the version.** pnpm 11's `minimumReleaseAge` defaults to 24 h, so a fresh release is silently skipped and installs fall back to the previous one. Use `dsh plugin --profile <name> add dsh-argp@<version>`, or add `minimumReleaseAgeExclude: [dsh-argp]` to the profile's `pnpm-workspace.yaml`.
 
 > **Inactive under the minimal preset** (`skipPresets: ['minimal']`). To enable it there, add `config: { skipPresets: [] }` via a profile-level modify.
@@ -76,7 +78,13 @@ components, which one consolidated row folds into a DeepSeek off-peak reference 
 | Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (supplementary recall turns) |
 | Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 |
 
-Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — same 46-turn workload, fully serial single-arm, n=1 per arm; token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion), and the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**. The v2.0.0 column is the 46-turn run with the egress gate off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context. Long-term memory for v2.0.0 is **8/10** on the supplementary-recall caliber: the first turn answered 3/3 (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more; the remaining 2 are unreachable because some material pages were never label-covered, and the model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock. Hidden artifact suite (T0): 20/20. Full comparison data and per-turn detail live in `CHANGELOG` 2.0.0.
+Note:
+
+- **Base**: local Qwen3.8-Flash-Next (declared window 262,144), same 46-turn workload, fully serial single-arm, n=1 per arm.
+- **Token and price caliber**: token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion); the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**.
+- **v2.0.0 column**: the 46-turn run with the egress gate off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
+- **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable because some material pages were never label-covered, and the model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
+- **T0**: hidden artifact suite 20/20; full comparison data and per-turn detail live in `CHANGELOG` 2.0.0.
 
 ## Model requirements
 

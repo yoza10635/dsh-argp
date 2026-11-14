@@ -20,6 +20,8 @@ dsh plugin --profile <name> add dsh-argp
 
 **安装即挂，无需手工配置**：插件包自带 bundle patch（关掉宿主自带的 `compaction-basic` 并挂载本插件），profile 层只做配置覆盖。
 
+**宿主要求**：DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0`（预发布参与匹配；当前最新 `0.2.2-rc.3` 已实测）。
+
 > **发布后 24 小时内安装，请显式指定版本。** pnpm 11 的 `minimumReleaseAge` 默认为 24 小时，刚发布的版本会被静默跳过、回落到旧版本。用 `dsh plugin --profile <name> add dsh-argp@<版本>`，或在 profile 的 `pnpm-workspace.yaml` 写 `minimumReleaseAgeExclude: [dsh-argp]`。
 
 > **极简（minimal）preset 下默认不生效**（`skipPresets: ['minimal']`）。需要时在 profile 层 modify 加 `config: { skipPresets: [] }`。
@@ -74,7 +76,13 @@ recall: 12 calls · 9 hits (75%)
 | 长程记忆（允许召回轮） | 7/10 | 2/10 | 8/10（补充召回轮） |
 | 隐藏工件套件（T0） | 19/20 | 18/20 | 20/20 |
 
-注：以上为**本地 Qwen3.8-Flash-Next**（声明窗 262,144）、同一 46 轮工作量、全串行单臂、每臂 n=1 的实测结果；token 按 provider 回报 usage 全程求和（miss=输入未命中，hit=输入命中，output=输出），参考价按 **DeepSeek 闲时 1 / 0.02 / 4 元每百万 tokens** 折算；v2.0.0 列为出口闸关配置的 46 轮实测；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。长程记忆 v2.0.0 按补充召回轮口径 **8/10**：单轮先答 3 问全中（覆盖 3/10），追加 3 个补充召回轮（每轮预算重置）补回 5 问；剩余 2 问因个别材料页未被标签覆盖而不可召回，模型如实答 C。1.x 的 7/10 来自 seq 直取召回栈（`recall`/`recall_detail`），能力真实，代价 2.4× 价格/2.3× 墙钟。T0 隐藏工件 20/20。完整对照数据与逐轮明细见 `CHANGELOG` 2.0.0。
+注：
+
+- **数据基座**：本地 Qwen3.8-Flash-Next（声明窗 262,144）、同一 46 轮工作量、全串行单臂、每臂 n=1。
+- **token 与价格口径**：token 按 provider 回报 usage 全程求和（miss=输入未命中，hit=输入命中，output=输出）；参考价按 **DeepSeek 闲时 1 / 0.02 / 4 元每百万 tokens** 折算。
+- **v2.0.0 列**：出口闸关配置的 46 轮实测；声明窗上下文利用率按服务端 cached_tokens（KV 驻留前缀）计，305K 是请求规模、非上下文。
+- **长程记忆**：v2.0.0 单轮先答 3 问全中（覆盖 3/10），追加 3 个补充召回轮（每轮预算重置）补回 5 问 → **8/10**；剩余 2 问因个别材料页未被标签覆盖而不可召回，模型如实答 C。1.x 的 7/10 来自 seq 直取召回栈（`recall`/`recall_detail`），能力真实，代价 2.4× 价格/2.3× 墙钟。
+- **T0**：隐藏工件 20/20；完整对照数据与逐轮明细见 `CHANGELOG` 2.0.0。
 
 ## 模型要求
 
