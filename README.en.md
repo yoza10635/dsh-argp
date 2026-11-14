@@ -49,7 +49,7 @@ rate and peak are actual request totals over the whole run:
 | Bill (miss+0.06c+3o) | 13.09M | 5.72M | **5.815M (−56% vs 1.x; vs native +1.7%, noise level)** |
 | Bill (DeepSeek off-peak 1/.02/4) | 11.58M | 4.36M | **3.69M (−68% vs 1.x; −15% vs native, lowest overall)** |
 | Prefix cache hit | 0.833 (head rewrites wipe the cache every turn) | 0.956 | **0.978** |
-| Peak request size (server-reported, vs declared window) | 80% (51K short of a 400) | 51% (est trigger fires early) | 305K = 116%* (**actual served context unverifiable retroactively**, see note) |
+| Peak KV-resident context (cached_tokens caliber, vs declared window) | 78.9% (raw request size 80%) | 50.0% (raw 51%) | **98.4% (= window − 4,096 block-aligned, reproduced in both runs; raw request-size peak 116%)** |
 | Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label |
 | Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
 | Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | 3/10 (human-graded: Q1/Q2/Q9 verbatim hits; remaining 7 unanswered, recall budget exhausted) |
@@ -65,13 +65,19 @@ The v2.0.0 column = egress0b paired settled values (same profile/env/runtime, fu
 **gate-off config**; the gate-on default family band 43.8–51.6 min / 5.39–6.62M is in report
 §6–9); single-run conclusions must pass three checks (per-turn band → same-config rerun →
 paired full run); run1 (+50% bill) is archived as the outlier-trajectory upper bound and is
-not tabulated. 305K note: that value is the server-reported **request size** (prompt_tokens) —
-probes confirm admission counts raw tokens (single-message / multi-message / warm-cache
-requests above 262,144 are all rejected), while the arm window (305K admitted) behaved
-differently; the actually-served context cannot be verified retroactively — the endpoint
-operator should check the config-change history. P45 note: the auto-grader's per-question
-extraction truncates at the header line, mislabeling 3 real hits as MISS; human grading uses
-the transcript verbatim. Future tags will be **2.0.0**.
+not tabulated. Peak-caliber note (user ruling 2026-11-15): context is counted via the server's
+**cached_tokens (KV-resident prefix)** — no arm ever exceeded the window (v2.0.0 = 258,048 =
+window − 4,096 block-aligned, reproduced token-for-token in both runs; gate-on family
+71.9–72.7%); the raw request size (cached+fresh) peaked at 305K/116% — that is request size
+only, and how the server handles its position semantics is endpoint-internal (admission
+counts raw; the arm window vs probe window behaved inconsistently, pending operator review).
+T0 note: all three failures are **unlocked-shape trajectory judgments** (merge3 return type
+unspecified — the test accepts 3 shapes, the model picked a 4th dataclass; the CB-code CLI
+error-line convention is beyond the delivered materials, which only define exception codes —
+alpha5 happened to over-deliver it; plugin_error_isolated is a family-wide shape miss) — not
+a compaction/recall quality regression. P45 note: the auto-grader's per-question extraction
+truncates at the header line, mislabeling 3 real hits as MISS; human grading uses the
+transcript verbatim. Future tags will be **2.0.0**.
 
 **Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
 `ARGP_FACTOR_EGRESS=0` (the pre-send gate off; the budget trigger stays and fired 5× — all
