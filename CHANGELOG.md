@@ -6,6 +6,44 @@
 
 > **2.0.0 分线（用户裁定 2026-11-12）**：factor 新压缩方案（P0–P6：触发收敛/散文浓缩/驱逐判据/拦截回兜，即 T-3 评测线）**一律从 2.0.0 起发，不进 1.x stable**。1.x 稳定行为停在 **1.11.2**（tag `v1.11.2` = 老方案冻结点，npm `latest`）；**1.11.3–1.11.8 全部是 T24 系列 bench 构建号**（从未上 registry，本文件无其正文）。工作树版本已改钉 `2.0.0-alpha.4`——**`npm run release` 固定发 latest，禁止在 alpha/beta 号上裸跑**（beta 须手动 `--tag beta`）。T24 各臂成绩单与预言裁决在 `docs/design-2.0-factor-engine.md` §9.25–§9.29。
 
+## [2.0.0-alpha.5] - 2026-11-14（关单审计回归锁 + EGRESS=0 裁断：出口闸价值定谳）
+
+> **未发布**（不发 npm、不 tag，仅入库 checkpoint，同 alpha.4 先例）。本版零 src/ 行为改动——
+> 全部增量是回归测试与实测文档；`lib/` 随构建重建。
+
+### Added
+
+- **关单审计回归锁**（GitHub 三张已关 issue 逐张对账的结果，两张有缺口已补）：
+  - **issue #1**（CitesStrip 给 assistant/message 写 `sourceEventSeqs` 与宿主 dsh-token-meter
+    语义冲突，1.1.0 修复）：宿主 0.1.5+ 的 `assertProvenance` 会 throw，但引擎调用点 try/catch
+    吞错、套件里唯一触达该路径的测试用 stub session——**无有效回归锁**。补：`strip-cites.test.ts`
+    两处断言「assistant/message replace 的 opts 不含 `sourceEventSeqs`」。变异验证：塞回字段
+    ⇒ 2红2绿（恰好落在加断言的两个测试）。
+  - **issue #2**（peratom flushEntry 写违规 compaction/summary，重启加载炸，1.7.0 双层修复）：
+    2.0 factor-only 重构退役旧栈时，契约移植进 `prune-tx`（写入侧守卫有
+    `compaction-tx-brackets` 锁），但**宿主验收层没有随契约迁移**（`createRestore` strict /
+    `assertV4RowAdmission` / `assertReleasedV4Relationships` 全仓零引用）——"写入合规 ⇒ 宿主
+    strict 重载不炸"这半边全盲。补：新增 `test/factor-v4-reload.test.ts`——
+    `pruneIntervals` 三种真实区间形态（单节点 / 跨轮多区间+逐区间 shadow-price 相邻 /
+    整轮 `[u..r]` checkpoint 墓碑）的发射日志**全过宿主原生完整加载链**（issue 点名的
+    validate.mjs 等价入口）；负控复刻旧 bug 发射序，宿主逐字拒绝
+    `shadowedSeqs do not name an exact current surface span`。变异验证：summary 发射移回
+    replace 循环之后（复刻 fatal ①）⇒ 3红3绿。施工附带实锤：宿主
+    `assertSourceEventReferences` 要求 replace 的 `sourceEventSeqs` 覆盖 span 内**每个**
+    surface 节点——生产区间恒为连续原子全列故无恙，约束已注释钉住。
+  - **issue #3**（preset 毒子路径，1.11.2）：`preset-patch-entries.test.ts` 白名单断言
+    完好（737cefa 变异双红在案），无需补。
+- **T24-J 第 7 臂 egress0**（出口闸价值裁断跑）：alpha5 同款 + `ARGP_FACTOR_EGRESS=0` +
+  length-stop 恢复链兜底，bench 克隆运行时（rc.3 asar 手术 + stub 双验证）。46/46 零死亡：
+  **bill 8.59M（较 alpha5 +50%）/ 墙钟 60.6min（+17%，慢回原生水平）/ cache 体积 +65%**
+  （89.2M vs 54.2M，账单分解逐项吻合）/ 峰值 305K = 申报窗 116%；**全程零压缩零撞墙**
+  零 max-tokens。**裁定：出口闸 = 成本优化器而非纯保险**（预测性压缩保持前缀小 ⇒ 每轮
+  cache 税小；无闸放任上下文单调生长），`ARGP_FACTOR_EGRESS` 缺省开为唯一合算配置。
+  length-stop 链在本臂零触发——端点 admission 对运行时路径**前缀缓存感知**
+  （cache-assisted 305K 放行、fresh 峭值仅 47K；无缓存探针按总量 400，探针
+  `wallhit-probe3-admission.json` 四例在案），链的兜底价值在严格 admission 端点。
+  详见 README 对照表第 7 臂段与仓库报告 §12。
+
 ## [2.0.0-alpha.4] - 2026-11-14（召回面 v2：AND 语义 + 两级视图 + 预算跨轮重置 + 后缀归一）
 
 > **未发布**（不发 npm、不 tag，仅入库 checkpoint）。alpha4 长跑（alpha.3/pkg9）暴露召回通道

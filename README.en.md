@@ -61,6 +61,23 @@ needle turn (T44) measures memory WITHOUT a recall channel, not compaction quali
 (wording experiment in the report §6.6). Full six-arm data lives in the CHANGELOG
 (2.0.0-alpha.4) and the repository reports.
 
+**Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
+`ARGP_FACTOR_EGRESS=0` (gate off) with the length-stop recovery chain as backstop:
+**bill 8.59M (+50%) / wall clock 60.6 min (+17%, back to native speed) / cache volume
++65% (89.2M vs 54.2M) / peak 305K = 116% of the declared window**; 46/46 zero dead turns,
+**zero compactions** the whole run (gate off ⇒ no predictive compaction; the fresh-counting
+wall is far away ⇒ nothing to trigger reactive compaction), zero wall hits, zero max-tokens.
+**Verdict: the egress gate is a cost optimizer, not just insurance** — predictive compaction
+keeps the prefix small ⇒ low per-turn cache tax ⇒ low bill; gate-free lets the context grow
+monotonically and every turn pays the cache tax on the whole history (the bill decomposition
+matches the total delta item by item).
+Runtime note: this endpoint's admission is **prefix-cache-aware** on the runtime path
+(cache-assisted 305K admitted, fresh peak only 47K; cache-less probes are rejected on total
+count) — the declared window 262,144 is effectively a fresh budget for the runtime path.
+The length-stop chain had nothing to rescue here (zero triggers); its backstop value lies
+in strict-admission endpoints (the probe-400 world). Data: report §12 and
+`wallhit-probe3-admission.json`.
+
 ## How it works
 
 ### Compaction transaction (prune-tx)
@@ -114,7 +131,7 @@ Settings → Plugins → ARGP card (all volatile; changes apply live, no restart
 
 | Variable | Effect |
 |---|---|
-| `ARGP_FACTOR_EGRESS=0` | Disable the egress gate (**comparison arms only**) |
+| `ARGP_FACTOR_EGRESS=0` | Disable the egress gate (comparison arm; **measured bill +50% / wall +17%** — the gate is a cost optimizer, keep the default on) |
 | `ARGP_FACTOR_PRESSURE=1` | Restore legacy pre-step estimate-driven pressure pruning (old-world reproduction) |
 | `ARGP_FACTOR_TIER=tiered` | Focal tiering strategy (hard/medium focal bands; default flat) |
 | `ARGP_FACTOR_CLIP=1` | C10 clip layer (three-state retention; default off) |
@@ -134,6 +151,7 @@ recall: 12 calls · 9 hits (75%)
 ## Verification
 
 - **T24-J six-arm comparison (2026-11-14, 46 turns × 6 arms, all serial finishers)**: alpha2/alpha3/alpha4/alpha5 (2.0 factor generations) + native compaction-basic + the 1.11.2 legacy scheme, identical turns2 protocol — the source of the table above; every 2.0 generation finished with zero dead turns and zero 400s; recall face v2 (alpha.4) achieved zero empty label mismatches, the per-turn recall-budget reset was used by the model in production, and long-term memory hit 6/10, the best factor result.
+- **Arm 7 egress0 (gate off + length-stop chain backstop, finished the same day)**: bill +50% / wall +17% / cache volume +65%, zero compactions, zero wall hits — **gate-default-on is the only sensible configuration** ("Arm 7" paragraph under the table); the length-stop recovery chain rode along via the bench clone runtime (rc.3 asar surgery + stub dual verification), zero triggers as expected.
 - **Regression**: `npm run check` = typecheck + typecheck:spike + smoke + unit tests (275 tests, 273 pass / 0 fail / 2 skipped) + build; egress tests EG-1…14b include the cold-resume backfill lock; recall-face v2 assembly invariants and the per-turn budget reset have mutation locks.
 - Historical 1.x graph-engine measurements (four-arm 7/7 probes, 50-turn t-long, etc.) are in the CHANGELOG and git history; they are **not 2.0 numbers** and must not be quoted as such.
 

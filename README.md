@@ -58,6 +58,17 @@ factor 的回答：**剪枝是确定性的**——同输入同输出、0 LLM、�
 "无召回通道时的记忆"，不是压缩质量本身（措辞实验见报告 §6.6）。完整六臂数据与逐轮明细见
 `CHANGELOG` 2.0.0-alpha.4 与仓库报告。
 
+**第 7 臂——出口闸价值定谳（egress0，2026-11-14）**：alpha5 同款 + `ARGP_FACTOR_EGRESS=0`
+（门关）+ length-stop 恢复链兜底：**bill 8.59M（+50%）/ 墙钟 60.6min（+17%，慢回原生水平）/
+cache 体积 +65%（89.2M vs 54.2M）/ 峰值 305K = 申报窗 116%**；46/46 零死亡，全程**零压缩**
+（门关 ⇒ 无预测压缩；fresh 计数墙极远 ⇒ 无撞墙可触发反应式压缩）、零撞墙、零 max-tokens。
+**裁定：出口闸是成本优化器而非纯保险**——预测性压缩保持前缀小 ⇒ 每轮 cache 税小 ⇒ bill 低；
+无闸放任上下文单调生长，每轮为全历史付 cache 税（账单分解与总差逐项吻合）。
+运行时注记：本端点对运行时路径的 admission 呈**前缀缓存感知**（cache-assisted 305K 放行、
+fresh 峰值仅 47K；无缓存探针按总量 400）——申报窗 262,144 对运行时路径实质是 fresh 预算；
+length-stop 恢复链在此世界无事可救（零触发），其兜底价值在严格 admission 端点（探针 400 语义）。
+数据：报告 §12 与探针 `wallhit-probe3-admission.json`。
+
 ## 工作方式
 
 ### 压缩事务（prune-tx）
@@ -111,7 +122,7 @@ Settings → Plugins → ARGP 卡片（全部 volatile，改完即生效，无�
 
 | 变量 | 作用 |
 |---|---|
-| `ARGP_FACTOR_EGRESS=0` | 关出口闸（**仅**修前/修后对照臂） |
+| `ARGP_FACTOR_EGRESS=0` | 关出口闸（对照臂；**实测 bill +50%/墙钟 +17%**——出口闸是成本优化器，缺省开勿关） |
 | `ARGP_FACTOR_PRESSURE=1` | 恢复旧 pre-step 估算驱动压力剪（旧世界复现） |
 | `ARGP_FACTOR_TIER=tiered` | 焦点分级策略档（hard/medium 焦点带；缺省 flat） |
 | `ARGP_FACTOR_CLIP=1` | C10 夹剪层（三态保留；缺省关） |
@@ -131,6 +142,7 @@ recall: 12 calls · 9 hits (75%)
 ## 验证
 
 - **T24-J 六臂对照（2026-11-14，46 轮 × 6 臂全串行完赛）**：alpha2/alpha3/alpha4/alpha5（2.0 factor 各代）+ 原生 compaction-basic + 1.11.2 老方案，同款 turns2 协议——上表数字出处；2.0 各代全程零死轮零 400，召回面 v2（alpha.4）实现零 empty 标签失配、召回预算跨轮重置被模型实战使用、长程记忆 6/10 全场 factor 最高。
+- **第 7 臂 egress0（出口闸关 + length-stop 链兜底，同日完赛）**：bill +50%/墙钟 +17%/cache 体积 +65%，零压缩零撞墙——**出口闸缺省开为唯一合算配置**（对照表下"出口闸价值定谳"段）；length-stop 恢复链以 bench 克隆运行时（rc.3 asar 手术 + stub 双验证）随臂搭载，零触发符合预期。
 - **回归**：`npm run check` = typecheck + typecheck:spike + smoke + 单测（275 测，273 过 / 0 败 / 2 skip）+ build；出口闸 EG-1…14b 含冷 resume 回填锁；召回面 v2 装配四不变量与预算跨轮重置有变异锁。
 - 历史 1.x 图引擎的实测（四臂 7/7 探针、50 轮 t-long 等）见 CHANGELOG 与 git 历史；它们**不是 2.0 的数字**，不可直接引用。
 

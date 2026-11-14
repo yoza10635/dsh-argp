@@ -1,6 +1,6 @@
 {
   "name": "dsh-argp",
-  "version": "2.0.0-alpha.4",
+  "version": "2.0.0-alpha.5",
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
