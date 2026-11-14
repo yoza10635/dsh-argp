@@ -36,34 +36,42 @@ Summarizer-style compaction (an LLM rewriting history) pays three prices:
 
 The factor engine's answer: **eviction is deterministic** — same input, same output, 0 LLM, recomputable; **forgetting is reversible** — a stub is one label line, the original comes back byte-for-byte from the append-only log; **the LLM does the one thing it is good at** — prose condensation, only inside a transaction, only when both gates pass.
 
-## Three-scheme measured comparison (T24-J, seven arms, 2026-11-14/15; column 4 = gate-off paired values)
+## Three-scheme measured comparison (T24-J, 2026-11-14/15; the v2.0.0 column = gate-off paired settled values)
 
 The same 46-turn workload (same prompts, same materials, fully serial single-arm, same
 endpoint/model/window 262,144); per-turn bill = `miss + 0.06×cache + 3×output`; cache-hit
 rate and peak are actual request totals over the whole run:
 
-| Dimension | 1.x legacy (1.11.2 graph+peratom) | Native (host compaction-basic) | **2.x factor** (gate on, default) | 2.x factor (gate off · egress0b paired) |
-|---|---|---|---|---|
-| Compaction mechanism | LLM summaries ×6 + contiguous-prune rewrites ×768 + system-head rewrite every turn | est-driven pre-clamp prune ×45 + LLM summaries ×6 (every 5-6 turns) | **Deterministic label group-prune (0 LLM)** + prose-condense dual gates + egress gate | Same, gate off; budget trigger (turn boundary) ×3 |
-| Wall clock | 114.7 min | 61.8 min | **49.4–51.6 min (−57%)** | 43.3 min (fastest draw in the family band) |
-| Bill (miss+0.06c+3o) | 13.09M | 5.72M | **5.39–5.72M (−59% vs 1.x)** | 5.815M (vs alpha5 **+1.6%, noise level**) |
-| Bill (DeepSeek off-peak 1/.02/4) | 11.58M | 4.36M | **3.77–3.89M** | **3.69M (lowest overall)** |
-| Prefix cache hit | 0.833 (head rewrites wipe the cache every turn) | 0.956 | **0.970–0.974** | 0.978 |
-| Peak real-context utilization | 80% (no output reserve, 51K short of a 400) | 51% (est trigger fires early, half the declared window unused) | **73–74%** (egress-gate precise reserve) | 116% (305K ceiling, cache-aware admission; fresh peak 18%) |
-| Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label | ✓ same |
-| Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 | 1/12 |
-| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | 6/10 (label recall, 1× the cost) | auto 0/10 (3 answers state=A, pending human review) |
-| Hidden artifact suite | 19/20 | 18/20 | 19–20/20 | — (audit pending) |
+| Dimension | v1.11.2 | Native (host compaction-basic) | v2.0.0 |
+|---|---|---|---|
+| Compaction mechanism | LLM summaries ×6 + contiguous-prune rewrites ×768 + system-head rewrite every turn | est-driven pre-clamp prune ×45 + LLM summaries ×6 (every 5-6 turns) | **Deterministic label group-prune (0 LLM)** + prose-condense dual gates + turn-boundary budget trigger; egress gate off (paired-arm config) |
+| Wall clock | 114.7 min | 61.8 min | **43.3 min (−62% vs 1.x)** |
+| Bill (miss+0.06c+3o) | 13.09M | 5.72M | **5.815M (−56% vs 1.x; vs native +1.7%, noise level)** |
+| Bill (DeepSeek off-peak 1/.02/4) | 11.58M | 4.36M | **3.69M (−68% vs 1.x; −15% vs native, lowest overall)** |
+| Prefix cache hit | 0.833 (head rewrites wipe the cache every turn) | 0.956 | **0.978** |
+| Peak request size (server-reported, vs declared window) | 80% (51K short of a 400) | 51% (est trigger fires early) | 305K = 116%* (**actual served context unverifiable retroactively**, see note) |
+| Forgetting reversible | ✗ summarization is irreversible | ✗ | ✓ `recall_history` byte-for-byte by label |
+| Material-needle memory (no-tools turn) | 0/12 | 0/12 | 1/12 |
+| Long-term memory (recall-allowed turn) | **7/10** (legacy seq-recall stack — at 2.4× the bill and 2.3× the wall clock) | 2/10 (structural amnesia, honest "unsure") | 3/10 (human-graded: Q1/Q2/Q9 verbatim hits; remaining 7 unanswered, recall budget exhausted) |
+| Hidden artifact suite (T0) | 19/20 | 18/20 | 17/20 (merge3 shape diff + plugin_error_isolated + cli_error_line_format) |
 
 Reading notes: n=1 per arm (single runs, not averages); wall clock includes day-vs-night
 server noise (±7%, controlled with compaction-free turns); 1.x's P45 edge comes from its
 seq-addressed recall stack — a real capability, at a disproportionate price; the no-tools
 needle turn (T44) measures memory WITHOUT a recall channel, not compaction quality
 (wording experiment in the report §6.6). Full seven-arm data lives in the CHANGELOG
-(2.0.0-alpha.5) and the repository reports §12–13. Reading column 4: egress0b is the paired
-rerun's settled values (same profile/env/runtime); single-run conclusions must pass three
-checks (per-turn band → same-config rerun → paired full run); run1 (+50% bill) is archived
-as the outlier-trajectory upper bound and is not tabulated.
+(2.0.0-alpha.5) and the repository reports §12–13.
+The v2.0.0 column = egress0b paired settled values (same profile/env/runtime, full 46 turns;
+**gate-off config**; the gate-on default family band 43.8–51.6 min / 5.39–6.62M is in report
+§6–9); single-run conclusions must pass three checks (per-turn band → same-config rerun →
+paired full run); run1 (+50% bill) is archived as the outlier-trajectory upper bound and is
+not tabulated. 305K note: that value is the server-reported **request size** (prompt_tokens) —
+probes confirm admission counts raw tokens (single-message / multi-message / warm-cache
+requests above 262,144 are all rejected), while the arm window (305K admitted) behaved
+differently; the actually-served context cannot be verified retroactively — the endpoint
+operator should check the config-change history. P45 note: the auto-grader's per-question
+extraction truncates at the header line, mislabeling 3 real hits as MISS; human grading uses
+the transcript verbatim. Future tags will be **2.0.0**.
 
 **Arm 7 — the egress gate's value, settled (egress0, 2026-11-14)**: same as alpha5 plus
 `ARGP_FACTOR_EGRESS=0` (the pre-send gate off; the budget trigger stays and fired 5× — all
