@@ -1,6 +1,6 @@
 [English](README.en.md) | 中文
 
-# dsh-argp — dsh 的上下文压缩插件
+# dsh-argp — 剪得掉，也找得回
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,7 +8,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**dsh-argp 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的第三方上下文压缩插件。** 工具结果按实体标签**确定性剪枝（0 LLM）**，散文只在压缩事务内**一次性浓缩**，出口闸拦住"必然超窗"的请求；被剪掉的原文留在 append-only 日志里，模型可以按标签用 `recall_history` 逐字取回。
+**dsh 的零配置上下文压缩插件**（[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)）：**0-LLM 实体标签剪枝** · **按标签逐字召回原文** · 散文只在压缩事务内浓缩 · **出口闸拦住必然超窗的请求**。
 
 > 1.x 图引擎已退役：老方案冻结在 npm **`1.11.2`**（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 里的 graph 旋钮会被宽容读取并告警忽略。
 
