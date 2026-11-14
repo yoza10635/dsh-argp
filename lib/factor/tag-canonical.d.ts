@@ -16,7 +16,7 @@ export interface CanonicalPath {
 /** 剥离尾部行号引用（`a.ts:12:3` → `a.ts`）——document 键按文件粒度归并。 */
 export declare function stripLineRef(raw: string): string;
 /**
- * 规则（P0 实测形态，spike/48）：
+ * 规则（P0 实测形态）：
  *  反斜杠归一 → `./` 剥离 → 行号剥离 → msys/盘符归形 → 尾/双斜杠归并；
  *  unix 绝对路径与 `~/` 保留大小写，盘符键小写合并。
  *  相对路径：只绑**事件在场 cwd**（参数注入，同一归形管道）；

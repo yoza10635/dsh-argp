@@ -80,14 +80,6 @@
     "spike26": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/26-tlong-coding.ts",
     "spike7real": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/07-real-trace.ts",
     "spike32": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/32-split-repr-compare.ts",
-    "spike48": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/48-tag-extract-audit.ts",
-    "spike49": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/49-recall-attribution.ts",
-    "t2": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts",
-    "oracle": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/51-oracle-judge.ts",
-    "classb": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/52-classb-oracle.ts",
-    "errdedup": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/53-error-dedup.ts",
-    "policy": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/54-policy-width.ts",
-    "vercmp": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/55-version-compare.ts",
     "spike8": "node --import ./scripts/ts-import-rewrite-loader.mjs spike/08-game-trace.ts"
   },
   "overrides": {

@@ -6,7 +6,7 @@
  *
  * 纪律：
  *  - **append root seq 去重**——replace 链同一调用多次入账只计一次（`shadowedSeqsOf`
- *    口径教训，spike/48 实测 47K 剪枝副本 vs 7.8K 真调用的病灶）；
+ *    口径教训，P0 提取审计实测 47K 剪枝副本 vs 7.8K 真调用的病灶）；
  *  - **词表源 = 被剪账本**（§1.5-7：列存活原子会把"已被清空"的标签挤出 top-N）；
  *  - **fail-closed 出口**：渲染前再过一遍 `labelAllowed`（文法表改版后旧索引条目
  *    不得漏进 prompt——拒收者留索引、不进 prompt）；

@@ -2,7 +2,7 @@
  * src/factor/factor-ledger.ts 契约测试（design-2.0 §1.3/§1.4/§2.2）。
  *
  * 契约面：
- *  - rootSeq 去重（replace 链双计是 spike/48 实测病灶：47K 副本 vs 7.8K 真调用）；
+ *  - rootSeq 去重（replace 链双计是 P0 实测病灶：47K 副本 vs 7.8K 真调用）；
  *  - 倒排键形 `document:`/`scope:`/`command:`/`errorcode:`；
  *  - 词表源 = 被剪账本（存活原子不列，§1.5-7）+ fail-closed 出口 + 预算诚实截断；
  *  - queryPruned 真 AND（2026-11-14 语义反转）/ order 三档（fresh/timeline）/ 游标分页 / epoch 漂移不静默；

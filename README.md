@@ -93,7 +93,6 @@ recall: 12 calls · 9 hits (75%)
 
 - `npm run check`：typecheck + smoke + 单测（269 测）+ 构建。
 - 出口闸单测：`npm run test -- --test-name-pattern=EG-`。
-- 离线语料回放：`node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts`。
 - 46 轮对照的逐轮明细见 `CHANGELOG` 2.0.0；1.x 实验脚本归档在 `spike/retired-1x/`（不参与编译）。
 
 ## 问题反馈

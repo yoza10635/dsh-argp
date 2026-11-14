@@ -4,7 +4,7 @@
  * 契约面（P0 实测教训全部入锁）：
  *  - 通道纪律：args 键值为主，文本侧**仅在 args 通道空**时兜底（增量口径）；
  *  - 分族语义：file 族 → document；grep 族 → scope；命令族 → command（pwsh 在内，
- *    spike/48 首轮漏 pwsh 的回归锁）；
+ *    P0 首轮漏 pwsh 的回归锁）；
  *  - readRange：offset/limit 提取（staleness 覆盖证明原料；全量读=null）；
  *  - 错误信号：exit≠0/ALL_CAPS（stop 词只举 errorish 不配标签）/isError 注入；
  *  - fail-closed：伪指令换行标签、secret 形态路径 → 拒收计数、不进 files。

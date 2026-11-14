@@ -93,9 +93,8 @@ Note: measured on **local Qwen3.8-Flash-Next** (declared window 262,144) — sam
 
 ## Development & verification
 
-- `npm run check`: typecheck + smoke + unit tests (275) + build.
+- `npm run check`: typecheck + smoke + unit tests (269) + build.
 - Egress-gate tests: `npm run test -- --test-name-pattern=EG-`.
-- Offline corpus replay: `node --import ./scripts/ts-import-rewrite-loader.mjs spike/50-t2-replay.ts`.
 - Per-turn detail for the 46-turn comparison lives in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
 
 ## Feedback
