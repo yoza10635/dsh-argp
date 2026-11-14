@@ -1,6 +1,6 @@
 [中文](README.md) | English
 
-# dsh-argp — prune it, then get it back
+# dsh-argp — factor-level context compaction for dsh
 
 [![CI](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml/badge.svg)](https://github.com/yoza10635/dsh-argp/actions/workflows/ci.yml)
 [![GitHub Release](https://img.shields.io/github/v/release/yoza10635/dsh-argp)](https://github.com/yoza10635/dsh-argp/releases)
@@ -8,7 +8,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Zero-config context compaction for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: **0-LLM entity-label pruning** · **verbatim recall by label** · prose condensed only inside compaction transactions · **an egress gate that never sends an over-window request**.
+**A context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh)**: **deterministic pruning of non-focal factors (0 LLM)** · prose condensed only inside compaction transactions · **an egress gate that never sends an over-window request**.
 
 > The 1.x graph engine is retired: the old scheme is frozen at npm **`1.11.2`** (tag `v1.11.2`). 2.x maintains only the factor engine; graph-era knobs in old profiles are tolerated with a warning.
 
