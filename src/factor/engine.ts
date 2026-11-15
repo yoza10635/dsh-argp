@@ -89,13 +89,24 @@ export function resolveClipEnabled(env: NodeJS.ProcessEnv = process.env): boolea
 }
 
 /**
- * §9.37 出口闸（缺省**关**；用户裁定 2026-11-15：46 轮实测对照臂形态即缺省形态——
- * 贴墙由 400 兜底网 + §9.36 闸二浓缩接管，上下文贴线优先于预检防线的提前回落）。
- * env ARGP_FACTOR_EGRESS=1 = 开（评测/对照/防 400 死流需要时显式开；缺省与非法值=关，
- * 档位语义同 resolveClipEnabled）。生效=构造期快照（focalTiered 同款纪律，须重挂引擎）。
+ * §9.37 出口闸解析（每次 pre-step 调用，读实时设置——设置页改动免重挂生效）：
+ *  - env ARGP_FACTOR_EGRESS=0 = 硬关（对照臂覆盖一切，压缩阈值设置也不开）；
+ *  - 设置 compactionThreshold > 0 = 开，线 = 声明窗 × 比例（「压缩阈值」语义，
+ *    2026-11-15 用户裁定：可开启并自行设置比例）；
+ *  - env ARGP_FACTOR_EGRESS=1（无设置）= 开，线 = 旧公式（窗 − 输出预算 − 2%，
+ *    评测/对照口径）；都没有 = 关（撞墙 400 兜底）。
  */
-export function resolveEgressEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['ARGP_FACTOR_EGRESS'] === '1'
+export interface EgressResolution {
+  enabled: boolean
+  /** 非 null = 设置比例线（线 = 声明窗 × ratio）；null = 旧公式线（窗 − 输出预算 − 2%）。 */
+  lineRatio: number | null
+}
+
+export function resolveEgress(env: NodeJS.ProcessEnv = process.env, compactionThreshold = 0): EgressResolution {
+  if (env['ARGP_FACTOR_EGRESS'] === '0') return { enabled: false, lineRatio: null }
+  if (compactionThreshold > 0) return { enabled: true, lineRatio: compactionThreshold }
+  if (env['ARGP_FACTOR_EGRESS'] === '1') return { enabled: true, lineRatio: null }
+  return { enabled: false, lineRatio: null }
 }
 
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */

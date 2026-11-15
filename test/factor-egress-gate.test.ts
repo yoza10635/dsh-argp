@@ -29,7 +29,7 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
-import { resolveEgressEnabled, type FactorEngine } from '../src/factor/engine.ts'
+import { resolveEgress, type FactorEngine } from '../src/factor/engine.ts'
 
 interface EgressInternals {
   factor: FactorEngine | null
@@ -331,11 +331,15 @@ test('EG-6b 缺省（无 env）⇒ egress 不挂、浓缩闸照旧（M4 锁）',
   assert.deepEqual(calls, ['condense'], '缺省=对照臂形态（egress 零触达，浓缩闸照旧）')
 })
 
-test('EG-7 resolveEgressEnabled：缺省关，唯一开档=字面 1（档位语义同 resolveClipEnabled）', () => {
-  assert.equal(resolveEgressEnabled({}), false)
-  assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '0' }), false)
-  assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: 'false' }), false, '非法值 ⇒ 关（缺省安全）')
-  assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '1' }), true)
+test('EG-7 resolveEgress：env=0 硬关 > 设置阈值比例线 > env=1 旧公式线 > 全无=关', () => {
+  assert.deepEqual(resolveEgress({}), { enabled: false, lineRatio: null }, '全无 = 关（撞墙 400 兜底）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '0' }), { enabled: false, lineRatio: null }, 'env=0 = 关')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: 'false' }), { enabled: false, lineRatio: null }, '非法值 ⇒ 关（缺省安全）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '1' }), { enabled: true, lineRatio: null }, 'env=1 = 开（旧公式线）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '0' }, 0.5), { enabled: false, lineRatio: null }, 'env=0 硬覆盖：设置阈值也不开（对照臂优先）')
+  assert.deepEqual(resolveEgress({}, 0.5), { enabled: true, lineRatio: 0.5 }, '设置压缩阈值 >0 → 比例线（线 = 窗 × 0.5）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '1' }, 0.5), { enabled: true, lineRatio: 0.5 }, '设置优先于 env=1（用户显式选择）')
+  assert.deepEqual(resolveEgress({}, 0), { enabled: false, lineRatio: null }, '设置 0 = 关（撞墙兜底，档位语义同 resolveClipEnabled 的安全方向）')
 })
 
 // EG-13/13b：冷 resume（2026-11-13 R2 实锤）——headless 每轮新进程 resume 时，历史
@@ -363,6 +367,45 @@ test('EG-13b 日志无 request/context 时走 requestContext() 兜底（M12 锁�
   const fired = await internals.egressGate(makeAgent(session), sig(), 0)
   assert.equal(fired, true, '宿主 requestContext() 是权威声明面，日志缺失时也不得放行')
   assert.equal(spy.targets.length, 1)
+})
+
+// EG-15/16（2026-11-15 压缩阈值设置）：compactionThreshold>0 → 比例线（线 = 窗 × 比例），
+// 优先于 env=1 的旧公式线；env=0 仍为对照硬覆盖（设置也不开）。
+test('EG-15 压缩阈值比例线：compactionThreshold=0.5 → 线=窗×0.5（env=1 也让位设置）', async () => {
+  // 钩子已置 env=1（旧公式线 730）：设置 0.5 必须优先 → 线 500。
+  // 走 emitPreStep 全调用点（resolveEgress 接线 + 真闸），520 只吃比例线。
+  const ctx = new Context()
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
+  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
+  const internals = ctx.compaction as unknown as EgressInternals
+  const factor = internals.factor as FactorEngine
+  const session = heavyAnchoredSession('eg-threshold', 520) // 520 ∈ [500, 730)：只吃比例线
+  internals.bindSession(session)
+  bridgeDeclaredWindow(ctx, session, 1000)
+  const spy = spyCompact(factor)
+  await emitPreStep(ctx, makeAgent(session))
+  assert.ok(spy.targets.length >= 1, 'pre-step 过设置比例线 500 发剪（旧公式线 730 不会在此触发）')
+})
+
+test('EG-16 env=0 硬覆盖：设置 compactionThreshold=0.5 也不开（对照臂优先于设置）', async () => {
+  const savedE = process.env['ARGP_FACTOR_EGRESS']
+  process.env['ARGP_FACTOR_EGRESS'] = '0'
+  try {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
+    await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
+    const internals = ctx.compaction as unknown as EgressInternals
+    const session = heavyAnchoredSession('eg-hard-off', 900) // 900 ≥ 比例线 500 也 ≥ 旧线 730
+    internals.bindSession(session)
+    const calls: string[] = []
+    internals.egressGate = async () => { calls.push('egress'); return true }
+    internals.condenseGate = async () => { calls.push('condense') }
+    await emitPreStep(ctx, makeAgent(session))
+    assert.deepEqual(calls, ['condense'], 'env=0 硬关：设置 0.5 不开闸（egressGate 零触达，交 400 兜底）')
+  } finally {
+    if (savedE === undefined) delete process.env['ARGP_FACTOR_EGRESS']
+    else process.env['ARGP_FACTOR_EGRESS'] = savedE
+  }
 })
 
 // EG-14（2026-11-13 T34 实锤）：事务后仍 ≥ 声明窗 ⇒ 硬拒，不发注定 400 的请求。

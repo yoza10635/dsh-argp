@@ -44,7 +44,7 @@ recall: 12 calls · 9 hits (75%)
 
 ## How it works
 
-All strategy values are fixed — **zero knobs** (no settings page): trigger line 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn, 10 vocabulary rows per category, 5 default recall items; same-named keys in old profiles are tolerated with a warning.
+Strategy values are fixed: trigger line 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn, 10 vocabulary rows per category, 5 default recall items. **The single setting, "Compaction threshold"** (Settings → Plugins, off by default): set a 0–1 ratio and context reaching declaredWindow × ratio is **compacted before sending** (live, no restart; above 0.8 the prose-condensation line at 0.8×window acts first and the threshold line adds pruning on top); **when off, a wall hit (the provider rejecting an oversized request) triggers compaction as the fallback** — suited to endpoints whose real wall ≈ the declared window; endpoints that auto-escalate (real wall ≫ declared window) should turn it on. The five other old knobs stay retired (same-named keys in old profiles are tolerated with a warning).
 
 **Governing principle: tool results may be pruned; conversation prose is only touched inside compaction transactions.**
 

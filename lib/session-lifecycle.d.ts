@@ -28,14 +28,14 @@ export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /**
  * 引擎设置 schema（schemastery）：**2.0.0 起零旋钮**——原六枚设置项
  * （windowRatio/retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
- * 全部退役，缺省值固化在 constants.ts；本 schema 保持空对象以维持公共 API
- * 形状与"名册为空"的可验证性。
+ * 全部退役，缺省值固化在 constants.ts；2.0.1 起名册唯一活键 = `compactionThreshold`
+ * （压缩阈值：出口闸触发线 = 声明窗 × 比例；0=关闭，撞墙 400 兜底）。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
  * volatile form；settings.register 已随 #4587 移除，本 schema 经 hub re-export
- * 维持公共 API 与文档口径）。两面键集必须一致（都为空）。
+ * 维持公共 API 与文档口径）。两面键集必须一致。
  *
- * 1.x graph 臂旋钮与 2.0 六枚旋钮在 cordis 非 strict 解析下一律宽容透传
+ * 1.x graph 臂旋钮与 2.0 五枚退役旋钮在 cordis 非 strict 解析下一律宽容透传
  * （宿主实测未声明键原样透传）；normalizeConfig 对非缺省旧值告警忽略。
  */
 export declare const ArgpUserSettingsSchema: z<ArgpUserSettings>;

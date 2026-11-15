@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "dsh-argp",
-    "description": "Context compaction for DeepSeek Harness (dsh): deterministic label-addressed eviction of tool results (0 LLM), prose condensation only inside compaction transactions (double-gated), an egress gate that never sends a request that would necessarily overflow, and label-addressed recall of originals from the append-only log. Zero settings knobs; originals stay in the log."
+    "description": "Context compaction for DeepSeek Harness (dsh): deterministic label-addressed eviction of tool results (0 LLM), prose condensation only inside compaction transactions (double-gated), label-addressed recall of originals from the append-only log (command/scope escape channels included), and an optional compaction-threshold setting (off by default — a wall hit triggers compaction as the fallback; turn it on to compact before sending at a ratio you choose)."
   }
 }

@@ -49,17 +49,19 @@ export const ARG_SETTINGS_KEY = 'dsh-argp'
 /**
  * 引擎设置 schema（schemastery）：**2.0.0 起零旋钮**——原六枚设置项
  * （windowRatio/retainRatio/charsPerToken + focalTurns/vocabTopN/recallLimit）
- * 全部退役，缺省值固化在 constants.ts；本 schema 保持空对象以维持公共 API
- * 形状与"名册为空"的可验证性。
+ * 全部退役，缺省值固化在 constants.ts；2.0.1 起名册唯一活键 = `compactionThreshold`
+ * （压缩阈值：出口闸触发线 = 声明窗 × 比例；0=关闭，撞墙 400 兜底）。
  *
  * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
  * volatile form；settings.register 已随 #4587 移除，本 schema 经 hub re-export
- * 维持公共 API 与文档口径）。两面键集必须一致（都为空）。
+ * 维持公共 API 与文档口径）。两面键集必须一致。
  *
- * 1.x graph 臂旋钮与 2.0 六枚旋钮在 cordis 非 strict 解析下一律宽容透传
+ * 1.x graph 臂旋钮与 2.0 五枚退役旋钮在 cordis 非 strict 解析下一律宽容透传
  * （宿主实测未声明键原样透传）；normalizeConfig 对非缺省旧值告警忽略。
  */
-export const ArgpUserSettingsSchema = z.object({}) as z<ArgpUserSettings>
+export const ArgpUserSettingsSchema = z.object({
+  compactionThreshold: z.number().min(0).max(1).default(0),
+}) as z<ArgpUserSettings>
 
 /**
  * The namespace pattern `settingsNamespace` enforced before it was removed.
@@ -193,6 +195,18 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
     ctx.logger.warn('[argp-factor] 设置旋钮（' + retiredKnobs.join(', ')
       + '）已随 2.0.0 零旋钮形态退役：宽容读、已忽略；缺省固化 '
       + 'windowRatio=0.8 / retainRatio=0.2 / charsPerToken=3.5 / focalTurns=1 / vocabTopN=10 / recallLimit=5')
+  }
+  // 压缩阈值（2.0.1 唯一活键）的 YAML 手写层形状告警：settings 源驱动的 volatile
+  // 值有 schema 校验；YAML 直写的裸值没有——出界形状静默降级（字符串→0=关、
+  // >1→闸几乎不触发），这里显式告警不静默（审查 P2-7）。
+  const rawThreshold = (config as unknown as Record<string, unknown>)['compactionThreshold']
+  const thresholdValue = rawThreshold !== null && typeof rawThreshold === 'object' && 'get' in (rawThreshold as object)
+    ? (rawThreshold as { get(): unknown }).get() : rawThreshold
+  if (thresholdValue !== undefined && thresholdValue !== null
+    && (typeof thresholdValue !== 'number' || !Number.isFinite(thresholdValue)
+      || thresholdValue < 0 || thresholdValue > 1)) {
+    ctx.logger.warn('[argp-factor] 压缩阈值 compactionThreshold=' + String(Array.isArray(thresholdValue) ? '[array]' : thresholdValue)
+      + ' 不是 0–1 之间的数字：按 0（关闭，撞墙 400 兜底）处理')
   }
   // 静态默认（兼容显式配置路径）：若 config 显式给 windowTokens/retainTokens 用之；
   // 否则运行时在 compactIfNeeded 按 contextWindow × ratio 解析（见 resolveScaledBudgets）。

@@ -87,28 +87,38 @@ C10 夹剪层的归位段（env 开）。
 
 pre-step 的**估算驱动压力剪**已退役（`ARGP_FACTOR_PRESSURE=1` 仅旧世界对照臂）。
 
-### 4.2 §9.37 出口闸（缺省关；ARGP_FACTOR_EGRESS=1 显式开）
+### 4.2 §9.37 出口闸（缺省关；设置「压缩阈值」或 env=1 开）
 
 缺省关（2026-11-15 用户裁定：46 轮实测对照臂形态即缺省形态——贴墙由 400 兜底网 +
-§9.36 闸二浓缩接管，上下文贴线优先于预检防线的提前回落）。开启后位置：pre-step
-（上一请求 usage 已锚、下一请求未发）。确定性算术：
+§9.36 闸二浓缩接管，上下文贴线优先于预检防线的提前回落）。**开启面与线形**
+（`resolveEgress`，每次 pre-step 实时解析——设置页改动免重挂生效）：
+
+- 设置「压缩阈值」`compactionThreshold > 0` → 线 = 声明窗 × 比例（阈值语义，用户自设）；
+- env `ARGP_FACTOR_EGRESS=1`（无设置）→ 线 = 旧公式（窗 − 输出预算三源 max − 2%）；
+- env `=0` → 硬关（对照臂覆盖设置）；都没有 → 关（撞墙 400 兜底）。
+
+开启后位置：pre-step（上一请求 usage 已锚、下一请求未发）。确定性算术（两线形按
+`resolveEgress` 分叉）：
 
 ```
 projected = anchored usage + 本步 incoming 估值（chars/charsPerToken）
-line      = 声明窗 − 输出预算 − round(声明窗 × 0.02)
+线形 A（设置「压缩阈值」）: line = round(声明窗 × compactionThreshold)
+线形 B（env=1 旧公式）:     line = 声明窗 − 输出预算 − round(声明窗 × 0.02)
 projected ≥ line  ⇒  不发请求，先 compactIfNeeded('pressure')
 ```
 
 - **只认 anchored**：断锚（回退 chars/tokenMeter）不驱动破坏性改写；
 - **声明窗来源**：活 `request/context` 事件 → 冷 resume 时反向扫日志回填
   （`restoreDeclaredWindow`）→ 再兜底 `session.requestContext()`；全无 ⇒ 不拦（交 400 网）；
-- **输出预算三源取 max**：①`agent.options.maxTokens`（宿主 buildRequest 同源）
+- **输出预算三源取 max**（仅线形 B）：①`agent.options.maxTokens`（宿主 buildRequest 同源）
   ②`requestMaxTokens`（`agent/request` 瀑布观测）③`llm.resolveModelInfo().defaultMaxTokens`
   （请求缺 mct 时 llm 在瀑布**之后**注入，②对它失明）；全缺退 `0.25×窗`；
 - **互斥**：`ARGP_FACTOR_PRESSURE=1` 时本闸不挂（两 env 各管一个对照世界，不叠乘）；
-- **事务内闸二补检**：出口闸的线可低至 ≈0.73×窗，`compactIfNeeded('pressure')` 里
-  `measurement.contextTokens >= windowTokens` 必须再过一次才允许调用散文浓缩（LLM 链
-  不得被自动通路提前触达）。
+- **事务内闸二补检**：出口闸的线可低至比例线（任意 >0，用户自设）或 ≈0.73×窗（旧公式），
+  `compactIfNeeded('pressure')` 里 `measurement.contextTokens >= windowTokens` 必须再过一次
+  才允许调用散文浓缩（LLM 链不得被自动通路提前触达）；
+- **两线叠合**（与 §4.3）：阈值比例 >0.8 时 0.8×窗的散文浓缩线先动作，阈值线在其上追加
+  R 剪；比例 <0.8 时阈值段内只有 0-LLM R 剪（散文浓缩仍等 0.8×窗线）。
 
 ### 4.3 §9.36 浓缩闸二（ctx 线）
 
@@ -201,7 +211,7 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
 | `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
 | `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale |
-| `client/*` | 聊天渲染的 cites 尾清扫（2.0.0 起设置卡随六枚旋钮退役） | cites-strip |
+| `client/*` | 聊天渲染的 cites 尾清扫 + 设置卡（2.0.1 单旋钮「压缩阈值」；configForms 0.1.7+ 契约） | cites-strip |
 
 ## 9. 关键不变式清单
 
@@ -262,12 +272,16 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
   selectManualRanges/consolidateTombstones/ManualRangeHost，≈200 行死路径）、log-access 的
   1.x 日志视图族（≈140 行）、17 处迁移史注释；src 净 −~500 行，圈 >50 函数持平。
 
-## 11. 评测与调试开关（构造期快照，切换须重挂）
+## 11. 评测与调试开关（构造期快照为主；`ARGP_FACTOR_EGRESS` 例外=pre-step 实时读）
 
-2.0.0 起**没有设置页旋钮**：原六枚（windowRatio/retainRatio/charsPerToken/focalTurns/
-vocabTopN/recallLimit）端到端退役，缺省值固化在 `constants.ts`；老 profile 同名键宽容
-透传 + 告警。本节仅列评测/调试用环境变量，普通使用不需要碰。环境变量在插件构造期读取，
-改了要重挂会话。
+2.0.1 起设置页**唯一旋钮** = 「压缩阈值」（`compactionThreshold`，volatile 免重挂；
+语义见 §4.2）；2.0.0 退役的六枚中其余五枚保持退役，缺省值固化在 `constants.ts`；
+老 profile 同名键宽容透传 + 告警。本节仅列评测/调试用环境变量，普通使用不需要碰。
+环境变量除 `ARGP_FACTOR_EGRESS` 外均在插件构造期读取，改了要重挂会话；
+`ARGP_FACTOR_EGRESS` 自 2.0.1 起改为**每次 pre-step 实时读**（与设置「压缩阈值」合流解析，
+优先级 = env=0 硬关 > 设置比例线 > env=1 旧公式线 > 关，见 §4.2）。**bench 注意**：env=1
+的评测/对照臂会被用户 settings 里残留的 `compactionThreshold` 静默改吃比例线——跑 env=1 臂
+前须确认用户层未设该键（或用 env=0 臂）。
 
 | 变量 | 作用 |
 |---|---|

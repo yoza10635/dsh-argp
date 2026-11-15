@@ -1,0 +1,214 @@
+/**
+ * ARGP settings card: client-side staged form over the `dsh-argp` settings
+ * namespace, plus the locale bundles the card renders.
+ *
+ * This is a self-contained port of the host `ui-settings-plugins` card model
+ * (card-form.ts + bash-card-controller.ts). The host primitives
+ * (`@deepseek-ai/dsh-client-store`, `@deepseek-ai/dsh-client-ui-settings`,
+ * `@deepseek-ai/dsh-client-ui-slots`, the card CSS modules) are NOT installed
+ * in this package, so we reimplement the small slice we need: a minimal
+ * snapshot store, a structural settings-scope interface, and a `CardForm`
+ * that stages edits and writes them on save. Only `react` is externalized at
+ * bundle time (the web shell preloads it).
+ *
+ * The form publishes through a snapshot store because slot components read
+ * through a snapshot selector, while both the scope and the local drafts
+ * change underneath; every projection is rebuilt from the two together.
+ */
+/**
+ * The 2.0.1 settings roster: ONE knob — `compactionThreshold`（压缩阈值）, the
+ * egress gate's trigger ratio. 0/blank = off (a wall hit — the provider
+ * rejecting an oversized request — triggers compaction as the fallback).
+ * The five retired knobs (windowRatio/retainRatio/charsPerToken/focalTurns/
+ * vocabTopN/recallLimit) stay retired; old profiles are tolerated with a
+ * warning (server normalizeConfig).
+ */
+export interface ArgpUserSettings {
+    /** Egress gate trigger line = declared window × this ratio; 0 = off. */
+    compactionThreshold: number;
+}
+/** Settings namespace this card owns (must equal the server-registered one). */
+export declare const ARG_SETTINGS_KEY = "dsh-argp";
+/** Locale keys the ARGP card renders (2.0.1 roster: one row). */
+export type ArgpLocaleKey = 'argpTitle' | 'argpDescription' | 'compactionThreshold' | 'compactionThresholdHint' | 'overridden' | 'reset' | 'readOnly' | 'expand' | 'collapse' | 'save' | 'saving' | 'discard' | 'unsaved' | 'saveFailed' | 'invalidNumber';
+/** English copy. */
+export declare const en: Record<ArgpLocaleKey, string>;
+/** Simplified Chinese copy. */
+export declare const zh: Record<ArgpLocaleKey, string>;
+/**
+ * A minimal external-store shape compatible with React's useSyncExternalStore.
+ * MUST match the host's `ObservableSnapshot` contract (`getSnapshot` + `subscribe`)
+ * — the slot renderer's `observableHook` → `bindSnapshotSelector` calls
+ * `source.getSnapshot()`, so a `get()` spelling here crashes the card at render.
+ */
+export interface SnapshotStore<S> {
+    /** Read the current snapshot (uSES contract name). */
+    getSnapshot(): S;
+    /** Replace the snapshot. */
+    set(next: S): void;
+    /** Subscribe a listener; returns an unsubscribe function. */
+    subscribe(listener: () => void): () => void;
+}
+/** Create a snapshot store seeded with `initial`. */
+export declare function createSnapshotStore<S>(initial: S): SnapshotStore<S>;
+/** Snapshot a bound settings scope publishes. */
+export interface SettingsScopeSnapshot {
+    /** 'ready' when the namespace is served to this client. */
+    status: 'ready' | 'loading' | 'unavailable';
+    /** Whether the Host document accepts writes. */
+    writable: boolean;
+    /** Effective values (user layer over composition layer over schema default). */
+    value: Record<string, unknown>;
+    /** Composition-layer values. */
+    base: Record<string, unknown>;
+    /** User-layer values, or undefined when the user has set nothing. */
+    user: Record<string, unknown> | undefined;
+}
+/** The bound settings scope a card's form reads and writes. */
+export interface SettingsScopeLike<T> {
+    /** Re-publish the form when the scope changes underneath. */
+    subscribe(listener: () => void): void;
+    /** Current scope snapshot. */
+    getSnapshot(): SettingsScopeSnapshot;
+    /** Write one field. */
+    set(field: string, value: unknown): Promise<void>;
+    /** Clear one field (re-inherit the composition layer). */
+    unset(field: string): Promise<void>;
+}
+/** The write one field's staged text performs when the card is saved. */
+type FieldWrite = {
+    kind: 'set';
+    value: unknown;
+} | {
+    kind: 'clear';
+};
+/** How one section field converts between its stored value and its draft text. */
+export interface CardFieldSpec {
+    /** Field name inside the namespace section. */
+    field: string;
+    /** Render a stored value as draft text; the empty string when none. */
+    format: (value: unknown) => string;
+    /** The write this draft text stages, or undefined when the text is invalid. */
+    parse: (text: string) => FieldWrite | undefined;
+}
+/** One field as a card's control renders it. */
+export interface CardFieldState {
+    /** Draft text the control renders. */
+    text: string;
+    /** Whether saving would leave a user-layer entry for this field. */
+    overridden: boolean;
+    /** Whether the draft is not a value this field accepts (blocks saving). */
+    invalid: boolean;
+}
+/** Form state every plugin card shares. */
+export interface CardShell {
+    /** False while the namespace is not served; the card renders nothing. */
+    available: boolean;
+    /** Whether the Host document accepts writes. */
+    writable: boolean;
+    /** Whether the form holds edits that a save would write. */
+    dirty: boolean;
+    /** Whether any staged draft is invalid (blocks the save). */
+    invalid: boolean;
+    /** Whether a save is crossing the wire. */
+    saving: boolean;
+    /** Whether the last save did not land as staged. */
+    failed: boolean;
+}
+/** The write actions every plugin card injects. */
+export interface CardActions {
+    /** Stage draft text for one field. */
+    edit: (field: string, text: string) => void;
+    /** Stage a clear so saving re-inherits the composition layer. */
+    resetField: (field: string) => void;
+    /** Write every staged edit, then re-seed from what the Host accepted. */
+    save: () => void;
+    /** Drop every staged edit. */
+    discard: () => void;
+}
+/** Range/integer constraints for a number field (mirrors the server-side schema bounds). */
+export interface NumberFieldSpec {
+    /** Inclusive lower bound. */
+    min?: number;
+    /** Inclusive upper bound. */
+    max?: number;
+    /** Require an integral value. */
+    integer?: boolean;
+}
+/**
+ * A number field with optional range/integer constraints. Empty clears;
+ * non-finite, out-of-range, or non-integer text is invalid (blocks the save,
+ * never silently stored).
+ */
+export declare function numberField(field: string, spec?: NumberFieldSpec): CardFieldSpec;
+/** Constraints for a text field. */
+export interface TextFieldSpec {
+    /** Accepted values; any other value is invalid (blocks the save). */
+    enum?: readonly string[];
+}
+/**
+ * A text field with an optional enum constraint (generic card-form primitive;
+ * the roster has no enum row since 2.0, tests keep the shape under lock).
+ * Empty clears; a value outside the enum is invalid (never silently stored).
+ */
+export declare function textField(field: string, spec?: TextFieldSpec): CardFieldSpec;
+/** Stages one card's edits over one settings namespace and writes them on save. */
+export declare class CardForm<T> {
+    private readonly scope;
+    private readonly specs;
+    private readonly staged;
+    private readonly listeners;
+    private saving;
+    private failed;
+    constructor(scope: SettingsScopeLike<T>, specs: CardFieldSpec[]);
+    /** Publish a projection rebuilt whenever the scope or a draft changes. */
+    bind<S>(project: () => S): SnapshotStore<S>;
+    /** Read the card-level state: what the Host serves, and what a save would do. */
+    shell(): CardShell;
+    /** Read one control's state. */
+    field(field: string): CardFieldState;
+    /** Build the edit/reset/save/discard actions bound to this form. */
+    actions(): CardActions;
+    /** Write every staged edit, then re-seed from what the Host accepted. */
+    private save;
+    /** Every staged edit a save would write. */
+    private plan;
+    private clear;
+    private store;
+    /**
+     * 批次 3-2（beta.1）：`set`/`unset` 的 Promise 只保证写入落盘，**不保证**快照已随之
+     * 刷新（宿主快照经事件总线异步重发布）。旧实现写后立即读快照校验，读到陈旧 user 层
+     * ⇒ 每次保存/恢复默认都被误判失败（"restore-default 恒失败"）。改为等待快照收敛：
+     * 60ms 轮询（订阅监听会重发布表单，轮询只读快照），1.5s 超时按当时快照判——真实
+     * 被宿主拒绝的写入仍会如期显示失败。
+     */
+    private settle;
+    private stage;
+    private spec;
+    private sectionValue;
+    private baseValue;
+    private userLayer;
+    private stored;
+    private publish;
+}
+/** The card's full render state (2.0.1 roster: one field, one rendered row). */
+export interface ArgpConfigState extends CardShell {
+    compactionThreshold: CardFieldState;
+}
+/** The registration-side face the slot entry injects. */
+export interface ArgpConfigFace extends CardActions {
+    hooks: {
+        argpConfig: SnapshotStore<ArgpConfigState>;
+    };
+}
+/** Bridges the `dsh-argp` scope onto the ARGP card's staged form. */
+export declare class ArgpConfigController {
+    private readonly form;
+    private readonly store;
+    /** @param scope - the bound settings scope for the `dsh-argp` namespace. */
+    constructor(scope: SettingsScopeLike<ArgpUserSettings>);
+    private projection;
+    /** Build the face the card's slot registration injects. */
+    inject(): ArgpConfigFace;
+}
+export {};

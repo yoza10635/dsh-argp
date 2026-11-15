@@ -28,12 +28,14 @@ export interface Atom {
     sourceSeq?: number;
 }
 /**
- * UI 设置页旋钮名册（2.0.0 起**零旋钮**）：Settings → Plugins 不再提供 ARGP
- * 设置卡，六枚旧旋钮（windowRatio/retainRatio/charsPerToken/focalTurns/
- * vocabTopN/recallLimit）全部退役，缺省值固化在 constants.ts。本类型与
- * `ArgpUserSettingsSchema` 保持同键集（空集，公共 API 与文档口径）。
+ * UI 设置页名册（2.0.1 起**单旋钮**）：唯一活键 `compactionThreshold`（压缩阈值）
+ * ——出口闸的触发比例；0/缺省=关闭（模型撞墙后自动压缩兜底）。其余五枚旧旋钮
+ * （windowRatio/retainRatio/charsPerToken/focalTurns/vocabTopN/recallLimit）保持
+ * 退役，缺省值固化在 constants.ts。本类型与 `ArgpUserSettingsSchema` 保持同键集。
  *
  * 老 profile 的同名键宽容读+告警忽略，见 normalizeConfig（RETIRED_KNOB_KEYS）。
  */
 export interface ArgpUserSettings {
+    /** 出口闸触发线 = 声明窗 × 本比例；0=关闭（撞墙 400 兜底）。 */
+    compactionThreshold: number;
 }

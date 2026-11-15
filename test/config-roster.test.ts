@@ -1,12 +1,13 @@
 /**
- * 零旋钮名册锁（2.0.0：六枚设置项全部退役）。
+ * 单旋钮名册锁（2.0.1：唯一活键 compactionThreshold；2.0.0 退役的五枚保持退役）。
  *
- * 2.0.0 起 `ArgpGraphEngine.Config` 与 `ArgpUserSettingsSchema` 都是空集；
- * 原六枚旋钮（windowRatio/retainRatio/charsPerToken/focalTurns/vocabTopN/
- * recallLimit）的缺省值固化在 constants.ts，老 profile 写它们只告警、不生效。
+ * 2.0.1 起 `ArgpGraphEngine.Config` 与 `ArgpUserSettingsSchema` 的唯一键 =
+ * compactionThreshold（压缩阈值：出口闸触发线 = 声明窗 × 比例，0=关闭撞墙兜底）；
+ * 五枚退役旋钮的缺省值固化在 constants.ts，老 profile 写它们只告警、不生效。
  *
  * 变异台账（摘锁必须变红，逐条执行）：
- *  ZK1 static Config 回加任一旋钮 ⇒ T1 红（schema 默认键集断言）。
+ *  ZK1 static Config 回加第二枚旋钮 ⇒ T1 红（schema 默认键集断言）。
+ *  ZK1b schema 的 min/max 边界删除 ⇒ T1 的 1.5 拒收断言红。
  *  ZK2 normalizeConfig 的退役告警块删除 ⇒ T2 红（warn 文案断言）。
  *  ZK3 退役键被重新接线（如 recallLimitOf 回读 config）⇒ T3 红（行为仍按固化缺省）。
  *  ZK4 旧 graph 五键/engine 判别式告警块删除 ⇒ T4 红。
@@ -75,25 +76,40 @@ async function bootFactor(extra: Record<string, unknown>, warns?: string[]): Pro
 
 const RETIRED_KNOBS = ['windowRatio', 'retainRatio', 'charsPerToken', 'focalTurns', 'vocabTopN', 'recallLimit'] as const
 
-test('ZK1 名册为空：static Config 与 ArgpUserSettingsSchema 都不含任何旋钮', () => {
+test('ZK1 单旋钮名册：static Config 与 ArgpUserSettingsSchema 唯一键 = compactionThreshold（缺省 0=关）', () => {
+  const std = (ArgpUserSettingsSchema as unknown as {
+    '~standard': { validate: (x: unknown) => { value?: Record<string, unknown>; issues?: unknown[] } }
+  })['~standard']
   const validate = (v: unknown): Record<string, unknown> => {
-    const r = (ArgpUserSettingsSchema as unknown as {
-      '~standard': { validate: (x: unknown) => { value?: Record<string, unknown>; issues?: unknown[] } }
-    })['~standard'].validate(v)
+    const r = std.validate(v)
     assert.equal(r.issues === undefined || r.issues.length === 0, true, 'validate 不得报错：' + JSON.stringify(r.issues))
     return r.value as Record<string, unknown>
   }
-  assert.deepEqual(Object.keys(validate({})).sort(), [], 'ArgpUserSettingsSchema 默认键集必须为空')
+  const defaults = validate({})
+  assert.deepEqual(Object.keys(defaults).sort(), ['compactionThreshold'], 'schema 默认键集 = 唯一活键（回加第二枚=红）')
+  assert.equal(defaults.compactionThreshold, 0, '缺省 0 = 关（撞墙 400 兜底）')
+  assert.equal(validate({ compactionThreshold: 0.5 }).compactionThreshold, 0.5, '比例可设')
+  const bad = std.validate({ compactionThreshold: 1.5 })
+  assert.equal((bad.issues ?? []).length > 0, true, '>1 必须被 schema 拒（ZK1b）')
   const tolerant = validate({ windowRatio: 0.5, focalTurns: 2, recallLimit: 7 })
   assert.equal(tolerant.windowRatio, 0.5, '老键宽容透传：validate 不拒（normalizeConfig 据此告警）')
   assert.equal(tolerant.focalTurns, 2)
   assert.equal(tolerant.recallLimit, 7)
-  // static Config 同为空白名单（宿主扫描面）；cordis 非 strict 会透传未知键。
+  // static Config 同名单（宿主扫描面）；cordis 非 strict 会透传未知键。
   const staticSchema = (ArgpGraphEngine as unknown as {
     Config: { '~standard': { validate: (x: unknown) => { value?: Record<string, unknown> } } }
   }).Config
   const staticDefaults = staticSchema['~standard'].validate({})
-  assert.deepEqual(Object.keys(staticDefaults.value ?? {}).sort(), [], 'static Config 默认键集必须为空（回加旋钮=红）')
+  assert.deepEqual(Object.keys(staticDefaults.value ?? {}).sort(), ['compactionThreshold'], 'static Config 唯一活键（回加第二枚=红）')
+  // dict 层白名单（非 strict validate 会吞 optional 无 default 的幽灵键——键集以
+  // schema 属性字典为准，对抗审查 P2-1）。
+  const dictKeys = Object.keys((ArgpGraphEngine as unknown as { Config: { dict?: Record<string, unknown> } }).Config.dict ?? {})
+  assert.deepEqual(dictKeys.sort(), ['compactionThreshold'], 'schema 属性字典 = 唯一活键（幽灵键从 validate 缝隙溜过也红）')
+  // volatile 键缺省在静态 validate 中物化为占位对象（settings 源驱动实时值）；
+  // 其 .get() 必须解析为 0 = 关（改动缺省比例 = 此断言红）。
+  const staticValue = (staticDefaults.value ?? {}).compactionThreshold as { get?: () => unknown } | undefined
+  const staticResolved = typeof staticValue?.get === 'function' ? staticValue.get() : staticValue
+  assert.ok(staticResolved === undefined || staticResolved === 0, 'volatile 静态占位 .get() = 0（关）')
 })
 
 test('ZK2 退役六键：出现即告警，文案逐键可见', async () => {

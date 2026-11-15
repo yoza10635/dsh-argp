@@ -12,7 +12,7 @@
  * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
  * 编译期断言、运行时同一实例。
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
@@ -68,6 +68,13 @@ export interface ArgpGraphConfig {
     skipPresets?: string[];
     /** 2.0 判别式仅剩 'factor'：旧的 'graph' 值宽容读但在构造期告警并按 factor 运行。 */
     engine?: 'factor';
+    /**
+     * 压缩阈值（2.0.1 唯一活旋钮，volatile）：出口闸触发线 = 声明窗 × 本比例。
+     * 0/缺省 = 关闭（模型撞墙 400 → 自动压缩兜底）。宿主 settings 源驱动时到达
+     * Volatile thunk，经 getter `.get()` 读实时值（设置页改动免重挂生效）；profile
+     * 直给裸数字也认（getter 两态兼容）。
+     */
+    compactionThreshold?: Volatile<number> | number;
 }
 /**
  * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
@@ -88,11 +95,15 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
 export declare class ArgpGraphEngine extends CompactionEngine {
     /**
      * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
-     * 表单；本插件**不提供任何可调旋钮**——2.0.0 起六枚设置项全部退役，缺省值按
-     * constants.ts 固化（0.8/0.2/3.5/1/10/5），行为由确定性信号驱动。
-     * 老 profile 的同名键经 cordis 非 strict 合并透传、normalizeConfig 告警忽略。
+     * 表单；2.0.1 起名册唯一活键 = `compactionThreshold`（压缩阈值）：出口闸触发线
+     * = 声明窗 × 本比例，0=关闭（模型撞墙 400 → 自动压缩兜底）。volatile = 设置页
+     * 改动免重挂即生效。其余五枚旧旋钮保持退役（constants 固化 + 老键宽容告警）。
      */
-    static Config: z<Schemastery.ObjectS<{}>, Schemastery.ObjectT<{}>, "plain">;
+    static Config: z<Schemastery.ObjectS<NoInfer<{
+        compactionThreshold: z<number, number, "volatile-defined">;
+    }>>, Schemastery.ObjectT<NoInfer<{
+        compactionThreshold: z<number, number, "volatile-defined">;
+    }>>, "plain">;
     static inject: string[];
     /** 2.0 因子引擎（构造期恒装配、会话内不变）。 */
     private readonly factor;
@@ -100,8 +111,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly prose;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;
-    /** §9.37 出口闸（构造期快照，缺省关；见 resolveEgressEnabled / egressGate）。 */
-    private readonly egressEnabled;
+    /** 原始构造 config（压缩阈值 volatile 读实时值的取数面）。 */
+    private readonly rawConfig;
     readonly windowTokens: number;
     readonly retainTokens: number;
     /** true = config 显式给 windowTokens；false = 运行时按 contextWindow × windowRatio 解析。 */
@@ -302,7 +313,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private condenseGate;
     /**
-     * §9.37 出口闸（缺省关；ARGP_FACTOR_EGRESS=1 显式开）——2026-11-15 用户裁定改判：
+     * §9.37 出口闸（缺省关；开启面 = 设置「压缩阈值」compactionThreshold>0 或 env
+     * ARGP_FACTOR_EGRESS=1；env=0 为对照硬覆盖）——2026-11-15 用户裁定改判：
      * 对照臂形态即缺省形态，贴墙由 400 兜底网 + §9.36 闸二浓缩接管；本闸降级为
      * 评测/对照/防死流开关，它根除的链见 P6-④ 贴墙账（T24-J R2 实锤）：
      * 贴墙轮先发出**必然超窗**的请求（`400 … request (273639
@@ -335,6 +347,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * （网不拆：声明窗未知/断锚/剪空/线≤0 → 照发，由 overflow 链接管——严格不差于现状）。
      * @returns true = 本步已发剪事务（调用方把同 step 的浓缩闸顺延，不吃二次重铸）。
      */
+    /** 压缩阈值实时值（volatile thunk / 裸值两态兼容；0 或缺省 = 关）。 */
+    private get compactionThreshold();
     private egressGate;
     /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
     private modelDefaultMaxTokens;
