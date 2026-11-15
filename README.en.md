@@ -79,7 +79,7 @@ Note:
 
 - **Base**: local Qwen3.8-Flash-Next (declared window 262,144), same 46-turn workload, fully serial single-arm, n=1 per arm.
 - **Token and price caliber**: token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion); the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**.
-- **v2.0.0 column**: the 46-turn run on default config; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
+- **v2.0.0 column**: the 46-turn run with the pre-send overflow check off (the default shape as of 2.0.1; eval-tier details in [ARCHITECTURE.md](ARCHITECTURE.md) §11); declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
 - **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable: one page was touched only by a directory-level grep (scope directory address only; the recall guidance teaches document/command/errorcode), and one page was never read — its content never entered the session log. The model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
 - **T0**: hidden artifact suite 20/20; comparison summary in `CHANGELOG` 2.0.0.
 
@@ -92,6 +92,7 @@ Note:
 ## Known limitations
 
 - **B-6 window-truncation blind spot**: live nodes that were never replaced can be truncated at the oldest end by the request assembler near the context window, leaving no trace — they are not in the prune vocabulary, and label recall cannot reach them. Mitigation: set `ARGP_FACTOR_EGRESS=1` to enable the pre-send overflow check (compress first, then send), which moves the trigger earlier; the real fix belongs in dsh (B-6 filed).
+- **Fallback net precondition**: the gate-off default assumes "real wall ≈ declared window" — the provider must actually reject oversized requests (400) for the fallback chain to trigger auto-pruning. If an endpoint's real wall far exceeds the declared window (gateway auto-escalation, multi-tier models), 400 never fires and auto-pruning goes inert under the default (only prose condensation and manual `/compact` remain); such endpoints should set `ARGP_FACTOR_EGRESS=1` (validated on a real DeepSeek endpoint: gate-off wedged turns by clamping the client-side generation budget to its minimum; gate-on ran the full workload cleanly).
 - **Condensation output tax**: condensation is the only LLM call, and only inside a transaction; an over-long summary can eat the savings. Gate 1 (prose ≥50%) and the 20480 output budget bound it, but extremely prose-heavy sessions may still not pay off.
 - **Content without entity labels cannot be evicted**: pure chat or outputs with no path/command/error code are untouched by pruning and wait for condensation. This is the other side of "labels are the only address" (fail-closed: never guess identity).
 - **Legacy log read path**: old tombstone grammar (v1.3.x–v1.7.x) and old `data.argpCites` remain readable, but 2.0 no longer emits them.

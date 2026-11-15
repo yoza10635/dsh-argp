@@ -127,9 +127,9 @@ pre-step 位：`source==='anchored'` 且 `contextTokens ≥ windowRatio×声明�
 - 预算：单次 5% / 累计 10% 窗口，耗尽/截断都带余额说明；
 - 防循环：每轮 20 次调用上限（安全阀，非内容限制）；
 - 模型侧引导：**不驻 system 前缀**，随词表 note 在首次压缩事务后注入
-  （`VOCAB_NOTE_GUIDE`）——压缩前无被剪内容，无需提示；引导含 scope 逃生通道
-  （document 未中时的目录级地址；2026-11-15：46 轮 P45 Q8 型洞=纯引导缺口，
-  只被目录级 grep 触及的内容仅有 scope 地址）。
+  （`VOCAB_NOTE_GUIDE`）——压缩前无被剪内容，无需提示；引导含 command+scope 双逃生通道
+  （document 未中时：shell 读入内容只挂 command 族标签、目录级触达只有 scope 地址；
+  2026-11-15 真实端点野测双实锤——P45 补召回经 `command:$a=Get-Content` 族标签收回 3 题）。
 
 ## 6. 读侧兼容（不可删）
 
