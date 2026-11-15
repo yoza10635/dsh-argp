@@ -8,9 +8,9 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Long sessions fill the window, and per-turn LLM summaries are expensive while shredding the prefix cache.** This plugin is a context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): only stale, superseded, out-of-focus tool results are pruned deterministically by entity label (0 LLM); pruned originals stay in the log and come back verbatim by label; conversation prose is summarized only inside compaction transactions; requests about to overflow the window are **compressed before sending**.
+**Long sessions fill the window, and per-turn LLM summaries are expensive while shredding the prefix cache.** This plugin is a context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): only stale, superseded, out-of-focus tool results are pruned deterministically by entity label (0 LLM); pruned originals stay in the log and come back verbatim by label; conversation prose is summarized only inside compaction transactions; prose condenses automatically when context crosses the line, and requests rejected by the provider for overflow are pruned and retried automatically.
 
-46-turn benchmark: 43.3 min wall clock · ¥3.69 DeepSeek off-peak reference price · 0.978 prefix cache hit (n=1, see table notes).
+46-turn benchmark: 43.3 min wall clock · ¥3.69 DeepSeek off-peak reference price · 97.8% prefix cache hit rate (n=1, see table notes).
 
 ## Install
 
@@ -20,7 +20,7 @@ dsh plugin --profile <name> add dsh-argp
 
 **Works out of the box, no manual wiring**: the package ships its own bundle patch (disables the stock `compaction-basic` and mounts this plugin); the profile layer only carries config overrides.
 
-**Host requirement**: DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0` (prereleases participate in matching; the current latest `0.2.2-rc.3` is tested).
+**Host requirement**: DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0` (prereleases participate in matching; the current latest `0.2.2-rc.3` is tested). The host must be on the **0.2.x line** (npm `next` channel or the matching desktop build); the npm `latest` channel (0.1.x) is outside the admission range and the plugin is **silently skipped**. If you don't see `[argp]` logs / the `/argp` command after install, clone this repo and run the preflight: `node scripts/doctor.mjs --dsh <dsh install root>`.
 
 > **Installing within 24 hours of a release? Pin the version.** pnpm 11's `minimumReleaseAge` defaults to 24 h, so a fresh release is silently skipped and installs fall back to the previous one. Use `dsh plugin --profile <name> add dsh-argp@<version>`, or add `minimumReleaseAgeExclude: [dsh-argp]` to the profile's `pnpm-workspace.yaml`.
 
@@ -30,7 +30,7 @@ dsh plugin --profile <name> add dsh-argp
 
 - Type **`/argp`** in a session: budget, trigger line, prune and recall stats.
 - **`/compact`**: run one manual compaction (full prune + prose condensation).
-- Automatic compaction: when a request is about to overflow the window, the standard compaction transaction runs first, then the request is sent; provider 400 remains the last-resort net.
+- Automatic compaction: prose condenses first when context crosses the line (0.8× the declared window); when a request is rejected by the provider for overflow (400), a full prune runs and the request is retried automatically.
 - Two recall tools are automatically available to the model: `recall_history` (verbatim text by label) and `list_labels` (vocabulary browser).
 
 ```text
@@ -50,7 +50,7 @@ All strategy values are fixed — **zero knobs** (no settings page): trigger lin
 
 - **Eviction (0 LLM)**: tool results get entity labels (`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`); deterministic staleness (superseded reads, newer versions, non-focal turns) scores them, and evictable ones become a one-line labeled stub. Prose is never evicted; focal turns are protected.
 - **Prose condensation**: the plugin's only LLM path, transaction-only, fired only when both gates pass (prose ≥50% of the declared window AND context ≥ 0.8× the declared window); empty output or failure keeps the original.
-- **Pre-send overflow check (compress first, then send)**: before a request is sent, anchored arithmetic decides whether it would necessarily overflow — if so it is not sent; compress first, then send. Provider 400 is the last-resort net.
+- **Overflow fallback**: when a request is rejected by the provider for overflow (400), a standard compaction transaction (full prune + prose condensation) runs automatically and the request is retried.
 - **Recall**: stubs carry labels; the original text comes back verbatim from the log by label. Both recall tools share a character budget (5% per call / 10% cumulative of the window) and state exhaustion explicitly. After compaction, the vocabulary note tells the model to recall by label.
 
 Compared with LLM-summary compaction: eviction is deterministic and recomputable; forgetting is reversible (the original never leaves the log); history is rewritten only inside compaction transactions, so the prefix cache is not shredded by per-turn rewrites. Transaction protocol, host-compat surface and invariants live in [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -68,7 +68,7 @@ components, which one consolidated row folds into a DeepSeek off-peak reference 
 | Input miss tokens (miss) | 9.287M | 1.979M | 1.363M |
 | Input hit tokens (hit) | 46.21M | 43.49M | 60.06M |
 | Output tokens (output) | 0.343M | 0.378M | 0.283M |
-| Prefix cache hit rate | 0.833 | 0.956 | 0.978 |
+| Prefix cache hit rate | 83.3% | 95.6% | 97.8% |
 | **DeepSeek off-peak reference price** | **11.58 元** | **4.36 元** | **3.69 元** |
 | Declared-window context utilization | 78.9% | 50.0% | 98.4% |
 | Forgetting reversible | ✓ `recall`/`recall_detail` | ✗ | ✓ `recall_history` byte-for-byte by label |
@@ -79,19 +79,19 @@ Note:
 
 - **Base**: local Qwen3.8-Flash-Next (declared window 262,144), same 46-turn workload, fully serial single-arm, n=1 per arm.
 - **Token and price caliber**: token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion); the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**.
-- **v2.0.0 column**: the 46-turn run with the pre-send overflow check off; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
-- **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable because some material pages were never label-covered, and the model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
-- **T0**: hidden artifact suite 20/20; full comparison data and per-turn detail live in `CHANGELOG` 2.0.0.
+- **v2.0.0 column**: the 46-turn run on default config; declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
+- **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable: one page was touched only by a directory-level grep (scope directory address only; the recall guidance teaches document/command/errorcode), and one page was never read — its content never entered the session log. The model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
+- **T0**: hidden artifact suite 20/20; comparison summary in `CHANGELOG` 2.0.0.
 
 ## Model requirements
 
-- **Eviction and the pre-send overflow check do not depend on the model**: identical behavior on any model (0 LLM determinism).
+- **Eviction does not depend on the model**: identical behavior on any model (0 LLM determinism).
 - **Prose condensation** needs an LLM route for the compaction purpose; by default it follows the host's `agent.options`. If the route is unavailable, condensation is disabled, zero network, originals kept. Condensation quality scales with instruction-following, but the failure direction is always "condense less".
 - Labels come from tool arguments and outputs; the model is not required to emit any citation protocol.
 
 ## Known limitations
 
-- **B-6 window-truncation blind spot**: live nodes that were never replaced can be truncated at the oldest end by the request assembler near the context window, leaving no trace — they are not in the prune vocabulary, and label recall cannot reach them. Mitigation: ratio budgets move the trigger earlier; the real fix belongs in dsh (B-6 filed).
+- **B-6 window-truncation blind spot**: live nodes that were never replaced can be truncated at the oldest end by the request assembler near the context window, leaving no trace — they are not in the prune vocabulary, and label recall cannot reach them. Mitigation: set `ARGP_FACTOR_EGRESS=1` to enable the pre-send overflow check (compress first, then send), which moves the trigger earlier; the real fix belongs in dsh (B-6 filed).
 - **Condensation output tax**: condensation is the only LLM call, and only inside a transaction; an over-long summary can eat the savings. Gate 1 (prose ≥50%) and the 20480 output budget bound it, but extremely prose-heavy sessions may still not pay off.
 - **Content without entity labels cannot be evicted**: pure chat or outputs with no path/command/error code are untouched by pruning and wait for condensation. This is the other side of "labels are the only address" (fail-closed: never guess identity).
 - **Legacy log read path**: old tombstone grammar (v1.3.x–v1.7.x) and old `data.argpCites` remain readable, but 2.0 no longer emits them.
@@ -100,7 +100,7 @@ Note:
 
 - `npm run check`: typecheck + smoke + unit tests (269) + build.
 - Pre-send overflow check tests: `npm run test -- --test-name-pattern=EG-`.
-- Per-turn detail for the 46-turn comparison lives in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
+- Summary caliber of the 46-turn comparison in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
 
 ## Upgrading from 1.x
 
