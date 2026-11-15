@@ -4,8 +4,9 @@
  *  ①容量算术：anchored 投影 ≥ 声明窗 − 输出预算 − 提前量 ⇒ 请求不发先剪（EG-1/2/4）；
  *  ②确定性纪律：断锚（chars 估）与声明窗未知**永不**驱动（EG-3/5，P6-④"只有确定性
  *    的才可以"+ 宁缺勿错交 400 兜底网）；
- *  ③pre-step 接线：缺省开、过线剪 ⇒ 同 step 浓缩闸顺延（EG-6/6c，防同步双重重铸）；
- *  ④逃生口：ARGP_FACTOR_EGRESS=0 ⇒ egress 不挂、浓缩闸照旧（EG-6b；'0' 是唯一关档，EG-7）。
+ *  ③pre-step 接线：开闸（env=1）且过线剪 ⇒ 同 step 浓缩闸顺延（EG-6/6c，防同步双重重铸）；
+ *  ④缺省关：无 env ⇒ egress 不挂、浓缩闸照旧（EG-6b，M4 锁；2026-11-15 用户裁定对照臂
+ *    形态=缺省，贴墙交 400 兜底网 + 闸二浓缩）；'1' 是唯一开档（EG-7，档位语义同 resolveClipEnabled）。
  *
  * 变异台账（摘除必红，cp 快照回滚）：
  *  M1 摘 anchored 守卫 ⇒ EG-3 红；M2 声明窗未知退默认大窗 ⇒ EG-5 红；
@@ -20,7 +21,7 @@
  *  （cand-shadow-fix T13/T18/T2x 4 笔 400 死流）。EG-13/13b 即该病灶的回归锁。
  *  对抗审查（2026-11-13）F1/F2/F5/F6 的修复各配专锁（EG-9/F2 闸二/EG-11/EG-10）。
  */
-import test from 'node:test'
+import test, { afterEach, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
@@ -124,6 +125,18 @@ function emitPreStep(ctx: Context, agent: unknown, messages: unknown[] = []): Pr
 
 const sig = (): AbortSignal => new AbortController().signal
 
+// 缺省关世界（2026-11-15 用户裁定）：门控类 EG 测试显式开闸；env 是构造期快照，
+// 钩子在引擎 mount 前置位、测后还原。
+let savedEgress: string | undefined
+beforeEach(() => {
+  savedEgress = process.env['ARGP_FACTOR_EGRESS']
+  process.env['ARGP_FACTOR_EGRESS'] = '1'
+})
+afterEach(() => {
+  if (savedEgress === undefined) delete process.env['ARGP_FACTOR_EGRESS']
+  else process.env['ARGP_FACTOR_EGRESS'] = savedEgress
+})
+
 // 缺省线（声明窗 1000）：outputBudget=floor(1000×0.25)=250，margin=round(1000×0.02)=20 ⇒ line=730。
 
 test('EG-1 anchored 投影过线 ⇒ 请求不发先剪：compactIfNeeded 进且返回 true', async () => {
@@ -217,7 +230,6 @@ test('EG-10 输出预算跨源取 max：mid-session 调大 mct 不得欠火（F6
 
 test('EG-11 PRESSURE 逃生口与出口闸互斥：hatch 世界 egress 不挂（F5 锁）', async () => {
   const savedP = process.env['ARGP_FACTOR_PRESSURE']
-  const savedE = process.env['ARGP_FACTOR_EGRESS']
   process.env['ARGP_FACTOR_PRESSURE'] = '1'
   try {
     const { ctx, internals } = await bootFactor()
@@ -228,12 +240,10 @@ test('EG-11 PRESSURE 逃生口与出口闸互斥：hatch 世界 egress 不挂（
     ;(internals as unknown as { factorPressure(agent: unknown, incoming?: number): Promise<void> }).factorPressure =
       async () => { calls.push('pressure') }
     await emitPreStep(ctx, makeAgent(session))
-    assert.deepEqual(calls, ['pressure', 'condense'], 'hatch=旧世界字节级复现：egress 零触达（两 env 各管各的对照世界）')
+    assert.deepEqual(calls, ['pressure', 'condense'], 'hatch=旧世界字节级复现：egress 零触达（钩子已置 EGRESS=1，互斥门必须仍然拦住）')
   } finally {
     if (savedP === undefined) delete process.env['ARGP_FACTOR_PRESSURE']
     else process.env['ARGP_FACTOR_PRESSURE'] = savedP
-    if (savedE === undefined) delete process.env['ARGP_FACTOR_EGRESS']
-    else process.env['ARGP_FACTOR_EGRESS'] = savedE
   }
 })
 
@@ -310,27 +320,21 @@ test('EG-6c pre-step 接线：egress 未发剪 ⇒ 浓缩闸照旧执行', async
   assert.deepEqual(calls, ['egress', 'condense'], '未发剪不吞浓缩闸（§9.36 通道原样）')
 })
 
-test('EG-6b 逃生口 ARGP_FACTOR_EGRESS=0 ⇒ egress 不挂、浓缩闸照旧（M4 锁）', async () => {
-  const saved = process.env['ARGP_FACTOR_EGRESS']
-  process.env['ARGP_FACTOR_EGRESS'] = '0'
-  try {
-    const { ctx, internals } = await bootFactor()
-    const session = heavyAnchoredSession('eg-off', 900)
-    const calls: string[] = []
-    internals.egressGate = async () => { calls.push('egress'); return true }
-    internals.condenseGate = async () => { calls.push('condense') }
-    await emitPreStep(ctx, makeAgent(session))
-    assert.deepEqual(calls, ['condense'], '关档=修前字节世界（对照臂可达；egress 零触达）')
-  } finally {
-    if (saved === undefined) delete process.env['ARGP_FACTOR_EGRESS']
-    else process.env['ARGP_FACTOR_EGRESS'] = saved
-  }
+test('EG-6b 缺省（无 env）⇒ egress 不挂、浓缩闸照旧（M4 锁）', async () => {
+  delete process.env['ARGP_FACTOR_EGRESS'] // 钩子置了 '1'；本测显式回到缺省关世界（还原交钩子）
+  const { ctx, internals } = await bootFactor()
+  const session = heavyAnchoredSession('eg-off', 900)
+  const calls: string[] = []
+  internals.egressGate = async () => { calls.push('egress'); return true }
+  internals.condenseGate = async () => { calls.push('condense') }
+  await emitPreStep(ctx, makeAgent(session))
+  assert.deepEqual(calls, ['condense'], '缺省=对照臂形态（egress 零触达，浓缩闸照旧）')
 })
 
-test('EG-7 resolveEgressEnabled：缺省开，唯一关档=字面 0', () => {
-  assert.equal(resolveEgressEnabled({}), true)
+test('EG-7 resolveEgressEnabled：缺省关，唯一开档=字面 1（档位语义同 resolveClipEnabled）', () => {
+  assert.equal(resolveEgressEnabled({}), false)
   assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '0' }), false)
-  assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: 'false' }), true, '档位语义同 resolveClipEnabled：只认 0')
+  assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: 'false' }), false, '非法值 ⇒ 关（缺省安全）')
   assert.equal(resolveEgressEnabled({ ARGP_FACTOR_EGRESS: '1' }), true)
 })
 

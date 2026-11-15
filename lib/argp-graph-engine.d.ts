@@ -100,7 +100,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     private readonly prose;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;
-    /** §9.37 出口闸（构造期快照，缺省开；见 resolveEgressEnabled / egressGate）。 */
+    /** §9.37 出口闸（构造期快照，缺省关；见 resolveEgressEnabled / egressGate）。 */
     private readonly egressEnabled;
     readonly windowTokens: number;
     readonly retainTokens: number;
@@ -302,9 +302,10 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     private condenseGate;
     /**
-     * §9.37 出口闸（缺省开；ARGP_FACTOR_EGRESS=0 关=仅修前/修后对照臂）——用户裁定
-     * 2026-11-13："什么设计都无法接受反复重试再全量重灌的成本"。P6-④ 把 400 当触发器的
-     * 贴墙账（T24-J R2 实锤）：贴墙轮先发出**必然超窗**的请求（`400 … request (273639
+     * §9.37 出口闸（缺省关；ARGP_FACTOR_EGRESS=1 显式开）——2026-11-15 用户裁定改判：
+     * 对照臂形态即缺省形态，贴墙由 400 兜底网 + §9.36 闸二浓缩接管；本闸降级为
+     * 评测/对照/防死流开关，它根除的链见 P6-④ 贴墙账（T24-J R2 实锤）：
+     * 贴墙轮先发出**必然超窗**的请求（`400 … request (273639
      * tokens) exceeds the available context size (262144)`——6 笔零 usage 死流恰每笔事务
      * 轮一发，这串 prefill 在 usage 账里完全隐形）→ 拒收后剪 → 重试再全量重灌；端点窗边
      * 行为还分叉：有时静默把 max_tokens 钳到 窗−prompt 再打满（T23 out=1,617，marker 丢轮）。
@@ -330,8 +331,8 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      * （T23）」，不再是「本端点按 prompt+mct 拒收」。
      * 逃生口互斥（审查 F5）：ARGP_FACTOR_PRESSURE=1 的"旧世界字节级复现"契约要求本闸
      * 不挂（调用点门控）——两 env 各管各的对照世界，不叠乘。
-     * 400 overflow 通路保留为最后兜底（网不拆：声明窗未知/断锚/剪空/线≤0 → 照发，由
-     * overflow 链接管——严格不差于现状）。
+     * 400 overflow 通路在缺省关形态下是主自动触发（网即通路）；开闸时它退为最后兜底
+     * （网不拆：声明窗未知/断锚/剪空/线≤0 → 照发，由 overflow 链接管——严格不差于现状）。
      * @returns true = 本步已发剪事务（调用方把同 step 的浓缩闸顺延，不吃二次重铸）。
      */
     private egressGate;

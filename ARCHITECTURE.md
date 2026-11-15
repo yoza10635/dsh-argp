@@ -18,7 +18,7 @@
       ▼
 ┌──────────────────────────────────────────────────────────┐
 │ 触发（pre-step / 手动 / 400）                              │
-│  §9.37 出口闸（anchored 容量算术）                          │
+│  §9.37 出口闸（缺省关，env=1 开）                           │
 │  §9.36 浓缩闸二（ctx 线）                                   │
 └──────────────────────────────────────────────────────────┘
       │ compactIfNeeded / compactNow
@@ -87,9 +87,11 @@ C10 夹剪层的归位段（env 开）。
 
 pre-step 的**估算驱动压力剪**已退役（`ARGP_FACTOR_PRESSURE=1` 仅旧世界对照臂）。
 
-### 4.2 §9.37 出口闸（缺省开）
+### 4.2 §9.37 出口闸（缺省关；ARGP_FACTOR_EGRESS=1 显式开）
 
-位置：pre-step（上一请求 usage 已锚、下一请求未发）。确定性算术：
+缺省关（2026-11-15 用户裁定：46 轮实测对照臂形态即缺省形态——贴墙由 400 兜底网 +
+§9.36 闸二浓缩接管，上下文贴线优先于预检防线的提前回落）。开启后位置：pre-step
+（上一请求 usage 已锚、下一请求未发）。确定性算术：
 
 ```
 projected = anchored usage + 本步 incoming 估值（chars/charsPerToken）
@@ -267,7 +269,7 @@ vocabTopN/recallLimit）端到端退役，缺省值固化在 `constants.ts`；�
 
 | 变量 | 作用 |
 |---|---|
-| `ARGP_FACTOR_EGRESS=0` | 关出口闸（对照臂；结构效应 = 上下文天花板 305K vs 192K；缺省开 = 严格 admission 端点的 pre-send 防线） |
+| `ARGP_FACTOR_EGRESS=1` | 开出口闸/超窗预检（缺省关=对照臂形态：贴墙交 400 兜底网 + 闸二浓缩；开闸 = 严格 admission 端点的 pre-send 防线，结构效应 = 上下文天花板 192K vs 305K） |
 | `ARGP_FACTOR_PRESSURE=1` | 恢复旧 pre-step 估算驱动压力剪（旧世界复现；与出口闸互斥） |
 | `ARGP_FACTOR_TIER=tiered` | 焦点分级策略档（hard/medium 焦点带；缺省 flat） |
 | `ARGP_FACTOR_CLIP=1` | C10 夹剪层（三态保留；缺省关） |

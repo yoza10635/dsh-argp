@@ -89,13 +89,13 @@ export function resolveClipEnabled(env: NodeJS.ProcessEnv = process.env): boolea
 }
 
 /**
- * §9.37 出口闸（缺省**开**；用户裁定 2026-11-13："什么设计都无法接受反复重试再全量
- * 重灌的成本"——400 撞墙→剪→重灌链根除：必然超窗的请求根本不得发出）。
- * env ARGP_FACTOR_EGRESS=0 = 关（仅供修前/修后对照臂复现贴墙世界；缺省与非法值=开，
- * 安全方向）。生效=构造期快照（focalTiered 同款纪律，须重挂引擎）。
+ * §9.37 出口闸（缺省**关**；用户裁定 2026-11-15：46 轮实测对照臂形态即缺省形态——
+ * 贴墙由 400 兜底网 + §9.36 闸二浓缩接管，上下文贴线优先于预检防线的提前回落）。
+ * env ARGP_FACTOR_EGRESS=1 = 开（评测/对照/防 400 死流需要时显式开；缺省与非法值=关，
+ * 档位语义同 resolveClipEnabled）。生效=构造期快照（focalTiered 同款纪律，须重挂引擎）。
  */
 export function resolveEgressEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['ARGP_FACTOR_EGRESS'] !== '0'
+  return env['ARGP_FACTOR_EGRESS'] === '1'
 }
 
 /** 复用 prune-tx 的窄宿主 + 文件快照探针（可再生性证明原料；缺 ⇒ 永不放行）。 */
