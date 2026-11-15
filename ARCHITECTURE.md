@@ -120,14 +120,16 @@ pre-step 位：`source==='anchored'` 且 `contextTokens ≥ windowRatio×声明�
 | 工具 | 输入 | 数据源 |
 |---|---|---|
 | `recall_history` | `labels[]`（交集）+ `limit` + `cursor/epoch` | `rawEventText` 取日志 append 根源原文；桩不冒充 |
-| `list_labels` | `category`（document/command/errorcode）+ `limit` | 被剪账本的词表（键 × 覆盖数 × 最后出现轮） |
+| `list_labels` | `category`（document/command/errorcode；scope 按需 `category:'scope'`）+ `limit` | 被剪账本的词表（键 × 覆盖数 × 最后出现轮） |
 
 - 查询宽容：裸标签按四 facet 展开试匹配；未命中标签**如实回显**（不静默剔除）；
 - 分页：`cursor/epoch` 续读，epoch 漂移显式告警（不假装稳定分页）；
 - 预算：单次 5% / 累计 10% 窗口，耗尽/截断都带余额说明；
 - 防循环：每轮 20 次调用上限（安全阀，非内容限制）；
 - 模型侧引导：**不驻 system 前缀**，随词表 note 在首次压缩事务后注入
-  （`VOCAB_NOTE_GUIDE`）——压缩前无被剪内容，无需提示。
+  （`VOCAB_NOTE_GUIDE`）——压缩前无被剪内容，无需提示；引导含 scope 逃生通道
+  （document 未中时的目录级地址；2026-11-15：46 轮 P45 Q8 型洞=纯引导缺口，
+  只被目录级 grep 触及的内容仅有 scope 地址）。
 
 ## 6. 读侧兼容（不可删）
 

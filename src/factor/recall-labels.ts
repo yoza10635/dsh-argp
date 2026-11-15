@@ -105,7 +105,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
 
   const recallHistoryTool = defineTool({
     name: 'recall_history',
-    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE> (a bare name matches all facets; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. Use view:"outline" for one metadata line per item, then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels.',
+    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE>, scope:<dir> (a bare name matches all facets; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. Use view:"outline" for one metadata line per item, then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels.',
     parameters: {
       labels: { type: 'array', items: { type: 'string' }, description: 'one or more labels; ALL must match the same item (true intersection), verbatim from the vocabulary (e.g. ["document:c:/proj/a.ts","errorcode:ERESOLVE"])' },
       limit: { type: 'integer', description: 'optional maximum items to return (engine-configured default when omitted, cap 20)' },
@@ -179,7 +179,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         .map(l => (typeof l === 'string' ? l.trim() : '')).filter(l => l !== ''))]
       if (wanted.length === 0) {
         return 'recall_history: pass at least one label exactly as shown in the '
-          + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE>); '
+          + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE> / scope:<dir>); '
           + 'call list_labels to see the full pruned vocabulary.'
       }
       const keys = new Set<string>()

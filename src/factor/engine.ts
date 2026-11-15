@@ -165,7 +165,7 @@ export { VOCAB_NOTE_MARKER }
  * 只在**首次压缩事务后**随词表 note 出现——压缩前没有被剪内容，无需指引；
  * note 本就随 epoch 重写，不额外制造前缀缓存断点。
  */
-const VOCAB_NOTE_GUIDE = 'Pruned atoms remain in the append-only log. If an answer depends on content no longer visible, recall it with recall_history using the labels below — never reconstruct from memory. Replies must be self-contained: restate facts, do not point at earlier context.'
+const VOCAB_NOTE_GUIDE = 'Pruned atoms remain in the append-only log. If an answer depends on content no longer visible, recall it with recall_history using the labels below — never reconstruct from memory. If no document label matches, a directory-level scope:<dir> address may still exist — list_labels(category:\'scope\') enumerates scope labels (not listed below). Replies must be self-contained: restate facts, do not point at earlier context.'
 
 const vocabNoteText = (labels: string): string => VOCAB_NOTE_MARKER + '\n' + VOCAB_NOTE_GUIDE + '\n' + labels
 

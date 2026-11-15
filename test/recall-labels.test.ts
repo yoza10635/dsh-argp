@@ -10,7 +10,9 @@
  *  - 每轮防循环安全阀双臂同阀（recall-tools 单点复用）；
  *  - 字符预算截断与耗尽显式（budgetRecallText 契约复用）+ 跨轮重置（2026-11-14 用户裁定）；
  *  - 路径后缀归一匹配（alpha4 T19/T30 实锤修复）：相对/缩短标签唯一命中改写并告知，
- *    多候选 fail-closed 列出绝不猜。
+ *    多候选 fail-closed 列出绝不猜；
+ *  - 召回引导三面同教 scope + scope 地址端到端（L1-L4，2026-11-15：46 轮 P45 Q8 型洞
+ *    =纯引导缺口——只被目录级 grep 触及的内容仅有 scope 地址，引导不教则模型不可发现）。
  *
  * 变异台账（摘锁必须变红，已逐条执行）：
  *  ML1 删未命中查询标签回显 → T3 红；
@@ -24,6 +26,10 @@
  *  ML9 摘 outline 视图分支 → T10 红；
  *  ML10 摘 item 钻取路径 → T11 红；
  *  ML11 装配式 full 改回整批拼接（无截断提示/双记账）→ T12 红。
+ *  ML12 删 description 的 scope:<dir> 枚举 → T-scope-guidance 红；
+ *  ML13 摘空标签错误文案的 scope 项 → T-scope-guidance 红；
+ *  ML14 摘账本 indexKeys 的 scope 索引 → T-scope-e2e 红（stubKey 只管桩文本标签，
+ *    摘它不红——L3 真正依赖的是 indexKeys 的 scope 键，变异实测钉死）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -113,6 +119,47 @@ test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）
   const fs = await sectionsOf(f.ctx)
   assert.ok(!fs.has('argp-contract'), '2.0.0 起契约不驻 system 前缀（随词表 note 在首次压缩后注入）')
   assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
+})
+
+test('召回引导三面同教 scope（2026-11-15 裁定：46 轮 P45 Q8 型洞=纯引导缺口，L1/L4 锁）', async () => {
+  const f = await boot()
+  const tool = (f.ctx.tools as unknown as { get(n: string): { description: string } }).get('recall_history') as { description: string }
+  assert.ok(tool.description.includes('scope:<dir>'), 'L1：recall_history description 列 scope 形态')
+  const { internals } = f
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-scope-guidance')
+  internals.bindSession(session)
+  prunedReadPair(session, factor)
+  const empty = await execTool(f.ctx, {
+    name: 'recall_history', callId: 'q0', agentSession: session,
+    args: { labels: [] },
+  })
+  assert.ok(toolText(empty).includes('scope:<dir>'), 'L4：空标签错误文案同步列 scope（失败时刻不得与新教通道自相矛盾）')
+})
+
+test('scope 地址端到端：仅目录级 grep 的 R 被剪后可按 scope:<dir> 逐字取回；裸词目录降级指路（L3 锁）', async () => {
+  const { ctx, internals } = await boot()
+  const factor = internals.factor as FactorEngine
+  const session = makeSession('recall-scope-e2e')
+  internals.bindSession(session)
+  appendUser(session, '开始任务')
+  // turn1：目录级 grep（args 只有 path=目录，无文件键 ⇒ 无 document，仅 scope 地址）；
+  // turn2：read 焦点留守，驱动剪枝发射——t38 型原子的最小复刻。
+  appendGroup(session, 1, 'g1', 'grep', '{"path":"C:/Proj/.material","pattern":"NOTE"}', 'MATERIAL LINE 1307152B ' + 'x'.repeat(260))
+  appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW CONTENT'.repeat(50))
+  assert.ok(factor.compactIfNeeded(session, 1000) !== null, '前置剪枝必须发射')
+  const res = await execTool(ctx, {
+    name: 'recall_history', callId: 'q1', agentSession: session,
+    args: { labels: ['scope:c:/proj/.material'] },
+  })
+  const text = toolText(res)
+  assert.ok(text.includes('MATERIAL LINE 1307152B'), 'scope 标签取回 grep 原文逐字（t38 型洞的机制通路）')
+  assert.ok(text.includes('state=shadowed'), '取回内容标记为当前不可见')
+  const bare = await execTool(ctx, {
+    name: 'recall_history', callId: 'q2', agentSession: session,
+    args: { labels: ['scope:material'] },
+  })
+  assert.ok(toolText(bare).includes('list_labels'), '裸词 scope（无 /）走不到后缀通道 → 未命中如实 + 指路 list_labels')
 })
 
 test('recall_history：标签交集 → 日志 append 根源原文；state/hit 标记齐、桩文本不冒充', async () => {
