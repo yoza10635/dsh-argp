@@ -1,5 +1,6 @@
 /**
- * issue #3 回归锁：cordis.patch.yml 的 preset 条目不许引用不可解析的包子路径。
+ * preset 补丁数据不变量锁：issue #3（不可解析包子路径 ⇒ never started）+
+ * issue #4（宿主 schema 外幽灵键 ⇒ 非 strict zod 静默剥离、配置无声失效）。
  *
  * 事故形态（报告者真机实证）：条目 `@deepseek-ai/dsh-tool-subagent-control/list-agents`
  * 在该包 exports（`. / ./src/* / ./package.json / ./locale/*.json`）里不存在，
@@ -22,6 +23,9 @@ const names = [...patch.matchAll(/^\s+name: '(@[^']+)'$/gm)].map(m => m[1])
 const ALLOWED_SUBPATHS = new Set([
   // '@deepseek-ai/dsh-plugin-manager' 0.2.2-rc.1 exports 实载含 "./tools"（2026-09 preset 设计如此，2026-11-09 复核实）
   '@deepseek-ai/dsh-plugin-manager/tools',
+  // '@deepseek-ai/dsh-plugin-market' rc.3 出厂 standard/cordis/ptc 自带此行；
+  // packages/boot/plugin-market/package.json exports 实载 "./tools"（2026-11-16 对 rc.3 检出核实的）
+  '@deepseek-ai/dsh-plugin-market/tools',
 ])
 
 test('preset 不许出现未核实的包子路径条目（issue #3 毒行 never started 教训）', () => {
@@ -34,4 +38,14 @@ test('delegation 组三 preset 完整：control 与 subagent 各 3 处，list-ag
   assert.equal(patch.includes('tool-subagent-list-agents'), false, 'list-agents 毒行被塞回来了')
   assert.equal((patch.match(/id: tool-subagent-control/g) ?? []).length, 3, 'tool-subagent-control 应恰好 3 处（standard/cordis/ptc）')
   assert.equal((patch.match(/^ {10}- id: tool-subagent$/gm) ?? []).length, 3, 'tool-subagent 应恰好 3 处')
+})
+
+test('幽灵键锁（issue #4 教训）：宿主 schema 外键禁入，modelSelection×3 与出厂对齐', () => {
+  // modelSelectionSettings / backgroundMode 是 1.7.0-beta 时代快照从当时宿主 preset 拷来的
+  // 幽灵键，宿主 schema 其后改名/删除（tool-subagent src/index.ts Config：modelSelection）。
+  // 非 strict zod 静默剥离未知键 ⇒ 配置无声失效（subagent 模型选择就此丢了三轮版本）。
+  // 快照过期就红在这里：重生成对齐后变绿（变异验证：塞回幽灵键 ⇒ 红）。
+  assert.equal(patch.includes('modelSelectionSettings'), false, '幽灵键 modelSelectionSettings 溜回来了（正键 = modelSelection）')
+  assert.equal(patch.includes('backgroundMode'), false, 'backgroundMode 已不在宿主 tool-subagent schema（幽灵键）')
+  assert.equal((patch.match(/^ {14}modelSelection: true$/gm) ?? []).length, 3, '三 preset 的 tool-subagent 行须带 modelSelection: true（rc.3 出厂对齐）')
 })
