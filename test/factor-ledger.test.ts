@@ -39,11 +39,16 @@ test('addPruned: 同 rootSeq 重放/replace 链不双计', () => {
   assert.equal(l.stat('document:c:/a.ts')?.count, 1, '双计 = 词表 ×N 虚高的病灶')
 })
 
-test('倒排键形：files→document: / scopes→scope: / commands 原样 / errorcodes→errorcode:', () => {
+test('倒排键形：files→document: / scopes→scope: / commands 原样 / errorcodes→errorcode: / tool→tool:（非空门槛）', () => {
   const keys = indexKeys(mkTags({
     files: ['c:/a.ts'], scopes: ['c:/proj'], commands: ['command:git'], errorcodes: ['exit:1'],
   }))
-  assert.deepEqual(keys, ['document:c:/a.ts', 'scope:c:/proj', 'command:git', 'errorcode:exit:1'])
+  assert.deepEqual(keys, ['document:c:/a.ts', 'scope:c:/proj', 'command:git', 'errorcode:exit:1', 'tool:read'])
+  // ZT9（design-tool-fact §7）：孤儿 R `tool:''`（issuer 缺失实测常态）**不产 tool: 空尾键**
+  // ——空尾键穿透 labelAllowed、罩住全部匿名原子、且经 focalLabels 共享通道污染焦点集。
+  const anon = indexKeys(mkTags({ tool: '', files: ['c:/b.ts'] }))
+  assert.ok(!anon.some(k => k.startsWith('tool:')), 'tool:"" 必须被非空门槛拒收（ZT9）')
+  assert.deepEqual(anon, ['document:c:/b.ts'])
 })
 
 // ---------------------------------------------------------------------------

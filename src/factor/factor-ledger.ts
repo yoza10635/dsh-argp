@@ -14,6 +14,7 @@
  *    都重置观察窗，"同文件他操作成功"绝不构成关闭理由。
  */
 import { labelAllowed } from './tag-canonical.ts'
+import type { PreviewBits } from './interactive.ts'
 import type { Facet, RTags, StickyState } from './types.ts'
 
 // ---------------------------------------------------------------------------
@@ -27,11 +28,18 @@ export function indexKeys(tags: RTags): string[] {
   for (const s of tags.scopes) out.push('scope:' + s)
   for (const c of tags.commands) out.push(c)
   for (const e of tags.errorcodes) out.push('errorcode:' + e)
+  // tool 键（2026-11-16 用户裁定「tool 名字等于什么就是什么因子键」）：注册名逐字入键
+  // （宿主存在字面冒号名 `tool:jobs` ⇒ 键形 `tool:tool:jobs`，P8 裁定不折叠）。
+  // **非空门槛**（对抗审查 P1-1）：callId 配不到 issuer 的孤儿 R `tool:''` 是实测常态，
+  // 空尾键 `tool:` 穿透 labelAllowed（5 字符）并罩住全部匿名原子；且 focalLabels 与
+  // 本函数共享（factor-atoms.ts:202）——不设门槛即焦点污染（ZT3/ZT9 锁死）。
+  if (tags.tool !== '') out.push('tool:' + tags.tool)
   return out
 }
 
-/** 词表可列类别（tool 仅展示不进查询键、scope 仅辅助排序——都不渲染进行）。 */
-export const VOCAB_FACETS = ['document', 'command', 'errorcode'] as const
+/** 词表可列类别（scope 仅辅助排序不渲染；tool 2026-11-16 升格进查询键，
+ *  旧「tool 仅展示」口径随 design-tool-facet §1 作废）。 */
+export const VOCAB_FACETS = ['document', 'command', 'errorcode', 'tool'] as const
 export type VocabFacet = (typeof VOCAB_FACETS)[number]
 
 export function facetOfKey(key: string): Facet | null {
@@ -52,6 +60,9 @@ export interface LedgerEntry {
   rootSeq: number
   turn: number
   tags: RTags
+  /** 交互族 Q/A 预览（design-tool-facet §2）；名单外/形状不符 = undefined。
+   *  由 tagRsFromLog 单点提取，在线/重建共用（ZT6）——账本不自存文本，重建零负担。 */
+  preview?: PreviewBits
 }
 
 export interface InvertedStat {
@@ -108,6 +119,12 @@ export interface PrunedQuery {
   cursor?: number
   /** 快照 epoch：与账本当前值不符 ⇒ 期间有剪枝入账，排序已漂移。 */
   epoch?: number
+  /** keyword 通道（design-tool-facet §11.4）：候选**限制**在此集内——带 labels 时是
+   *  交集（KR2：keyword 不越过 label 收窄集）；labels 空时即全候选（发现模式）。
+   *  在场 label 全被剔除（空想）时 restrictTo **不复活**候选（KR2 的另一半）。 */
+  restrictTo?: Set<number>
+  /** relevant 档新首键 = keyword 命中数降序（确定性，KR3）；缺省排序逐字节不变。 */
+  relevance?: Map<number, number>
 }
 
 export interface PrunedQueryResult {
@@ -242,6 +259,18 @@ export class FactorLedger {
     return this.entries.has(rootSeq)
   }
 
+  /** keyword 发现模式全候选（升序确定性）。 */
+  prunedRootSeqs(): number[] {
+    return [...this.entries.keys()].sort((a, b) => a - b)
+  }
+
+  /** 单枚条目的全形标签键（keyword 发现行随行走全形标签 = 教学闭环，§11.4：
+   *  命中一次就教会模型下次直接用它抄来的标签）。 */
+  labelKeysOf(rootSeq: number): string[] {
+    const e = this.entries.get(rootSeq)
+    return e === undefined ? [] : indexKeys(e.tags)
+  }
+
   /** item 钻取的行元数据（仅账本内 seq 有值；outline/item 路径共用）。 */
   entryOf(rootSeq: number): { turn: number; tool: string; failed: boolean; errorish: boolean } | null {
     const e = this.entries.get(rootSeq)
@@ -264,6 +293,13 @@ export class FactorLedger {
       if (candidate === null) candidate = new Set(set)
       else for (const seq of candidate) if (!set.has(seq)) candidate.delete(seq)
     }
+    // keyword 通道候选收口（design-tool-facet §11.4）：带 labels ⇒ 交集（KR2——keyword
+    // 不越过 label 收窄集）；labels 空 ⇒ restrictTo 即全候选（发现模式）。在场 label
+    // 全被剔（空想）时 candidate 保持 null——restrictTo **不复活**被拒候选（KR2 另一半）。
+    if (q.restrictTo !== undefined) {
+      if (candidate === null) candidate = q.labels.length === 0 ? new Set(q.restrictTo) : null
+      else for (const seq of [...candidate]) if (!q.restrictTo.has(seq)) candidate.delete(seq)
+    }
     const sorted = [...(candidate ?? [])]
       .map(seq => ({ seq, e: this.entries.get(seq) }))
       .filter((x): x is { seq: number; e: LedgerEntry } => x.e !== undefined)
@@ -272,11 +308,14 @@ export class FactorLedger {
           return a.e.turn - b.e.turn || a.seq - b.seq
         }
         if (q.order === 'fresh') return b.e.turn - a.e.turn || b.seq - a.seq
+        // keyword 相关性首键（命中数降序）：只在调用方给了 relevance 时生效，否则
+        // 下方表达式逐字节等于现行 relevant 行为（KR3 确定性由 Map 值确定性保证）。
+        const rel = q.relevance !== undefined ? (q.relevance.get(b.seq) ?? 0) - (q.relevance.get(a.seq) ?? 0) : 0
         // relevant（缺省）：hitLabels 数在纯 AND 下为常数 ⇒ 实际退化为 fresh（契约文案
         // 如实说明）；保留该键是为 anyOf（缓办）与多键形标签未来扩展留位。
         const aHits = q.labels.filter(l => this.inverted.get(l)?.has(a.seq)).length
         const bHits = q.labels.filter(l => this.inverted.get(l)?.has(b.seq)).length
-        return bHits - aHits || b.e.turn - a.e.turn || b.seq - a.seq
+        return rel || bHits - aHits || b.e.turn - a.e.turn || b.seq - a.seq
       })
     const hitOf = (seq: number): string[] => q.labels.filter(l => this.inverted.get(l)?.has(seq))
     return this.pageOf(q, sorted, hitOf)
@@ -332,9 +371,9 @@ export class FactorLedger {
    * verdict；err-sig 只**计数**不判死——errorish 是文本信号（日志正文含 ENOENT 也置真），
    * 绝不当"该次调用失败"渲染（types.ts RTags.failed 注释纪律）。
    */
-  vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number }>; omitted: number; rejected: number } {
+  vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number; preview?: PreviewBits }>; omitted: number; rejected: number } {
     const prefix = facet + ':'
-    const candidates: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number }> = []
+    const candidates: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number; preview?: PreviewBits }> = []
     let rejected = 0
     for (const key of this.inverted.keys()) {
       if (!key.startsWith(prefix)) continue
@@ -361,6 +400,9 @@ export class FactorLedger {
         lastTool: lastEntry?.tags.tool ?? 'tool',
         lastFailed: lastEntry?.tags.failed === true,
         errSigCount: errSig,
+        // 预览与 `last:` 位**同枚**（lastSeenTurn 那枚，P1-4 裁定：否则文案与
+        // recall 首条对不上）。一行聚合 N 枚只展示这一枚。
+        preview: lastEntry?.preview,
       })
     }
     candidates.sort((a, b) => b.count - a.count || b.lastSeenTurn - a.lastSeenTurn)
@@ -378,6 +420,9 @@ export interface RenderVocabularyOptions {
   budgetChars?: number
   /** 触发钩子文案：默认中文，preset 双语在 P2 接。 */
   stickyHook?: (v: StickyView) => string
+  /** 交互族判定谓词（engine 侧从 INTERACTIVE_PREVIEW_TOOLS 注入；名单知识不进
+   *  本叶子模块——P1-3 分层纪律）。缺省 = 无交互族（渲染退化为普通段全量，行为兼容）。 */
+  isInteractive?: (key: string) => boolean
 }
 
 export interface RenderVocabularyResult {
@@ -415,37 +460,73 @@ export function renderVocabulary(o: RenderVocabularyOptions): RenderVocabularyRe
     const mark = o.stickyHook !== undefined
       ? o.stickyHook(t)
       : `⚠ ${t.file} + ${t.errorcode}：修复宣称后仍失败 ×${t.failCount}——按未解决特例对待，动手前先 recall_history(document:${t.file})`
-    if (!push(mark)) break
+    if (!push(mark)) truncated = true
   }
 
-  for (const facet of VOCAB_FACETS) {
-    const v = o.ledger.vocabularyRows(facet, topN)
-    rejected += v.rejected
-    if (v.rows.length === 0) continue
-    if (v.omitted > 0) omitted[facet] = v.omitted
-    const header = `${facet}（历史已清空项，recall_history 可取回）：`
+  type VocabRow = ReturnType<FactorLedger['vocabularyRows']>['rows'][number]
+  // R4 紧版行（2026-11-14）：去每行 hook（facet header 已指路 recall_history），
+  // 换确定性线索——最后一条的 tool + 宿主结构化 verdict + err-sig 计数
+  // （errorish 只计数不判死，见 vocabularyRows 注释）。
+  // tool 桶行键名即工具名，`last: <tool>` 与键恒重复 ⇒ 去重（P2 项）。
+  const plainLine = (r: VocabRow, dedupeTool: boolean): string =>
+    `- ${r.key} ×${r.count} · ${dedupeTool ? '' : 'last: ' + r.lastTool + ' '}${r.lastFailed ? 'failed' : 'ok'} @t${r.lastSeenTurn}`
+    + (r.errSigCount > 0 ? ' · err-sig ' + r.errSigCount + '/' + r.count : '')
+  // 交互族行变体（design-tool-facet §2）：Q/A 预览（与 last: 位同枚）；多问 q×n 防漏答。
+  const interactiveLine = (r: VocabRow): string =>
+    `- ${r.key} ×${r.count} · ${r.lastFailed ? 'failed' : 'ok'} @t${r.lastSeenTurn}`
+    + (r.errSigCount > 0 ? ' · err-sig ' + r.errSigCount + '/' + r.count : '')
+    + (r.preview?.q !== undefined ? ' · Q' + (r.preview.qCount !== undefined ? '×' + r.preview.qCount : '') + ':"' + r.preview.q + '"' : '')
+    + (r.preview?.a !== undefined ? ' A:"' + r.preview.a + '"' : '')
+  /** 单块渲染；空标题回滚（承诺"可取回"却零条目 = 假通道）。返回是否全部入文。 */
+  const block = (header: string, rows: VocabRow[], lineOf: (r: VocabRow) => string): boolean => {
+    if (rows.length === 0) return true
     if (!push(header)) {
       truncated = true
-      break
+      return false
     }
     let anyRow = false
-    for (const r of v.rows) {
-      // R4 紧版行（2026-11-14）：去每行 hook（facet header 已指路 recall_history），
-      // 换确定性线索——最后一条的 tool + 宿主结构化 verdict + err-sig 计数
-      // （errorish 只计数不判死，见 vocabularyRows 注释）。
-      const errPart = r.errSigCount > 0 ? ' · err-sig ' + r.errSigCount + '/' + r.count : ''
-      if (!push(`- ${r.key} ×${r.count} · last: ${r.lastTool} ${r.lastFailed ? 'failed' : 'ok'} @t${r.lastSeenTurn}${errPart}`)) {
+    for (const r of rows) {
+      if (!push(lineOf(r))) {
         truncated = true
         break
       }
       anyRow = true
     }
-    // 诚实渲染：标题不得单独入文——承诺"可取回"却零条目是假通道，空标题回滚。
     if (!anyRow) {
       lines.pop()
       used -= header.length + 1
     }
-    if (truncated) break
+    return !truncated
+  }
+
+  // **两段化**（P1-3：VOCAB_FACETS 声明序不再承担优先级；push 失败即截断的单调模型
+  // 撑不起"交互置顶、最后裁"）：
+  //  保号段（先推 = 最后裁）：sticky → 交互 tool 行 → document；
+  //  普通段（先裁）：command → errorcode → 普通 tool 行。
+  // 段内溢出裁序（A5 裁定，ZT4 锁）：document 行先让位、交互行最后裁。
+  const isI = o.isInteractive ?? (() => false)
+  const toolView = o.ledger.vocabularyRows('tool', topN)
+  rejected += toolView.rejected
+  if (toolView.omitted > 0) omitted.tool = toolView.omitted
+  const interactiveRows = toolView.rows.filter(r => isI(r.key))
+  const plainToolRows = toolView.rows.filter(r => !isI(r.key))
+  const docView = o.ledger.vocabularyRows('document', topN)
+  rejected += docView.rejected
+  if (docView.omitted > 0) omitted.document = docView.omitted
+
+  block('交互记录（已剪，recall_history 可取回原文）：', interactiveRows, interactiveLine)
+  if (!truncated) block('document（历史已清空项，recall_history 可取回）：', docView.rows, r => plainLine(r, false))
+
+  // 普通段：保号段把预算吃穿就不再尝试（诚实 truncated，不静默丢）。
+  if (!truncated) {
+    for (const facet of ['command', 'errorcode'] as const) {
+      const v = o.ledger.vocabularyRows(facet, topN)
+      rejected += v.rejected
+      if (v.omitted > 0) omitted[facet] = v.omitted
+      block(`${facet}（历史已清空项，recall_history 可取回）：`, v.rows, r => plainLine(r, false))
+      if (truncated) break
+    }
+    if (!truncated) block('tool（历史已清空项，recall_history 可取回）：', plainToolRows, r => plainLine(r, true))
   }
 
   const omittedFacets = Object.keys(omitted) as VocabFacet[]

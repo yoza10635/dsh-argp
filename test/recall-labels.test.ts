@@ -461,5 +461,5 @@ test('list_labels：scope 按需可见（查询侧早已放行，词表侧对齐
     name: 'list_labels', callId: 'q2', agentSession: session,
     args: { category: 'bogus' },
   }))
-  assert.ok(bogus.includes('valid: document | command | errorcode | scope'), '严拒文案与描述同口径（含 scope）')
+  assert.ok(bogus.includes('valid: document | command | errorcode | tool | scope'), '严拒文案与描述同口径（含 scope；tool 2026-11-16 升格）')
 })

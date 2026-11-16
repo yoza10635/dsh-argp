@@ -1,7 +1,9 @@
+import type { PreviewBits } from './interactive.ts';
 import type { Facet, RTags, StickyState } from './types.ts';
 export declare function indexKeys(tags: RTags): string[];
-/** 词表可列类别（tool 仅展示不进查询键、scope 仅辅助排序——都不渲染进行）。 */
-export declare const VOCAB_FACETS: readonly ["document", "command", "errorcode"];
+/** 词表可列类别（scope 仅辅助排序不渲染；tool 2026-11-16 升格进查询键，
+ *  旧「tool 仅展示」口径随 design-tool-facet §1 作废）。 */
+export declare const VOCAB_FACETS: readonly ["document", "command", "errorcode", "tool"];
 export type VocabFacet = (typeof VOCAB_FACETS)[number];
 export declare function facetOfKey(key: string): Facet | null;
 export interface LedgerEntry {
@@ -9,6 +11,9 @@ export interface LedgerEntry {
     rootSeq: number;
     turn: number;
     tags: RTags;
+    /** 交互族 Q/A 预览（design-tool-facet §2）；名单外/形状不符 = undefined。
+     *  由 tagRsFromLog 单点提取，在线/重建共用（ZT6）——账本不自存文本，重建零负担。 */
+    preview?: PreviewBits;
 }
 export interface InvertedStat {
     rootSeqs: number[];
@@ -61,6 +66,12 @@ export interface PrunedQuery {
     cursor?: number;
     /** 快照 epoch：与账本当前值不符 ⇒ 期间有剪枝入账，排序已漂移。 */
     epoch?: number;
+    /** keyword 通道（design-tool-facet §11.4）：候选**限制**在此集内——带 labels 时是
+     *  交集（KR2：keyword 不越过 label 收窄集）；labels 空时即全候选（发现模式）。
+     *  在场 label 全被剔除（空想）时 restrictTo **不复活**候选（KR2 的另一半）。 */
+    restrictTo?: Set<number>;
+    /** relevant 档新首键 = keyword 命中数降序（确定性，KR3）；缺省排序逐字节不变。 */
+    relevance?: Map<number, number>;
 }
 export interface PrunedQueryResult {
     rows: Array<{
@@ -107,6 +118,11 @@ export declare class FactorLedger {
     /** item 句柄校验（recall_history item= 钻取）：rootSeq 必须在**被剪账本**内——
      *  对 live seq 用 item 必须拒绝，否则 item 就是无标签限制的 seq 召回通道（假通道复辟）。 */
     hasEntry(rootSeq: number): boolean;
+    /** keyword 发现模式全候选（升序确定性）。 */
+    prunedRootSeqs(): number[];
+    /** 单枚条目的全形标签键（keyword 发现行随行走全形标签 = 教学闭环，§11.4：
+     *  命中一次就教会模型下次直接用它抄来的标签）。 */
+    labelKeysOf(rootSeq: number): string[];
     /** item 钻取的行元数据（仅账本内 seq 有值；outline/item 路径共用）。 */
     entryOf(rootSeq: number): {
         turn: number;
@@ -147,6 +163,7 @@ export declare class FactorLedger {
             lastTool: string;
             lastFailed: boolean;
             errSigCount: number;
+            preview?: PreviewBits;
         }>;
         omitted: number;
         rejected: number;
@@ -158,6 +175,9 @@ export interface RenderVocabularyOptions {
     budgetChars?: number;
     /** 触发钩子文案：默认中文，preset 双语在 P2 接。 */
     stickyHook?: (v: StickyView) => string;
+    /** 交互族判定谓词（engine 侧从 INTERACTIVE_PREVIEW_TOOLS 注入；名单知识不进
+     *  本叶子模块——P1-3 分层纪律）。缺省 = 无交互族（渲染退化为普通段全量，行为兼容）。 */
+    isInteractive?: (key: string) => boolean;
 }
 export interface RenderVocabularyResult {
     text: string;

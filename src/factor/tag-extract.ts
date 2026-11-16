@@ -42,7 +42,9 @@ const ERR_HINT_RE = /\b(error|err!|failed|failure|fatal|exception|traceback|pani
 const WIN_PATH_RE = /[A-Za-z]:[\\/][^\s'"`,;)\]{}]+/g
 const UNIX_PATH_RE = /(?:[\w.@-]+\/)+[\w.@-]+\.\w{1,8}/g
 
-function parseArgsObj(raw: unknown): Record<string, unknown> | null {
+/** args 双形（宿主 tool/call arguments = JSON string 或已解析对象）统一解析；
+ *  interactive.ts 预览提取共用（canonical 单点：两处各写一份 JSON 容差是漂移源）。 */
+export function parseArgsObj(raw: unknown): Record<string, unknown> | null {
   if (typeof raw === 'string') {
     const t = raw.trim()
     if (!t.startsWith('{')) return null

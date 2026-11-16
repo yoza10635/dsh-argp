@@ -12,6 +12,9 @@ export declare const COMMAND_TOOLS: ReadonlySet<string>;
  * cd 族爆炸半径已定谳，cat/sed/ls 里"命令"只是载体。增删本表须由 T-2 medium 面占比闸复测背书。
  */
 export declare const COMMAND_MEDIUM_FAMILY_WHITELIST: ReadonlySet<string>;
+/** args 双形（宿主 tool/call arguments = JSON string 或已解析对象）统一解析；
+ *  interactive.ts 预览提取共用（canonical 单点：两处各写一份 JSON 容差是漂移源）。 */
+export declare function parseArgsObj(raw: unknown): Record<string, unknown> | null;
 /** bash 命令行 → 命令族（剥 `cd X &&` 前缀/环境赋值/sudo；多行取首行）。 */
 export declare function commandFamily(cmd: string): {
     family: string | null;

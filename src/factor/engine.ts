@@ -31,6 +31,7 @@ import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult 
 import { computeScore, planPrune, type PrunePlan, type ScoredEntry } from './retention-score.ts'
 import { factorAssistantTombstone } from '../tombstone-text.js'
 import { READ_TOOLS } from './tag-extract.ts'
+import { INTERACTIVE_PREVIEW_TOOLS, interactiveCheckpointText, isInteractiveToolKey } from './interactive.ts'
 import type { FileSnapshot } from './types.ts'
 
 export interface FactorEngineConfig {
@@ -471,7 +472,8 @@ export class FactorEngine {
     const shadowed = scanShadowedSeqs(session)
     for (const [seq, input] of tagsBySeq) {
       ledger.observeR(seq, input.turn, input.tags)
-      if (shadowed.has(seq)) ledger.addPruned({ rootSeq: seq, turn: input.turn, tags: input.tags })
+      // preview 随贴标同行（tagRsFromLog 单点提取）——在线/重建同路 ⇒ ZT6 逐字节一致。
+      if (shadowed.has(seq)) ledger.addPruned({ rootSeq: seq, turn: input.turn, tags: input.tags, preview: input.preview })
     }
     // 在线快照采样：仅首观察且非重放批的 R
     if (this.host.fileSnapshot !== undefined) {
@@ -767,10 +769,21 @@ export class FactorEngine {
     const tombstones: ({ type: 'tool'; seq: number; callId: string; text: string }
       | { type: 'user'; text: string })[] = []
     const consumed = new Set<number>()
-    // 1) 协议组（A+R + 旧 A+桩 K pack）：整组离场，压缩检查点占位（中性标记，模型可见）。
+    // 1) 协议组（A+R + 旧 A+桩 K pack）：整组离场，压缩检查点占位（模型可见）。
+    //    交互组专段（P7=带 + ZT7/ZT10）：组内任一成员是交互族即用专段文案，措辞只提
+    //    在场成员；普通组维持零指针中性标记（组剪裁定不变）。
     for (const g of groupPlan.groups) {
       intervals.push({ seqs: g.seqs, chars: g.chars, atoms: g.atoms })
-      tombstones.push({ type: 'user', text: FACTOR_COMPACTED_MARKER })
+      const interactiveTools: string[] = []
+      for (const a of g.atoms) {
+        if (a.type !== 'R') continue
+        const t = tagsBySeq.get(a.seq)?.tool ?? ''
+        if (INTERACTIVE_PREVIEW_TOOLS.has(t) && !interactiveTools.includes(t)) interactiveTools.push(t)
+      }
+      tombstones.push({
+        type: 'user',
+        text: interactiveTools.length > 0 ? interactiveCheckpointText(interactiveTools) : FACTOR_COMPACTED_MARKER,
+      })
       for (const s of g.seqs) consumed.add(s)
     }
     // 2) forced A 未被组吸收：无 R 在面 ⇒ 仍可整节点离场（检查点）；有 R 留下 ⇒ A 不动，
@@ -834,7 +847,8 @@ export class FactorEngine {
             const roots = resolveRootSeqs(eventLog, seq)
             const rootSeq = roots[0] ?? seq
             const rootInput = tagsBySeq.get(rootSeq) ?? input
-            this.ledgerOf(session).addPruned({ rootSeq, turn: atom.turn, tags: rootInput.tags })
+            // preview 必须同行透传（ZT6）：漏传 = 在线账本无预览、重建有 ⇒ 词表漂移。
+            this.ledgerOf(session).addPruned({ rootSeq, turn: atom.turn, tags: rootInput.tags, preview: rootInput.preview })
           }
         }
       }
@@ -904,7 +918,7 @@ export class FactorEngine {
         const atom = atomsBySeq.get(seq)
         const input = tagsBySeq.get(seq)
         if (atom !== undefined && input !== undefined) {
-          this.ledgerOf(session).addPruned({ rootSeq: seq, turn: atom.turn, tags: input.tags })
+          this.ledgerOf(session).addPruned({ rootSeq: seq, turn: atom.turn, tags: input.tags, preview: input.preview })
         }
       }
       this.host.log.info('[argp-factor] 夹剪臂：剪 ' + intervals.length + ' R / ' + plan.releasedChars
@@ -943,14 +957,17 @@ export class FactorEngine {
       : head + ' → ' + key + '（需要原文时 recall_history(' + key + ')）'
   }
 
-  /** 实体标签选择序：document → command → errorcode → scope（stubText 与 clip 首行共用）。
-   *  scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R 被标
-   *  "无实体标签"，而模型其实可以 recall_history(scope:…)。 */
+  /** 实体标签选择序：document → command → errorcode → scope → **tool**（stubText 与 clip
+   *  首行共用）。scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R
+   *  被标 "无实体标签"，而模型其实可以 recall_history(scope:…)。
+   *  tool 尾位（2026-11-16 design-tool-facet §1）：受益面只有 clip 对照臂（stubText 唯一
+   *  调用链 compactClipArm→replacementText，P0-1 亲验），非空门槛同 indexKeys。 */
   private stubKey(input: RTagInput): string | undefined {
     return input.tags.files[0] !== undefined ? 'document:' + input.tags.files[0]
       : input.tags.commands[0]
         ?? (input.tags.errorcodes[0] !== undefined ? 'errorcode:' + input.tags.errorcodes[0]
-          : (input.tags.scopes[0] !== undefined ? 'scope:' + input.tags.scopes[0] : undefined))
+          : input.tags.scopes[0] !== undefined ? 'scope:' + input.tags.scopes[0]
+            : input.tool !== '' ? 'tool:' + input.tool : undefined)
   }
 
   /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
@@ -960,6 +977,7 @@ export class FactorEngine {
       ledger: this.ledgerOf(session),
       topNPerFacet: this.cfg.vocabTopN(),
       budgetChars: this.cfg.vocabBudgetChars,
+      isInteractive: isInteractiveToolKey,
     })
   }
 

@@ -96,6 +96,12 @@ const FACET_PREFIXES = ['document:', 'command:', 'errorcode:', 'scope:'] as cons
  */
 export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_labels']
 
+/** keyword 通道文法闸（KR4）+ 命中窗宽（§11.4）。字面子串口径：不 regex（ReDoS）、
+ *  不模糊、不嵌入——0-LLM 与确定性（KR3）由 indexOf 语义天然成立。 */
+const KEYWORD_MIN_CHARS = 2
+const KEYWORD_MAX_CHARS = 100
+const KEYWORD_SNIPPET_CHARS = 60
+
 /**
  * 注册因子臂召回两工具。`factor` 闭包捕获引擎的**同一个** FactorEngine 实例
  * （账本/epoch 与发射侧共享，构造期装配一次）。
@@ -105,9 +111,10 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
 
   const recallHistoryTool = defineTool({
     name: 'recall_history',
-    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE>, scope:<dir> (a bare name matches all facets; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. Use view:"outline" for one metadata line per item, then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels.',
+    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE>, scope:<dir>, tool:<registered-name> (a bare name matches all facets except tool:; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. keyword is a literal case-insensitive substring filter over pruned originals: with labels it narrows them (AND); alone it discovers — every outline line carries the item\'s full-form labels, copy them for the next call. Use view:"outline" for one metadata line per item, then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels.',
     parameters: {
       labels: { type: 'array', items: { type: 'string' }, description: 'one or more labels; ALL must match the same item (true intersection), verbatim from the vocabulary (e.g. ["document:c:/proj/a.ts","errorcode:ERESOLVE"])' },
+      keyword: { type: 'string', description: 'optional literal substring (2-100 chars, no control chars; NOT a regex). At least one of labels/keyword is required. With labels = AND filter (keyword never widens the label set); alone = discovery over all pruned originals, sorted by hit count' },
       limit: { type: 'integer', description: 'optional maximum items to return (engine-configured default when omitted, cap 20)' },
       view: { type: 'string', description: 'optional result shape: "full" (default) = original texts; "outline" = one metadata line per item — start here for wide result sets' },
       order: { type: 'string', description: 'optional sort: "relevant" (default) | "fresh" (newest first) | "timeline" (oldest first, causal reading order)' },
@@ -131,10 +138,21 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
       }
       const a = (args ?? {}) as {
         labels?: string[]; limit?: number; cursor?: number; epoch?: number
-        view?: string; order?: string; item?: number; offset?: number
+        view?: string; order?: string; item?: number; offset?: number; keyword?: string
       }
       const ledger = factor.ledgerForRecall(session)
       const shadowed = host.shadowedSeqsOf(session)
+      // ---- keyword 文法闸（KR4：拒收必须可见，不静默降级）----
+      // 字面子串、大小写不敏感；**不做 regex**（ReDoS+复杂度，design-tool-facet §11.3）。
+      const kwRaw = typeof a.keyword === 'string' ? a.keyword.trim() : ''
+      if (a.keyword !== undefined && kwRaw === '') {
+        return 'recall_history: keyword is empty after trim — pass a 2-100 char literal substring, or drop the parameter.'
+      }
+      if (kwRaw.length > 0 && (kwRaw.length < KEYWORD_MIN_CHARS || kwRaw.length > KEYWORD_MAX_CHARS
+        || /[\r\n\t\x00-\x1f]/.test(kwRaw))) {
+        return 'recall_history: keyword rejected — must be a literal 2-100 char substring without control characters (regex is not supported). Got '
+          + JSON.stringify(kwRaw.slice(0, 40)) + (kwRaw.length > 40 ? '…' : '') + '.'
+      }
 
       // ---- item 钻取路径（item 优先；labels/cursor/limit/order/view 忽略并明示，不隐式合并）。
       // 生死线（对抗审查 C 项）：item 必须 ∈ 被剪账本——否则 item 就是无标签限制的 seq
@@ -177,10 +195,12 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
 
       const wanted = [...new Set((Array.isArray(a.labels) ? a.labels : [])
         .map(l => (typeof l === 'string' ? l.trim() : '')).filter(l => l !== ''))]
-      if (wanted.length === 0) {
+      // KR1（design-tool-fact §11.4）：labels 与 keyword 至少给一个——不留"空查询=
+      // 全表 dump"的口子（全候选只经 keyword 过滤后按 limit 截断地可见）。
+      if (wanted.length === 0 && kwRaw === '') {
         return 'recall_history: pass at least one label exactly as shown in the '
-          + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE> / scope:<dir>); '
-          + 'call list_labels to see the full pruned vocabulary.'
+          + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE> / scope:<dir> / tool:<name>), '
+          + 'or a keyword (literal substring) to discover; call list_labels to see the full pruned vocabulary.'
       }
       const keys = new Set<string>()
       const unknown: string[] = []
@@ -224,24 +244,75 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
       // 缺省档 = 固化 DEFAULT_RECALL_LIMIT（原 recallLimit 旋钮已随 2.0.0 退役；
       // 5 = P2-1 已测口径逐字保持）；模型可显式传 limit，上限 20。
       const limit = Math.max(1, Math.min(20, a.limit ?? DEFAULT_RECALL_LIMIT))
-      const view = a.view === 'outline' ? 'outline' : 'full'
+      // keyword-only = 发现模式缺省 outline（§11.4：先给行+全形标签+命中窗，item= 再取全文；
+      // 显式 view 优先）。
+      const view = a.view === 'outline' || a.view === 'full' ? a.view
+        : kwRaw !== '' && keys.size === 0 && wanted.length === 0 ? 'outline' : 'full'
       const order = a.order === 'fresh' || a.order === 'timeline' ? a.order : 'relevant'
-      const q = ledger.queryPruned({ labels: [...keys], limit, order, cursor: a.cursor, epoch: a.epoch })
+      // ---- keyword 扫描（design-tool-fact §11.4；成本账 §11.3：被剪原文 1–3MB 量级
+      // indexOf 毫秒级，无需索引）。KR6：候选只从**账本条目**取、文本只从
+      // rawEventText(rootSeq) 原文取——surface 现文/桩文/A args 永不入扫描面。 ----
+      let restrictTo: Set<number> | undefined
+      let relevance: Map<number, number> | undefined
+      const hitAt = new Map<number, number>()
+      if (kwRaw !== '') {
+        const needle = kwRaw.toLowerCase()
+        let candidates: number[]
+        if (keys.size > 0) {
+          // AND 语义的候选 = label 交集（与 queryPruned 同构的小规模重复，语义优先于省一遍）。
+          let inter: Set<number> | null = null
+          for (const k of keys) {
+            const s = ledger.stat(k)
+            if (s === null) continue
+            if (inter === null) inter = new Set(s.rootSeqs)
+            else {
+              const set = new Set(s.rootSeqs)
+              for (const x of [...inter]) if (!set.has(x)) inter.delete(x)
+            }
+          }
+          candidates = inter === null ? [] : [...inter]
+        } else {
+          candidates = ledger.prunedRootSeqs()
+        }
+        restrictTo = new Set<number>()
+        relevance = new Map<number, number>()
+        for (const seq of candidates) {
+          const raw = rawEventText(session, seq)
+          if (raw === null) continue
+          const hay = raw.text.toLowerCase()
+          let hits = 0
+          let first = -1
+          for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) {
+            hits += 1
+            if (first < 0) first = i
+          }
+          if (hits === 0) continue
+          restrictTo.add(seq)
+          relevance.set(seq, hits)
+          hitAt.set(seq, first)
+        }
+      }
+      const q = ledger.queryPruned({ labels: [...keys], limit, order, cursor: a.cursor, epoch: a.epoch, restrictTo, relevance })
       if (q.rows.length === 0) {
         pushBounded(st.recallCalls, { seq: -1, hit: false }, host.telemetryCap)
         // 全部标签都解析成功仍空 ⇒ 是"无交集"而非"标签空想"——必须区分（审查 F.10），
         // 否则模型会反复重查同一对标签。
         const allResolved = unknown.length === 0 && ambiguous.length === 0 && wanted.length >= 2
-        return 'recall_history: no pruned item matches (' + wanted.join(', ') + ')'
+        return 'recall_history: no pruned item matches ('
+          + [...wanted, ...(kwRaw !== '' ? ['keyword:"' + kwRaw.slice(0, 40) + (kwRaw.length > 40 ? '…' : '') + '"'] : [])].join(', ') + ')'
           + (unknown.length > 0 ? ' — labels not in the pruned ledger, ignored: ' + unknown.join(', ') : '')
           + (ambiguous.length > 0 ? ' — ambiguous path suffix, not resolved: ' + ambiguous.join('; ') : '')
+          + (kwRaw !== '' && keys.size === 0 ? ' — keyword searched the full pruned ledger (originals only; summarized prose and live context are not searchable)' : '')
           + (allResolved ? ' — labels exist but no pruned item carries all of them together; drop a label or check list_labels coverage' : '')
           + '. The ledger holds ' + ledger.prunedCount + ' pruned item(s) total; '
           + 'if the label came from memory rather than a stub/vocabulary line, call list_labels to see the real one.'
       }
       const lines: string[] = []
-      lines.push((view === 'outline' ? 'recall_history outline: ' : 'recall_history: ') + q.rows.length + ' item(s) by labels [' + [...keys].join(', ')
-        + '] (ledger holds ' + ledger.prunedCount + ')' + (view === 'outline' ? '; fetch text with item=<id>' : ''))
+      lines.push((view === 'outline' ? 'recall_history outline: ' : 'recall_history: ') + q.rows.length + ' item(s) by '
+        + [...(keys.size > 0 ? ['labels [' + [...keys].join(', ') + ']'] : []),
+          ...(kwRaw !== '' ? ['keyword "' + kwRaw.slice(0, 40) + (kwRaw.length > 40 ? '…' : '') + '"'] : [])].join(' + ')
+        + ' (ledger holds ' + ledger.prunedCount + ')'
+        + (view === 'outline' ? '; fetch text with item=<id>' : ''))
       // 未命中的查询标签如实回显（不静默）：模型必须知道自己查询里哪半是空想。
       if (unknown.length > 0) lines.push('[labels not in the pruned ledger, ignored: ' + unknown.join(', ') + ']')
       // 后缀归一改写必须可见（模型学会下次用全形）；歧义候选如实列出。
@@ -255,8 +326,20 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           const raw = rawEventText(session, row.rootSeq)
           const len = raw === null ? 'no-text' : raw.text.length + ' chars'
           const verdict = row.failed ? 'failed' : row.errorish ? 'error-sig' : 'ok'
+          // keyword 发现行随行走**全形标签**（§11.4 教学闭环：命中一次就教会下次抄标签）
+          // + 首个命中 ±60 窗口（判"是不是这条"，全文走 item= 钻取）。
+          const labelPart = row.hitLabels.length > 0 ? row.hitLabels.join(',') : ledger.labelKeysOf(row.rootSeq).join(',')
+          let hitPart = ''
+          if (kwRaw !== '' && raw !== null) {
+            const at = hitAt.get(row.rootSeq) ?? -1
+            if (at >= 0) {
+              const from = Math.max(0, at - KEYWORD_SNIPPET_CHARS)
+              const to = Math.min(raw.text.length, at + kwRaw.length + KEYWORD_SNIPPET_CHARS)
+              hitPart = ' · hit:"' + (from > 0 ? '…' : '') + raw.text.slice(from, to).replace(/[\r\n\t\x00-\x1f]+/g, ' ') + (to < raw.text.length ? '…' : '') + '"'
+            }
+          }
           lines.push('item=' + row.rootSeq + ' · turn=' + row.turn + ' · ' + row.tool + ' ' + verdict
-            + ' · ' + len + ' · labels=' + row.hitLabels.join(','))
+            + ' · ' + len + ' · labels=' + labelPart + hitPart)
         }
       } else {
         // 装配式 full（审查 B 项四不变量）：目标 = min(perCall, remaining)（#1）；
@@ -273,7 +356,8 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           const raw = rawEventText(session, row.rootSeq)
           const state = nodeStateOf(session, row.rootSeq, s => shadowed.has(s))
           pushBounded(st.recallCalls, { seq: row.rootSeq, hit: true, state }, host.telemetryCap)
-          const tag = '--- seq=' + row.rootSeq + ' turn=' + row.turn + ' state=' + state + ' labels=' + row.hitLabels.join(',')
+          const tag = '--- seq=' + row.rootSeq + ' turn=' + row.turn + ' state=' + state
+            + ' labels=' + (row.hitLabels.length > 0 ? row.hitLabels.join(',') : ledger.labelKeysOf(row.rootSeq).join(','))
             + (raw?.reconstructed ? ' [reconstructed: ' + (raw.note ?? '') + ']' : '')
           const block = raw === null
             ? tag + ' (this log event carries no model-visible text)'
@@ -326,9 +410,9 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
 
   const listLabelsTool = defineTool({
     name: 'list_labels',
-    description: 'List the label vocabulary derived from the pruned ledger: every document:<path> / command:<family> / errorcode:<CODE> (and scope:<path> on request) that covers pruned tool results, each with how many pruned items it covers, the last operation seen on it, and an error-signal count (a text signal, not a failure verdict). Use it when a needed label is not in the short vocabulary section or when recall_history found nothing (labels must be copied from here or from a stub, never guessed). category filters one facet (default: document+command+errorcode); each line is directly usable in recall_history.',
+    description: 'List the label vocabulary derived from the pruned ledger: every document:<path> / command:<family> / errorcode:<CODE> / tool:<registered-name> (and scope:<path> on request) that covers pruned tool results, each with how many pruned items it covers, the last operation seen on it, and an error-signal count (a text signal, not a failure verdict). Use it when a needed label is not in the short vocabulary section or when recall_history found nothing (labels must be copied from here or from a stub, never guessed). category filters one facet (default: document+command+errorcode+tool); each line is directly usable in recall_history.',
     parameters: {
-      category: { type: 'string', description: 'optional facet filter: document | command | errorcode | scope' },
+      category: { type: 'string', description: 'optional facet filter: document | command | errorcode | tool | scope' },
       limit: { type: 'integer', description: 'optional maximum labels per category (default 30, cap 200)' },
     },
     output: {
@@ -372,9 +456,10 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         for (const r of v.rows) {
           // R4 紧版行内线索：last = 最后一条的 tool + 宿主结构化 verdict；
           // err-sig 只计数（errorish 是文本信号，不当"调用失败"渲染）。
+          // tool 桶键名即工具名，lastTool 与键恒重复 ⇒ 去重（design-tool-facet P2）。
           const errPart = r.errSigCount > 0 ? ' · err-sig ' + r.errSigCount + '/' + r.count : ''
-          lines.push('- ' + r.key + ' ×' + r.count + ' · last: ' + r.lastTool + ' ' + (r.lastFailed ? 'failed' : 'ok')
-            + ' @t' + r.lastSeenTurn + errPart)
+          lines.push('- ' + r.key + ' ×' + r.count + ' · ' + (facet === 'tool' ? '' : 'last: ' + r.lastTool + ' ')
+            + (r.lastFailed ? 'failed' : 'ok') + ' @t' + r.lastSeenTurn + errPart)
         }
       }
       // fail-closed 出口可见：被当前文法拒收的键留索引不进 prompt，但拒收本身必须可查。

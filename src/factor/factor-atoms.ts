@@ -11,6 +11,7 @@
  */
 import { COMMAND_MEDIUM_FAMILY_WHITELIST, COMMAND_TOOLS, extractTags } from './tag-extract.ts'
 import { indexKeys } from './factor-ledger.ts'
+import { extractPreview, type PreviewBits } from './interactive.ts'
 import type { RTags } from './types.ts'
 
 /** 事件形状的最小结构型（SessionEvent 的读侧投影，避免 import 宿主类型传染）。 */
@@ -116,6 +117,9 @@ export interface RTagInput {
   tags: RTags
   /** R 内含 image/file 块（含 tool-result 嵌套 content）：文本桩会丢附件 ⇒ 硬保护。 */
   hasAttachment?: boolean
+  /** 交互族 Q/A 预览（design-tool-facet §2；名单外/形状不符 = undefined）。
+   *  **在线与重建同点提取**（本函数唯一提取点）——ZT6 逐字节一致由此保证。 */
+  preview?: PreviewBits
 }
 
 /** 事件 data 内是否有附件块（image/file，递归 tool-result 的嵌套 content）。 */
@@ -174,10 +178,13 @@ export function tagRsFromLog(
       sessionCwd,
       isError: isErrorOf(e),
     })
+    const toolName = call?.name ?? ''
+    const preview = extractPreview(toolName, call?.args, resultText) ?? undefined
     out.set(e.seq, {
       seq: e.seq, turn: typeof turnRaw === 'number' ? turnRaw : 0,
       callId: typeof callId === 'string' ? callId : undefined,
-      tool: call?.name ?? '', resultText, tags, hasAttachment: hasAttachmentBlocks(e.data),
+      tool: toolName, resultText, tags, hasAttachment: hasAttachmentBlocks(e.data),
+      ...(preview !== null && preview !== undefined ? { preview } : {}),
     })
   }
   return out

@@ -265,7 +265,7 @@ export function pruneIntervals(
         text: summaryKind === 'tombstone-merge'
           ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
           : summaryKind === 'factor-prune'
-            ? `ARGP 协议组剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；A+R 组整体离场 + 压缩检查点占位（中性标记「已压缩剪枝次要原子」）；原文保留在 append-only 日志，recall_history(labels) 可取回`
+            ? `ARGP 协议组剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；A+R 组整体离场 + 压缩检查点占位（普通组中性标记「已压缩剪枝次要原子」；交互组专段带 tool: 即时指针）；原文保留在 append-only 日志，recall_history(labels) 可取回`
             : summaryKind === 'factor-prose'
               ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；清扫式合并（焦点外前缀一轮全吞，§9.36 H2 终裁）+ one-shot 原生式 LLM 浓缩（输入=U+final A/textA，工具原子零进）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
               : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,

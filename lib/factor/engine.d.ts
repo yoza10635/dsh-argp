@@ -223,9 +223,11 @@ export declare class FactorEngine {
     /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
      *  tagRsFromLog 的桩排除判据（夹剪文本同带此前缀，同受排除）——单点引用，改文案不得动前缀。 */
     private stubText;
-    /** 实体标签选择序：document → command → errorcode → scope（stubText 与 clip 首行共用）。
-     *  scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R 被标
-     *  "无实体标签"，而模型其实可以 recall_history(scope:…)。 */
+    /** 实体标签选择序：document → command → errorcode → scope → **tool**（stubText 与 clip
+     *  首行共用）。scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R
+     *  被标 "无实体标签"，而模型其实可以 recall_history(scope:…)。
+     *  tool 尾位（2026-11-16 design-tool-facet §1）：受益面只有 clip 对照臂（stubText 唯一
+     *  调用链 compactClipArm→replacementText，P0-1 亲验），非空门槛同 indexKeys。 */
     private stubKey;
     /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;
