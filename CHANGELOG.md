@@ -6,6 +6,13 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [2.0.2] - 2026-11-16（preset 覆盖块对 rc.3 重生成对齐——issue #4）
+
+### Fixed
+
+- **`cordis.patch.yml` preset 覆盖块（bundle patch 的 GENERATED 段）从旧宿主快照对 0.2.2-rc.3 重生成**（issue #4 实锤）：快照停在 1.7.0-beta 时代的宿主 preset，其后宿主键改名/增删，而覆盖块是整体替换 preset config——漂移在装了 dsh-argp 的会话里全部真实生效。具体：`modelSelectionSettings` → `modelSelection`（旧拼写在现行宿主 schema 里是幽灵键，被非 strict zod 静默剥离 ⇒ **subagent 模型选择被无声关闭三轮版本**）；删 `backgroundMode`（已出宿主 schema，同类幽灵）；补宿主新增条目（`time-context`/`tool-schedule`/`tool-office`/`dsh-plugin-market/tools`）；摘宿主已删条目（`tool-subagent-codex`/`claude-code`/`ralph`）；`modelDiscovery` 等其余出厂项随之对齐。宿主升级后重跑 `scripts/generate-preset-overrides.ts` 的义务自此有回归锁兜底。
+- 回归锁：`test/preset-patch-entries.test.ts` 新增幽灵键锁（`modelSelectionSettings`/`backgroundMode` 禁入 + `modelSelection: true`×3 出厂对齐，变异验证：塞回幽灵键 ⇒ 红）；包子路径白名单补 `@deepseek-ai/dsh-plugin-market/tools`（rc.3 检出 `packages/boot/plugin-market` exports 实载 `./tools`，2026-11-16 核实）。
+
 ## [2.0.1] - 2026-11-15（出口闸转缺省关 + 压缩阈值设置项 + scope/command 召回引导）
 
 ### Added
