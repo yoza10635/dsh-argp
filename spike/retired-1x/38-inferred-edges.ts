@@ -38,7 +38,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { Session as SessionT } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine as ArgpGraphEngine } from '../../src/argp-engine.ts'
 import { findLoadBearingTokens } from '../src/token-ontology.ts'
 
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')

@@ -110,3 +110,24 @@ test('B6 状态卡：正控有「B-6 盲区」行、负控二无（zh 渲染）'
   const okText = textOf(renderArgpStatus(host, { agent: { session: okS } as never } as never, 'zh'))
   assert.ok(!okText.includes('B-6 盲区'), `负控卡面不应有盲区行：\n${okText}`)
 })
+
+test('B6 只读红线锁（ADV-6）：b6RiskSummary+卡面渲染对压缩状态零写', async () => {
+  const { ctx, engine } = await bootFactor()
+  const s = makeSession('b6-readonly')
+  bridgeDeclaredWindow(ctx, s, 1000)
+  appendUser(s, 1, BIG)
+  appendReadGroup(s, 1, 'c0', BIG)
+  const f = (engine as unknown as { factor: {
+    stateOf(sess: Session): { observedUpToSeq: number; snapshots: Map<unknown, unknown>; vocabNoteSeq: number | null; vocabEpoch: number }
+    ledgerOf(sess: Session): { prunedRootSeqs(): number[] }
+  } }).factor
+  const snap = () => {
+    const st = f.stateOf(s)
+    return [st.observedUpToSeq, st.snapshots.size, st.vocabNoteSeq, st.vocabEpoch, f.ledgerOf(s).prunedRootSeqs().length] as const
+  }
+  const before = snap()
+  engine.b6RiskSummary(s)
+  const host = engine as unknown as ArgpStatusHost
+  renderArgpStatus(host, { agent: { session: s } as never } as never, 'zh')
+  assert.deepEqual(snap(), before, '★b6/卡面为只读渲染（design-2.1.0-batch §2 红线）：游标/快照/note epoch/账本任何一项被推进即红')
+})

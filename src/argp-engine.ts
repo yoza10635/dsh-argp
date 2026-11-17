@@ -645,8 +645,8 @@ export class ArgpEngine extends CompactionEngine {
    *  surface 里、也不在锚点覆盖范围内，漏掉就等于漏算"这一轮的启动量"——而用户恰恰
    *  常在轮初粘贴大段文本。
    */
-  private measureTokens(session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
-    return measureTokens(this as unknown as BudgetHost, session, extraTokens)
+  private measureTokens(session: Session, extraTokens = 0, legacyPlain = false): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
+    return measureTokens(this as unknown as BudgetHost, session, extraTokens, legacyPlain)
   }
 
   /**
@@ -1161,13 +1161,15 @@ export class ArgpEngine extends CompactionEngine {
     const { retainTokens, declaredKnown } = await this.resolveScaledBudgets(agent)
     if (!declaredKnown) return
     this.bindSession(agent.session) // D2：上方 await 窗口内焦点可能被其他会话的装配换桶——回绑后再测量
-    const m = this.measureTokens(agent.session, incomingTokens)
+    const m = this.measureTokens(agent.session, incomingTokens, true)
     const deficit = m.contextTokens - retainTokens
     if (deficit <= 0) return
     // R 剪清不动（可剪面被硬保护占满）即本轮终态：无摘要兜底——factor 臂唯一 LLM
     // 摘要通路是散文浓缩链（prose-condenser），只在压缩事务内被调（触发收敛口径）。
-    // ⚠️ Issue5 显式不改：本函数=ARGP_FACTOR_PRESSURE=1 逃生口的旧世界字节级复现
-    // 契约，估算口径冻结在 1.x——此处保持裸 charsPerToken，勿"顺手"加权。
+    // ⚠️ Issue5 显式不改 + ADV-1 裁定（2026-11-17）：本函数=ARGP_FACTOR_PRESSURE=1
+    // 逃生口的旧世界字节级复现契约——估算分量经 legacyPlain=true 冻结在 1.x 朴素密度
+    // （measureTokens 上游已全局 CJK 加权，不 pin 则 CJK 会话 deficit 失真 ≈2×），
+    // 此处再乘裸 charsPerToken 同为冻结面。勿"顺手"加权。
     this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
   }
 

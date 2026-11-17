@@ -22,11 +22,6 @@ export function countCjkChars(text: string): number {
   return n
 }
 
-/** 字符统计对（total, cjk）——供已有逐字符遍历的热点复用，避免二次扫串。 */
-export function cjkStats(totalChars: number, cjkChars: number): { chars: number; cjk: number } {
-  return { chars: totalChars, cjk: cjkChars }
-}
-
 /** 由统计对算加权 token 估算（浮点；取整在消费点）。非 CJK 文本 = chars/3.5 精确浮点。 */
 export function estTokensFromStats(chars: number, cjk: number): number {
   return (chars - cjk) / DEFAULT_CHARS_PER_TOKEN + cjk / CJK_CHARS_PER_TOKEN

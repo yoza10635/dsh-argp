@@ -104,7 +104,8 @@ test('CT5 liveBlend 密度：latin surface 精确回 3.5；CJK surface 落入 (�
   assert.equal(liveBlendCharsPerToken(makeSession('cjk-blend-empty'), 3.5), 3.5)
   assert.equal(liveBlendCharsPerToken(lat, 3.5), 3.5)
   const blendCjk = liveBlendCharsPerToken(cjkS, 3.5)
-  assert.ok(blendCjk > CJK_CHARS_PER_TOKEN && blendCjk < DEFAULT_CHARS_PER_TOKEN, `blend=${blendCjk}`)
+  // 纯 CJK 面 blend=chars/(chars/1.7) 理论值恰=κ，浮点可微落于 κ 之下——用 ε 容差防偶发红（ADV-9）
+  assert.ok(blendCjk >= CJK_CHARS_PER_TOKEN - 1e-9 && blendCjk < DEFAULT_CHARS_PER_TOKEN, `blend=${blendCjk}`)
   // engine 公开方法与会话样本同源
   assert.equal(engine.liveCharsPerToken(lat), 3.5)
   assert.ok(Math.abs(engine.liveCharsPerToken(cjkS) - blendCjk) < 1e-12)

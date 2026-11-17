@@ -74,11 +74,15 @@ function flatten(s: string): string {
   return s.replace(/[\r\n\t\x00-\x1f]+/g, ' ').replace(/ {2,}/g, ' ').trim()
 }
 
-/** 预览侧收缩：flatten → 80 截断 → labelAllowed（secret/异常形态 ⇒ 该侧弃）。 */
+/** 预览侧收缩：flatten → labelAllowed（原串）→ 80 截断 → 复检（secret/异常形态 ⇒ 该侧弃）。 */
 function shrinkSide(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined
   const f = flatten(raw)
   if (f === '') return undefined
+  // ADV-5（2026-11-17 审查）：secret 检测必须在截断**之前**跑——先截后验会把
+  // sk-/JWT 切成残缺形（如 'sk' 断尾）令 SECRET_RES 正则失配穿透进 prompt。
+  // 只认 secret 类拒收：'long' 拒不适用于预览（80 截断本就消化长文），勿扩大成整拒收弃侧。
+  if (labelAllowed(f) === 'secret') return undefined
   const capped = f.length > PREVIEW_SIDE_CAP ? f.slice(0, PREVIEW_SIDE_CAP - 1) + '…' : f
   return labelAllowed(capped) === null ? capped : undefined
 }

@@ -162,6 +162,15 @@ test('extractPreview 收缩：控制符压平单行、80 截断、secret 侧弃�
   const secret = extractPreview('ask_user_question', '{"questions":[{"id":"q1","question":"用哪个 key"}]}',
     JSON.stringify({ answers: [{ id: 'q1', selected: [], custom: 'sk-abcdefghijklmnop1234' }] }))
   assert.ok(secret !== null && secret.a === undefined, 'secret 形态 ⇒ 该侧 labelAllowed 拒收')
+  // ADV-5：secret 恰跨 80 截断线——先截后验会把 sk- 切成断尾残缺形令正则失配（穿透口）
+  const cross = extractPreview('ask_user_question',
+    JSON.stringify({ questions: [{ id: 'q1', question: 'x'.repeat(75) + ' sk-abcdefghijklmnop1234' }] }), ASK_RESULT)
+  assert.ok(cross !== null && cross.q === undefined, '★原串含 secret 且截后成残缺形 ⇒ 整侧弃（截先验后即穿透）')
+  // M6 锁：后置复检独立面——「…」属 \S，截断点恰落 token 尾时把尾 token 延一字符
+  // 跨过 `token[:=]\S{6,}` 阈值（ABCDE→ABCDE…=6）：原串放行、capped 才命中 ⇒ 前置检测抓不到。
+  const cross2 = extractPreview('ask_user_question',
+    JSON.stringify({ questions: [{ id: 'q1', question: 'a'.repeat(67) + ' token=ABCDE end' }] }), ASK_RESULT)
+  assert.ok(cross2 !== null && cross2.q === undefined, '★截后「…」延符跨界 ⇒ 后置复检独立拦截（摘后置即穿透）')
 })
 
 test('extractPreview exit_plan_mode：Q=plan 首行剥 #；A=判决文案首行', () => {

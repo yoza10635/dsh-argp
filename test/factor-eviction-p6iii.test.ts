@@ -134,7 +134,8 @@ test('T1 召回对轮闭合后进剪序；在轮 recall R 轮内保护（EV1+EV1
   internals.bindSession(session)
   // 旧轮（closed）：正常 bash R + recall_history R（裁定 2：闭合轮召回对无条件进剪序——
   // r0 文本提及焦点文档，focalNonRegenerable 硬保护位被裁定 2 摘除仍须照剪；EV1b 变异=还原 hard 即红。
-  // 注：attachment 面锁不了——发射层 prune-tx 对附件 R 恒保留活体，与评分层无关）
+  // 注：attachment 面锁不了——factor/engine.ts:822 R-only 发射段对附件 R 恒保留活体（与评分层无关；
+  // 该发射层防线另有 factor-group-prune G8 锁兜底），EV1b 锁面因此走焦点文档命中形）
   appendUser(session, '旧轮任务', 1)
   appendGroup(session, 1, 'c1', 'bash', '{"command":"npm test"}', '旧轮输出 ' + 'a'.repeat(200))
   appendGroup(session, 1, 'r0', 'recall_history', '{"labels":["document:c:/proj/old.md"]}',

@@ -16,7 +16,7 @@
  *   （`src/prune-selection.ts`）。（1.7.0 的 `tomb-audit.mjs` 是另一件事：它只做静态
  *   统计，不驱动引擎。）
  * - **状态推导**（`position`/`recencyCut`/`eff`/`askCoverage`/`aGroupChars`…）必须复刻
- *   `compactIfNeeded`（`src/argp-graph-engine.ts:1356-1450`）——它散落在方法体里、没有
+ *   `compactIfNeeded`（`src/argp-engine.ts`，1.x 时代旧行号段 1356-1450）——它散落在方法体里、没有
  *   可复用的纯函数入口。每段都标了源行号，改引擎时须同步。
  * - **"首个拦截闸"**用短表达式复算（只为**解释**结论），并与真实函数的返回**交叉校验**；
  *   二者不一致时脚本打印 `[MISMATCH]` 并计入失败——不一致即意味着本脚本的状态推导
@@ -78,7 +78,7 @@ const numArg = (name: string, fallback: number): number => {
 }
 const hasFlag = (name: string): boolean => argv.includes('--' + name)
 
-/** 引擎默认（`session-lifecycle.normalizeConfig` + `ArgpGraphEngine.Config`）。 */
+/** 引擎默认（`session-lifecycle.normalizeConfig` + `ArgpEngine.Config`（旧名 `ArgpGraphEngine`））。 */
 const recencyGuard = numArg('recency-guard', 4)
 const turnGuard = numArg('turn-guard', 1)
 const retainRatio = numArg('retain-ratio', 0.2)

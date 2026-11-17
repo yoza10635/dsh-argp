@@ -191,23 +191,23 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, atomize, telemetry, constants, budget, prune-tx |
 | `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
 | `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表/note | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
-| `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, peratom/llm-adapter |
+| `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, llm/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` 两个 defineTool + 会话解析/防循环阀 | log-access, telemetry, factor-ledger, factor/engine |
 | `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary` | — |
 | `factor/factor-atoms.ts` | R 原子投影：标签、焦点、sticky、cites/命令/路径抽取辅助 | tag-extract, tag-canonical |
 | `factor/retention-score.ts` | 保留打分与 `planPrune`（焦点带/sticky/过期/宽度熔断/夹剪归位） | factor/types, factor-atoms |
 | `factor/tag-extract.ts` | 工具参数/输出 → 实体标签（四 facet） | tag-canonical |
 | `factor/clip-shape.ts` | C10 夹剪层语义（三态保留与文本形） | — |
-| `atomize.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, peratom/types |
+| `atomize.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, llm/types |
 | `budget.ts` | `visibleChars` / `resolveScaledBudgets` / `measureTokens` / `scaleBudgets` / `acquireTokenMeter` | constants, log-access |
 | `recall.ts` | `shadowedSeqsOf`（权威账本）+ `budgetRecallText`（字符预算） | log-access, session-state(type) |
 | `prune-tx.ts` | 事务骨架：`pruneIntervals` / `consolidateTombstones` / 手动区间函数 / `buildTombstoneRedirect` | argp-types, log-access, atomize |
 | `tombstone-text.ts` | 墓碑文案与老文法识别（读侧兼容） | — |
 | `cites-strip.ts` | cites 尾块匹配/剥离（残差清扫；纯函数，零依赖） | — |
-| `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / `autoDshLlmSpec` 宿主路由兜底） | dsh-llm |
-| `peratom/types.ts` | 来源判定叶子（ARG_NS / isArgpUserInfo / isOwnSourceKind） | — |
+| `llm/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / `autoDshLlmSpec` 宿主路由兜底） | dsh-llm |
+| `llm/types.ts` | 来源判定叶子（ARG_NS / isArgpUserInfo / isOwnSourceKind） | — |
 | `argp-types.ts` | Atom / AtomType / ArgpUserSettings（叶子） | cites-strip(type-only) |
-| `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, peratom/types |
+| `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, llm/types |
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
 | `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
 | `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale |
@@ -254,7 +254,7 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `src/factor/tag-extract.ts` | 8 | 33 | 76 | 6 | 93 | 166/221 |
 | `src/factor/factor-ledger.ts` | 19 | 21 | 58 | **7** | 68 | 321/460 |
 | `src/log-access.ts` | 14 | 20 | 54 | **7** | 38 | 172/325 |
-| `src/peratom/llm-adapter.ts` | 5 | 20 | 51 | 5 | 70 | 161/274 |
+| `src/llm/llm-adapter.ts` | 5 | 20 | 51 | 5 | 70 | 161/274 |
 | `src/argp-command.ts` | 26 | 30 | 45 | 3 | 68 | 148/249 |
 | 其余 21 个 src 文件 | — | ≤19 | ≤43 | ≤7 | ≤147 | 最大 543（config-controller），均 ≤ 365 |
 

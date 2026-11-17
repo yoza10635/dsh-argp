@@ -183,3 +183,29 @@ test('TC-B env 逃生口：ARGP_FACTOR_PRESSURE=1 恢复旧估算驱动路径（
     else process.env['ARGP_FACTOR_PRESSURE'] = saved
   }
 })
+
+test('逃生口估算冻结在 1.x 朴素密度（ADV-1：legacyPlain 接线锁）', async () => {
+  const { internals, factor } = await bootFactor()
+  const session = makeSession('pressure-legacy-pin')
+  internals.bindSession(session)
+  const cjk = '压缩召回测试内容段落'.repeat(400) // 纯 CJK 大 surface：加权口径必高于朴素口径
+  session.append('user/message', {
+    ...createUserMessage({ content: [{ type: 'text', text: cjk }], source: { kind: 'user' } }), turn: 1,
+  } as never, { surfaceOp: 'append' })
+  const mt = internals as unknown as {
+    measureTokens(s: Session, e?: number, l?: boolean): { contextTokens: number; surfaceTokens: number }
+    resolveScaledBudgets(a: unknown): Promise<{ retainTokens: number; declaredKnown: boolean }>
+  }
+  const weighted = mt.measureTokens(session, 0, false)
+  const legacy = mt.measureTokens(session, 0, true)
+  assert.ok(weighted.surfaceTokens > legacy.surfaceTokens, '前置：CJK surface 加权>朴素（否则夹具失效）')
+  assert.ok(Math.abs(legacy.surfaceTokens - Math.ceil(cjk.length / 3.5)) <= 4, 'legacyPlain≈朴素 ceil(chars/3.5)（surface 另含 system/用户头，小常数容差）')
+  const scaled = await mt.resolveScaledBudgets(makeAgent(session))
+  assert.ok(scaled.declaredKnown)
+  const spy = spyCompact(factor)
+  await internals.factorPressure(makeAgent(session), 0)
+  spy.restore()
+  assert.equal(spy.targets.length, 1, 'CJK 大 surface 必构成一次压力剪')
+  const expected = Math.floor((legacy.contextTokens - scaled.retainTokens) * 3.5)
+  assert.equal(spy.targets[0], expected, '★target 必须按朴素 deficit 推得（摘 legacyPlain=true 接线⇒加权 deficit≈2× ⇒ 红）')
+})

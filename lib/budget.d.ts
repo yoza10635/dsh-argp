@@ -126,8 +126,13 @@ export declare function resolveScaledBudgets(host: BudgetHost, agent: Compaction
  *  常在轮初粘贴大段文本，旧实现轮初估值偏低就是漏了这块。
  *
  * 原 class 私有方法；this.x → host.x。
+ *
+ * `legacyPlain=true`（ADV-1 裁定 2026-11-17）：估算分量冻结在 1.x 朴素密度
+ * （chars/host.charsPerToken，Issue5 加权不生效）——**仅供 ARGP_FACTOR_PRESSURE=1
+ * 逃生口**维持「旧世界字节级复现」契约；正常链恒传 false，usage 真值锚点分量两种模式
+ * 下都零动。
  */
-export declare function measureTokens(host: BudgetHost, session: Session, extraTokens?: number): {
+export declare function measureTokens(host: BudgetHost, session: Session, extraTokens?: number, legacyPlain?: boolean): {
     contextTokens: number;
     surfaceTokens: number;
     source: 'anchored' | 'tokenMeter' | 'config' | 'chars';
