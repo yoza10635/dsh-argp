@@ -6,6 +6,25 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [2.1.0-beta.0] - 2026-11-17（tool 因子键 + 交互族预览 + keyword 召回 + 外评 Issue3/4/5）
+
+### Added
+
+- **`tool:<注册名>` 因子键全量升格**：每枚工具结果至少带一枚 `tool:` 地址（工具名缺失的孤儿结果除外）——剪后词表、`list_labels(category:'tool')`、`recall_history` 标签召回全链可用；「没有实体标签就找不回」的旧口径随 tool 键退役（README 已知限制同步）。
+- **交互族词表预览**：`ask_user_question` / `exit_plan_mode` 检查点专段带 `tool:` 地址与 Q/A 侧写预览（逐问拼接、answers 解析、80 字符截断、secret 侧弃、控制符压平），压缩后模型能看到「当时问过什么、答了什么」。
+- **`recall_history` keyword 通道**：可选 `keyword` 字面内容子串扫描（大小写不敏感，0 LLM，不开新工具、不支持 regex）；labels+keyword 为 AND，labels/keyword 双空给引导文案；命中返回 outline+全形标签+命中窗，与标签召回共享单次 5%/累计 10% 窗预算；文法闸拒收过短/过长/控制符/trim 空输入。
+- **`/argp` 状态卡 B-6 盲区风险行**（外评 Issue4）：不可剪 live 面（非 R 原子 + 未闭合轮）≥ 0.8×声明窗时显式露出近似诊断行（只读渲染，禁走 decide() 压缩状态面）；声明窗未知=零告警（宁缺勿错，交 400 兜底网口径）。
+- **CJK 自适应密度估算**（外评 Issue5 B 案）：字符估算从统一 3.5 chars/token 改为 `nonCjk/3.5 + cjk/κ`，κ=1.7（Qwen3.8 tokenizer 同帧配对差分标定，两独立语料组 1.714/1.675 收敛）——中文重负载内容不再被系统性低估 ~2×。白名单=CJK 统一表意+扩展 A+中日韩标点+假名；其余字符（含全角/西里尔/谚文/emoji）一律走 3.5 桶=非 CJK 文本估算逐字不变。覆盖 anchored 增量、锚点重置、deficit→chars 反向换算、召回预算、浓缩闸一容量线；`ARGP_FACTOR_PRESSURE=1` 逃生口与宿主 shadow 定价口径（HOST_CHARS_PER_TOKEN=4）刻意不改。跨 tokenizer 不自动重标定=刻意简化（README 口径声明）。
+
+### Changed
+
+- **命名遗留清偿**（外评 Issue3）：`ArgpGraphEngine`→`ArgpEngine`、`ArgpGraphConfig`→`ArgpConfig`（旧名保留为 @deprecated 别名，下一 major 移除）；`argp-graph-engine.ts`→`argp-engine.ts`、`graph-build.ts`→`atomize.ts`、`peratom/`→`llm/`；日志前缀 `[argp-graph]`→`[argp-engine]`。`compactionId` 的 `argp-graph-` wire 前缀保留（历史日志重建按 id 去重，无解析点）。
+- README：估算口径/B-6 缓解句同步新形态；策略值句改「按字符类别加权」。
+
+### Testing
+
+- 314 测全绿（新增 B6×5、CT1-CT6 锁）；变异面 27 刀全红（新增 M22-M26）；κ 标定读数表与语料工件在仓库外台账（design-2.1.0-batch §5，不进仓库）。
+
 ## [2.0.2] - 2026-11-16（preset 覆盖块对 rc.3 重生成对齐——issue #4）
 
 ### Fixed
