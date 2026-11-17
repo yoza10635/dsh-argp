@@ -40,6 +40,8 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpEngine } from '../src/argp-engine.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
+import { liveBlendCharsPerToken } from '../src/budget.ts'
+import { DEFAULT_CHARS_PER_TOKEN } from '../src/constants.ts'
 
 function appendUser(session: Session, text: string): void {
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }), { surfaceOp: 'append' })
@@ -427,7 +429,12 @@ test('装配式 full：新→旧序，首条整装→次条截断带 offset 提�
   appendGroup(session, 6, 'p6', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW'.repeat(10))
   assert.ok(factor.compactIfNeeded(session, 3000) !== null, '大缺额把三条 a.ts 全剪进账本')
   const st = internals.stateOf(session)
-  st.resolvedWindowTokens = 8000 // perCall = 1400：首条(t3)全文装下，次条(t2)截断，末条(t1)弃装
+  // Issue5 口径：召回预算 = resolvedWindowTokens × 5%/10% × live 面混合密度。
+  // 本会话 surface 含中文墓碑/notice，blend < 3.5 —— 窗口按 blend 反向补偿，
+  // 把 perCall 拉回 1400 的原语义，让本锁继续锁装配行为（序/截断/弃装/单记账）
+  // 而非预算密度换算（后者由 test/cjk-estimate.test.ts CT5 专锁）。
+  const blend = liveBlendCharsPerToken(session, DEFAULT_CHARS_PER_TOKEN)
+  st.resolvedWindowTokens = Math.ceil(8000 * DEFAULT_CHARS_PER_TOKEN / blend) // perCall ≈ 1400：首条(t3)全文装下，次条(t2)截断，末条(t1)弃装
   const res = await execTool(ctx, {
     name: 'recall_history', callId: 'q1', agentSession: session,
     args: { labels: ['document:c:/proj/a.ts'], limit: 5 },

@@ -20,7 +20,8 @@ import type { Atom, AtomType } from './argp-types.js'
 import type { SessionRuntimeState } from './session-state.js'
 import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn, resolveRootSeqs } from './log-access.js'
 import { classifyUserMessage } from './atomize.js'
-import { visibleChars } from './budget.js'
+import { visibleChars, visibleCharStats } from './budget.js'
+import { estTokensFromStats } from './cjk.js'
 import { shadowedTokensOf } from './constants.js'
 import { pushBounded } from './telemetry.js'
 import { isMergeableTombstoneText, seqRangeTombstone, toolTombstone, toolTombstoneSummary } from './tombstone-text.js'
@@ -440,7 +441,10 @@ export function pruneIntervals(
     // 的事件，增量按 seq >= anchor 计。这里 promptTokens 是**当前 surface 全量估算**
     // （已含刚落的墓碑/检查点），故 anchor 必须取 log 尾后的下一个 seq（session.seq），
     // 否则中间位置的替换副本会被 delta 二次计入（prose 检查点可达 20K tok）。
-    st.lastRealPromptTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
+    // Issue5：锚点重置换 CJK 加权估算（审查 F4：这里是「标着 anchored 的 chars 估算
+    // 敞口」——不改则压缩换代后 3.5 偏差原样回归）。非 CJK surface = chars/3.5 逐字等价。
+    const anchorStats = visibleCharStats(session)
+    st.lastRealPromptTokens = Math.ceil(estTokensFromStats(anchorStats.chars, anchorStats.cjk))
     st.lastRealAnchorSeq = session.seq
     // 永久冻结：落剪不再刷新 frozenCatalog（见 bindSession 注释）。剪枝本身已让可见上下文换代，
     // 那一步的前缀缓存失效是上下文真实变更的必然代价；但 catalog 文本恒定，不在这条路上再变一次。

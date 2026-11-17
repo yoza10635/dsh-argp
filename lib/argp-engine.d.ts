@@ -266,8 +266,9 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     private postPruneProjection;
     /**
-     * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
-     * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
+     * 本步已 claiming（尚未落盘进 surface）的 user 消息估值（Issue5 起为 CJK 加权：
+     * nonCjk/3.5 + cjk/κ）。与 `measureTokens` 的增量口径同基准，可直接相加；
+     * 非 CJK 输入 = chars/3.5 逐字等价。
      */
     private incomingTokens;
     /**
@@ -364,6 +365,12 @@ export declare class ArgpEngine extends CompactionEngine {
         ratioPct: number;
         warn: boolean;
     };
+    /**
+     * live surface 样本混合密度（Issue5）：token→chars 反向换算（deficit→chars、
+     * /argp 卡面历史字符数换算）共用口径。非 CJK-only 样本精确回 charsPerToken
+     * （等价锁，见 budget.liveBlendCharsPerToken）。
+     */
+    liveCharsPerToken(session: Session): number;
     private egressGate;
     /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
     private modelDefaultMaxTokens;

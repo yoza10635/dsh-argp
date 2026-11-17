@@ -12,6 +12,7 @@
  */
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionRuntimeState } from './session-state.js'
+import { liveBlendCharsPerToken } from './budget.js'
 import { sessionEvents } from './log-access.js'
 
 /**
@@ -87,8 +88,11 @@ export function recallBudgetState(host: RecallHost, session: Session | null): { 
   if (session === null) return { perCallLimit: Number.MAX_SAFE_INTEGER, remaining: Number.MAX_SAFE_INTEGER, totalLimit: Number.MAX_SAFE_INTEGER }
   const st = host.stateOf(session)
   syncBudgetTurn(host, session)
-  const perCallLimit = Math.floor(st.resolvedWindowTokens * 0.05 * host.charsPerToken)
-  const totalLimit = Math.floor(st.resolvedWindowTokens * 0.10 * host.charsPerToken)
+  // Issue5：token→chars 反向换算按 live 面样本混合密度（CJK 重的会话同额 token 预算
+  // 对应更少字符）。非 CJK surface 精确回 charsPerToken（逐字等价）。
+  const cpt = liveBlendCharsPerToken(session, host.charsPerToken)
+  const perCallLimit = Math.floor(st.resolvedWindowTokens * 0.05 * cpt)
+  const totalLimit = Math.floor(st.resolvedWindowTokens * 0.10 * cpt)
   return { perCallLimit, remaining: Math.max(0, totalLimit - st.recallCharsUsed), totalLimit }
 }
 
@@ -105,8 +109,9 @@ export function budgetRecallText(host: RecallHost, session: Session | null, text
   if (session === null) return text
   const st = host.stateOf(session)
   syncBudgetTurn(host, session)
-  const perCallLimit = Math.floor(st.resolvedWindowTokens * 0.05 * host.charsPerToken)
-  const totalLimit = Math.floor(st.resolvedWindowTokens * 0.10 * host.charsPerToken)
+  const cpt = liveBlendCharsPerToken(session, host.charsPerToken)
+  const perCallLimit = Math.floor(st.resolvedWindowTokens * 0.05 * cpt)
+  const totalLimit = Math.floor(st.resolvedWindowTokens * 0.10 * cpt)
   const remaining = Math.max(0, totalLimit - st.recallCharsUsed)
   if (remaining === 0) {
     return '(recall text budget exhausted: ' + st.recallCharsUsed + '/' + totalLimit

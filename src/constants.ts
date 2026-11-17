@@ -11,8 +11,20 @@ export const DEFAULT_WINDOW_TOKENS = 16_384
 /** 默认保留目标（token）。graph 引擎 retainTokens 缺省锚。 */
 export const DEFAULT_RETAIN_TOKENS = 8_192
 
-/** chars/token 估算系数（无 tokenMeter 时的降级度量基准）。 */
+/** chars/token 估算系数（无 tokenMeter 时的降级度量基准；非 CJK 桶，Issue5 后口径）。 */
 export const DEFAULT_CHARS_PER_TOKEN = 3.5
+
+/**
+ * CJK chars/token 估算系数（Issue5，2.1.0）：`estTokens = nonCjk/3.5 + cjk/κ` 的 CJK 分量。
+ *
+ * **κ = 1.7 = Qwen3.8 tokenizer 标定值**（2026-11-17，tb21p 同帧配对差分：自然中文
+ * 散文 30K chars 两独立组读数 1.714/1.675，pooled 1.70；读数表 design-2.1.0-batch §5）。
+ * 3.5 对中文重负载系统性低估 ~2×（本常量的动机，外评 Issue5）。
+ *
+ * 跨 tokenizer 不重标定 = **刻意简化**（README 口径声明）：换端点时 κ 不自动跟随，
+ * 估算仍只是兜底语义（anchored 真值面不受影响）。白名单判定与消费点见 `cjk.ts`。
+ */
+export const CJK_CHARS_PER_TOKEN = 1.7
 
 /**
  * 宿主 token-meter 的 `CHARS_PER_TOKEN`（`dsh-token-meter/lib/types/estimate.js`，当前 = 4）。

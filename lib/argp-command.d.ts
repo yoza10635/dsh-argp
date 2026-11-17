@@ -70,6 +70,11 @@ export interface ArgpStatusHost extends BudgetHost {
         ratioPct: number;
         warn: boolean;
     };
+    /**
+     * Issue5：live 面样本混合密度（token→chars 反向换算）。可选成员：缺省时回退
+     * charsPerToken 常数密度（测试宿主/旧宿主行为不变）。
+     */
+    liveCharsPerToken?: (session: Session) => number;
 }
 /**
  * 注册 `/argp`（幂等、可降级）。

@@ -72,6 +72,11 @@ export interface ArgpStatusHost extends BudgetHost {
    * 可选成员：测试宿主可不实现（缺省=卡面不显示风险行）。
    */
   b6RiskSummary?: (session: Session) => { declaredWindow: number; nonPrunableTokens: number; ratioPct: number; warn: boolean }
+  /**
+   * Issue5：live 面样本混合密度（token→chars 反向换算）。可选成员：缺省时回退
+   * charsPerToken 常数密度（测试宿主/旧宿主行为不变）。
+   */
+  liveCharsPerToken?: (session: Session) => number
 }
 
 /** 宿主命令服务的窄接口（避免 import 运行时实现，只触达 register）。 */
@@ -248,8 +253,13 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   } else {
     const last = records[records.length - 1]
     if (last !== undefined) {
-      const beforeTok = Math.round(last.charsBefore / host.charsPerToken)
-      const afterTok = Math.round(last.charsAfter / host.charsPerToken)
+      // Issue5：历史事务字符数→token 的换算按 live 面样本混合密度（记录只存字符数，
+      // 密度取当前 live 面=近似口径）；非 CJK 会话/无采样宿主精确回 charsPerToken（等价）。
+      const cpt = session !== null && session !== undefined && host.liveCharsPerToken !== undefined
+        ? host.liveCharsPerToken(session)
+        : host.charsPerToken
+      const beforeTok = Math.round(last.charsBefore / cpt)
+      const afterTok = Math.round(last.charsAfter / cpt)
       lines.push(T.prunesLedger(records.length, last.intervals.length, last.shadowedSeqs.length,
         fmtTokens(beforeTok), fmtTokens(afterTok), last.forced ? T.forced() : '', st?.prunedNodeIndex.size ?? 0))
     }

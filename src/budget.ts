@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionAgentContext } from '@deepseek-ai/dsh-compaction'
 import { DEFAULT_WINDOW_TOKENS, DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_RATIO, DEFAULT_RETAIN_RATIO } from './constants.js'
+import { countCjkChars, estTokensFromStats } from './cjk.js'
 import { eventText } from './log-access.js'
 
 /** 比例预算纯函数：window = ctx × windowRatio；retain = window × retainRatio（缺省回退）。导出供测试。 */
@@ -76,6 +77,34 @@ export function visibleChars(session: Session): number {
   let total = 0
   for (const seq of session.surface.nodes) total += eventText(session, seq).length
   return total
+}
+
+/**
+ * surface 可见字符统计对（Issue5）：total + 白名单 CJK 计数。
+ * 加权 token 估算的 surface 侧入口；与 visibleChars 同遍历形状（单趟）。
+ */
+export function visibleCharStats(session: Session): { chars: number; cjk: number } {
+  let total = 0
+  let cjk = 0
+  for (const seq of session.surface.nodes) {
+    const t = eventText(session, seq)
+    total += t.length
+    cjk += countCjkChars(t)
+  }
+  return { chars: total, cjk }
+}
+
+/**
+ * live surface 样本混合密度（Issue5）：token→chars 反向换算用
+ * （deficit→chars、recall 预算、浓缩闸一容量线）。混合密度 = chars/estTokens，
+ * 非 CJK-only 样本精确回 3.5（等价锁）；空 surface 回退常数密度。
+ */
+export function liveBlendCharsPerToken(session: Session, fallback: number): number {
+  const s = visibleCharStats(session)
+  // 空 surface 与非 CJK 样本走常数回退：非 CJK 路径逐字等价锁（chars/(chars/3.5)
+  // 在浮点上不保证精确回 3.5，边界 floor 会抖 1——显式短路）。
+  if (s.chars === 0 || s.cjk === 0) return fallback
+  return s.chars / estTokensFromStats(s.chars, s.cjk)
 }
 
 /**
@@ -198,7 +227,9 @@ export async function resolveScaledBudgets(
  * 原 class 私有方法；this.x → host.x。
  */
 export function measureTokens(host: BudgetHost, session: Session, extraTokens = 0): { contextTokens: number; surfaceTokens: number; source: 'anchored' | 'tokenMeter' | 'config' | 'chars' } {
-  const surfaceTokens = Math.ceil(visibleChars(session) / host.charsPerToken)
+  // Issue5：字符估算换 CJK 加权（estTokensFromStats）；非 CJK 输入 = chars/3.5 精确等价。
+  const sstats = visibleCharStats(session)
+  const surfaceTokens = Math.ceil(estTokensFromStats(sstats.chars, sstats.cjk))
   const st = host.stateOf(session)
   if (st.lastRealAnchorSeq >= 0 && st.lastRealPromptTokens > 0) {
     // 真实锚点（上轮 provider usage）覆盖的是**锚点事件之前**的 prompt；锚点事件
@@ -206,11 +237,17 @@ export function measureTokens(host: BudgetHost, session: Session, extraTokens = 
     // 增量通常远小于全量，估算偏差只作用于增量 → 总误差从 ±30% 降到几个百分点。
     // 已知局限（保守或单步窗口）：压缩换代后锚点重置为纯 surface 估算（不含
     // system+tools）→ 低估一个 step，下一次 assistant/message usage 回到精确锚定。
+    // 增量估算同样换加权（Issue5）：锚点基数=usage 真值零动，仅增量分量加权。
     let deltaChars = 0
+    let deltaCjk = 0
     for (const seq of session.surface.nodes) {
-      if (seq >= st.lastRealAnchorSeq) deltaChars += eventText(session, seq).length
+      if (seq >= st.lastRealAnchorSeq) {
+        const t = eventText(session, seq)
+        deltaChars += t.length
+        deltaCjk += countCjkChars(t)
+      }
     }
-    const deltaTokens = Math.ceil(deltaChars / host.charsPerToken)
+    const deltaTokens = Math.ceil(estTokensFromStats(deltaChars, deltaCjk))
     return { contextTokens: st.lastRealPromptTokens + deltaTokens + extraTokens, surfaceTokens, source: 'anchored' }
   }
   if (host.tokenMeter !== undefined) {

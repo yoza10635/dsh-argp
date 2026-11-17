@@ -41,7 +41,8 @@ import { looksAskText, classifyUserMessage, extractCites, atomize, type CiteStat
 export { looksAskText, classifyUserMessage, extractCites } from './atomize.js'
 export type { CiteStats } from './atomize.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/acquireTokenMeter。
-import { resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
+import { resolveScaledBudgets, measureTokens, liveBlendCharsPerToken, type BudgetHost, type TokenMeter } from './budget.js'
+import { countCjkChars, estTokensFromStats } from './cjk.js'
 export { scaleBudgets } from './budget.js'
 import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
@@ -665,25 +666,27 @@ export class ArgpEngine extends CompactionEngine {
   }
 
   /**
-   * 本步已 claiming（尚未落盘进 surface）的 user 消息估值：字符数 ÷ charsPerToken。
-   * 与 `measureTokens` 的增量口径同基准（同一 charsPerToken），可直接相加。
+   * 本步已 claiming（尚未落盘进 surface）的 user 消息估值（Issue5 起为 CJK 加权：
+   * nonCjk/3.5 + cjk/κ）。与 `measureTokens` 的增量口径同基准，可直接相加；
+   * 非 CJK 输入 = chars/3.5 逐字等价。
    */
   private incomingTokens(messages: readonly unknown[]): number {
     let chars = 0
+    let cjk = 0
     for (const message of messages) {
       const content = (message as { content?: unknown }).content
       if (!Array.isArray(content)) continue
       for (const block of content) {
         const b = block as { text?: unknown; content?: unknown }
-        if (typeof b.text === 'string') chars += b.text.length
+        if (typeof b.text === 'string') { chars += b.text.length; cjk += countCjkChars(b.text) }
         if (!Array.isArray(b.content)) continue
         for (const inner of b.content) {
           const t = (inner as { text?: unknown }).text
-          if (typeof t === 'string') chars += t.length
+          if (typeof t === 'string') { chars += t.length; cjk += countCjkChars(t) }
         }
       }
     }
-    return chars === 0 ? 0 : Math.ceil(chars / this.charsPerToken)
+    return chars === 0 ? 0 : Math.ceil(estTokensFromStats(chars, cjk))
   }
 
   /**
@@ -832,17 +835,28 @@ export class ArgpEngine extends CompactionEngine {
     const openTurn = detectOpenTurn(session)
     const atoms = atomize(this as unknown as GraphBuildHost, session)
     let chars = 0
+    let cjk = 0
     for (const a of atoms) {
       if (a.type === 'R' && (openTurn === null || a.turn < openTurn)) continue
       chars += a.text.length
+      cjk += countCjkChars(a.text)
     }
-    const tokens = Math.ceil(chars / this.charsPerToken)
+    const tokens = Math.ceil(estTokensFromStats(chars, cjk))
     return {
       declaredWindow: declared,
       nonPrunableTokens: tokens,
       ratioPct: Math.round((tokens / declared) * 100),
       warn: tokens >= declared * this.windowRatio,
     }
+  }
+
+  /**
+   * live surface 样本混合密度（Issue5）：token→chars 反向换算（deficit→chars、
+   * /argp 卡面历史字符数换算）共用口径。非 CJK-only 样本精确回 charsPerToken
+   * （等价锁，见 budget.liveBlendCharsPerToken）。
+   */
+  liveCharsPerToken(session: Session): number {
+    return liveBlendCharsPerToken(session, this.charsPerToken)
   }
 
   private async egressGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number, lineRatio: number | null = null): Promise<boolean | 'blocked'> {
@@ -1007,7 +1021,8 @@ export class ArgpEngine extends CompactionEngine {
       let pruned: CompactionResult | null = null
       const deficit = measurement.contextTokens - retainTokens
       if (deficit > 0) {
-        pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.charsPerToken))
+        // Issue5：deficit→chars 按 live 面样本混合密度（CJK 重的面同额 token 只需更少字符）
+        pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)))
       }
       let native = { pruned: 0, charsRemoved: 0 }
       if (trigger === 'context-overflow' || measurement.contextTokens > retainTokens) {
@@ -1151,6 +1166,8 @@ export class ArgpEngine extends CompactionEngine {
     if (deficit <= 0) return
     // R 剪清不动（可剪面被硬保护占满）即本轮终态：无摘要兜底——factor 臂唯一 LLM
     // 摘要通路是散文浓缩链（prose-condenser），只在压缩事务内被调（触发收敛口径）。
+    // ⚠️ Issue5 显式不改：本函数=ARGP_FACTOR_PRESSURE=1 逃生口的旧世界字节级复现
+    // 契约，估算口径冻结在 1.x——此处保持裸 charsPerToken，勿"顺手"加权。
     this.factor.compactIfNeeded(agent.session, Math.floor(deficit * this.charsPerToken))
   }
 

@@ -53,6 +53,20 @@ export declare function acquireTokenMeter(ctx: Context): TokenMeter | undefined;
 /** surface 可见字符总量（与 spike 4 同基准）。原 class 私有方法，纯函数（无 this）。 */
 export declare function visibleChars(session: Session): number;
 /**
+ * surface 可见字符统计对（Issue5）：total + 白名单 CJK 计数。
+ * 加权 token 估算的 surface 侧入口；与 visibleChars 同遍历形状（单趟）。
+ */
+export declare function visibleCharStats(session: Session): {
+    chars: number;
+    cjk: number;
+};
+/**
+ * live surface 样本混合密度（Issue5）：token→chars 反向换算用
+ * （deficit→chars、recall 预算、浓缩闸一容量线）。混合密度 = chars/estTokens，
+ * 非 CJK-only 样本精确回 3.5（等价锁）；空 surface 回退常数密度。
+ */
+export declare function liveBlendCharsPerToken(session: Session, fallback: number): number;
+/**
  * 预算/度量模块函数访问引擎状态所需的窄接口。
  * 仅列出 resolveScaledBudgets / measureTokens 实际读写的字段；
  * hub 的 ArgpEngine 以 `this as unknown as BudgetHost` 满足它。
