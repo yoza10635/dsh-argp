@@ -349,6 +349,21 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     /** 压缩阈值实时值（volatile thunk / 裸值两态兼容；0 或缺省 = 关）。 */
     private get compactionThreshold();
+    /**
+     * Issue4（2026-11-17，design-2.1.0-batch §2）：B-6 盲区风险摘要——**只读、近似诊断**。
+     * 触发 = 不可剪 live 估算 ≥ windowRatio × 声明窗：可剪面全剪光后仍会逼近声明窗，
+     * 宿主组装层将无痕截断最旧 live 节点（README 已知限制 B-6，根治在 dsh 侧）。
+     * 近似口径（台账 §6-R4 裁定的落点）：不可剪 = 非 R 原子（U/A/X/system 可见面）
+     * + 未闭合轮 R；焦点/sticky/召回对等硬保护位**未计**（方向=低估不可剪量=漏报风险，
+     * 卡面文案带「近似」）。**禁走 `FactorEngine.decide`**——其 observe() 有
+     * ledger/观察游标/快照采样副作用（factor/engine.ts:459-496），卡面渲染不得污染压缩状态。
+     */
+    b6RiskSummary(session: Session): {
+        declaredWindow: number;
+        nonPrunableTokens: number;
+        ratioPct: number;
+        warn: boolean;
+    };
     private egressGate;
     /** §9.37 出口闸·输出预算档③：模型注册面的缺省输出预算（每会话探一次，0=已探无）。 */
     private modelDefaultMaxTokens;

@@ -817,6 +817,34 @@ export class ArgpEngine extends CompactionEngine {
     return typeof get === 'function' ? get.call(raw) : 0
   }
 
+  /**
+   * Issue4（2026-11-17，design-2.1.0-batch §2）：B-6 盲区风险摘要——**只读、近似诊断**。
+   * 触发 = 不可剪 live 估算 ≥ windowRatio × 声明窗：可剪面全剪光后仍会逼近声明窗，
+   * 宿主组装层将无痕截断最旧 live 节点（README 已知限制 B-6，根治在 dsh 侧）。
+   * 近似口径（台账 §6-R4 裁定的落点）：不可剪 = 非 R 原子（U/A/X/system 可见面）
+   * + 未闭合轮 R；焦点/sticky/召回对等硬保护位**未计**（方向=低估不可剪量=漏报风险，
+   * 卡面文案带「近似」）。**禁走 `FactorEngine.decide`**——其 observe() 有
+   * ledger/观察游标/快照采样副作用（factor/engine.ts:459-496），卡面渲染不得污染压缩状态。
+   */
+  b6RiskSummary(session: Session): { declaredWindow: number; nonPrunableTokens: number; ratioPct: number; warn: boolean } {
+    const declared = this.declaredContextWindows.get(session) ?? 0
+    if (declared <= 0) return { declaredWindow: 0, nonPrunableTokens: 0, ratioPct: 0, warn: false }
+    const openTurn = detectOpenTurn(session)
+    const atoms = atomize(this as unknown as GraphBuildHost, session)
+    let chars = 0
+    for (const a of atoms) {
+      if (a.type === 'R' && (openTurn === null || a.turn < openTurn)) continue
+      chars += a.text.length
+    }
+    const tokens = Math.ceil(chars / this.charsPerToken)
+    return {
+      declaredWindow: declared,
+      nonPrunableTokens: tokens,
+      ratioPct: Math.round((tokens / declared) * 100),
+      warn: tokens >= declared * this.windowRatio,
+    }
+  }
+
   private async egressGate(agent: CompactionAgentContext, signal: AbortSignal, incomingTokens: number, lineRatio: number | null = null): Promise<boolean | 'blocked'> {
     const session = agent.session
     if (signal.aborted) return false

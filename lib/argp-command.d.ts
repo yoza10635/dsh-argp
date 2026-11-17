@@ -60,6 +60,16 @@ export interface ArgpStatusHost extends BudgetHost {
     readonly session: Session | null;
     /** 会话实际运行的 preset id（无 preset 概念时 undefined）。 */
     activePresetOf(session: Session): string | null | undefined;
+    /**
+     * Issue4：B-6 盲区风险摘要（只读、近似诊断，见 argp-engine.b6RiskSummary）。
+     * 可选成员：测试宿主可不实现（缺省=卡面不显示风险行）。
+     */
+    b6RiskSummary?: (session: Session) => {
+        declaredWindow: number;
+        nonPrunableTokens: number;
+        ratioPct: number;
+        warn: boolean;
+    };
 }
 /**
  * 注册 `/argp`（幂等、可降级）。

@@ -67,6 +67,11 @@ export interface ArgpStatusHost extends BudgetHost {
   readonly session: Session | null
   /** 会话实际运行的 preset id（无 preset 概念时 undefined）。 */
   activePresetOf(session: Session): string | null | undefined
+  /**
+   * Issue4：B-6 盲区风险摘要（只读、近似诊断，见 argp-engine.b6RiskSummary）。
+   * 可选成员：测试宿主可不实现（缺省=卡面不显示风险行）。
+   */
+  b6RiskSummary?: (session: Session) => { declaredWindow: number; nonPrunableTokens: number; ratioPct: number; warn: boolean }
 }
 
 /** 宿主命令服务的窄接口（避免 import 运行时实现，只触达 register）。 */
@@ -133,6 +138,7 @@ interface StatusCopy {
   forced(): string
   audit(count: number, latest: string): string
   recall(calls: number, hits: number, pct: string): string
+  b6Risk(nonPrunable: string, pct: string, line: string): string
 }
 
 const enCopy: StatusCopy = {
@@ -150,6 +156,9 @@ const enCopy: StatusCopy = {
   forced: () => ' (forced)',
   audit: (count, latest) => 'audit: ' + count + ' warning(s) · latest: ' + latest,
   recall: (calls, hits, pct) => 'recall: ' + calls + ' calls · ' + hits + ' hits (' + pct + ') [this process]',
+  b6Risk: (nonPrunable, pct, line) => '⚠ B-6 blind zone: non-prunable live ≈ ' + nonPrunable
+    + ' tok (' + pct + '% of declared window, risk line ' + line + ') — after pruning everything prunable the request still nears the window;'
+    + ' the host assembler truncates oldest live nodes silently (README known limitations) [approximate]',
 }
 
 const zhCopy: StatusCopy = {
@@ -167,6 +176,8 @@ const zhCopy: StatusCopy = {
   forced: () => '（强制）',
   audit: (count, latest) => '审计：' + count + ' 条警告 · 最近：' + latest,
   recall: (calls, hits, pct) => '召回：' + calls + ' 次调用 · ' + hits + ' 次命中（' + pct + '）[本进程]',
+  b6Risk: (nonPrunable, pct, line) => '⚠ B-6 盲区风险：不可剪 live ≈ ' + nonPrunable + ' tok（占声明窗 ' + pct
+    + '%，风险线 ' + line + '）——可剪面全剪后请求仍逼近声明窗，宿主组装层会无痕截断最旧 live 节点（README 已知限制）[近似]',
 }
 
 /**
@@ -214,6 +225,16 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   } else {
     const m = measureTokens(host, session)
     lines.push(T.budgetNow(fmtTokens(trigger), fmtTokens(retain), capNote, fmtTokens(m.contextTokens), m.source))
+  }
+
+  // 段 2.5（Issue4）：B-6 盲区风险行——仅触发时显示（不可剪 live ≥ windowRatio×声明窗，
+  // 判定与会话读数全在引擎 b6RiskSummary：只读、近似诊断，卡面不写任何状态）。
+  if (session !== null && session !== undefined && host.b6RiskSummary !== undefined) {
+    const risk = host.b6RiskSummary(session)
+    if (risk.warn) {
+      lines.push(T.b6Risk(fmtTokens(risk.nonPrunableTokens), String(risk.ratioPct),
+        fmtTokens(Math.round(risk.declaredWindow * host.windowRatio))))
+    }
   }
 
   // 段 3：剪枝台账（**会话桶**；批次 3-2：records 为进程内遥测——重启后由账本重建恢复，
