@@ -21,9 +21,13 @@
 - **命名遗留清偿**（外评 Issue3）：`ArgpGraphEngine`→`ArgpEngine`、`ArgpGraphConfig`→`ArgpConfig`（旧名保留为 @deprecated 别名，下一 major 移除）；`argp-graph-engine.ts`→`argp-engine.ts`、`graph-build.ts`→`atomize.ts`、`peratom/`→`llm/`；日志前缀 `[argp-graph]`→`[argp-engine]`。`compactionId` 的 `argp-graph-` wire 前缀保留（历史日志重建按 id 去重，无解析点）。
 - README：估算口径/B-6 缓解句同步新形态；策略值句改「按字符类别加权」。
 
+### Fixed
+
+- **在轮召回结果不再被同轮压缩事务剪空**（注入预审实锤 P1）：裁定 2「召回对可再生=再召回一次」原实现把**尚未闭合轮内**刚返回的 `recall_history`/`list_labels` 结果也保持无条件可剪——高压场景（估算线已过、散文浓缩闸未触发、大块 U 原子不在剪序）下唯一可剪原子=刚返回的召回结果，模型下一步请求前它就被剪成空 `tool/result` 克隆，召回面在最需要它的时刻自废。「下次压缩驱逐」语义修正为**轮闭合后的下一事务**：在轮召回 R 硬排除剪序，轮闭合后照旧无条件进剪序（含 sticky/焦点/附件位失效面不变）。回归锁 EV1/EV1b 双向变异（M27/M28）。
+
 ### Testing
 
-- 314 测全绿（新增 B6×5、CT1-CT6 锁）；变异面 27 刀全红（新增 M22-M26）；κ 标定读数表与语料工件在仓库外台账（design-2.1.0-batch §5，不进仓库）。
+- 314 测全绿（新增 B6×5、CT1-CT6 锁；EV1 锁按在轮保护语义重写+EV1b 补锁）；变异面 29 刀全红（新增 M22-M28）；κ 标定读数表与语料工件在仓库外台账（design-2.1.0-batch §5，不进仓库）。
 
 ## [2.0.2] - 2026-11-16（preset 覆盖块对 rc.3 重生成对齐——issue #4）
 

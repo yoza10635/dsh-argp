@@ -1,15 +1,17 @@
 /**
  * P6-③ 驱逐判据（2026-11-11 用户裁定，11-12 开工）：factor decide 两条新准入。
  *
- * 裁定 2（召回轮）：召回对（recall_history/list_labels 的 call+result）**无条件进剪序**
- * ——全部硬保护位失效（含 open 轮 failureNoFollowR / sticky / focal），可再生=再召回一次；
- * 排序照常走 freshness（刚引用=新鲜，迟剪）。
+ * 裁定 2（召回轮，2026-11-17 P1 修订见 [[test-plan §注入预审]]）：召回对（recall_history/list_labels
+ * 的 call+result）**轮闭合后无条件进剪序**——全部硬保护位失效（含 sticky / focal），可再生=再召回一次；
+ * 排序照常走 freshness（刚引用=新鲜，迟剪）。★「下次压缩驱逐」=轮闭合后的下一事务：**在轮（open turn）
+ * 已返回的召回 R 硬排除剪序**——否则同轮第二笔压缩事务把刚返回的结果剪成空克隆，模型只看到空=高压召回面自废。
  * 裁定 3（中断轮）：closed 轮内半截 A（有 tool-call 却有未应答 call）+ 孤儿 R（callId
  * 无在世 issuer A）强制先行（无视目标量，"驱逐时机=下次压缩"），保留该轮 user 消息；
  * 半截 A 的已应答 R 必须同行驱逐（user 墓碑替 A 会孤儿化它们）。
  *
  * 变异台账（摘锁必须变红，已逐条执行）：
- *  EV1 recall 硬保护豁免摘除（hard 照常生效）→ T1 红（open 轮 recall R 受保护不剪）；
+ *  EV1 在轮召回排除摘除（删 `inOpenTurn && RECALL_TOOL_NAMES` continue）→ T1 红（在轮 recall R 被剪空）；
+ *  EV1b 裁定 2 回滚为召回 R 照常硬保护（hard:{} 还原）→ T1 红（closed 轮 recall R 不再被剪）；
  *  EV2 强制先行段摘除（forcedFirstSeqs 不喂）→ T2/T3 红（半截 A/孤儿 R 不入序零发射）；
  *  EV3 半截 A 的已应答 R 不同行 → T4 红（孤儿 R 幸存 = tool-pairing 失衡）。
  */
@@ -30,7 +32,7 @@ function appendUser(session: Session, text: string, turn?: number): void {
   } as never, { surfaceOp: 'append' })
 }
 
-function appendGroup(session: Session, turn: number, callId: string, tool: string, args: string, resultText: string): void {
+function appendGroup(session: Session, turn: number, callId: string, tool: string, args: string, resultText: string, extraResultBlocks: unknown[] = []): void {
   session.append('assistant/message', {
     stream: [], turn, step: 1,
     message: createAssistantMessage({
@@ -43,7 +45,7 @@ function appendGroup(session: Session, turn: number, callId: string, tool: strin
     turn, step: 1,
     message: {
       role: 'user',
-      content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: resultText }], isError: false }],
+      content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: resultText }, ...extraResultBlocks] as never, isError: false }],
       source: { kind: 'tool', callId },
       id: 'm_' + callId,
     },
@@ -126,26 +128,32 @@ function devCount(session: Session): number {
   }).length
 }
 
-test('T1 召回对无条件进剪序：open 轮内的 recall_history R 照剪（EV1 锁）', async () => {
+test('T1 召回对轮闭合后进剪序；在轮 recall R 轮内保护（EV1+EV1b 锁，2026-11-17 P1 修订）', async () => {
   const { ctx, internals } = await boot()
   const session = makeSession('p6iii-recall')
   internals.bindSession(session)
-  // 旧轮：正常 bash R（closed）
+  // 旧轮（closed）：正常 bash R + recall_history R（裁定 2：闭合轮召回对无条件进剪序——
+  // r0 文本提及焦点文档，focalNonRegenerable 硬保护位被裁定 2 摘除仍须照剪；EV1b 变异=还原 hard 即红。
+  // 注：attachment 面锁不了——发射层 prune-tx 对附件 R 恒保留活体，与评分层无关）
   appendUser(session, '旧轮任务', 1)
   appendGroup(session, 1, 'c1', 'bash', '{"command":"npm test"}', '旧轮输出 ' + 'a'.repeat(200))
-  // open turn 2：正常 bash R（受 open 保护）+ recall_history R（豁免 ⇒ 照剪）
+  appendGroup(session, 1, 'r0', 'recall_history', '{"labels":["document:c:/proj/old.md"]}',
+    '闭合轮召回原文 C:/proj/old.md ' + 'z'.repeat(200))
+  // open turn 2：正常 bash R + read R（open 保护，且 read 令 C:/proj/old.md 成焦点）+ 在轮 recall R
   session.append('turn/start', { turn: 2 } as never)
   appendUser(session, '当前轮', 2)
   appendGroup(session, 2, 'c2', 'bash', '{"command":"ls"}', 'open 轮活体输出 ' + 'b'.repeat(200))
-  appendGroup(session, 2, 'r1', 'recall_history', '{"labels":["document:docs/plan.md"]}', '被召回原文 ' + 'r'.repeat(200))
+  appendGroup(session, 2, 'c3', 'read', '{"file_path":"C:/proj/old.md"}', '焦点文档活体内容 ' + 'f'.repeat(200))
+  appendGroup(session, 2, 'r1', 'recall_history', '{"labels":["document:docs/plan.md"]}', '在轮召回原文 ' + 'r'.repeat(200))
   const result = await internals.compactIfNeeded({ session } as never, 'context-overflow', new AbortController().signal)
   assert.ok(result !== null, 'context-overflow 必须触发 factor 剪')
   const texts = surfaceDump(session)
-  assert.ok(!texts.includes('被召回原文'), '★open 轮 recall R 原文必须被剪（硬保护豁免）')
-  assert.ok(!texts.includes('[已剪·因子]'), '新方案零指针桩文本')
-  assert.ok(texts.includes('"toolCallId":"r1"'), 'recall R 以空 tool/result 克隆留位（callId 配对）')
-  assert.ok(texts.includes('open 轮活体输出'), 'open 轮正常 R 仍受保护（豁免只认召回面）')
+  assert.ok(texts.includes('在轮召回原文'), '★在轮 recall R 必须原文在场——同轮事务剪空=召回面自废（EV1 锁）')
+  assert.ok(texts.includes('"toolCallId":"r1"'), '在轮 recall R 未被空克隆替换')
+  assert.ok(!texts.includes('闭合轮召回原文'), '★closed 轮 recall R 照剪（裁定 2 保留面，EV1b 锁）')
   assert.ok(!texts.includes('旧轮输出'), 'closed 旧 A+R 组照常组剪（对照面）')
+  assert.ok(texts.includes('open 轮活体输出'), 'open 轮正常 R 仍受保护')
+  assert.ok(!texts.includes('[已剪·因子]'), '新方案零指针桩文本')
   assert.ok(devCount(session) >= 1, 'closed 旧组落压缩检查点')
 })
 
