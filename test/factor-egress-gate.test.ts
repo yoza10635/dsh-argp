@@ -28,7 +28,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { resolveEgress, type FactorEngine } from '../src/factor/engine.ts'
 
 interface EgressInternals {
@@ -42,7 +42,7 @@ interface EgressInternals {
 async function bootFactor(): Promise<{ ctx: Context; internals: EgressInternals; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
   const internals = ctx.compaction as unknown as EgressInternals
   return { ctx, internals, factor: internals.factor as FactorEngine }
 }
@@ -253,7 +253,7 @@ test('EG-11 PRESSURE 逃生口与出口闸互斥：hatch 世界 egress 不挂（
 async function bootFactorScaled(): Promise<{ ctx: Context; internals: EgressInternals & { prose: unknown }; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', recencyGuard: 0 })
+  await ctx.plugin(ArgpEngine, { engine: 'factor', recencyGuard: 0 })
   const internals = ctx.compaction as unknown as EgressInternals & { prose: unknown }
   return { ctx, internals, factor: internals.factor as FactorEngine }
 }
@@ -376,7 +376,7 @@ test('EG-15 压缩阈值比例线：compactionThreshold=0.5 → 线=窗×0.5（e
   // 走 emitPreStep 全调用点（resolveEgress 接线 + 真闸），520 只吃比例线。
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
   const internals = ctx.compaction as unknown as EgressInternals
   const factor = internals.factor as FactorEngine
   const session = heavyAnchoredSession('eg-threshold', 520) // 520 ∈ [500, 730)：只吃比例线
@@ -393,7 +393,7 @@ test('EG-16 env=0 硬覆盖：设置 compactionThreshold=0.5 也不开（对照�
   try {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'egress persona' } })
-    await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
+    await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0, compactionThreshold: 0.5 } as never)
     const internals = ctx.compaction as unknown as EgressInternals
     const session = heavyAnchoredSession('eg-hard-off', 900) // 900 ≥ 比例线 500 也 ≥ 旧线 730
     internals.bindSession(session)

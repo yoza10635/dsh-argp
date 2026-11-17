@@ -23,7 +23,7 @@
  *   realm，**不回落到父 realm**），`command-compact` 的 `inject=['commands',
  *   'compaction']` 会在空 realm 里永久 "waiting for compaction"；摘除后组变
  *   普通组，消费端沿 scope 链解析到宿主平面的 `ctx.compaction`＝本插件的
- *   ArgpGraphEngine（extends CompactionEngine，服务名 `compaction`），`/compact`
+ *   ArgpEngine（extends CompactionEngine，服务名 `compaction`），`/compact`
  *   自动指向 ARGP 的确定性 compactNow，零额外接线；
  * - {@link dropEmptyGroups} 组内清空时连组删除（loader 的 entryListProblem 会
  *   拒「group must hold a list」）；
@@ -74,7 +74,7 @@ export declare function dropEmptyGroups(source: string): string;
  * the parent's"）。于是 `command-compact` 的 `inject=['commands','compaction']`
  * 在空 realm 里找不到提供者 → 永久 "waiting for compaction" → preset 挂载失败。
  * 摘除 `isolate` 后组变普通组，消费端沿 scope 链解析到宿主平面的
- * ArgpGraphEngine。
+ * ArgpEngine。
  *
  * 只操作指定 id 的组，不碰其他组（如 planning/delegation 的 isolate 是各自
  * 服务的正确生命周期隔离，不能动）。幂等：无 `isolate` 块时零修改。

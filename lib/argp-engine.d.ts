@@ -24,9 +24,9 @@ import type { Atom } from './argp-types.js';
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js';
 import { type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js';
 export type { PrunedNodeInfo } from './session-state.js';
-import { type CiteStats } from './graph-build.js';
-export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js';
-export type { CiteStats } from './graph-build.js';
+import { type CiteStats } from './atomize.js';
+export { looksAskText, classifyUserMessage, extractCites } from './atomize.js';
+export type { CiteStats } from './atomize.js';
 export { scaleBudgets } from './budget.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 export type { GraphPruneRecord } from './prune-tx.js';
@@ -43,7 +43,7 @@ export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js
  * cites/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
  * normalizeConfig 宽容读 + 告警忽略（老 profile 不炸，但不静默改变预期）。
  */
-export interface ArgpGraphConfig {
+export interface ArgpConfig {
     /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × 0.8。 */
     windowTokens?: number;
     /** 保留目标（token）。不传时默认 = 触发线 × 0.2（压缩率 1/5）。 */
@@ -92,7 +92,7 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     seq: number;
     data?: Record<string, unknown>;
 }): void;
-export declare class ArgpGraphEngine extends CompactionEngine {
+export declare class ArgpEngine extends CompactionEngine {
     /**
      * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
      * 表单；2.0.1 起名册唯一活键 = `compactionThreshold`（压缩阈值）：出口闸触发线
@@ -199,7 +199,7 @@ export declare class ArgpGraphEngine extends CompactionEngine {
     sessionCount(): number;
     /** 结构化日志门面（构造期自 ctx 捕获）。 */
     private readonly log;
-    constructor(ctx: Context, config?: ArgpGraphConfig);
+    constructor(ctx: Context, config?: ArgpConfig);
     /**
      * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded 首次绑定
      * 都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：账目丢失仅日志在），
@@ -392,4 +392,4 @@ export declare class ArgpGraphEngine extends CompactionEngine {
      */
     rebuildLedgerFromLog(): void;
 }
-export default ArgpGraphEngine;
+export default ArgpEngine;

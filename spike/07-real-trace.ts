@@ -35,7 +35,7 @@ import { mountModel } from './model-mount.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 
 // ---------- 配置 ----------
 const windowTokens = Number(process.env['ARGP_WINDOW_TOKENS'] ?? 80_000)
@@ -107,8 +107,8 @@ const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-7 real coding trace persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
 const modelMount = await mountModel(ctx)
-await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses })
-const engine = ctx.compaction as ArgpGraphEngine
+await ctx.plugin(ArgpEngine, { windowTokens, retainTokens, maxPasses })
+const engine = ctx.compaction as ArgpEngine
 
 const agent = ctx.agentLoop.create(SessionId('spike-7-real-trace'), {
   provider: modelMount.provider,

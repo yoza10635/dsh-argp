@@ -13,7 +13,7 @@
  * 运行时 import hub 形成环；hub 反向 import 本模块并 re-export，公共 API 不变
  * （index.ts 的 `export *` 透出）。
  *
- * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）。
+ * ArgpConfig 经 type-only import 取用（编译期擦除，无运行时环）。
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -21,12 +21,12 @@ import z from '@deepseek-ai/schemastery'
 import type { ArgpUserSettings } from './argp-types.js'
 import type { PrunedNodeInfo } from './session-state.js'
 import { sessionEvents, turnOf } from './log-access.js'
-import { classifyUserMessage } from './graph-build.js'
+import { classifyUserMessage } from './atomize.js'
 import { pushBounded, DEFAULT_TELEMETRY_CAP } from './telemetry.js'
 import { DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { acquireTokenMeter, type TokenMeter } from './budget.js'
 import type { GraphPruneRecord } from './prune-tx.js'
-import type { ArgpGraphConfig } from './argp-graph-engine.js' // type-only：编译期擦除，无运行时环
+import type { ArgpConfig } from './argp-engine.js' // type-only：编译期擦除，无运行时环
 
 // ── 设置页常量（ARG_SETTINGS_KEY / ArgpUserSettingsSchema 经 hub re-export 维持公共 API）──
 //
@@ -52,7 +52,7 @@ export const ARG_SETTINGS_KEY = 'dsh-argp'
  * 全部退役，缺省值固化在 constants.ts；2.0.1 起名册唯一活键 = `compactionThreshold`
  * （压缩阈值：出口闸触发线 = 声明窗 × 比例；0=关闭，撞墙 400 兜底）。
  *
- * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
+ * 真实校验面是 `ArgpEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
  * volatile form；settings.register 已随 #4587 移除，本 schema 经 hub re-export
  * 维持公共 API 与文档口径）。两面键集必须一致。
  *
@@ -132,7 +132,7 @@ const RETIRED_KNOB_KEYS: readonly string[] = [
  * 置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）是唯一的 ctx 读取，
  * 保持在 settings 注册之前。
  */
-export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void {
+export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpConfig): void {
   // 构造期配置形状校验——收集全部违例**一次性**抛出。此前错误形状静默通过：
   // skipPresets 非数组被 spread 成字符数组 = 永不匹配（preset 快照静默失效）、
   // NaN/Infinity 数值让预算与守卫静默偏移。cordis 对插件 config 不做 schema 校验
@@ -163,7 +163,7 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
     violations.push('skipPresets: expected string[], got ' + JSON.stringify(config.skipPresets))
   }
   if (violations.length > 0) {
-    throw new Error('[argp-graph] invalid config (plugin will not activate): ' + violations.join('; '))
+    throw new Error('[argp-engine] invalid config (plugin will not activate): ' + violations.join('; '))
   }
   // 旧 graph 键宽容读 + 告警：cordis 非 strict 合并（宿主实测未声明键透传）⇒ 老 profile
   // 不炸 = 宽容读；2.0 起这些键**全部**不再被消费（图臂退役），出现即告警，不让沉默
@@ -230,12 +230,12 @@ export function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpG
  * `settings.register(ns, schema, { base })`：Settings 改为扫描插件的 `static Config`
  * 生成表单，表单值写回 profile 的 `cordis.patch.yml`。因此本函数不再注册任何东西，
  * 只做一件事——声明本插件实例允许设置页自动生成表单（auto: true，因为没有自定义
- * settings 页面）。引擎的旋钮值由 `ArgpGraphEngine.Config` 的 volatile 引用提供。
+ * settings 页面）。引擎的旋钮值由 `ArgpEngine.Config` 的 volatile 引用提供。
  *
  * ⚠️ 旧实现的构造期快照（`host.argpSettings` / `host.settingsSource`）已删除：
  * 那套"注册后把基线与 scope.get() 二选一"的回退逻辑是为被移除的 register API 服务的。
  */
-export function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpGraphConfig): void {
+export function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpConfig): void {
   ctx.inject(['settings'], (scopedCtx: Context) => {
     // 宿主 0.1.7 的 settings 服务没有 `register`，只有 `configure`（页面展示策略）。
     // dsh-settings 不是本包依赖（缺 Named export 会让整个 entry 加载失败，见文件头 NOTE），

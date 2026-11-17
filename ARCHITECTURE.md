@@ -187,9 +187,9 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 
 | 文件 | 职责 | 依赖 |
 |---|---|---|
-| `argp-graph-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
-| `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, graph-build, telemetry, constants, budget, prune-tx |
-| `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), graph-build(type), prune-tx(type), log-access(type) |
+| `argp-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
+| `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, atomize, telemetry, constants, budget, prune-tx |
+| `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
 | `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表/note | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
 | `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, peratom/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` 两个 defineTool + 会话解析/防循环阀 | log-access, telemetry, factor-ledger, factor/engine |
@@ -198,10 +198,10 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `factor/retention-score.ts` | 保留打分与 `planPrune`（焦点带/sticky/过期/宽度熔断/夹剪归位） | factor/types, factor-atoms |
 | `factor/tag-extract.ts` | 工具参数/输出 → 实体标签（四 facet） | tag-canonical |
 | `factor/clip-shape.ts` | C10 夹剪层语义（三态保留与文本形） | — |
-| `graph-build.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, peratom/types |
+| `atomize.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, peratom/types |
 | `budget.ts` | `visibleChars` / `resolveScaledBudgets` / `measureTokens` / `scaleBudgets` / `acquireTokenMeter` | constants, log-access |
 | `recall.ts` | `shadowedSeqsOf`（权威账本）+ `budgetRecallText`（字符预算） | log-access, session-state(type) |
-| `prune-tx.ts` | 事务骨架：`pruneIntervals` / `consolidateTombstones` / 手动区间函数 / `buildTombstoneRedirect` | argp-types, log-access, graph-build |
+| `prune-tx.ts` | 事务骨架：`pruneIntervals` / `consolidateTombstones` / 手动区间函数 / `buildTombstoneRedirect` | argp-types, log-access, atomize |
 | `tombstone-text.ts` | 墓碑文案与老文法识别（读侧兼容） | — |
 | `cites-strip.ts` | cites 尾块匹配/剥离（残差清扫；纯函数，零依赖） | — |
 | `peratom/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / `autoDshLlmSpec` 宿主路由兜底） | dsh-llm |
@@ -246,8 +246,8 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `src/factor/engine.ts` | 26 | **329** | **709** | 5 | **221** | 743/1025 |
 | `src/factor/recall-labels.ts` | 5 | **89** | **224** | 5 | **285** | 293/389 |
 | `src/prune-tx.ts` | 5 | 85 | 164 | 5 | **340** | 316/470 |
-| `src/argp-graph-engine.ts` | 47 | **237** | 388 | 5 | **237** | 691/1165 |
-| `src/graph-build.ts` | 4 | 31 | 114 | **7** | 84 | 107/187 |
+| `src/argp-engine.ts` | 47 | **237** | 388 | 5 | **237** | 691/1165 |
+| `src/atomize.ts` | 4 | 31 | 114 | **7** | 84 | 107/187 |
 | `src/factor/prose-condenser.ts` | 16 | 45 | 102 | 5 | 113 | 410/577 |
 | `src/session-lifecycle.ts` | 7 | 37 | 86 | 6 | 115 | 219/365 |
 | `src/preset-cleaner.ts` | 5 | 21 | 81 | **7** | 65 | 186/311 |
@@ -264,9 +264,9 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
   （decide 193 行 / compactIfNeeded 136 行 / planProtocolGroups 100 行——决策与双闸编排）、
   `prune-tx.pruneIntervals`（340 行——带 `ended` 状态机的事务骨架，start/summary/逐区间
   replace/end + 事务后不变量审计 + 错误路径不可双 end）、`recall-labels` 的 recall_history
-  装配（285 行——召回面四不变量）、`argp-graph-engine` 组合根（47 函数挂载全部宿主钩子）。
+  装配（285 行——召回面四不变量）、`argp-engine` 组合根（47 函数挂载全部宿主钩子）。
 - **不做表演性拆分**：这三个大函数各自是一个凝聚事务/决策核，拆分收益（行数）远小于风险
-  （15+ 变异锁回归、错误路径状态机断裂）。`argp-graph-engine.ts` 的体量是组合根设计
+  （15+ 变异锁回归、错误路径状态机断裂）。`argp-engine.ts` 的体量是组合根设计
   （"引擎是唯一组合根，向下单向依赖"）的直接结果，非意外膨胀。
 - 清洁批（2026-11-14）移除：13 个零引用导出、手动区间族（compactRegion/compactRegions/
   selectManualRanges/consolidateTombstones/ManualRangeHost，≈200 行死路径）、log-access 的

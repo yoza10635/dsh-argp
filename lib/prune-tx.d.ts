@@ -74,7 +74,7 @@ export declare function buildTombstoneRedirect(records: readonly {
 }[]): Map<number, number>;
 /**
  * 剪枝事务模块函数访问引擎状态所需的窄接口。
- * 仅列出各事务函数实际读写的字段与方法；hub 的 ArgpGraphEngine 以
+ * 仅列出各事务函数实际读写的字段与方法；hub 的 ArgpEngine 以
  * `this as unknown as PruneTxHost` 满足它。
  *
  * bindSession / atomize 以**方法引用**形式声明：调用时经传入实例分派（即 hub 的

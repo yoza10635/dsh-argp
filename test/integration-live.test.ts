@@ -28,9 +28,9 @@ import type { GenerateOptions, Message, StreamChunk } from '@deepseek-ai/dsh-llm
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session as SessionType } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { eventText } from '../src/log-access.ts'
-import { serializeWireMessages } from '../src/peratom/llm-adapter.ts'
+import { serializeWireMessages } from '../src/llm/llm-adapter.ts'
 
 // ---------------------------------------------------------------------------
 // 门控与预检（env 未设 ⇒ 零网络，直接整文件 skip）
@@ -143,19 +143,19 @@ class LiveHttpLlm extends LlmAdapter {
 async function makeLiveLoop(): Promise<{
   ctx: Context
   adapter: LiveHttpLlm
-  engine: ArgpGraphEngine
+  engine: ArgpEngine
   harness: AgentLoopTestHarness
 }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'integration-live test' } })
   const adapter = new LiveHttpLlm(LIVE, servedModel)
   ;(ctx.get('llm') as unknown as { registerAdapter(p: string[], a: LlmAdapter): unknown }).registerAdapter(['a'], adapter)
-  await ctx.plugin(ArgpGraphEngine, {
+  await ctx.plugin(ArgpEngine, {
     peratom: { declarer: false },
     windowTokens: 8000, retainTokens: 4000, recencyGuard: 0, turnGuard: 0, minSpanChars: 20,
   })
   const harness = await mountAgentLoopTestHarness(ctx)
-  return { ctx, adapter, engine: ctx.compaction as ArgpGraphEngine, harness }
+  return { ctx, adapter, engine: ctx.compaction as ArgpEngine, harness }
 }
 
 function say(agent: Agent, text: string): void {
@@ -189,7 +189,7 @@ interface LiveRecord {
   degradedToC?: string
 }
 
-function compressorOf(engine: ArgpGraphEngine): { records: LiveRecord[] } {
+function compressorOf(engine: ArgpEngine): { records: LiveRecord[] } {
   const stack = (engine as unknown as { peratomStack: { compressor: unknown } | null }).peratomStack
   assert.ok(stack !== null, 'peratom 栈已挂载（引擎自挂载句柄）')
   return stack.compressor as { records: LiveRecord[] }

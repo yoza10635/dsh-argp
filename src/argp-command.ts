@@ -51,7 +51,7 @@ export const ARGP_COMMAND_DESCRIPTION = 'Show ARGP context-compression status fo
  *
  * 与 `LifecycleHost` / `BudgetHost` 同理：本模块只声明自己要读的字段，经
  * `this as unknown as ArgpStatusHost` 从引擎实例转换而来，不把命令模块反向
- * 耦合到 `ArgpGraphEngine` 这个大类上（也避免测试要构造整个引擎）。
+ * 耦合到 `ArgpEngine` 这个大类上（也避免测试要构造整个引擎）。
  */
 export interface ArgpStatusHost extends BudgetHost {
   /**

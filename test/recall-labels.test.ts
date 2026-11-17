@@ -37,7 +37,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
 
@@ -77,11 +77,11 @@ interface EngineInternals {
   stateOf(session: Session): { recallCallsThisTurn: number; recallTurn: number; recallCharsUsed: number; resolvedWindowTokens: number }
 }
 
-async function boot(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals }> {
+async function boot(): Promise<{ ctx: Context; engine: ArgpEngine; internals: EngineInternals }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'recall labels persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
-  return { ctx, engine: ctx.compaction as ArgpGraphEngine, internals: ctx.compaction as unknown as EngineInternals }
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  return { ctx, engine: ctx.compaction as ArgpEngine, internals: ctx.compaction as unknown as EngineInternals }
 }
 
 /** ToolsService.get 对缺席工具的形状两线不一（undefined / throw 皆可能）——统一布尔。 */

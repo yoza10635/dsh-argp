@@ -55,7 +55,7 @@ export declare function visibleChars(session: Session): number;
 /**
  * 预算/度量模块函数访问引擎状态所需的窄接口。
  * 仅列出 resolveScaledBudgets / measureTokens 实际读写的字段；
- * hub 的 ArgpGraphEngine 以 `this as unknown as BudgetHost` 满足它。
+ * hub 的 ArgpEngine 以 `this as unknown as BudgetHost` 满足它。
  * windowRatio/retainRatio/charsPerToken 在 class 上是 getter——经 host 读取时
  * getter 以真实实例为 this 调用，语义与 this.windowRatio 完全一致。
  */

@@ -1,11 +1,11 @@
 /**
- * dev-check smoke: load the current argp-graph-engine module and exercise its
+ * dev-check smoke: load the current argp-engine module and exercise its
  * pure cite extractor. This fails fast on module-level syntax/runtime errors
  * without needing a Cordis context or a live model.
  *
  * Run through dev-check.bat; output lands in dev-check-out.txt.
  */
-import { eventText, extractCites } from '../src/argp-graph-engine.ts'
+import { eventText, extractCites } from '../src/argp-engine.ts'
 
 const sample = 'body text\n{"cites":["gateway release passes"]}'
 const result = extractCites(sample)
@@ -31,4 +31,4 @@ if (eventText(userSession, 0) !== 'user needle') {
   process.exit(1)
 }
 
-console.log('[smoke] argp-graph-engine module loaded; extractCites + user eventText ok')
+console.log('[smoke] argp-engine module loaded; extractCites + user eventText ok')

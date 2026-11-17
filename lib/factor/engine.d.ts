@@ -8,7 +8,7 @@ import { FactorLedger, type RenderVocabularyResult } from './factor-ledger.ts';
 import { type PrunePlan } from './retention-score.ts';
 import type { FileSnapshot } from './types.ts';
 export interface FactorEngineConfig {
-    /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。2.0.0 零旋钮：ArgpGraphEngine 传固化常量 getter；直接构造（测试/评测）可传值。 */
+    /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。2.0.0 零旋钮：ArgpEngine 传固化常量 getter；直接构造（测试/评测）可传值。 */
     focalTurns?: number | (() => number);
     /** 词表每类 topN（§1.4）。2.0.0 零旋钮：装配面传固化常量 getter；直接构造可传值。 */
     vocabTopN?: number | (() => number);

@@ -7,7 +7,7 @@
  * 循环 import 规避：本模块**不** import hub 运行时。atomize 接收窄接口
  * {@link GraphBuildHost} 而非具体 class；hub 的 class 以
  * `this as unknown as GraphBuildHost` 传入（编译期断言，运行时即真实实例，
- * 私有字段经 host 类型可读写/重赋值）。依赖方向：hub → graph-build（单向）。
+ * 私有字段经 host 类型可读写/重赋值）。依赖方向：hub → atomize（单向）。
  */
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { Atom } from './argp-types.js';
@@ -22,7 +22,7 @@ export interface CiteStats {
 }
 /**
  * 原子化访问引擎状态所需的窄接口。
- * 仅列出 atomize 实际读写的字段；hub 的 ArgpGraphEngine 以
+ * 仅列出 atomize 实际读写的字段；hub 的 ArgpEngine 以
  * `this as unknown as GraphBuildHost` 满足它。
  */
 export interface GraphBuildHost {

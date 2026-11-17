@@ -466,7 +466,7 @@ export class ArgpConfigController {
 
   /** @param scope - the bound settings scope for the `dsh-argp` namespace. */
   constructor(scope: SettingsScopeLike<ArgpUserSettings>) {
-    // Bounds mirror `ArgpGraphEngine.Config` (the host-validated source; the client
+    // Bounds mirror `ArgpEngine.Config` (the host-validated source; the client
     // must reject out-of-spec drafts before they are staged, since a rejected host
     // write would surface as an opaque save failure). The single field stays 1:1
     // with the card's rendered row (knob parity, 2.0.1 roster).

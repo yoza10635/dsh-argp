@@ -18,7 +18,7 @@
  * **本文件是 `.d.ts`**：只参与类型检查、**不**被 `tsc` 重新发射到 `lib/`（声明文件是
  * 输入不是输出）。运行时无任何影响——`source: { kind: 'argp' }` 只是普通对象字面量。
  * 该增强对**整个编译程序**生效（`tsconfig.json` / `tsconfig.build.json` 的 include 都
- * 覆盖 src 下全部 `.ts`，含本 `.d.ts`），故 `decision.ts` / `argp-graph-engine.ts` 里的
+ * 覆盖 src 下全部 `.ts`，含本 `.d.ts`），故 `decision.ts` / `argp-engine.ts` 里的
  * `{ kind: 'argp' }` 字面量都能通过类型检查，无需任何 `as` 强转。
  */
 import type { ContextFormed } from '@deepseek-ai/dsh-llm'

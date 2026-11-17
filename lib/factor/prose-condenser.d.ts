@@ -3,7 +3,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { type PruneTxHost } from '../prune-tx.ts';
 import type { Atom } from '../argp-types.ts';
-import { type AgentRouteHint } from '../peratom/llm-adapter.ts';
+import { type AgentRouteHint } from '../llm/llm-adapter.ts';
 /** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
  *  闸二（总上下文 ≥ windowRatio×声明窗）在引擎侧 condenseGate 把关，两闸齐过才开压。 */
 export declare const PROSE_TRIGGER_RATIO = 0.5;

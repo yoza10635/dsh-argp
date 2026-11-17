@@ -15,7 +15,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, type FactorEngineHost } from '../src/factor/engine.ts'
 import { tagRsFromLog, type EventLike } from '../src/factor/factor-atoms.ts'
 import { sessionEvents, resolveRootSeqs } from '../src/log-access.ts'
@@ -56,7 +56,7 @@ function appendUser(session: Session, turn: number, text: string): void {
 async function makeV4Factor(): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'v4 shape persona' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
+  await ctx.plugin(ArgpEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
   const host = ctx.compaction as unknown as FactorEngineHost
   host.fileSnapshot = (key: string) => ({ key, mtimeMs: 1000, size: 100, exists: true })
   return { host, factor: new FactorEngine(host, {}) }

@@ -19,7 +19,7 @@ import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 import type { Atom, AtomType } from './argp-types.js'
 import type { SessionRuntimeState } from './session-state.js'
 import { sessionEvents, eventText, asSeq, asSeqs, detectOpenTurn, resolveRootSeqs } from './log-access.js'
-import { classifyUserMessage } from './graph-build.js'
+import { classifyUserMessage } from './atomize.js'
 import { visibleChars } from './budget.js'
 import { shadowedTokensOf } from './constants.js'
 import { pushBounded } from './telemetry.js'
@@ -99,7 +99,7 @@ export function buildTombstoneRedirect(
 
 /**
  * 剪枝事务模块函数访问引擎状态所需的窄接口。
- * 仅列出各事务函数实际读写的字段与方法；hub 的 ArgpGraphEngine 以
+ * 仅列出各事务函数实际读写的字段与方法；hub 的 ArgpEngine 以
  * `this as unknown as PruneTxHost` 满足它。
  *
  * bindSession / atomize 以**方法引用**形式声明：调用时经传入实例分派（即 hub 的
@@ -170,7 +170,7 @@ export function pruneIntervals(
       if (ts !== undefined) keptTs.push(ts)
     }
     if (droppedSeqs.length > 0) {
-      host.log.warn('[argp-graph] tool tombstone clone pre-check failed for seq(s) ' + droppedSeqs.join(',')
+      host.log.warn('[argp-engine] tool tombstone clone pre-check failed for seq(s) ' + droppedSeqs.join(',')
         + '; keeping those R node(s) alive (not pruned) to preserve issuer tool_calls pairing')
       // 调用方（图剪）在事务前已把这些原子索引进 prunedNodeIndex；节点保留活体，
       // 删除索引条目保持 recall 账本诚实（活体节点不应出现在 pruned 索引）。
@@ -205,6 +205,8 @@ export function pruneIntervals(
   }
   const charsBefore = visibleChars(session)
   const openTurn = detectOpenTurn(session)
+  // 'argp-graph-' = 历史 wire 前缀（会话日志既有形态）：非压缩时点零改写不变量 + 旧日志
+  // 零成本兼容 ⇒ **勿随 2.1.0 类名重构（ArgpGraphEngine→ArgpEngine）改动**（design-2.1.0-batch §1.7）。
   const compactionId = CompactionId('argp-graph-' + randomUUID())
   const lifecycle = { compactionId, turn: openTurn }
   // /compact 溯源：发起命令 ID 随事务事件落账（UI presentation correlation）。
@@ -407,7 +409,7 @@ export function pruneIntervals(
       const pairMsg = 'tool-pairing invariant violated after compaction: '
         + (pairError instanceof Error ? pairError.message : String(pairError))
         + ' (transaction committed; observability guard)'
-      host.log.error('[argp-graph] ' + pairMsg)
+      host.log.error('[argp-engine] ' + pairMsg)
       st.auditWarnings.push(pairMsg)
       if (st.auditWarnings.length > host.telemetryCap) st.auditWarnings.shift()
     }

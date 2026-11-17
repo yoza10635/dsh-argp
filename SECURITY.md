@@ -24,7 +24,7 @@ dsh-argp 是个人维护的开源项目（上下文压缩插件，运行在 [Dee
 
 ## 范围内（In scope）
 
-- 压缩引擎（`src/argp-graph-engine.ts`、`src/factor/*`、`src/prune-tx.ts`）：R 贴标剪枝、散文浓缩、出口闸
+- 压缩引擎（`src/argp-engine.ts`、`src/factor/*`、`src/prune-tx.ts`）：R 贴标剪枝、散文浓缩、出口闸
 - recall 子系统（`src/factor/recall-labels.ts`、`src/recall.ts`）：标签召回与 shadowed 账本
 - session 事件读取（`src/log-access.ts` 的 `sessionEvents()`）：宿主基线 0.1.5-rc.1
 - 声明式挂载（`client.js`、profile 注入）

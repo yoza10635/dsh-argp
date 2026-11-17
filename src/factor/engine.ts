@@ -12,7 +12,7 @@
  * 文件基线；重放批（引擎挂上前的历史）不采样——启动后才 stat 到的 mtime
  * 无法区分"R 读后文件没动"与"R 读后已变又恰好没再变"，一律按未知（不可再生）。
  *
- * 装配侧不变量（argp-graph-engine 构造器执行）：
+ * 装配侧不变量（argp-engine 构造器执行）：
  *  - engine='factor' ⇒ compressor/declarer/zoom 三管线不挂、cites 通道硬关；
  *  - 本类只剪 R（content-only 最小桩，宿主 assertToolResultRewrite 形态）；
  *    A 永不入剪枝区间（恒留待摘要），协议组互锁因此天然满足。
@@ -35,7 +35,7 @@ import { INTERACTIVE_PREVIEW_TOOLS, interactiveCheckpointText, isInteractiveTool
 import type { FileSnapshot } from './types.ts'
 
 export interface FactorEngineConfig {
-  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。2.0.0 零旋钮：ArgpGraphEngine 传固化常量 getter；直接构造（测试/评测）可传值。 */
+  /** 焦点轮数（§2.5 默认 1，可 2 防摆荡）。2.0.0 零旋钮：ArgpEngine 传固化常量 getter；直接构造（测试/评测）可传值。 */
   focalTurns?: number | (() => number)
   /** 词表每类 topN（§1.4）。2.0.0 零旋钮：装配面传固化常量 getter；直接构造可传值。 */
   vocabTopN?: number | (() => number)
@@ -400,7 +400,7 @@ export class FactorEngine {
 
   constructor(host: FactorEngineHost, config: FactorEngineConfig = {}) {
     this.host = host
-    // 裸值/getter 双形归一：装配面传 getter（2.0.0 起 ArgpGraphEngine 传固化常量
+    // 裸值/getter 双形归一：装配面传 getter（2.0.0 起 ArgpEngine 传固化常量
     // getter）；测试传裸值 = 固定值。设置页旋钮已退役，不再有 volatile 活读路径。
     const asGetter = (v: number | (() => number) | undefined, d: number): (() => number) =>
       typeof v === 'function' ? v : () => v ?? d

@@ -22,7 +22,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, VOCAB_NOTE_MARKER } from '../src/factor/engine.ts'
 import { sessionEvents } from '../src/log-access.ts'
 
@@ -62,11 +62,11 @@ interface EngineInternals {
   atomize(session: Session): Array<{ seq: number; type: string; text: string }>
 }
 
-async function bootFactor(): Promise<{ engine: ArgpGraphEngine; internals: EngineInternals; factor: FactorEngine }> {
+async function bootFactor(): Promise<{ engine: ArgpEngine; internals: EngineInternals; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'vocab note persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
-  const engine = ctx.compaction as ArgpGraphEngine
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  const engine = ctx.compaction as ArgpEngine
   const internals = engine as unknown as EngineInternals
   return { engine, internals, factor: internals.factor as FactorEngine }
 }
@@ -80,7 +80,7 @@ function prunedReadPair(session: Session, factor: FactorEngine): void {
 }
 
 /** 测试侧 steer：模拟宿主落盘契约（steer = append 一条带 source 的 user/message，
- *  与 argp-graph-engine factorPressure 里 closure 的构造形一致）。 */
+ *  与 argp-engine factorPressure 里 closure 的构造形一致）。 */
 function steerSpyOf(session: Session, counter: { n: number }): (text: string) => void {
   return (text: string): void => {
     counter.n += 1

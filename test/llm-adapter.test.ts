@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { completeViaDshLlm, autoDshLlmSpec, serializeWireMessages } from '../src/peratom/llm-adapter.ts'
+import { completeViaDshLlm, autoDshLlmSpec, serializeWireMessages } from '../src/llm/llm-adapter.ts'
 import type { Message } from '@deepseek-ai/dsh-llm'
 
 // ---------------------------------------------------------------------------

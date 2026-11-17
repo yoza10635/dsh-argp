@@ -1,7 +1,7 @@
 /**
  * 单旋钮名册锁（2.0.1：唯一活键 compactionThreshold；2.0.0 退役的五枚保持退役）。
  *
- * 2.0.1 起 `ArgpGraphEngine.Config` 与 `ArgpUserSettingsSchema` 的唯一键 =
+ * 2.0.1 起 `ArgpEngine.Config` 与 `ArgpUserSettingsSchema` 的唯一键 =
  * compactionThreshold（压缩阈值：出口闸触发线 = 声明窗 × 比例，0=关闭撞墙兜底）；
  * 五枚退役旋钮的缺省值固化在 constants.ts，老 profile 写它们只告警、不生效。
  *
@@ -18,7 +18,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { ArgpUserSettingsSchema } from '../src/session-lifecycle.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
@@ -70,7 +70,7 @@ async function bootFactor(extra: Record<string, unknown>, warns?: string[]): Pro
     const real = logger.warn.bind(ctx.logger)
     logger.warn = (msg: string): void => { warns.push(msg); real(msg) }
   }
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, ...extra } as never)
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, ...extra } as never)
   return { ctx, internals: ctx.compaction as unknown as EngineInternals }
 }
 
@@ -96,14 +96,14 @@ test('ZK1 单旋钮名册：static Config 与 ArgpUserSettingsSchema 唯一键 =
   assert.equal(tolerant.focalTurns, 2)
   assert.equal(tolerant.recallLimit, 7)
   // static Config 同名单（宿主扫描面）；cordis 非 strict 会透传未知键。
-  const staticSchema = (ArgpGraphEngine as unknown as {
+  const staticSchema = (ArgpEngine as unknown as {
     Config: { '~standard': { validate: (x: unknown) => { value?: Record<string, unknown> } } }
   }).Config
   const staticDefaults = staticSchema['~standard'].validate({})
   assert.deepEqual(Object.keys(staticDefaults.value ?? {}).sort(), ['compactionThreshold'], 'static Config 唯一活键（回加第二枚=红）')
   // dict 层白名单（非 strict validate 会吞 optional 无 default 的幽灵键——键集以
   // schema 属性字典为准，对抗审查 P2-1）。
-  const dictKeys = Object.keys((ArgpGraphEngine as unknown as { Config: { dict?: Record<string, unknown> } }).Config.dict ?? {})
+  const dictKeys = Object.keys((ArgpEngine as unknown as { Config: { dict?: Record<string, unknown> } }).Config.dict ?? {})
   assert.deepEqual(dictKeys.sort(), ['compactionThreshold'], 'schema 属性字典 = 唯一活键（幽灵键从 validate 缝隙溜过也红）')
   // volatile 键缺省在静态 validate 中物化为占位对象（settings 源驱动实时值）；
   // 其 .get() 必须解析为 0 = 关（改动缺省比例 = 此断言红）。
@@ -168,7 +168,7 @@ test('ZK4 旧 graph 键与 engine 判别式：仍告警忽略（宽容读不炸�
   const logger = ctx.logger as unknown as { warn: (msg: string) => void }
   const real = logger.warn.bind(ctx.logger)
   logger.warn = (msg: string): void => { warns.push(msg); real(msg) }
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', recencyGuard: 0, peratom: { compressor: false }, windowTokens: 100, retainTokens: 50 } as never)
+  await ctx.plugin(ArgpEngine, { engine: 'factor', recencyGuard: 0, peratom: { compressor: false }, windowTokens: 100, retainTokens: 50 } as never)
   const hit = warns.find(w => w.includes('[argp-factor]') && w.includes('recencyGuard=0'))
   assert.ok(hit !== undefined, '老 graph 键非缺省 ⇒ 宽容读+告警')
   assert.ok(hit.includes('peratom='), 'peratom 块同样在告警名册')
@@ -179,7 +179,7 @@ test('ZK4 旧 graph 键与 engine 判别式：仍告警忽略（宽容读不炸�
   const glogger = gctx.logger as unknown as { warn: (msg: string) => void }
   const greal = glogger.warn.bind(gctx.logger)
   glogger.warn = (msg: string): void => { gWarns.push(msg); greal(msg) }
-  await gctx.plugin(ArgpGraphEngine, { engine: 'graph', windowTokens: 100, retainTokens: 50 } as never)
+  await gctx.plugin(ArgpEngine, { engine: 'graph', windowTokens: 100, retainTokens: 50 } as never)
   const graphWarn = gWarns.find(w => w.includes('[argp-factor]') && w.includes('engine='))
   assert.ok(graphWarn !== undefined, 'engine=graph ⇒ 明确告警（不再静默换引擎）')
   assert.ok(graphWarn.includes('1.11.2'), '告警指认老方案冻结点')

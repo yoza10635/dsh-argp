@@ -1,13 +1,13 @@
 /**
  * spike 7（M3）：基线臂 —— dsh 原版 BasicCompactionEngine 跑 t-long 同款任务（50 轮，DeepSeek v4-flash）
  *
- * 目的：与 spike 6（ArgpGraphEngine 臂）构成同任务对照（C2/C3/C6）：
+ * 目的：与 spike 6（ArgpEngine 臂）构成同任务对照（C2/C3/C6）：
  *  - 摘要压缩的墙钟/token 成本（每笔事务 1 次额外 LLM 摘要请求，ARGP 为 0）
  *  - 长程信息保真：摘要改写 vs 占位+recall 找回。基线臂无 recall 通道，
  *    被摘要掉的内容若丢失即不可恢复——预期 R 针显著劣化（这就是 C3/C4 的对照证据）
  *
  * 与 spike 6 的差异（仅此四处，其余逐字一致）：
- *  1. 引擎：BasicCompactionEngine 替代 ArgpGraphEngine；无 recall_pruned、无 cites 契约
+ *  1. 引擎：BasicCompactionEngine 替代 ArgpEngine；无 recall_pruned、无 cites 契约
  *  2. 压力基线对齐：contextWindow=128000 × thresholdRatio=0.08 = 10240 tokens = ARGP 阈值；retainTokens=7168 与 ARGP 同值。
  *     口径差异如实披露：basic 按 meter 请求 token 估算，ARGP 按 surface 可见 chars/3.5。
  *  3. probe 文案删去 recall_pruned 提示（基线臂无此工具，防幻觉调用）

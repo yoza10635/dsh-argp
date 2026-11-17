@@ -37,9 +37,9 @@ import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeStat
 export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
 // 原子化模块：atomize/extractCites/classifyUserMessage/looksAskText。本地使用 + 转发。
-import { looksAskText, classifyUserMessage, extractCites, atomize, type CiteStats, type GraphBuildHost } from './graph-build.js'
-export { looksAskText, classifyUserMessage, extractCites } from './graph-build.js'
-export type { CiteStats } from './graph-build.js'
+import { looksAskText, classifyUserMessage, extractCites, atomize, type CiteStats, type GraphBuildHost } from './atomize.js'
+export { looksAskText, classifyUserMessage, extractCites } from './atomize.js'
+export type { CiteStats } from './atomize.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/acquireTokenMeter。
 import { resolveScaledBudgets, measureTokens, type BudgetHost, type TokenMeter } from './budget.js'
 export { scaleBudgets } from './budget.js'
@@ -70,7 +70,7 @@ export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js
  * cites/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
  * normalizeConfig 宽容读 + 告警忽略（老 profile 不炸，但不静默改变预期）。
  */
-export interface ArgpGraphConfig {
+export interface ArgpConfig {
   /** 触发线（token）。不传时默认 = 适配器声明的 contextWindow × 0.8。 */
   windowTokens?: number
   /** 保留目标（token）。不传时默认 = 触发线 × 0.2（压缩率 1/5）。 */
@@ -163,7 +163,7 @@ interface NativeToolResultPruner {
   pruneSession?: (session: Session) => { pruned?: readonly unknown[]; charsRemoved?: number }
 }
 
-export class ArgpGraphEngine extends CompactionEngine {
+export class ArgpEngine extends CompactionEngine {
   /**
    * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
    * 表单；2.0.1 起名册唯一活键 = `compactionThreshold`（压缩阈值）：出口闸触发线
@@ -184,7 +184,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
   private readonly pressureTriggerEnabled: boolean = false
   /** 原始构造 config（压缩阈值 volatile 读实时值的取数面）。 */
-  private readonly rawConfig: ArgpGraphConfig
+  private readonly rawConfig: ArgpConfig
 
   readonly windowTokens!: number
   readonly retainTokens!: number
@@ -288,7 +288,7 @@ export class ArgpGraphEngine extends CompactionEngine {
   /** 结构化日志门面（构造期自 ctx 捕获）。 */
   private readonly log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
 
-  constructor(ctx: Context, config: ArgpGraphConfig = {}) {
+  constructor(ctx: Context, config: ArgpConfig = {}) {
     super(ctx)
     // 结构化日志门面（2026-08-29 review 轻微项）：替换裸 console 直调，日志进宿主
     // 统一管道（ctx.logger 门面；warn/error/info 三级均被 cordis logger 支持）。
@@ -339,7 +339,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         if (typeof declared === 'number' && declared > 0) {
           const previous = this.declaredContextWindows.get(session)
           if (previous !== undefined && previous !== declared) {
-            this.log.info(`[argp-graph] declared contextWindow changed: ${previous} -> ${declared}`)
+            this.log.info(`[argp-engine] declared contextWindow changed: ${previous} -> ${declared}`)
           }
           this.declaredContextWindows.set(session, declared)
         }
@@ -350,7 +350,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (event.type === 'compaction/start') {
         const cid = (event.data as { compactionId?: string } | undefined)?.compactionId
         if (typeof cid === 'string' && !cid.startsWith('argp-')) {
-          this.log.warn(`[argp-graph] foreign compaction detected (id=${cid}, turn=${turnOf(event) ?? '?'})`
+          this.log.warn(`[argp-engine] foreign compaction detected (id=${cid}, turn=${turnOf(event) ?? '?'})`
             + ' — a non-ARGP compaction engine is active; lossy summarization may pre-empt ARGP pruning')
         }
       }
@@ -422,20 +422,20 @@ export class ArgpGraphEngine extends CompactionEngine {
           // 审查 P1-1：durable surface progress ≠ 减够；仍 ≥ 窗则不 retry（同一超窗请求重发只会再 400）。
           const declaredAfterCatch = this.declaredContextWindows.get(session) ?? 0
           if (declaredAfterCatch > 0 && this.postPruneProjection(session) >= declaredAfterCatch) {
-            this.log.warn(`[argp-graph] overflow prune partial progress but still ≥ window: ${message}; not retrying`)
+            this.log.warn(`[argp-engine] overflow prune partial progress but still ≥ window: ${message}; not retrying`)
             return next()
           }
-          this.log.warn(`[argp-graph] overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
+          this.log.warn(`[argp-engine] overflow prune failed after durable surface progress: ${message}; retrying from the replacement surface`)
           this.overflowRetries.set(agent, retries + 1)
           return { kind: 'retry' }
         }
-        this.log.warn(`[argp-graph] overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
+        this.log.warn(`[argp-engine] overflow prune failed: ${message}; ${signal.aborted ? 'cancellation prevents retry' : 'preserving the original request error'}`)
         return next()
       }
       if (signal.aborted || session.surface.replaceGeneration <= genBefore) return next()
       if (result !== null) {
         this.log.info(
-          `[argp-graph] context-overflow prune: shadowed ${result.shadowedSeqs.length} surface nodes `
+          `[argp-engine] context-overflow prune: shadowed ${result.shadowedSeqs.length} surface nodes `
           + `(seqs ${result.shadowedRange.start}-${result.shadowedRange.end}, ~${result.shadowedTokenCount} tokens)`,
         )
       }
@@ -445,7 +445,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       if (declaredForGuard > 0) {
         const after = this.postPruneProjection(session)
         if (after >= declaredForGuard) {
-          this.log.warn('[argp-graph] overflow prune 后仍 ≥ 声明窗（projected=' + after
+          this.log.warn('[argp-engine] overflow prune 后仍 ≥ 声明窗（projected=' + after
             + ' ≥ ' + declaredForGuard + '）：不 retry 同一超窗请求')
           return next()
         }
@@ -586,7 +586,7 @@ export class ArgpGraphEngine extends CompactionEngine {
       st.lastRealAnchorSeq = -1
       return
     }
-    this.log.info('[argp-graph] usage anchor restored from log: real prompt='
+    this.log.info('[argp-engine] usage anchor restored from log: real prompt='
       + st.lastRealPromptTokens + ' tok at seq=' + st.lastRealAnchorSeq)
   }
 
@@ -609,7 +609,7 @@ export class ArgpGraphEngine extends CompactionEngine {
         const declared = (event.data as { contextWindow?: unknown } | undefined)?.contextWindow
         if (typeof declared === 'number' && declared > 0) {
           this.declaredContextWindows.set(session, declared)
-          this.log.info('[argp-graph] declared contextWindow restored from log: ' + declared)
+          this.log.info('[argp-engine] declared contextWindow restored from log: ' + declared)
           return
         }
       }
@@ -747,7 +747,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     if (!this.skipPresets.includes(preset)) return false
     if (!this.skipLogged.has(session)) {
       this.skipLogged.add(session)
-      this.log.info('[argp-graph] session runs under preset "' + preset + '" (in skipPresets); ARGP compaction disabled for this session (stock behavior)')
+      this.log.info('[argp-engine] session runs under preset "' + preset + '" (in skipPresets); ARGP compaction disabled for this session (stock behavior)')
     }
     return true
   }
@@ -962,7 +962,7 @@ export class ArgpGraphEngine extends CompactionEngine {
     // thresholdTokens 只用于压力口径的早退；context-overflow 是 provider 已确认超窗，
     // reserve 再大也必须尝试事务（否则 400 恢复被静默禁用，请求原样失败）。
     if (thresholdTokens <= 0 && trigger !== 'context-overflow') {
-      this.log.info('[argp-graph] pressure check: reserveTokens exceeds windowTokens, skip')
+      this.log.info('[argp-engine] pressure check: reserveTokens exceeds windowTokens, skip')
       return null
     }
     let measurement = this.measureTokens(session, incomingTokens)
@@ -1137,4 +1137,4 @@ export class ArgpGraphEngine extends CompactionEngine {
   }
 }
 
-export default ArgpGraphEngine
+export default ArgpEngine

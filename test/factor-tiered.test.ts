@@ -15,14 +15,14 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, resolveFocalTiered, type FactorEngineHost } from '../src/factor/engine.ts'
 import { sessionEvents } from '../src/log-access.ts'
 
 async function makeTiered(tiered: 'flat' | 'tiered'): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'tiered test persona' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
+  await ctx.plugin(ArgpEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
   const host = ctx.compaction as unknown as FactorEngineHost
   host.fileSnapshot = (key: string) => ({ key, mtimeMs: 1000, size: 100, exists: true })
   return { host, factor: new FactorEngine(host, { focalTiered: tiered }) }
@@ -67,7 +67,7 @@ test('flat 地基锁：缺省构造与显式 flat 的决策输出全等（现行
   const build = async (tiered: 'flat' | 'tiered' | undefined): Promise<string> => {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'flat lock persona' } })
-    await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
+    await ctx.plugin(ArgpEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
     const host = ctx.compaction as unknown as FactorEngineHost
     const factor = new FactorEngine(host, tiered === undefined ? {} : { focalTiered: tiered })
     const session = makeSession('flat-lock-' + String(tiered))
@@ -268,7 +268,7 @@ test('resolveFocalTiered 纯函数：仅精确 \'tiered\' 生效（缺省/非法
 async function bootFactorArm(): Promise<FactorEngine> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'escape hatch persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
   return (ctx.compaction as unknown as { factor: FactorEngine }).factor
 }
 

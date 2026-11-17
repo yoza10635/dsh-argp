@@ -36,7 +36,7 @@ import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-te
 import { classifyUaAtom, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
 import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
 import { DEFAULT_FOCAL_TURNS, FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
-import { autoDshLlmSpec, completeViaDshLlm, type AgentRouteHint } from '../peratom/llm-adapter.ts'
+import { autoDshLlmSpec, completeViaDshLlm, type AgentRouteHint } from '../llm/llm-adapter.ts'
 
 /** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
  *  闸二（总上下文 ≥ windowRatio×声明窗）在引擎侧 condenseGate 把关，两闸齐过才开压。 */

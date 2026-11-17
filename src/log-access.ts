@@ -12,7 +12,7 @@
  * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
  */
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
-import { isArgpUserInfo, isOwnSourceKind } from './peratom/types.js'
+import { isArgpUserInfo, isOwnSourceKind } from './llm/types.js'
 
 /**
  * 跨宿主版本兼容的事件日志读取（升级阻断修复）。
@@ -152,7 +152,7 @@ export type NodeState = 'shadowed' | 'live' | 'off-surface'
 /**
  * 全日志扫描收集被遮蔽 surface seq（权威剪枝账本：compaction/prune.shadowedSeqs 的并集）。
  * 只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，shadowedSeqs 即被剪 seq
- * 权威清单），与 ArgpGraphEngine.shadowedSeqsOf 同口径。**不可**改用「replace 形态推断」
+ * 权威清单），与 ArgpEngine.shadowedSeqsOf 同口径。**不可**改用「replace 形态推断」
  * （任何 surfaceOp replace 的 sourceEventSeqs 都算 shadowed）：那会把原地压缩副本
  * （无 compaction/prune 事件）误判为 shadowed，导致召回对压缩原子谎报 state=shadowed。
  */

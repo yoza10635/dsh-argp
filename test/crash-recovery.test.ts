@@ -13,19 +13,19 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { CompactionEngine, CompactionId } from '@deepseek-ai/dsh-compaction'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { asSeq, asSeqs } from '../src/log-access.ts'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 
-async function makeEngine(): Promise<{ ctx: Context; engine: ArgpGraphEngine }> {
+async function makeEngine(): Promise<{ ctx: Context; engine: ArgpEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'argp 0-llm test persona' } })
-  await ctx.plugin(ArgpGraphEngine, {
+  await ctx.plugin(ArgpEngine, {
     windowTokens: 100,
     retainTokens: 50,
     minSpanChars: 20,
     recencyGuard: 0,
     maxPasses: 16,
   })
-  return { ctx, engine: ctx.compaction as ArgpGraphEngine }
+  return { ctx, engine: ctx.compaction as ArgpEngine }
 }
 
 function appendUser(session: Session, text: string): void {

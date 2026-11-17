@@ -13,14 +13,14 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, planFocusTail, type FactorEngineHost } from '../src/factor/engine.ts'
 import { eventText, sessionEvents } from '../src/log-access.ts'
 
 async function makeFactor(): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'focus tail persona' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
+  await ctx.plugin(ArgpEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
   const host = ctx.compaction as unknown as FactorEngineHost
   return { host, factor: new FactorEngine(host) }
 }

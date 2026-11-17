@@ -20,7 +20,7 @@
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { AtomType } from './argp-types.js'
-import type { CiteStats } from './graph-build.js'
+import type { CiteStats } from './atomize.js'
 import type { GraphPruneRecord } from './prune-tx.js'
 import type { NodeState } from './log-access.js'
 

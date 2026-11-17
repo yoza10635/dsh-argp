@@ -38,7 +38,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, type FactorEngineHost } from '../src/factor/engine.ts'
 import { FactorLedger, indexKeys, renderVocabulary } from '../src/factor/factor-ledger.ts'
 import { extractPreview, interactiveCheckpointText, isInteractiveToolKey } from '../src/factor/interactive.ts'
@@ -112,8 +112,8 @@ function makeSession(id: string): Session {
 async function boot(engineCfg: { clipEnabled?: boolean } = {}): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'tool facet persona' } })
-  await ctx.plugin(ArgpGraphEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
-  const engine = ctx.compaction as ArgpGraphEngine
+  await ctx.plugin(ArgpEngine, { windowTokens: 100, retainTokens: 50, recencyGuard: 0, maxPasses: 8 })
+  const engine = ctx.compaction as ArgpEngine
   const host = engine as unknown as FactorEngineHost
   return { host, factor: new FactorEngine(host, engineCfg.clipEnabled === true ? { clipEnabled: true } : {}) }
 }
@@ -121,7 +121,7 @@ async function boot(engineCfg: { clipEnabled?: boolean } = {}): Promise<{ host: 
 async function bootRecall(): Promise<{ ctx: Context; factor: () => FactorEngine | null; stateOf: (s: Session) => { recallCharsUsed: number } }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'tool facet recall persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
   const internals = ctx.compaction as unknown as { factor: FactorEngine | null; stateOf(s: Session): { recallCharsUsed: number } }
   return { ctx, factor: () => internals.factor, stateOf: s => internals.stateOf(s) }
 }

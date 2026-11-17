@@ -7,7 +7,7 @@
  *
  * Atom 保留 cites 字段——读侧仍要解析历史 `data.argpCites`（老会话回放）。
  *
- * 留在 hub 的类型：`ArgpGraphConfig`（构造配置面），按「深度依赖则留 hub」原则保留在
+ * 留在 hub 的类型：`ArgpConfig`（构造配置面），按「深度依赖则留 hub」原则保留在
  * 引擎侧（它引用引擎的旋钮面，迁入本叶子会形成类型环）。
  */
 import type { ParsedCite } from './cites-strip.js';

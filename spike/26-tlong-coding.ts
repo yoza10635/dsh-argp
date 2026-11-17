@@ -11,7 +11,7 @@
  * 口径（§2）：headless 真实模型长程复测——真实模型 + 真实工具流量 + 真实引擎路径，
  * 仅传输层是脚本，不经 WebUI。对外不得写成"WebUI 生产对话"。
  *
- * 臂（§5）：ARGP_ARM=A（ArgpGraphEngine，主臂）| B（BasicCompactionEngine 对照，预期 R 不可找回）。
+ * 臂（§5）：ARGP_ARM=A（ArgpEngine，主臂）| B（BasicCompactionEngine 对照，预期 R 不可找回）。
  * 配置固定（§3）：工具集 read/write/edit 三文件工具；中性 persona；
  * ARGP_CONTEXT_WINDOW=200000（A/B 触发线均从它派生 ×0.8=160K，口径干净）；
  * A 臂不显式传 window/retain → 引擎 ratio 0.8/0.2 派生 160K/32K（逐位复现 160K 定稿）。
@@ -43,7 +43,7 @@ import { mountModel } from './model-mount.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import BasicCompactionEngine from '@deepseek-ai/dsh-compaction-basic'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 
@@ -87,7 +87,7 @@ const PERSONA = 'You are a coding agent implementing a mini rate-limit microserv
 // read_file 读出的文本材料），删块零语法风险；且 section 是独立语句，删后结构仍完整。
 // 深埋锚点（extractCites / compactIfNeeded / recall 预算）都在契约块之外，保留。
 const BALLAST_REL = 'ref-module.ts'
-const BALLAST_SRC = path.join(import.meta.dirname, '..', 'src', 'argp-graph-engine.ts')
+const BALLAST_SRC = path.join(import.meta.dirname, '..', 'src', 'argp-engine.ts')
 function makeBallast(): { path: string; sectionsDropped: number } {
   const lines = fs.readFileSync(BALLAST_SRC, 'utf8').split('\n')
   const drop = new Set<number>()
@@ -191,7 +191,7 @@ await ctx.plugin(AgentLoop, { agents: [] })
 const modelMount = await mountModel(ctx) // 挂载 deepseek 适配器（catalog contextWindow = ARGP_CONTEXT_WINDOW）
 if (isArgp) {
   // A 臂：显式传 window/retain（与 scan-32k 定稿 run 同口径；确定性优先，不走运行时 ratio 解析）
-  await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses })
+  await ctx.plugin(ArgpEngine, { windowTokens, retainTokens, maxPasses })
 } else {
   // B 臂：触发线 = contextWindow×thresholdRatio = 200K×0.8 = 160K（与 A 同源自，口径干净）
   // retainTokens 与 A 臂同源（ARGP_RETAIN_TOKENS，默认 32K），保证 A/B 同参对照
@@ -200,7 +200,7 @@ if (isArgp) {
     modelPolicies: [{ provider: DEEPSEEK_PROVIDER, model: DEEPSEEK_MODEL, thresholdRatio: 0.8, retainTokens }],
   })
 }
-const argp: ArgpGraphEngine | null = isArgp ? (ctx.compaction as ArgpGraphEngine) : null
+const argp: ArgpEngine | null = isArgp ? (ctx.compaction as ArgpEngine) : null
 
 // ---------- 沙箱工具：read_file / write_file / edit_file（§3 固定 3 文件工具） ----------
 const sandbox = (rel: string): string => {

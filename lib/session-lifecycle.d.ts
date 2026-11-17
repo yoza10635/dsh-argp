@@ -13,7 +13,7 @@
  * 运行时 import hub 形成环；hub 反向 import 本模块并 re-export，公共 API 不变
  * （index.ts 的 `export *` 透出）。
  *
- * ArgpGraphConfig 经 type-only import 取用（编译期擦除，无运行时环）。
+ * ArgpConfig 经 type-only import 取用（编译期擦除，无运行时环）。
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
@@ -22,7 +22,7 @@ import type { ArgpUserSettings } from './argp-types.js';
 import type { PrunedNodeInfo } from './session-state.js';
 import { type TokenMeter } from './budget.js';
 import type { GraphPruneRecord } from './prune-tx.js';
-import type { ArgpGraphConfig } from './argp-graph-engine.js';
+import type { ArgpConfig } from './argp-engine.js';
 /** 设置页 namespace key（同时是 Host 服务端与客户端卡片的 key，须一致才进渲染交集）。 */
 export declare const ARG_SETTINGS_KEY = "dsh-argp";
 /**
@@ -31,7 +31,7 @@ export declare const ARG_SETTINGS_KEY = "dsh-argp";
  * 全部退役，缺省值固化在 constants.ts；2.0.1 起名册唯一活键 = `compactionThreshold`
  * （压缩阈值：出口闸触发线 = 声明窗 × 比例；0=关闭，撞墙 400 兜底）。
  *
- * 真实校验面是 `ArgpGraphEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
+ * 真实校验面是 `ArgpEngine.Config`（宿主 0.1.7+ 扫描 static Config 生成
  * volatile form；settings.register 已随 #4587 移除，本 schema 经 hub re-export
  * 维持公共 API 与文档口径）。两面键集必须一致。
  *
@@ -79,7 +79,7 @@ export interface LifecycleHost {
  * 置于 registerSettings 之前。tokenMeter 获取（acquireTokenMeter(ctx)）是唯一的 ctx 读取，
  * 保持在 settings 注册之前。
  */
-export declare function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpGraphConfig): void;
+export declare function normalizeConfig(ctx: Context, host: LifecycleHost, config: ArgpConfig): void;
 /**
  * 设置页可见性声明（dsh 0.1.7+）。
  *
@@ -87,12 +87,12 @@ export declare function normalizeConfig(ctx: Context, host: LifecycleHost, confi
  * `settings.register(ns, schema, { base })`：Settings 改为扫描插件的 `static Config`
  * 生成表单，表单值写回 profile 的 `cordis.patch.yml`。因此本函数不再注册任何东西，
  * 只做一件事——声明本插件实例允许设置页自动生成表单（auto: true，因为没有自定义
- * settings 页面）。引擎的旋钮值由 `ArgpGraphEngine.Config` 的 volatile 引用提供。
+ * settings 页面）。引擎的旋钮值由 `ArgpEngine.Config` 的 volatile 引用提供。
  *
  * ⚠️ 旧实现的构造期快照（`host.argpSettings` / `host.settingsSource`）已删除：
  * 那套"注册后把基线与 scope.get() 二选一"的回退逻辑是为被移除的 register API 服务的。
  */
-export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpGraphConfig): void;
+export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpConfig): void;
 /**
  * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded
  * 首次绑定都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：

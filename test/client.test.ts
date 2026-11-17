@@ -67,7 +67,7 @@ registerHooks({
 // 动态 import：ESM 静态导入会被提升、先于 registerHooks 执行，
 // 而 index.ts 的模块图（经 argp-config-card.ts）会 import react。
 const { apply } = await import('../src/client/index.ts')
-const { ARG_SETTINGS_KEY: serverKey } = await import('../src/argp-graph-engine.ts')
+const { ARG_SETTINGS_KEY: serverKey } = await import('../src/argp-engine.ts')
 
 // ── 结构化 ctx stub（镜像 src/client/index.ts 的结构化接口）────────────────
 

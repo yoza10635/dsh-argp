@@ -1,5 +1,5 @@
 /**
- * spike 10d：ArgpGraphEngine + DeepSeek v4-flash 单轮装配冒烟。
+ * spike 10d：ArgpEngine + DeepSeek v4-flash 单轮装配冒烟。
  */
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -7,7 +7,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import { DEEPSEEK_MODEL, DEEPSEEK_PROVIDER, DEEPSEEK_REASONING_EFFORT, mountDeepSeekFlash } from './deepseek.ts'
 
 const failures: string[] = []
@@ -15,8 +15,8 @@ const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-10d argp smoke persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
 await mountDeepSeekFlash(ctx)
-await ctx.plugin(ArgpGraphEngine, { windowTokens: 10_240, retainTokens: 7_168 })
-const engine = ctx.compaction as ArgpGraphEngine
+await ctx.plugin(ArgpEngine, { windowTokens: 10_240, retainTokens: 7_168 })
+const engine = ctx.compaction as ArgpEngine
 
 function waitForIdle(subject: Agent): Promise<void> {
   return new Promise((resolve) => {

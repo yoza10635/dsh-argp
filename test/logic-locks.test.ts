@@ -26,7 +26,7 @@ import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { asSeq, asSeqs, scanShadowedSeqs, sessionEvents } from '../src/log-access.ts'
 import { createSessionRuntimeState } from '../src/session-state.ts'
 import { shadowedSeqsOf } from '../src/recall.ts'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { hasAttachmentBlocks } from '../src/factor/factor-atoms.ts'
 import type { SessionRuntimeState } from '../src/session-state.ts'
@@ -44,7 +44,7 @@ interface Internals {
 async function boot(extra: Record<string, unknown> = {}): Promise<{ ctx: Context; internals: Internals }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'logic locks persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, ...extra } as never)
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, ...extra } as never)
   return { ctx, internals: ctx.compaction as unknown as Internals }
 }
 

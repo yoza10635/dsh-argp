@@ -1,5 +1,5 @@
 /**
- * spike 6（M3）：t-long 长程误差曲线 × ArgpGraphEngine（50 轮，DeepSeek v4-flash）
+ * spike 6（M3）：t-long 长程误差曲线 × ArgpEngine（50 轮，DeepSeek v4-flash）
  *
  * 目标（设计稿 §10）：probe 准确率随剪枝边界数增长的误差累积曲线；真剪枝链长程稳定性。
  * 结构：setup 1 + filler 42 + probe 7（轮 14/20/26/32/38/44/50）= 50 轮。
@@ -27,7 +27,7 @@ import { mountModel } from './model-mount.ts'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 
 const failures: string[] = []
 const verdict = (name: string, ok: boolean, detail: string): void => {
@@ -100,15 +100,15 @@ function dProbeText(): string {
     + 'Reply with exactly one line: D-ANSWER: <space-separated sorted shard numbers, or NOT-RECOVERABLE if you cannot recover them>'
 }
 
-// ---------- 装配：模型（ARGP_MODEL_SOURCE 切换 deepseek / qwen-local）+ ArgpGraphEngine ----------
+// ---------- 装配：模型（ARGP_MODEL_SOURCE 切换 deepseek / qwen-local）+ ArgpEngine ----------
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-6 t-long archival persona' } })
 await ctx.plugin(AgentLoop, { agents: [] })
 const modelMount = await mountModel(ctx)
 // 边价值实验 seam：citesOn=false（A₁/A₀）→ disableCiteEdges=true → 确定性无边，
 // 与 A3 重放 clear 源一致；citesOn=true（A₂）→ 允许从模型 cites 块建语义边。
-await ctx.plugin(ArgpGraphEngine, { windowTokens, retainTokens, maxPasses, disableCiteEdges: !citesOn })
-const engine = ctx.compaction as ArgpGraphEngine
+await ctx.plugin(ArgpEngine, { windowTokens, retainTokens, maxPasses, disableCiteEdges: !citesOn })
+const engine = ctx.compaction as ArgpEngine
 
 const sandbox = (rel: string): string => {
   const resolved = path.resolve(workDir, rel)

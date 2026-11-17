@@ -17,7 +17,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 
 interface EngineInternals {
@@ -26,11 +26,11 @@ interface EngineInternals {
   bindSession(session: Session): void
 }
 
-async function bootFactor(): Promise<{ ctx: Context; engine: ArgpGraphEngine; internals: EngineInternals; factor: FactorEngine }> {
+async function bootFactor(): Promise<{ ctx: Context; engine: ArgpEngine; internals: EngineInternals; factor: FactorEngine }> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'pressure hook persona' } })
-  await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
-  const engine = ctx.compaction as ArgpGraphEngine
+  await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  const engine = ctx.compaction as ArgpEngine
   const internals = engine as unknown as EngineInternals
   return { ctx, engine, internals, factor: internals.factor as FactorEngine }
 }
@@ -165,7 +165,7 @@ test('TC-B env 逃生口：ARGP_FACTOR_PRESSURE=1 恢复旧估算驱动路径（
   try {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'pressure hook persona' } })
-    await ctx.plugin(ArgpGraphEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+    await ctx.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
     const internals = ctx.compaction as unknown as EngineInternals & { factor: FactorEngine | null }
     const factor = internals.factor as FactorEngine
     const session = heavySession('tc-hatch')

@@ -10,16 +10,16 @@ import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { ArgpGraphEngine } from '../src/argp-graph-engine.ts'
+import { ArgpEngine } from '../src/argp-engine.ts'
 
 const ctx = new Context()
 await mountAgentLoopTestDependencies(ctx, { systemPrompt: { persona: 'spike-8a synthetic' } })
-await ctx.plugin(ArgpGraphEngine, {
+await ctx.plugin(ArgpEngine, {
   windowTokens: 100_000,
   retainTokens: 33_000,
   maxPasses: 256,
 })
-const engine = ctx.compaction as ArgpGraphEngine
+const engine = ctx.compaction as ArgpEngine
 
 const session = Session.create(SessionId('spike-8a-synthetic'))
 const aCount = 40

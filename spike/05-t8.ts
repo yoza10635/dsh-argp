@@ -1,5 +1,5 @@
 /**
- * spike 5（M3）：t8-prunechain 复刻 × ArgpGraphEngine（建边版：原子化 + 建图 + 图序剪枝 + cites 义务）
+ * spike 5（M3）：t8-prunechain 复刻 × ArgpEngine（建边版：原子化 + 建图 + 图序剪枝 + cites 义务）
  *
  * 对照基线：pi fork t8-prunechain run-1（DeepSeek-v4-flash，23 轮，7 次剪枝边界）
  * 与基线差异（台账登记）：本地 Qwen3.8-27B × 16K 机制验证窗口 × 12 轮（原 23 轮）× dsh 装配；
@@ -24,7 +24,7 @@ import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { ArgpGraphEngine, extractCites } from '../src/argp-graph-engine.ts'
+import { ArgpEngine, extractCites } from '../src/argp-engine.ts'
 
 const failures: string[] = []
 const verdict = (name: string, ok: boolean, detail: string): void => {
@@ -62,7 +62,7 @@ for (let i = 1; i <= chunkCount; i += 1) {
   fs.writeFileSync(path.join(workDir, 'logs', 'chunk-' + i + '.md'), makeChunk(i), 'utf8')
 }
 
-// ---------- 装配（同 spike 4，引擎换 ArgpGraphEngine） ----------
+// ---------- 装配（同 spike 4，引擎换 ArgpEngine） ----------
 process.env['ARGP_LOCAL_KEY'] = 'local-no-auth'
 
 const ctx = new Context()
@@ -91,8 +91,8 @@ await ctx.plugin(LlmPiAi, {
 // 窗口调小（10240/7168 token）：chunk ≈14.7K chars，阈值 35.8K/目标 25.1K 使每个 filler 后都越线，
 // 预期每次事务剪 1 组 ≈6 笔（16384/8192 时单遍贪心只能触发 1~2 笔，G2 无法成立）。
 // Q1/Q2 在剪枝序里排在 chunk 组之后（A 自重要度 5 > R 的 0），不会先被剪。
-await ctx.plugin(ArgpGraphEngine, { windowTokens: 10_240, retainTokens: 7_168 })
-const engine = ctx.compaction as ArgpGraphEngine
+await ctx.plugin(ArgpEngine, { windowTokens: 10_240, retainTokens: 7_168 })
+const engine = ctx.compaction as ArgpEngine
 
 // 任务沙箱工具：t8 filler 只读（read-heavy / decode-light），probe 直接回复不写文件
 const sandbox = (rel: string): string => {
