@@ -189,3 +189,37 @@ test('SH9 带 1 不回退：search 先行后 recall_history 全等（工具带�
   assert.ok(ref.includes('kw-SH'), '参照输出有效')
   assert.ok(after.includes('kw-SH'))
 })
+
+test('SH10 hit= 第二跳：临时索引散文 seq 钻通逐字原文（R2★ 缺锁的正面半）', async () => {
+  const { ctx, session } = await bootFixture()
+  const found = toolText(await execTool(ctx, { name: 'search_history', callId: 'h1', agentSession: session, args: { keyword: 'kw-SH' } }))
+  const uSeq = [...found.matchAll(/hit=(\d+) · U ·/g)].map(m => Number(m[1]))[0]
+  assert.ok(uSeq !== undefined, '发现面有 U 行')
+  const fetched = toolText(await execTool(ctx, { name: 'search_history', callId: 'h2', agentSession: session, args: { hit: uSeq } }))
+  assert.ok(fetched.includes('--- hit=' + uSeq + ' user'), 'hit 钻取头形')
+  assert.ok(fetched.includes('部署代号 kw-SH 记录于此'), '散文原文逐字取回')
+  assert.ok(fetched.includes('state=live'))
+})
+
+test('SH11 hit= 白名单外拒答：陌生 seq + 被新查询覆盖后旧 seq 失效（单槽诚实句，R4）', async () => {
+  const { ctx, session } = await bootFixture()
+  const miss = toolText(await execTool(ctx, { name: 'search_history', callId: 'h3', agentSession: session, args: { hit: 999999 } }))
+  assert.ok(miss.includes('not in the last result'), '陌生 seq 严拒（非无标签 seq 通道）')
+  const found = toolText(await execTool(ctx, { name: 'search_history', callId: 'h4', agentSession: session, args: { keyword: 'kw-SH' } }))
+  const oldSeq = seqsOf(found)[0]!
+  void toolText(await execTool(ctx, { name: 'search_history', callId: 'h5', agentSession: session, args: { keyword: 'kw-ZERO' } }))
+  const stale = toolText(await execTool(ctx, { name: 'search_history', callId: 'h6', agentSession: session, args: { hit: oldSeq } }))
+  assert.ok(stale.includes('not in the last result'), '新查询覆盖单槽→旧 hit 失效如实报')
+})
+
+test('SH12 分布档（N>250）：无预览无索引+prose User/Assistant 头+faceted 命名避共现', async () => {
+  const { ctx, session, internals } = await bootSearch()
+  for (let i = 0; i < 251; i++) appendUser(session, 'kw-FAC 条目' + i)
+  const out = toolText(await execTool(ctx, { name: 'search_history', callId: 'f1', agentSession: session, args: { keyword: 'kw-FAC' } }))
+  assert.ok(out.includes('251 hit(s)'), '命中集总数=251（N 定义 D9）')
+  assert.ok(out.includes('exceed the listing threshold'), '超阈不列')
+  assert.ok(!out.includes('· hit:"'), '分布档无预览')
+  assert.ok(out.includes('Distribution among hits'), 'faceted 命名避共现（S9）')
+  assert.ok(out.includes('prose among hits: User×251'), '散文 User 桶')
+  assert.ok(internals.stateOf(session).searchIndex === null, '分布档不落索引')
+})
