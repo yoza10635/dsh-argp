@@ -397,6 +397,13 @@ test('KR2（迁册 search_history）：labels+keyword = AND；keyword 不越过�
   }))
   assert.ok(ghost.includes('labels not in the pruned ledger, ignored'), '空想 label 照旧回显')
   assert.ok(ghost.includes('ZZZTOPSECRET'), 'keyword 独立发现不被空想 label 拖死')
+  // 多标签真交集（M5 活锁）：keep.ts 是 tool:read、ask 是 tool:ask_user_question，
+  // 两标签交叉=空集；若退化为并集会把 keep（含 ZZZ）误捞回。
+  const inter = toolText(await execTool(ctx, {
+    name: 'search_history', callId: 'k4', agentSession: session,
+    args: { labels: ['document:c:/proj/keep.ts', 'tool:ask_user_question'], keyword: 'ZZZTOPSECRET' },
+  }))
+  assert.ok(inter.includes('0 hit(s)'), '多标签 AND=真交集（非并集，摘交集收口=并集则误捞）')
 })
 
 test('KR2+/KR3+KR5+KR6（迁册 search_history）：keyword 发现模式=行+全形标签+命中窗；同查询确定性；预算记账；live 不可 grep', async () => {
