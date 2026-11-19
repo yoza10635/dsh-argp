@@ -6,14 +6,14 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
-## [2.1.0-beta.0] - 2026-11-17（tool 因子键 + 交互族预览 + keyword 召回 + 外评 Issue3/4/5）
+## [2.1.0-beta.0] - 2026-11-19（tool 因子键 + 交互族预览 + search_history 内容发现 + 外评 Issue3/4/5）
 
 ### Added
 
 - **`tool:<注册名>` 因子键全量升格**：每枚工具结果至少带一枚 `tool:` 地址（工具名缺失的孤儿结果除外）——剪后词表、`list_labels(category:'tool')`、`recall_history` 标签召回全链可用；「没有实体标签就找不回」的旧口径随 tool 键退役（README 已知限制同步）。
 - **交互族词表预览**：`ask_user_question` / `exit_plan_mode` 检查点专段带 `tool:` 地址与 Q/A 侧写预览（逐问拼接、answers 解析、80 字符截断、secret 侧弃、控制符压平），压缩后模型能看到「当时问过什么、答了什么」。
-- **`recall_history` keyword 通道**：可选 `keyword` 字面内容子串扫描（大小写不敏感，0 LLM，不开新工具、不支持 regex）；labels+keyword 为 AND，labels/keyword 双空给引导文案；命中返回 outline+全形标签+命中窗，与标签召回共享单次 5%/累计 10% 窗预算；文法闸拒收过短/过长/控制符/trim 空输入。
-- **`/argp` 状态卡 B-6 盲区风险行**（外评 Issue4）：不可剪 live 面（非 R 原子 + 未闭合轮）≥ 0.8×声明窗时显式露出近似诊断行（只读渲染，禁走 decide() 压缩状态面）；声明窗未知=零告警（宁缺勿错，交 400 兜底网口径）。
+- **`search_history` 内容发现工具**（散文 keyword 召回，2026-11-19）：新增第三个召回工具，把「无标签散文原子不可追」缺口补上——按字面内容子串扫描被剪工具原子 **∪ user/assistant 散文原文**（含已被浓缩请离场的正文，原文恒在 append-only 日志）。三工具正交分工：`search_history`=找（内容）、`recall_history`=取（标签地址）、`list_labels`=看（词表）；keyword 通道从 `recall_history` **整体迁出**至 `search_history`（beta 未发布=零 wire 兼容成本）。两步走=命中行带 `hit=<seq>` 句柄+分层预览（N≤20→100 tok、N≤250→20 tok、显式 limit 页→200 tok），`hit=` 第二跳取逐字全文（白名单=临时索引单槽，新查询整体覆盖；索引外 seq 严拒=无任意 seq 注入面）。N>250 走**标签分布直方图**（faceted 形：工具命中按其他标签 ×n(hits)、`(no-label)` 兜底桶、count desc→key asc；散文按 User/Assistant 分桶；无预览逼细化）。排序 `score=min(hits,10)`（TF 饱和=BM25 饱和项整数形，防单个巨原子霸榜）。散文带谓词：仅 text 块投影（args 不入面）、kind 主防线排除插件自写 note/检查点 + 宿主 runtime-context/skill-catalog boilerplate、replace 副本排除（顶层 `surfaceOp.op==='replace'`，非 sourceEventSeqs）；从旧到新独立 cap + fail-visible 截断页脚（cap=0 关带=评测对照臂）。两带合并文本恰过一次共享预算（5%/10%）。
+- **`/argp` 状态卡盲区风险行**（外评 Issue4）：不可剪 live 面（非 R 原子 + 未闭合轮）≥ 0.8×声明窗时显式露出近似诊断行（只读渲染，禁走 decide() 压缩状态面）；声明窗未知=零告警（宁缺勿错，交 400 兜底网口径）。**2026-11-19 实测勘误**：原「B-6 无痕截断」前提证伪——当前宿主对超窗请求全量发出并返回显式 `CONTEXT_WINDOW_EXCEEDED`（声明窗探针，档案恒完整、零截断），非无痕消失；卡片保留为「逼近窗预警」（仍真，撞到的就是这个显式错误），README 已知限制与措辞同步勘误。
 - **CJK 自适应密度估算**（外评 Issue5 B 案）：字符估算从统一 3.5 chars/token 改为 `nonCjk/3.5 + cjk/κ`，κ=1.7（Qwen3.8 tokenizer 同帧配对差分标定，两独立语料组 1.714/1.675 收敛）——中文重负载内容不再被系统性低估 ~2×。白名单=CJK 统一表意+扩展 A+中日韩标点+假名；其余字符（含全角/西里尔/谚文/emoji）一律走 3.5 桶=非 CJK 文本估算逐字不变。覆盖 anchored 增量、锚点重置、deficit→chars 反向换算、召回预算、浓缩闸一容量线；`ARGP_FACTOR_PRESSURE=1` 逃生口与宿主 shadow 定价口径（HOST_CHARS_PER_TOKEN=4）刻意不改。跨 tokenizer 不自动重标定=刻意简化（README 口径声明）。
 
 ### Changed
@@ -34,7 +34,7 @@
 
 ### Testing
 
-- 316 测全绿（新增 B6×5、CT1-CT6、EV1/EV1b 重写、ADV-1 逃生口接线锁、ADV-6 b6 只读红线锁）；变异面 33 刀全红（新增 M22-M33）；κ 标定读数表与语料工件在仓库外台账（design-2.1.0-batch §5，不进仓库）。二轮对抗审查台账=design-2.1.0-batch §7（ADV-1..12，全部亲验）。
+- 334 测全绿（新增 B6×5、CT1-CT6、EV1/EV1b 重写、ADV-1 逃生口接线锁、ADV-6 b6 只读红线锁、PS1-PS6 散文扫描带、SH1-12 search_history 装配/命中索引/分布档、TG1 note 逃生句）；变异面 48 刀全红（新增 M22-M46，run_mut 仓库外）；κ 标定读数表与语料工件在仓库外台账（design-2.1.0-batch §5，不进仓库）。二轮对抗审查台账=design-2.1.0-batch §7（ADV-1..12）；散文 keyword 召回三轮审查+P13 实测+IR 方法论对齐=design-prose-keyword-recall §5/§6/§6.5/§6.6（全部亲验）。
 
 ## [2.0.2] - 2026-11-16（preset 覆盖块对 rc.3 重生成对齐——issue #4）
 

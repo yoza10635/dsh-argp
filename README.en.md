@@ -31,7 +31,7 @@ dsh plugin --profile <name> add dsh-argp
 - Type **`/argp`** in a session: budget, trigger line, prune and recall stats.
 - **`/compact`**: run one manual compaction (full prune + prose condensation).
 - Automatic compaction: prose condenses first when context crosses the line (0.8× the declared window); when a request is rejected by the provider for overflow (400), a full prune runs and the request is retried automatically.
-- Two recall tools are automatically available to the model: `recall_history` (verbatim text by label) and `list_labels` (vocabulary browser).
+- Three recall tools are automatically available to the model: `recall_history` (verbatim text of pruned results by entity label), `search_history` (find and fetch by literal keyword, including conversation prose already condensed away), and `list_labels` (vocabulary browser).
 
 ```text
 ARGP 2.0.0 · engine: factor · preset: standard
@@ -44,14 +44,14 @@ recall: 12 calls · 9 hits (75%)
 
 ## How it works
 
-Strategy values are fixed: trigger line 0.8× the declared window, retention target 0.2, 3.5 chars/token, 1 focal turn, 10 vocabulary rows per category, 5 default recall items. **The single setting, "Compaction threshold"** (Settings → Plugins, off by default): set a 0–1 ratio and context reaching declaredWindow × ratio is **compacted before sending** (live, no restart; above 0.8 the prose-condensation line at 0.8×window acts first and the threshold line adds pruning on top); **when off, a wall hit (the provider rejecting an oversized request) triggers compaction as the fallback** — suited to endpoints whose real wall ≈ the declared window; endpoints that auto-escalate (real wall ≫ declared window) should turn it on. The five other old knobs stay retired (same-named keys in old profiles are tolerated with a warning).
+Strategy values are fixed: trigger line 0.8× the declared window, retention target 0.2, estimation weighted by character class (non-CJK 3.5, CJK 1.7 chars/token, κ calibrated on the Qwen3.8 tokenizer — estimation is only a fallback; occupancy anchors on provider usage), 1 focal turn, 10 vocabulary rows per category, 5 default recall items. **The single setting, "Compaction threshold"** (Settings → Plugins, off by default): set a 0–1 ratio and context reaching declaredWindow × ratio is **compacted before sending** (live, no restart; above 0.8 the prose-condensation line at 0.8×window acts first and the threshold line adds pruning on top); **when off, a wall hit (the provider rejecting an oversized request) triggers compaction as the fallback** — suited to endpoints whose real wall ≈ the declared window; endpoints that auto-escalate (real wall ≫ declared window) should turn it on. The five other old knobs stay retired (same-named keys in old profiles are tolerated with a warning).
 
 **Governing principle: tool results may be pruned; conversation prose is only touched inside compaction transactions.**
 
 - **Eviction (0 LLM)**: tool results get entity labels (`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`); deterministic staleness (superseded reads, newer versions, non-focal turns) scores them, and evictable ones become a one-line labeled stub. Prose is never evicted; focal turns are protected.
 - **Prose condensation**: the plugin's only LLM path, transaction-only, fired only when both gates pass (prose ≥50% of the declared window AND context ≥ 0.8× the declared window); empty output or failure keeps the original.
 - **Overflow fallback**: when a request is rejected by the provider for overflow (400), a standard compaction transaction (full prune + prose condensation) runs automatically and the request is retried.
-- **Recall**: stubs carry labels; the original text comes back verbatim from the log by label. Both recall tools share a character budget (5% per call / 10% cumulative of the window) and state exhaustion explicitly. After compaction, the vocabulary note tells the model to recall by label.
+- **Recall**: stubs carry labels; the original text comes back verbatim from the log by label (`recall_history`); content with no label — especially condensed-away conversation prose — is found and fetched verbatim by literal keyword (`search_history`, 2.1.0: tiered previews, `hit=` second-hop full fetch, a label distribution when there are too many hits). All three tools share a character budget (5% per call / 10% cumulative of the window) and state exhaustion explicitly. After compaction, the vocabulary note tells the model to recall by label or keyword.
 
 Compared with LLM-summary compaction: eviction is deterministic and recomputable; forgetting is reversible (the original never leaves the log); history is rewritten only inside compaction transactions, so the prefix cache is not shredded by per-turn rewrites. Transaction protocol, host-compat surface and invariants live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -71,7 +71,7 @@ components, which one consolidated row folds into a DeepSeek off-peak reference 
 | Prefix cache hit rate | 83.3% | 95.6% | 97.8% |
 | **DeepSeek off-peak reference price** | **11.58 元** | **4.36 元** | **3.69 元** |
 | Declared-window context utilization | 78.9% | 50.0% | 98.4% |
-| Forgetting reversible | ✓ `recall`/`recall_detail` | ✗ | ✓ `recall_history` byte-for-byte by label |
+| Forgetting reversible | ✓ `recall`/`recall_detail` | ✗ | ✓ `recall_history` by label + `search_history` by content (prose too) |
 | Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (supplementary recall turns) |
 | Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 |
 
@@ -94,12 +94,12 @@ Note:
 - **B-6 window-truncation blind spot**: live nodes that were never replaced can be truncated at the oldest end by the request assembler near the context window, leaving no trace — they are not in the prune vocabulary, and label recall cannot reach them. Mitigation: set `ARGP_FACTOR_EGRESS=1` to enable the pre-send overflow check (compress first, then send), which moves the trigger earlier; the real fix belongs in dsh (B-6 filed).
 - **Fallback net precondition**: the gate-off default assumes "real wall ≈ declared window" — the provider must actually reject oversized requests (400) for the fallback chain to trigger auto-pruning. If an endpoint's real wall far exceeds the declared window (gateway auto-escalation, multi-tier models), 400 never fires and auto-pruning goes inert under the default (only prose condensation and manual `/compact` remain); such endpoints should set `ARGP_FACTOR_EGRESS=1` (validated on a real DeepSeek endpoint: gate-off wedged turns by clamping the client-side generation budget to its minimum; gate-on ran the full workload cleanly).
 - **Condensation output tax**: condensation is the only LLM call, and only inside a transaction; an over-long summary can eat the savings. Gate 1 (prose ≥50%) and the 20480 output budget bound it, but extremely prose-heavy sessions may still not pay off.
-- **Content without entity labels cannot be evicted**: pure chat or outputs with no path/command/error code are untouched by pruning and wait for condensation. This is the other side of "labels are the only address" (fail-closed: never guess identity).
+- **Content without entity labels**: pure chat or outputs with no path/command/error code are untouched by pruning and never guessed an identity (fail-closed) — so they have no label address. Since 2.1.0 they are still recoverable verbatim by literal keyword through `search_history` (including text already condensed away). Labels are addresses; keyword is a content channel.
 - **Legacy log read path**: old tombstone grammar (v1.3.x–v1.7.x) and old `data.argpCites` remain readable, but 2.0 no longer emits them.
 
 ## Development & verification
 
-- `npm run check`: typecheck + smoke + unit tests (269) + build.
+- `npm run check`: typecheck + smoke + unit tests (334) + build.
 - Pre-send overflow check tests: `npm run test -- --test-name-pattern=EG-`.
 - Summary caliber of the 46-turn comparison in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
 

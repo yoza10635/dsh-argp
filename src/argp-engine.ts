@@ -331,7 +331,7 @@ export class ArgpEngine extends CompactionEngine {
     // 召回面 = recall_history / list_labels（标签制）+ search_history（内容发现，2.1.0）。
     registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
     registerSearchHistory(ctx, this.factor, this as unknown as RecallLabelsHost)
-    this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩；召回面 = recall_history/list_labels')
+    this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩；召回面 = recall_history/list_labels（标签）+ search_history（内容发现）')
     // /argp 状态命令：只读出口，放在工具注册之后（依赖 commands 服务，缺失时
     // inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。
     registerArgpCommand(ctx, this as unknown as ArgpStatusHost)
