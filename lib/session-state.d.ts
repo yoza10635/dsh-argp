@@ -62,5 +62,12 @@ export interface SessionRuntimeState {
     shadowedScanned: number;
     /** 进行中事务的 prune 声称（compaction/start→end 之间；end 成功才入 shadowedSet）。 */
     shadowedPending: number[] | null;
+    /** search_history 临时命中索引（单槽；任何新查询整体覆盖；null=空/未建/进程重启）。 */
+    searchIndex: Map<number, {
+        kind: 'R' | 'U' | 'A';
+        turn: number | string;
+    }> | null;
+    /** 最近一次 search_history 的查询词（第二跳「被覆盖」话术如实披露；刀 C）。 */
+    searchQuery: string;
 }
 export declare function createSessionRuntimeState(): SessionRuntimeState;

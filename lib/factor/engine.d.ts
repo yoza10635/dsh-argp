@@ -29,6 +29,13 @@ export interface FactorEngineConfig {
      * static Config schema**，env ARGP_FACTOR_CLIP 唯一触达通道（resolveClipEnabled）。
      */
     clipEnabled?: boolean;
+    /**
+     * 散文扫描带上限（design-prose-keyword-recall §1.1）。内部裸项，严禁进 static
+     * Config（ZK1）：undefined=窗相对现算 defaultProseCapChars；测试/bench 直给小值
+     * 触发截断路径；**0=search_history 散文带整体关闭**（评测对照臂，S6 裁定 config
+     * 注入为唯一形、不开数值 env 第二形）。
+     */
+    proseScanCapChars?: number;
 }
 /**
  * focalTiered 的 env 逃生口（T-3 两臂实跑唯一触达通道）：tiered 是策略档，
@@ -185,6 +192,8 @@ export declare class FactorEngine {
     private readonly cfg;
     constructor(host: FactorEngineHost, config?: FactorEngineConfig);
     /** 会话账本（懒建；见 ledgers 字段注释）。public：召回工具按执行会话取桶。 */
+    /** 散文带 cap 覆盖（search_history 装配读；undefined ⇒ 装配层按窗相对现算）。 */
+    proseScanCapOverride(): number | undefined;
     ledgerOf(session: Session): FactorLedger;
     /** 兼容读：最近一次被 observe/decide/vocabulary 触达的会话账本（诊断/单会话测试）。 */
     get ledger(): FactorLedger;

@@ -18,6 +18,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { SessionRuntimeState } from '../session-state.ts';
+import { type FactorLedger } from './factor-ledger.ts';
 import type { FactorEngine } from './engine.ts';
 /** 窄宿主：两个闭包实际触达的引擎成员。 */
 export interface RecallLabelsHost {
@@ -33,10 +34,37 @@ export interface RecallLabelsHost {
     telemetryCap: number;
 }
 /**
+ * 工具调用的目标会话解析（1-2）：优先 exec.agent.session（agent loop 设置，多会话/
+ * 子代理宿主下逐调用正确）。回退焦点绑定**只在引擎只见过一个会话时允许**（beta.1 评审
+ * D2 同族：多会话宿主下 exec.agent 缺席的静默回退会把 B 会话的上下文喂给 A 的调用；
+ * 单会话宿主与无 agent 上下文的测试路径不受影响）。
+ */
+export declare function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | null;
+/** per-turn 安全阀（召回面工具共用）：轮变归零 → 判上限 → 计数。返回 true = 已拒绝。 */
+export declare function recallCallBlocked(st: SessionRuntimeState, session: Session): boolean;
+/**
+ * 查询标签解析单点（recall_history 与 search_history 共用；刀 B 从 recall 体抽出，
+ * 行为逐字不变——KR/ZT/L 系锁全绿为准）：wanted 去重 → facet 精确/大小写两形展开 →
+ * 路径后缀唯一归一（fail-closed 多候选不猜）。
+ */
+export declare function resolveQueryLabels(ledger: FactorLedger, raw: unknown): {
+    wanted: string[];
+    keys: Set<string>;
+    unknown: string[];
+    remapped: string[];
+    ambiguous: string[];
+};
+/**
  * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
  * P6-③ 裁定 2：召回对（call+result）无条件进剪序（可再生=再召回一次），识别按本名单。
+ * search_history 同族（2.1.0 刀 B）：搜索结果同样可再生，且自动继承 P1 在轮免疫
+ * （在轮排除按本名单判定）。
  */
 export declare const RECALL_TOOL_NAMES: readonly string[];
+/** keyword 通道文法闸（KR4）+ 命中窗宽（§11.4）。字面子串口径：不 regex（ReDoS）、
+ *  不模糊、不嵌入——0-LLM 与确定性（KR3）由 indexOf 语义天然成立。 */
+export declare const KEYWORD_MIN_CHARS = 2;
+export declare const KEYWORD_MAX_CHARS = 100;
 /**
  * 注册因子臂召回两工具。`factor` 闭包捕获引擎的**同一个** FactorEngine 实例
  * （账本/epoch 与发射侧共享，构造期装配一次）。

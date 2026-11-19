@@ -46,6 +46,7 @@ import { countCjkChars, estTokensFromStats } from './cjk.js'
 export { scaleBudgets } from './budget.js'
 import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
+import { registerSearchHistory } from './factor/search-history.ts'
 import { ProseCondenser } from './factor/prose-condenser.ts'
 // 召回模块（2.0 只留共享语义）：shadowed 增量账本 + 召回字符预算。本地使用。
 import { shadowedSeqsOf, budgetRecallText, type RecallHost } from './recall.js'
@@ -80,6 +81,11 @@ export interface ArgpConfig {
   reserveTokens?: number
   /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
   telemetryCap?: number
+  /**
+   * 散文扫描带上限（search_history；FactorEngine 同名裸项透传）。**严禁进 static
+   * Config**（ZK1 单键名册）：仅构造面直给（测试/bench），缺省=窗相对现算。
+   */
+  proseScanCapChars?: number
   /** 可选显式 token 测量函数；不传则退化为字符估算。 */
   measureTokens?: (session: Session) => { contextTokens: number; surfaceTokens: number }
   /** 上下文溢出恢复的最大重试次数（context-overflow trigger），缺省 1（对齐官方 compaction-basic）。 */
@@ -308,6 +314,8 @@ export class ArgpEngine extends CompactionEngine {
       focalTiered: resolveFocalTiered(),
       // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
       clipEnabled: resolveClipEnabled(),
+      // 散文扫描带 cap 裸项透传（缺省 undefined=窗相对现算；0=关闭散文带）。
+      proseScanCapChars: config.proseScanCapChars,
     })
     // P6-④ 散文浓缩链：factor 唯一 LLM 摘要通路，只在压缩事务内被调
     // （compactIfNeeded——overflow 或出口闸驱进的 'pressure' 且闸二 ctx 线补检通过 /
@@ -320,8 +328,9 @@ export class ArgpEngine extends CompactionEngine {
     // §9.37 出口闸：缺省关（2026-11-15 用户裁定：对照臂形态=缺省，贴墙交 400 兜底网）。
     // 开启面 = 设置「压缩阈值」(compactionThreshold>0，volatile 实时读) 或 env=1（评测/对照），
     // 每次 pre-step 经 resolveEgress 实时解析（设置页改动免重挂生效）。
-    // 召回面 = recall_history / list_labels（标签制）。
+    // 召回面 = recall_history / list_labels（标签制）+ search_history（内容发现，2.1.0）。
     registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
+    registerSearchHistory(ctx, this.factor, this as unknown as RecallLabelsHost)
     this.log.info('[argp] engine=factor-only（2.0）：R 贴标剪枝 + 散文浓缩；召回面 = recall_history/list_labels')
     // /argp 状态命令：只读出口，放在工具注册之后（依赖 commands 服务，缺失时
     // inject 回调不执行 ⇒ 不改变其余装配的可观测行为）。

@@ -23,7 +23,7 @@ import { nodeStateOf, rawEventText, sessionEvents } from '../log-access.ts'
 import { currentTurnOf, recallBudgetState } from '../recall.ts'
 import { pushBounded } from '../telemetry.ts'
 import { DEFAULT_RECALL_LIMIT } from '../constants.ts'
-import { VOCAB_FACETS, facetOfKey, type VocabFacet } from './factor-ledger.ts'
+import { VOCAB_FACETS, facetOfKey, type FactorLedger, type VocabFacet } from './factor-ledger.ts'
 import type { FactorEngine } from './engine.ts'
 
 /** 窄宿主：两个闭包实际触达的引擎成员。 */
@@ -46,7 +46,7 @@ export interface RecallLabelsHost {
  * D2 同族：多会话宿主下 exec.agent 缺席的静默回退会把 B 会话的上下文喂给 A 的调用；
  * 单会话宿主与无 agent 上下文的测试路径不受影响）。
  */
-function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | null {
+export function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | null {
   const agent = (exec as { agent?: { session?: Session } } | undefined)?.agent
   if (agent?.session !== undefined) return agent.session
   return host.sessionCount() <= 1 ? host.session : null
@@ -58,8 +58,8 @@ function sessionOfToolCall(exec: unknown, host: RecallLabelsHost): Session | nul
  */
 const RECALL_CALLS_PER_TURN_LIMIT = 20
 
-/** per-turn 安全阀（两工具共用）：轮变归零 → 判上限 → 计数。返回 true = 已拒绝。 */
-function recallCallBlocked(st: SessionRuntimeState, session: Session): boolean {
+/** per-turn 安全阀（召回面工具共用）：轮变归零 → 判上限 → 计数。返回 true = 已拒绝。 */
+export function recallCallBlocked(st: SessionRuntimeState, session: Session): boolean {
   const turn = currentTurnOf(session)
   if (st.recallTurn !== turn) {
     st.recallTurn = turn
@@ -91,15 +91,73 @@ function pathTailOf(wanted: string): string | null {
 const FACET_PREFIXES = ['document:', 'command:', 'errorcode:', 'scope:'] as const
 
 /**
+ * 查询标签解析单点（recall_history 与 search_history 共用；刀 B 从 recall 体抽出，
+ * 行为逐字不变——KR/ZT/L 系锁全绿为准）：wanted 去重 → facet 精确/大小写两形展开 →
+ * 路径后缀唯一归一（fail-closed 多候选不猜）。
+ */
+export function resolveQueryLabels(ledger: FactorLedger, raw: unknown): {
+  wanted: string[]
+  keys: Set<string>
+  unknown: string[]
+  remapped: string[]
+  ambiguous: string[]
+} {
+  const wanted = [...new Set((Array.isArray(raw) ? raw : [])
+    .map(l => (typeof l === 'string' ? l.trim() : '')).filter(l => l !== ''))]
+  const keys = new Set<string>()
+  const unknown: string[] = []
+  for (const w of wanted) {
+    if (facetOfKey(w) !== null) {
+      if (ledger.stat(w) !== null) keys.add(w)
+      else unknown.push(w)
+      continue
+    }
+    // 大小写两形都试：document 键是 canonical 小写形（盘符归一），模型手敲
+    // `C:/...` 直拼查不中；errorcode 大小写敏感，只认索引里真实存在的形。
+    const variants = new Set([w, w.toLowerCase()])
+    const hits: string[] = []
+    for (const v of variants) for (const p of FACET_PREFIXES) {
+      const k = p + v
+      if (ledger.stat(k) !== null) hits.push(k)
+    }
+    if (hits.length === 0) unknown.push(w)
+    else for (const k of hits) keys.add(k)
+  }
+  // 路径后缀归一（2026-11-14 用户裁定；alpha4 T19/T30 实锤：模型猜相对路径标签，
+  // 账本存绝对路径 ⇒ no-match 后模型放弃召回、凭记忆作答）。精确/展开都未命中的
+  // 路径形标签做唯一后缀匹配；命中如实告知改写（模型下次用全形），多候选
+  // fail-closed 列出候选绝不猜（与词表出口 fail-closed 同纪律）。
+  const remapped: string[] = []
+  const ambiguous: string[] = []
+  for (const w of [...unknown]) {
+    const tail = pathTailOf(w)
+    if (tail === null) continue
+    const candidates = [...ledger.matchBySuffix('document:', tail), ...ledger.matchBySuffix('scope:', tail)]
+    if (candidates.length === 1) {
+      keys.add(candidates[0]!)
+      remapped.push(w + ' → ' + candidates[0]!)
+      unknown.splice(unknown.indexOf(w), 1)
+    } else if (candidates.length > 1) {
+      ambiguous.push(w + ' — suffix matches ' + candidates.length + ' ledger keys: '
+        + candidates.slice(0, 5).join(', ') + (candidates.length > 5 ? ', …' : ''))
+      unknown.splice(unknown.indexOf(w), 1)
+    }
+  }
+  return { wanted, keys, unknown, remapped, ambiguous }
+}
+
+/**
  * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
  * P6-③ 裁定 2：召回对（call+result）无条件进剪序（可再生=再召回一次），识别按本名单。
+ * search_history 同族（2.1.0 刀 B）：搜索结果同样可再生，且自动继承 P1 在轮免疫
+ * （在轮排除按本名单判定）。
  */
-export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_labels']
+export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_labels', 'search_history']
 
 /** keyword 通道文法闸（KR4）+ 命中窗宽（§11.4）。字面子串口径：不 regex（ReDoS）、
  *  不模糊、不嵌入——0-LLM 与确定性（KR3）由 indexOf 语义天然成立。 */
-const KEYWORD_MIN_CHARS = 2
-const KEYWORD_MAX_CHARS = 100
+export const KEYWORD_MIN_CHARS = 2
+export const KEYWORD_MAX_CHARS = 100
 const KEYWORD_SNIPPET_CHARS = 60
 
 /**
@@ -193,8 +251,8 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
         return host.budgetRecallText(session, lines.join('\n')) + footer
       }
 
-      const wanted = [...new Set((Array.isArray(a.labels) ? a.labels : [])
-        .map(l => (typeof l === 'string' ? l.trim() : '')).filter(l => l !== ''))]
+      const labels = resolveQueryLabels(ledger, a.labels)
+      const wanted = labels.wanted
       // KR1（design-tool-fact §11.4）：labels 与 keyword 至少给一个——不留"空查询=
       // 全表 dump"的口子（全候选只经 keyword 过滤后按 limit 截断地可见）。
       if (wanted.length === 0 && kwRaw === '') {
@@ -202,45 +260,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
           + 'vocabulary section (document:<path> / command:<family> / errorcode:<CODE> / scope:<dir> / tool:<name>), '
           + 'or a keyword (literal substring) to discover; call list_labels to see the full pruned vocabulary.'
       }
-      const keys = new Set<string>()
-      const unknown: string[] = []
-      for (const w of wanted) {
-        if (facetOfKey(w) !== null) {
-          if (ledger.stat(w) !== null) keys.add(w)
-          else unknown.push(w)
-          continue
-        }
-        // 大小写两形都试：document 键是 canonical 小写形（盘符归一），模型手敲
-        // `C:/...` 直拼查不中；errorcode 大小写敏感，只认索引里真实存在的形。
-        const variants = new Set([w, w.toLowerCase()])
-        const hits: string[] = []
-        for (const v of variants) for (const p of FACET_PREFIXES) {
-          const k = p + v
-          if (ledger.stat(k) !== null) hits.push(k)
-        }
-        if (hits.length === 0) unknown.push(w)
-        else for (const k of hits) keys.add(k)
-      }
-      // 路径后缀归一（2026-11-14 用户裁定；alpha4 T19/T30 实锤：模型猜相对路径标签，
-      // 账本存绝对路径 ⇒ no-match 后模型放弃召回、凭记忆作答）。精确/展开都未命中的
-      // 路径形标签做唯一后缀匹配；命中如实告知改写（模型下次用全形），多候选
-      // fail-closed 列出候选绝不猜（与词表出口 fail-closed 同纪律）。
-      const remapped: string[] = []
-      const ambiguous: string[] = []
-      for (const w of [...unknown]) {
-        const tail = pathTailOf(w)
-        if (tail === null) continue
-        const candidates = [...ledger.matchBySuffix('document:', tail), ...ledger.matchBySuffix('scope:', tail)]
-        if (candidates.length === 1) {
-          keys.add(candidates[0]!)
-          remapped.push(w + ' → ' + candidates[0]!)
-          unknown.splice(unknown.indexOf(w), 1)
-        } else if (candidates.length > 1) {
-          ambiguous.push(w + ' — suffix matches ' + candidates.length + ' ledger keys: '
-            + candidates.slice(0, 5).join(', ') + (candidates.length > 5 ? ', …' : ''))
-          unknown.splice(unknown.indexOf(w), 1)
-        }
-      }
+      const { keys, unknown, ambiguous, remapped } = labels
       // 缺省档 = 固化 DEFAULT_RECALL_LIMIT（原 recallLimit 旋钮已随 2.0.0 退役；
       // 5 = P2-1 已测口径逐字保持）；模型可显式传 limit，上限 20。
       const limit = Math.max(1, Math.min(20, a.limit ?? DEFAULT_RECALL_LIMIT))

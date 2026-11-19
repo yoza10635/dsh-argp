@@ -52,6 +52,11 @@ export interface ArgpConfig {
     reserveTokens?: number;
     /** 诊断/遥测数组容量上限（保留最近 N 条，默认 256；P4.5 有界化）。 */
     telemetryCap?: number;
+    /**
+     * 散文扫描带上限（search_history；FactorEngine 同名裸项透传）。**严禁进 static
+     * Config**（ZK1 单键名册）：仅构造面直给（测试/bench），缺省=窗相对现算。
+     */
+    proseScanCapChars?: number;
     /** 可选显式 token 测量函数；不传则退化为字符估算。 */
     measureTokens?: (session: Session) => {
         contextTokens: number;
