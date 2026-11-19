@@ -28,4 +28,10 @@ import type { FactorEngine } from './engine.ts';
  * codePoint 前缀 ⑥截断补 …（不回测）。
  */
 export declare function buildPreview(text: string, first: number, needleLen: number, tok: number, cpt: number): string;
+/**
+ * 多片段预览（Lucene unified highlighter 形：命中分散时取多个 fragment，非只锚首次）。
+ * 宽档（tok≥50）最多 2 个**互不重叠**窗（预算对半），窄档单窗；命中聚成一簇时自然只出 1 窗。
+ * 确定性：positions 升序、重叠判据=下一锚点 ≤ 上窗可见右界。
+ */
+export declare function buildPreviews(text: string, positions: number[], needleLen: number, tok: number, cpt: number): string;
 export declare function registerSearchHistory(ctx: Context, factor: FactorEngine, host: RecallLabelsHost): void;

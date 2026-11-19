@@ -99,7 +99,7 @@ Note:
 
 ## Development & verification
 
-- `npm run check`: typecheck + smoke + unit tests (334) + build.
+- `npm run check`: typecheck + smoke + unit tests (336) + build.
 - Pre-send overflow check tests: `npm run test -- --test-name-pattern=EG-`.
 - Summary caliber of the 46-turn comparison in `CHANGELOG` 2.0.0; 1.x experiment scripts are archived under `spike/retired-1x/` (not compiled).
 

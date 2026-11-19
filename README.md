@@ -99,7 +99,7 @@ recall: 12 calls · 9 hits (75%)
 
 ## 开发与验证
 
-- `npm run check`：typecheck + smoke + 单测（334 测）+ 构建。
+- `npm run check`：typecheck + smoke + 单测（336 测）+ 构建。
 - 超窗预检单测：`npm run test -- --test-name-pattern=EG-`。
 - 46 轮对照的汇总口径见 `CHANGELOG` 2.0.0；1.x 实验脚本归档在 `spike/retired-1x/`（不参与编译）。
 

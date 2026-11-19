@@ -87,12 +87,32 @@ export function isProseCandidate(event: ProseEventLike): boolean {
   return !isProseExcludedKind(sourceKindOf(event))
 }
 
+/** 命中位置上限（fragment 选取只用到首尾几处，封顶防超大原子的命中数组膨胀；count 仍如实全计）。 */
+export const HIT_POSITIONS_CAP = 50
+
+/**
+ * 非重叠 indexOf 收集命中：全量 count + 前 HIT_POSITIONS_CAP 个偏移（小写化文本口径）。
+ * 命中面单点（search_history 工具带 + 散文带共用），杜绝两处 indexOf 漂移。
+ */
+export function collectHits(text: string, needleLower: string): { count: number; positions: number[] } {
+  const hay = text.toLowerCase()
+  const positions: number[] = []
+  let count = 0
+  for (let i = hay.indexOf(needleLower); i >= 0; i = hay.indexOf(needleLower, i + needleLower.length)) {
+    count += 1
+    if (positions.length < HIT_POSITIONS_CAP) positions.push(i)
+  }
+  return { count, positions }
+}
+
 export interface ProseHit {
   seq: number
   /** 命中次数（原始 TF；饱和计分是装配层 D11 的事，扫描面如实）。 */
   hits: number
-  /** 首个命中在**小写化投影文本**中的字符偏移。 */
+  /** 首个命中在**小写化投影文本**中的字符偏移（=positions[0]，向后兼容保留）。 */
   first: number
+  /** 前若干命中偏移（多 fragment 预览用，≤HIT_POSITIONS_CAP）。 */
+  positions: number[]
   /** 投影文本字符数（装配层展示长度用，免二次投影）。 */
   chars: number
 }
@@ -127,15 +147,9 @@ export function scanProseHits(events: readonly ProseEventLike[], needle: string,
       break
     }
     scanned += text.length
-    const hay = text.toLowerCase()
-    let hits = 0
-    let first = -1
-    for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + needle.length)) {
-      hits += 1
-      if (first < 0) first = i
-    }
-    if (hits === 0) continue
-    out.push({ seq, hits, first, chars: text.length })
+    const h = collectHits(text, needle)
+    if (h.count === 0) continue
+    out.push({ seq, hits: h.count, first: h.positions[0] as number, positions: h.positions, chars: text.length })
   }
   return { hits: out, scannedChars: scanned, truncated, disabled: false }
 }

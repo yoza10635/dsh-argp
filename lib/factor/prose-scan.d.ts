@@ -19,12 +19,24 @@ export declare function isProseExcludedKind(kind: string | undefined): boolean;
 export declare function proseTextOf(event: ProseEventLike): string | null;
 /** 是否入扫描面的候选事件（形+kind；text 非空判定留给调用方，避免双投影）。 */
 export declare function isProseCandidate(event: ProseEventLike): boolean;
+/** 命中位置上限（fragment 选取只用到首尾几处，封顶防超大原子的命中数组膨胀；count 仍如实全计）。 */
+export declare const HIT_POSITIONS_CAP = 50;
+/**
+ * 非重叠 indexOf 收集命中：全量 count + 前 HIT_POSITIONS_CAP 个偏移（小写化文本口径）。
+ * 命中面单点（search_history 工具带 + 散文带共用），杜绝两处 indexOf 漂移。
+ */
+export declare function collectHits(text: string, needleLower: string): {
+    count: number;
+    positions: number[];
+};
 export interface ProseHit {
     seq: number;
     /** 命中次数（原始 TF；饱和计分是装配层 D11 的事，扫描面如实）。 */
     hits: number;
-    /** 首个命中在**小写化投影文本**中的字符偏移。 */
+    /** 首个命中在**小写化投影文本**中的字符偏移（=positions[0]，向后兼容保留）。 */
     first: number;
+    /** 前若干命中偏移（多 fragment 预览用，≤HIT_POSITIONS_CAP）。 */
+    positions: number[];
     /** 投影文本字符数（装配层展示长度用，免二次投影）。 */
     chars: number;
 }

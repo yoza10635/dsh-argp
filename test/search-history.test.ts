@@ -223,3 +223,20 @@ test('SH12 分布档（N>250）：无预览无索引+prose User/Assistant 头+fa
   assert.ok(out.includes('prose among hits: User×251'), '散文 User 桶')
   assert.ok(internals.stateOf(session).searchIndex === null, '分布档不落索引')
 })
+
+test('SH13 单原子多次命中：行内 ×N 次数 + 分散命中出 2 fragment（highlighter canon）', async () => {
+  const { ctx, session } = await bootSearch()
+  appendUser(session, 'kw-MF 开头 ' + 'a'.repeat(3000) + ' kw-MF 结尾')
+  const out = toolText(await execTool(ctx, { name: 'search_history', callId: 'mf1', agentSession: session, args: { keyword: 'kw-MF' } }))
+  assert.ok(out.includes('· ×2'), '行内报原始命中次数 ×2（非饱和 score）')
+  assert.ok(out.includes('⊕'), '分散两处命中→两个 fragment 窗（不只锚首次）')
+  assert.ok(out.indexOf('kw-MF 开头') < out.indexOf('kw-MF 结尾'), '首尾两窗都在')
+})
+
+test('SH14 聚集命中退化为单 fragment + ×N：命中挤一簇不硬塞第二窗', async () => {
+  const { ctx, session } = await bootSearch()
+  appendUser(session, 'kw-CL a kw-CL b kw-CL c')
+  const out = toolText(await execTool(ctx, { name: 'search_history', callId: 'cl1', agentSession: session, args: { keyword: 'kw-CL' } }))
+  assert.ok(out.includes('· ×3'), '三次命中如实报 ×3')
+  assert.ok(!out.includes('⊕'), '命中聚一簇→单窗（重叠锚点跳过，不重复同段）')
+})
