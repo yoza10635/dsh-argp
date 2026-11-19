@@ -61,8 +61,8 @@ export declare function resolveQueryLabels(ledger: FactorLedger, raw: unknown): 
  * （在轮排除按本名单判定）。
  */
 export declare const RECALL_TOOL_NAMES: readonly string[];
-/** keyword 通道文法闸（KR4）+ 命中窗宽（§11.4）。字面子串口径：不 regex（ReDoS）、
- *  不模糊、不嵌入——0-LLM 与确定性（KR3）由 indexOf 语义天然成立。 */
+/** keyword 通道文法闸（现由 search_history 消费；2.1.0 D8′ 迁出后 recall_history 不再用）。
+ *  字面子串口径：不 regex（ReDoS）、不模糊、不嵌入——0-LLM 与确定性由 indexOf 语义天然成立。 */
 export declare const KEYWORD_MIN_CHARS = 2;
 export declare const KEYWORD_MAX_CHARS = 100;
 /**

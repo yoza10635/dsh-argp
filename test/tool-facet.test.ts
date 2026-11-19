@@ -366,77 +366,77 @@ async function bootPruned() {
   return { ctx, session, stateOf }
 }
 
-test('ZT8+KR1：labels/keyword 双空 ⇒ 引导文案；裸名不展开 tool 桶', async () => {
+test('ZT8+KR1：labels 空 ⇒ 引导文案（含 search_history 指路）；裸名不展开 tool 桶', async () => {
   const { ctx, session } = await bootPruned()
   const empty = toolText(await execTool(ctx, { name: 'recall_history', callId: 'e1', agentSession: session, args: {} }))
-  assert.ok(empty.includes('or a keyword'), 'KR1：双空 ⇒ 引导（含 keyword 指路），不落全表扫描')
+  assert.ok(empty.includes('search_history'), 'KR1：标签空 ⇒ 引导（含 search_history 内容发现指路），不落全表扫描')
   const bare = toolText(await execTool(ctx, { name: 'recall_history', callId: 'e2', agentSession: session, args: { labels: ['ask_user_question'] } }))
   assert.ok(bare.includes('not in the pruned ledger'), '裸名按现契约回显 unknown')
   assert.ok(!bare.includes('by labels [tool:ask_user_question]'), 'ZT8：裸名不展开进 tool 桶')
 })
 
-test('KR2：labels+keyword = AND；keyword 不越过有效 label 集', async () => {
+test('KR2（迁册 search_history）：labels+keyword = AND；keyword 不越过有效 label 集', async () => {
   const { ctx, session } = await bootPruned()
   // keep.ts 原文含 needle、ask 答案不含：AND 应只回 keep 一枚
   const both = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'k1', agentSession: session,
+    name: 'search_history', callId: 'k1', agentSession: session,
     args: { labels: ['document:c:/proj/keep.ts'], keyword: 'ZZZTOPSECRET' },
   }))
-  assert.ok(both.includes('--- seq=') && both.includes('ZZZTOPSECRET'), 'AND：label 集内 keyword 命中，full 正文在场')
+  assert.ok(both.includes('hit=') && both.includes('ZZZTOPSECRET'), 'AND：label 集内 keyword 命中，预览在场')
   assert.ok(!both.includes('ask_user_question'), 'label 集外的 keyword 命中枚不得被捞进（不越集）')
   const miss = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'k2', agentSession: session,
+    name: 'search_history', callId: 'k2', agentSession: session,
     args: { labels: ['tool:ask_user_question'], keyword: 'ZZZTOPSECRET' },
   }))
-  assert.ok(miss.includes('no pruned item matches'), 'label 集内零 keyword 命中 ⇒ 空手（keyword 不扩集）')
+  assert.ok(miss.includes('0 hit(s)'), 'label 集内零 keyword 命中 ⇒ 空手（keyword 不扩集）')
   // 现契约「空想 label 剔除不杀查询」+ keyword：label 不缩候选，keyword 独立发现，
   // 空想回显必须仍在场（模型要能看到自己哪半是空想）。
   const ghost = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'k3', agentSession: session,
+    name: 'search_history', callId: 'k3', agentSession: session,
     args: { labels: ['errorcode:NOPE_NOT_THERE'], keyword: 'ZZZTOPSECRET' },
   }))
   assert.ok(ghost.includes('labels not in the pruned ledger, ignored'), '空想 label 照旧回显')
   assert.ok(ghost.includes('ZZZTOPSECRET'), 'keyword 独立发现不被空想 label 拖死')
 })
 
-test('KR2+/KR3+KR5+KR6：keyword-only 发现模式 = outline+全形标签+命中窗；同查询确定性；预算记账；live 不可 grep', async () => {
+test('KR2+/KR3+KR5+KR6（迁册 search_history）：keyword 发现模式=行+全形标签+命中窗；同查询确定性；预算记账；live 不可 grep', async () => {
   const { ctx, session, stateOf } = await bootPruned()
   const first = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'd1', agentSession: session,
+    name: 'search_history', callId: 'd1', agentSession: session,
     args: { keyword: 'ZZZTOPSECRET' },
   }))
-  assert.ok(first.includes('recall_history outline:'), 'keyword-only 缺省 outline（发现模式）')
-  assert.ok(first.includes('hit:"'), '命中窗在场')
+  assert.ok(first.includes('search_history "ZZZTOPSECRET"'), 'keyword 发现头')
+  assert.ok(first.includes('· hit:"'), '命中窗在场')
   assert.ok(first.includes('labels=document:c:/proj/keep.ts'), '发现行随行走全形标签（教学闭环）')
   // KR3 确定性：同查询逐字节等值（0-LLM ⇒ 无排序抖动；预算记账同轮不改变行内容）
   const second = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'd2', agentSession: session,
+    name: 'search_history', callId: 'd2', agentSession: session,
     args: { keyword: 'ZZZTOPSECRET' },
   }))
   assert.equal(second, first, 'KR3：同查询逐字节一致')
   const lowered = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'd2b', agentSession: session,
+    name: 'search_history', callId: 'd2b', agentSession: session,
     args: { keyword: 'zzztopsecret' },
   }))
-  assert.ok(lowered.includes('item='), '大小写不敏感')
+  assert.ok(lowered.includes('hit='), '大小写不敏感')
   const live = toolText(await execTool(ctx, {
-    name: 'recall_history', callId: 'd3', agentSession: session,
+    name: 'search_history', callId: 'd3', agentSession: session,
     args: { keyword: 'live 内容不可 grep' },
   }))
-  assert.ok(live.includes('no pruned item matches'), 'KR6：live R 同词不可命中（只扫被剪原文）')
+  assert.ok(live.includes('no matches'), 'KR6：live R 同词不可命中（非被剪原文、非 U/A 散文）')
   assert.ok(stateOf(session).recallCharsUsed > 0, 'KR5：keyword 通道同走 budgetRecallText 记账')
 })
 
-test('KR4：keyword 文法闸——过短/过长/控制符拒收可见', async () => {
+test('KR4（迁册 search_history）：keyword 文法闸——过短/过长/控制符拒收可见', async () => {
   const { ctx, session } = await bootPruned()
-  const short = toolText(await execTool(ctx, { name: 'recall_history', callId: 'g1', agentSession: session, args: { keyword: 'x' } }))
-  assert.ok(short.includes('keyword rejected'), '1 字符拒收可见')
-  const ctrl = toolText(await execTool(ctx, { name: 'recall_history', callId: 'g2', agentSession: session, args: { keyword: 'a\nb' } }))
-  assert.ok(ctrl.includes('keyword rejected'), '控制符拒收')
-  const long = toolText(await execTool(ctx, { name: 'recall_history', callId: 'g3', agentSession: session, args: { keyword: 'y'.repeat(101) } }))
-  assert.ok(long.includes('keyword rejected'), '超长拒收')
-  const emptyish = toolText(await execTool(ctx, { name: 'recall_history', callId: 'g4', agentSession: session, args: { keyword: '   ' } }))
-  assert.ok(emptyish.includes('empty after trim'), 'trim 后空显式拒绝（不静默降级）')
+  const short = toolText(await execTool(ctx, { name: 'search_history', callId: 'g1', agentSession: session, args: { keyword: 'x' } }))
+  assert.ok(short.includes('literal substring of 2-'), '1 字符拒收可见')
+  const ctrl = toolText(await execTool(ctx, { name: 'search_history', callId: 'g2', agentSession: session, args: { keyword: 'a\nb' } }))
+  assert.ok(ctrl.includes('literal substring'), '控制符拒收')
+  const long = toolText(await execTool(ctx, { name: 'search_history', callId: 'g3', agentSession: session, args: { keyword: 'y'.repeat(101) } }))
+  assert.ok(long.includes('literal substring'), '超长拒收')
+  const emptyish = toolText(await execTool(ctx, { name: 'search_history', callId: 'g4', agentSession: session, args: { keyword: '   ' } }))
+  assert.ok(emptyish.includes('keyword is required'), 'trim 后空显式拒绝（不静默降级）')
 })
 
 test('list_labels：category=tool 放行且行去重 last:；交互键可列', async () => {
