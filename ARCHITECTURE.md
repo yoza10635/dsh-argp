@@ -8,7 +8,7 @@
 ## 1. 一句话架构
 
 因子引擎把对话拆成**原子**（U/A/R/X 四类 surface 事件）。压缩时**只剪 R**（工具结果）：
-按实体标签与过期判据打分 → `prune-tx` 事务逐区间成对发射 `compaction/prune` + `replace`
+按实体标签与过期判据判定、排队 → `prune-tx` 事务逐区间成对发射 `compaction/prune` + `replace`
 （最小桩）→ 散文浓缩（唯一 LLM 通路，事务内双闸）→ 词表 note 收尾。**剪枝决策 0 LLM**；
 被剪原文留在 append-only 日志，`recall_history(label)` 按字节取回；已离场散文（含浓缩原文）由 `search_history(keyword=...)` 按内容逐字取回。
 
@@ -25,7 +25,7 @@
       ▼
 ┌──────────────────────────────────────────────────────────┐
 │ FactorEngine（0 LLM）                                     │
-│  atomize → R 贴标打分 → plan（焦点/sticky/过期/宽度）       │
+│  atomize → R 贴标判定 → plan（焦点/sticky/过期/宽度）       │
 │  → prune-tx：start → summary → 逐区间 prune+replace → end │
 └──────────────────────────────────────────────────────────┘
       │ 事务内（可选）

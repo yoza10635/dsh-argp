@@ -20,7 +20,7 @@ dsh plugin --profile <name> add dsh-argp
 
 **装完即用，无需手工配置**：插件包自带 bundle patch（关掉宿主自带的 `compaction-basic` 并挂载本插件），profile 层只做配置覆盖。
 
-**宿主要求**：DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0`（预发布参与匹配；当前最新 `0.2.2-rc.3` 已实测）。宿主须在 **0.2.x 线**（npm `next` 渠道或对应桌面版）；npm `latest` 渠道（0.1.x）不在准入区间，插件会被宿主**静默跳过**。装完不见 `[argp]` 日志 / `/argp` 命令时，克隆本仓库跑预检：`node scripts/doctor.mjs --dsh <dsh 安装根>`。
+**宿主要求**：DeepSeek Harness `>=0.2.0-rc.1 <0.3.0-0`（预发布参与匹配）。npm `latest` 与 `next` 现均为 `0.2.2-rc.5`（0.2.x 线，任一渠道可直接安装，对应桌面版同线；安装冒烟实测于 rc.3）。宿主仍停在 `0.1.x` 老线时不在准入区间，插件会被**静默跳过**。装完不见 `[argp]` 日志 / `/argp` 命令时，克隆本仓库跑预检：`node scripts/doctor.mjs --dsh <dsh 安装根>`。
 
 > **发布后 24 小时内安装，请显式指定版本。** pnpm 11 的 `minimumReleaseAge` 默认为 24 小时，刚发布的版本会被静默跳过、回落到旧版本。用 `dsh plugin --profile <name> add dsh-argp@<版本>`，或在 profile 的 `pnpm-workspace.yaml` 写 `minimumReleaseAgeExclude: [dsh-argp]`。
 
@@ -48,7 +48,7 @@ recall: 12 calls · 9 hits (75%)
 
 **总原则：工具结果可剪，对话正文只在压缩事务内动。**
 
-- **剪枝（0 LLM）**：工具结果按实体身份贴标签（`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`），按"过期读、被新版取代、非焦点轮"确定性打分，可剪的换成一行标签桩；散文永远不剪，焦点轮受保护。
+- **剪枝（0 LLM）**：工具结果按实体身份贴标签（`document:<path>` / `command:<family>` / `errorcode:<CODE>` / `scope:<dir>`），按"同文件更新读取、文件被改、当轮引用标签"三件已发生事实确定性判定，判不上的按新旧与体积排队，可剪的换成一行标签桩；散文永远不剪，焦点受保护。
 - **散文浓缩**：插件唯一的 LLM 通路，只在压缩事务内、两道闸都过线时触发（散文占声明窗 ≥50%，且上下文 ≥ 0.8×声明窗）；空输出或异常保原文。
 - **超窗兜底**：请求被 provider 以超窗拒收（400）时，自动执行一次标准压缩事务（全量剪 + 散文浓缩）再重试。
 - **召回**：桩里带标签，原文从日志按标签逐字取回（`recall_history`）；无标签的已离场内容——尤其被浓缩的对话正文——按字面 keyword 发现并逐字取回（`search_history`，2.1.0：命中给分层预览，`hit=` 第二跳取全文，命中过多回标签分布逼细化）；三个工具共享单次 5% / 累计 10% 窗的字符预算，耗尽会显式说明。压缩后词表 note 会提示模型按标签或 keyword 召回。
