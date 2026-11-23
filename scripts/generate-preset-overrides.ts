@@ -13,6 +13,8 @@
  *
  * 用法：
  *   node --import ./scripts/ts-import-rewrite-loader.mjs scripts/generate-preset-overrides.ts [presetsDir]
+ *   node --import ./scripts/ts-import-rewrite-loader.mjs scripts/generate-preset-overrides.ts --check [presetsDir]
+ *     ——漂移检测（CI 用，见 .github/workflows/preset-drift.yml）：只比对不写盘，不一致退 1。
  *
  * presetsDir 缺省依次取：argv[2] → 环境变量 DSH_WEB_APP_PRESETS → 与插件仓库**同级**
  * 的 deepseek-harness checkout（`<repo>/../deepseek-harness/packages/bundle/web-app/presets`）。
@@ -40,11 +42,16 @@ function defaultPresetsDir(): string {
 }
 
 async function main(): Promise<void> {
-  const presetsDir = process.argv[2] !== undefined ? resolve(process.argv[2]) : defaultPresetsDir()
+  // `--check`：漂移检测模式（CI 用）——重建 override 段与 cordis.patch.yml 现文比对，
+  // 一致退 0、不一致打印首个差异并退 1，绝不写盘。宿主 preset 在 npm 发布物里没有
+  // （web-app bundle 不单独发包），CI 唯一可取源是宿主仓库 sparse 拉 presets 目录。
+  const checkMode = process.argv.slice(2).some(a => a === '--check')
+  const positional = process.argv.slice(2).filter(a => !a.startsWith('--'))
+  const presetsDir = positional[0] !== undefined ? resolve(positional[0]) : defaultPresetsDir()
   if (!existsSync(presetsDir)) {
     throw new Error(`presets dir not found: ${presetsDir} (pass it as argv[2] or set DSH_WEB_APP_PRESETS)`)
   }
-  console.log(`[generate-preset-overrides] presets dir: ${presetsDir}`)
+  console.log(`[generate-preset-overrides] presets dir: ${presetsDir}${checkMode ? ' (check-only)' : ''}`)
 
   const overrides: string[] = []
   for (const preset of PRESETS) {
@@ -77,6 +84,32 @@ async function main(): Promise<void> {
     next = before + section + after
   } else {
     next = current.replace(/\s+$/, '') + '\n\n' + section + '\n'
+  }
+  if (checkMode) {
+    if (next === current) {
+      console.log(`[generate-preset-overrides] check: in sync (${overrides.length} override(s) vs host presets)`)
+      return
+    }
+    if (beginIdx === -1 || endIdx === -1) {
+      console.error('[generate-preset-overrides] check: DRIFT — MARK 段缺失，无法比对')
+      process.exitCode = 1
+      return
+    }
+    const cur = current.slice(beginIdx, endIdx + MARK_END.length).split('\n')
+    const exp = section.split('\n')
+    let first = 0
+    while (first < cur.length && first < exp.length && cur[first] === exp[first]) first += 1
+    console.error(`[generate-preset-overrides] check: DRIFT — 宿主 preset 与包内快照不一致（首个差异在第 ${first + 1} 行，`
+      + `快照 ${cur.length} 行 vs 期望 ${exp.length} 行）`)
+    for (const [tag, lines] of [['current', cur], ['expected', exp]] as const) {
+      for (let i = first; i < Math.min(first + 8, lines.length); i += 1) {
+        console.error(`  ${tag} L${i + 1}: ${lines[i] ?? '(eof)'}`)
+      }
+    }
+    console.error('  → 修复：本地重跑 node --import ./scripts/ts-import-rewrite-loader.mjs '
+      + 'scripts/generate-preset-overrides.ts <host presets 目录> 并提交（人工审：幽灵键/子路径教训见 CHANGELOG issue #4）')
+    process.exitCode = 1
+    return
   }
   await writeFile(PATCH_PATH, next, 'utf8')
   console.log(`[generate-preset-overrides] wrote ${overrides.length} override(s) to ${PATCH_PATH}`)

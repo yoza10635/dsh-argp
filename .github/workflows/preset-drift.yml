@@ -1,0 +1,72 @@
+# 宿主 preset 漂移检测：cordis.patch.yml 尾部 GENERATED 段是宿主 shipped preset 的
+# 整段替换快照，而漂移发生在**上游**——我们仓库没动静时 push 触发的 CI 看不见它，
+# 故独立 workflow + 每日 schedule。快照遮蔽宿主改动的实害先例：issue #4（幽灵键
+# 让 subagent 模型选择无声死三轮）、10-17 的 {{cwd}} 组装必炸。
+# 只检测不自动改：重生成是人工裁决动作（防把新幽灵键/毒子路径烤进包里）。
+# 基线 = npm `@deepseek-ai/dsh` dist-tags.latest 对应的 dsh-v<version> tag——
+# **稳定频道用户手里的宿主**才是快照要贴合的现实；alpha/master 的前瞻漂移不该
+# 天天红灯淹没真信号（想看上游用 workflow_dispatch 的 ref 输入，如 master）。
+# 注意 peer 包（@deepseek-ai/dsh-agent 等）的 npm 版本线与宿主版本线不同步，
+# 宿主版本必须经 @deepseek-ai/dsh 查询，勿拿 peer 包当前缀。
+name: Preset drift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '30 8 * * *' # 每日 08:30 UTC（北京 16:30）
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'host git ref to compare against (empty = npm latest 对应 tag；前瞻上游填 master 或 dsh-v0.2.3-alpha.N)'
+        required: false
+        default: ''
+
+jobs:
+  preset-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # type stripping 需要 Node >=22.19/24；runner 预装版本不保证，钉 24。
+      # 本检测零依赖（loader + preset-cleaner 纯内置模块），不需要 npm ci。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # 基线解析：npm @deepseek-ai/dsh 的 dist-tags.latest → git tag dsh-v<version>。
+      # 若宿主改 tag 前缀或停发 tag，这里会红在 clone 上——人工修本文件或用 ref 输入过渡。
+      - name: Resolve host ref (npm latest → dsh-v* tag unless dispatch override)
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          if [ -z "$REF" ]; then
+            V=$(npm view @deepseek-ai/dsh dist-tags.latest --registry=https://registry.npmjs.org)
+            REF="dsh-v$V"
+          fi
+          echo "host ref: $REF"
+          echo "HOST_REF=$REF" >> "$GITHUB_ENV"
+
+      # 宿主 preset 文件不在任何已发布 npm 包里（web-app bundle 不单独发包），
+      # 唯一可取源 = 宿主仓库，sparse 只拉 presets 目录。
+      - name: Fetch host shipped presets
+        run: |
+          ok=0
+          for i in 1 2 3; do
+            rm -rf host
+            if git clone --depth 1 --filter=blob:none --sparse --branch "$HOST_REF" \
+                 https://github.com/deepseek-ai/deepseek-harness.git host \
+               && git -C host sparse-checkout set packages/bundle/web-app/presets; then
+              ok=1; break
+            fi
+            echo "fetch attempt $i failed (blob fetch is a second round-trip); retrying"; sleep $((i*10))
+          done
+          [ "$ok" = 1 ]
+
+      - name: Check GENERATED preset override block against live host presets
+        run: |
+          if ! node --import ./scripts/ts-import-rewrite-loader.mjs \
+               scripts/generate-preset-overrides.ts --check host/packages/bundle/web-app/presets; then
+            echo "::error::宿主 preset 已漂移：本地重跑 scripts/generate-preset-overrides.ts 重生成并提交（人工审幽灵键/子路径，见 CHANGELOG issue #4）"
+            exit 1
+          fi
