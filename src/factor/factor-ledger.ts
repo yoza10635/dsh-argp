@@ -14,6 +14,7 @@
  *    都重置观察窗，"同文件他操作成功"绝不构成关闭理由。
  */
 import { labelAllowed } from './tag-canonical.ts'
+import { isRecallTool, namesRecallFamilyKey } from './recall-tools.ts'
 import type { PreviewBits } from './interactive.ts'
 import type { Facet, RTags, StickyState } from './types.ts'
 
@@ -176,10 +177,19 @@ export class FactorLedger {
   }
 
   /**
-   * sticky 状态机进料：**全部** R 事件（含存活者——"两次失败夹成功写"的观察
-   * 面本来就在存活区）。rootSeq 去重与 addPruned 独立。
+   * sticky 状态机进料：R 事件（含存活者——"两次失败夹成功写"的观察面本来就在
+   * 存活区），**但召回族除外**（下方 isRecall 早退，召回副本可见性裁决）。
+   * rootSeq 去重与 addPruned 独立。
    */
   observeR(rootSeq: number, turn: number, tags: RTags): void {
+    // 召回副本可见性裁决（2026-11-23）：裁定 2 剪下的召回结果不进 sticky 观察面。
+    // 副本经文本侧兜底携带的 file|errorcode 组合是原文失败发生次的回声——放进来 =
+    // 同一次失败再记一笔；若中间夹过成功写的 fixClaimedBetween，把已修复错误翻成
+    // sticky（词表「修复宣称后仍失败 ×N」假警报行 + 同文件读取挂错保护）。
+    // 早退放在 observed 登记**之前**：observed 是"进过观察面"的去重集，副本从未进
+    // 观察面、登记它即让去重集虚胖；重放幂等不因此破坏——副本事件每次重放都走
+    // 同一早退路径，代价只是一次 includes 判断。
+    if (isRecallTool(tags.tool)) return
     if (this.observed.has(rootSeq)) return
     this.observed.add(rootSeq)
     if (tags.errorish && tags.errorcodes.length > 0 && tags.files.length > 0) {
@@ -300,9 +310,18 @@ export class FactorLedger {
       if (candidate === null) candidate = q.labels.length === 0 ? new Set(q.restrictTo) : null
       else for (const seq of [...candidate]) if (!q.restrictTo.has(seq)) candidate.delete(seq)
     }
+    // 召回副本可见性裁决（2026-11-23）：裁定 2 把召回工具自身结果剪成副本，副本经
+    // 文本侧兜底携带与原文相同的 document:/errorcode: 键（tag-extract），纯 AND 下
+    // relevant 档退化为 turn/rootSeq 降序 ⇒ seq 更新的副本排挤原文进缺省档
+    // （缺省 limit 5 与 5% 字符预算）。缺省剔除；labels 点名 tool: 召回族键时放行
+    // （审计查询 ['document:x','tool:recall_history']='该文件曾被召回过什么'必须
+    // 命中副本）。施加位置=条目级（entries 过滤后、排序前）；item= 直钻不受本闸
+    // （句柄只来自先前 surfacing，审计第二跳要用）。
+    const copiesVisible = namesRecallFamilyKey(q.labels)
     const sorted = [...(candidate ?? [])]
       .map(seq => ({ seq, e: this.entries.get(seq) }))
       .filter((x): x is { seq: number; e: LedgerEntry } => x.e !== undefined)
+      .filter(x => copiesVisible || !isRecallTool(x.e.tags.tool))
       .sort((a, b) => {
         if ((q.order ?? 'relevant') === 'timeline') {
           return a.e.turn - b.e.turn || a.seq - b.seq
@@ -373,6 +392,12 @@ export class FactorLedger {
    */
   vocabularyRows(facet: VocabFacet, topN: number): { rows: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number; preview?: PreviewBits }>; omitted: number; rejected: number } {
     const prefix = facet + ':'
+    // 召回副本可见性裁决（2026-11-23）：非 tool facet 的行计数与全部行内聚合量
+    // （lastSeenTurn/lastTool/err-sig/preview）剔除召回副本——queryPruned 缺省
+    // 不返回副本，词表 ×N 不得超出可返回数（「词表数=可查数」契约）；仅副本
+    // 覆盖的键（可见数 0）整行不出列。tool facet 原样保留——`tool:recall_history`
+    // ×副本数本身是审计行，且点名 tool: 族键的查询确实返回副本。
+    const skipCopies = facet !== 'tool'
     const candidates: Array<{ key: string; count: number; lastSeenTurn: number; lastTool: string; lastFailed: boolean; errSigCount: number; preview?: PreviewBits }> = []
     let rejected = 0
     for (const key of this.inverted.keys()) {
@@ -386,17 +411,23 @@ export class FactorLedger {
       let lastSeq = -1
       let lastEntry: LedgerEntry | null = null
       let errSig = 0
+      let visibleCount = 0
       for (const seq of st.rootSeqs) {
         const e = this.entries.get(seq)
         if (e === undefined) continue
+        if (skipCopies && isRecallTool(e.tags.tool)) continue
+        visibleCount += 1
         if (e.tags.errorish) errSig += 1
         if (lastEntry === null || e.turn > lastEntry.turn || (e.turn === lastEntry.turn && seq > lastSeq)) {
           lastEntry = e
           lastSeq = seq
         }
       }
+      if (skipCopies && visibleCount === 0) continue
       candidates.push({
-        key, count: st.count, lastSeenTurn: st.lastSeenTurn,
+        key,
+        count: skipCopies ? visibleCount : st.count,
+        lastSeenTurn: skipCopies ? (lastEntry?.turn ?? st.lastSeenTurn) : st.lastSeenTurn,
         lastTool: lastEntry?.tags.tool ?? 'tool',
         lastFailed: lastEntry?.tags.failed === true,
         errSigCount: errSig,

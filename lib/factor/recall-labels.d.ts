@@ -54,13 +54,6 @@ export declare function resolveQueryLabels(ledger: FactorLedger, raw: unknown): 
     remapped: string[];
     ambiguous: string[];
 };
-/**
- * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
- * P6-③ 裁定 2：召回对（call+result）无条件进剪序（可再生=再召回一次），识别按本名单。
- * search_history 同族（2.1.0 刀 B）：搜索结果同样可再生，且自动继承 P1 在轮免疫
- * （在轮排除按本名单判定）。
- */
-export declare const RECALL_TOOL_NAMES: readonly string[];
 /** keyword 通道文法闸（现由 search_history 消费；2.1.0 D8′ 迁出后 recall_history 不再用）。
  *  字面子串口径：不 regex（ReDoS）、不模糊、不嵌入——0-LLM 与确定性由 indexOf 语义天然成立。 */
 export declare const KEYWORD_MIN_CHARS = 2;

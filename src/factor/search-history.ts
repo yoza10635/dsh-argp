@@ -33,6 +33,7 @@ import {
 } from '../constants.ts'
 import { collectHits, defaultProseCapChars, proseTextOf, scanProseHits } from './prose-scan.ts'
 import { KEYWORD_MAX_CHARS, KEYWORD_MIN_CHARS, recallCallBlocked, resolveQueryLabels, sessionOfToolCall, type RecallLabelsHost } from './recall-labels.ts'
+import { isRecallTool, namesRecallFamilyKey } from './recall-tools.ts'
 import type { FactorEngine } from './engine.ts'
 
 interface SearchRow {
@@ -129,7 +130,9 @@ export function registerSearchHistory(ctx: Context, factor: FactorEngine, host: 
       + 'condensed away by compaction (originals stay in the append-only log). Each row prints a hit=<seq> handle, the per-item match count (×N), and up to two match fragments (previews shrink when there are many hits); fetch a row\'s full original with search_history(hit=<seq>). '
       + 'Optional labels[] narrows to pruned items carrying ALL given labels — prose has no labels, so with labels present only '
       + 'the tool band is searched. More than ' + RECALL_SEARCH_FACET_N + ' hits: nothing is listed — refine (longer keyword or add labels). '
-      + 'Shares the recall_history per-call/per-turn character budget.',
+      + 'Shares the recall_history per-call/per-turn character budget. '
+      + 'Pruned results of the recall tools themselves are by default excluded from the tool band and from vocabulary counts '
+      + '(copies of originals would duplicate rows); pass a tool:recall_history / tool:list_labels / tool:search_history label to include those copies (audit).',
     parameters: {
       keyword: { type: 'string', description: 'literal substring, 2-100 chars, no control chars (NOT a regex); required unless hit= is set' },
       labels: { type: 'array', items: { type: 'string' }, description: 'optional; ALL must match the same pruned item (verbatim vocabulary labels). With labels only the tool band is searched — prose never carries labels' },
@@ -207,6 +210,16 @@ export function registerSearchHistory(ctx: Context, factor: FactorEngine, host: 
         candT = inter === null ? [] : [...inter]
       } else {
         candT = ledger.prunedRootSeqs()
+      }
+      // 召回副本可见性裁决（2026-11-23，与 queryPruned 同收口）：裁定 2 剪下的召回
+      // 结果携带与原文相同的 document:/errorcode: 键，R 带对原文+副本双命中（行内
+      // ×N 只治单 atom 行级、不跨 atom）。labels 未点名 tool: 召回族键时剔除副本；
+      // 点名时放行（审计形）。hit= 第二跳不受本闸（白名单=先前 surfacing 行）。
+      if (!namesRecallFamilyKey(labels.keys)) {
+        candT = candT.filter(seq => {
+          const e = ledger.entryOf(seq)
+          return e === null || !isRecallTool(e.tool)
+        })
       }
       for (const seq of candT) {
         const raw = rawEventText(session, seq)

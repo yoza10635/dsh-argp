@@ -25,7 +25,7 @@ import { DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACTOR_COMPACTED_MARKER, FOCA
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
-import { RECALL_TOOL_NAMES } from './recall-labels.ts'
+import { isRecallTool } from './recall-tools.ts'
 import { CLIP_MARK, clipFamilyOf, clipReserveChars, clipText } from './clip-shape.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
 import { computeScore, planPrune, type PrunePlan, type ScoredEntry } from './retention-score.ts'
@@ -560,7 +560,7 @@ export class FactorEngine {
       // 裁定 2 的"下次压缩驱逐"=轮闭合后的下一事务；同轮第二笔压缩事务把刚返回的
       // recall/list_labels 结果剪成空克隆=高压时召回面自废（provider 看到的是空 tool/result）。
       // 轮闭合后回到裁定 2 无条件进剪序。
-      if (inOpenTurn && RECALL_TOOL_NAMES.includes(input.tool)) continue
+      if (inOpenTurn && isRecallTool(input.tool)) continue
       // 焦点尾窗降级时，只有最新 cap 组内的 R 算焦点；其余走普通排序/释放阀。
       const inFocus = focusEscalated && focusTail.focusSeqs.has(a.seq)
       const keys = indexKeys(input.tags)
@@ -580,7 +580,7 @@ export class FactorEngine {
         seq: a.seq, turn: a.turn, input, inOpenTurn, inFocus, regenerable, stickyMember, focalMatch,
         focalDocHit: tiered ? [...keys].filter(k => focalDocSet.has(k)) : [],
         mediumHit: tiered ? keys.some(k => focalMedium.has(k)) : false,
-        isRecall: RECALL_TOOL_NAMES.includes(input.tool),
+        isRecall: isRecallTool(input.tool),
       })
     }
     // 宽度熔断（§2.5 v1.1 护栏）：焦点文档 hard 候选字节占比超阈 ⇒ 每文档只保最新一枚

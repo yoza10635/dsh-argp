@@ -146,13 +146,9 @@ export function resolveQueryLabels(ledger: FactorLedger, raw: unknown): {
   return { wanted, keys, unknown, remapped, ambiguous }
 }
 
-/**
- * 召回面工具名（单一事实源）：defineTool 的 name 与 decide() 的召回对识别同源——
- * P6-③ 裁定 2：召回对（call+result）无条件进剪序（可再生=再召回一次），识别按本名单。
- * search_history 同族（2.1.0 刀 B）：搜索结果同样可再生，且自动继承 P1 在轮免疫
- * （在轮排除按本名单判定）。
- */
-export const RECALL_TOOL_NAMES: readonly string[] = ['recall_history', 'list_labels', 'search_history']
+// 召回面工具名单单一事实源已抽至 recall-tools.ts（叶子模块）——P6-③ 裁定 2 的剪枝
+// 识别与 2026-11-23 召回副本可见性裁决（factor-ledger 查询层）共用该名单，
+// 从 factor-ledger 反向 import 本文件会成环。
 
 /** keyword 通道文法闸（现由 search_history 消费；2.1.0 D8′ 迁出后 recall_history 不再用）。
  *  字面子串口径：不 regex（ReDoS）、不模糊、不嵌入——0-LLM 与确定性由 indexOf 语义天然成立。 */
@@ -168,7 +164,7 @@ export function registerRecallLabels(ctx: Context, factor: FactorEngine, host: R
 
   const recallHistoryTool = defineTool({
     name: 'recall_history',
-    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE>, scope:<dir>, tool:<registered-name> (a bare name matches all facets except tool:; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. Use view:"outline" for one metadata line per item (each carries the item\'s full-form labels), then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels. To find content by literal substring (including condensed-away prose), use search_history(keyword=...) instead.',
+    description: 'Retrieve originals of pruned tool results by ENTITY LABEL: document:<path>, command:<family>, errorcode:<CODE>, scope:<dir>, tool:<registered-name> (a bare name matches all facets except tool:; a shortened path suffix resolves uniquely or lists candidates). Multiple labels require ALL of them to match the same item — if nothing comes back, drop a label. Use view:"outline" for one metadata line per item (each carries the item\'s full-form labels), then item=<rootSeq> / offset=<chars> to fetch text. Returns verbatim originals under a per-call and per-turn character budget; cursor/epoch continue paging. item= only addresses items a previous reply surfaced; list_labels(category) discovers labels. To find content by literal substring (including condensed-away prose), use search_history(keyword=...) instead. Pruned results of the recall tools themselves are by default excluded from queries and vocabulary counts (they would shadow the originals); name a tool:recall_history / tool:list_labels / tool:search_history label to include those copies (audit).',
     parameters: {
       labels: { type: 'array', items: { type: 'string' }, description: 'one or more labels; ALL must match the same item (true intersection), verbatim from the vocabulary (e.g. ["document:c:/proj/a.ts","errorcode:ERESOLVE"])' },
       limit: { type: 'integer', description: 'optional maximum items to return (engine-configured default when omitted, cap 20)' },

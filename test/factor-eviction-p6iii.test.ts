@@ -10,7 +10,7 @@
  * 半截 A 的已应答 R 必须同行驱逐（user 墓碑替 A 会孤儿化它们）。
  *
  * 变异台账（摘锁必须变红，已逐条执行）：
- *  EV1 在轮召回排除摘除（删 `inOpenTurn && RECALL_TOOL_NAMES` continue）→ T1 红（在轮 recall R 被剪空）；
+ *  EV1 在轮召回排除摘除（删 `inOpenTurn && isRecallTool` continue）→ T1 红（在轮 recall R 被剪空）；
  *  EV1b 裁定 2 回滚为召回 R 照常硬保护（hard:{} 还原）→ T1 红（closed 轮 recall R 不再被剪）；
  *  EV2 强制先行段摘除（forcedFirstSeqs 不喂）→ T2/T3 红（半截 A/孤儿 R 不入序零发射）；
  *  EV3 半截 A 的已应答 R 不同行 → T4 红（孤儿 R 幸存 = tool-pairing 失衡）。

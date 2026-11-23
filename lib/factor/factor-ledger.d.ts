@@ -103,8 +103,9 @@ export declare class FactorLedger {
      */
     addPruned(entry: LedgerEntry): boolean;
     /**
-     * sticky 状态机进料：**全部** R 事件（含存活者——"两次失败夹成功写"的观察
-     * 面本来就在存活区）。rootSeq 去重与 addPruned 独立。
+     * sticky 状态机进料：R 事件（含存活者——"两次失败夹成功写"的观察面本来就在
+     * 存活区），**但召回族除外**（下方 isRecall 早退，召回副本可见性裁决）。
+     * rootSeq 去重与 addPruned 独立。
      */
     observeR(rootSeq: number, turn: number, tags: RTags): void;
     /**

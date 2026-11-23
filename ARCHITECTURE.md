@@ -130,9 +130,9 @@ pre-step 位：`source==='anchored'` 且 `contextTokens ≥ windowRatio×声明�
 
 | 工具 | 输入 | 数据源 |
 |---|---|---|
-| `recall_history` | `labels[]`（交集）+ `limit` + `cursor/epoch` + `item/offset` | `rawEventText` 取日志 append 根源原文；桩不冒充 |
+| `recall_history` | `labels[]`（交集）+ `limit` + `cursor/epoch` + `item/offset` | `rawEventText` 取日志 append 根源原文；桩不冒充。被剪的召回工具自身结果缺省不进查询与词表统计，labels 点名 `tool:` 召回族标签时返回（2026-11-23 召回副本可见性裁决；`item=` 直钻不受限——句柄只来自先前 surfacing） |
 | `list_labels` | `category`（document/command/errorcode；scope 按需 `category:'scope'`）+ `limit` | 被剪账本的词表（键 × 覆盖数 × 最后出现轮） |
-| `search_history` | `keyword`（内容子串 2-100，必填）+ `labels[]`（可选 AND，仅工具带）+ `limit` + `hit`（第二跳） | 被剪 R 原文 ∪ user/assistant 散文原文（仅 text 块、kind 主防线排注入/宿主 boilerplate、replace 副本排除）；N>250 走标签分布直方图逼细化 |
+| `search_history` | `keyword`（内容子串 2-100，必填）+ `labels[]`（可选 AND，仅工具带）+ `limit` + `hit`（第二跳） | 被剪 R 原文 ∪ user/assistant 散文原文（仅 text 块、kind 主防线排注入/宿主 boilerplate、replace 副本排除）；N>250 走标签分布直方图逼细化。被剪的召回工具自身结果缺省不进工具带与词表统计，labels 点名 `tool:` 召回族标签时返回（与 queryPruned 同收口） |
 
 - 查询宽容：裸标签按四 facet 展开试匹配；未命中标签**如实回显**（不静默剔除）；
 - 分页：`cursor/epoch` 续读，epoch 漂移显式告警（不假装稳定分页）；
@@ -195,9 +195,10 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 | `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表/note | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
 | `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, llm/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` defineTool + 会话解析/防循环阀/`resolveQueryLabels` 单点 | log-access, telemetry, factor-ledger, factor/engine |
-| `factor/search-history.ts` | `search_history` defineTool：内容发现（被剪 R ∪ 散文）+ 分层预览 + 临时索引单槽 + 分布直方图 | log-access, budget, cjk, prose-scan, recall-labels, factor/engine |
+| `factor/search-history.ts` | `search_history` defineTool：内容发现（被剪 R ∪ 散文）+ 分层预览 + 临时索引单槽 + 分布直方图 | log-access, budget, cjk, prose-scan, recall-labels, recall-tools, factor/engine |
+| `factor/recall-tools.ts` | 召回面工具名单单一事实源（P6-③ 裁定 2 剪枝识别 + 召回副本可见性裁决谓词，叶子模块） | — |
 | `factor/prose-scan.ts` | 散文扫描带纯函数面：仅 text 块投影 + kind/replace 谓词 + 从旧到新 cap | llm/types |
-| `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary` | — |
+| `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary`；查询层统一裁决召回副本可见性 | tag-canonical, recall-tools |
 | `factor/factor-atoms.ts` | R 原子投影：标签、焦点、sticky、cites/命令/路径抽取辅助 | tag-extract, tag-canonical |
 | `factor/retention-score.ts` | 保留打分与 `planPrune`（焦点带/sticky/过期/宽度熔断/夹剪归位） | factor/types, factor-atoms |
 | `factor/tag-extract.ts` | 工具参数/输出 → 实体标签（四 facet） | tag-canonical |
