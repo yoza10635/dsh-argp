@@ -24,7 +24,7 @@ import type {
 import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceededError } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
-import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
+import type { CommandId } from '@deepseek-ai/dsh-commands'
 import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。

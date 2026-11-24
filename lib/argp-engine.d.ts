@@ -17,7 +17,7 @@ import z from '@deepseek-ai/schemastery';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';
 import type { CompactionAgentContext, CompactionResult, CompactionTrigger, ManualCompactAgentContext } from '@deepseek-ai/dsh-compaction';
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
+import type { CommandId } from '@deepseek-ai/dsh-commands';
 export type { NodeState } from './log-access.js';
 export { eventText } from './log-access.js';
 import type { Atom } from './argp-types.js';

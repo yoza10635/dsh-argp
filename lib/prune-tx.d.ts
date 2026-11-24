@@ -1,6 +1,6 @@
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
-import type { CommandId } from '@deepseek-ai/dsh-commands/brand';
+import type { CommandId } from '@deepseek-ai/dsh-commands';
 import type { Atom, AtomType } from './argp-types.js';
 import type { SessionRuntimeState } from './session-state.js';
 /**
