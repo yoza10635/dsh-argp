@@ -6,6 +6,18 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [2.1.1-beta.0] - 2026-11-24（beta 渠道：宿主 0.2.3-alpha 预适配）
+
+### 优化
+- preset: 覆盖块对宿主 dsh-v0.2.3-alpha.2 重生成（standard 新增 tool-cordis 条目、cordis 的 tool-skill 新增 excludedSkills、ptc 的 skill-filesystem 新增 customSkillDirs 且 plugin-manager 恢复出厂启用条件，均出厂对齐）
+
+### 修复
+- deps: CommandId 类型导入改 dsh-commands 根出口，规避宿主 0.2.3 移除 ./brand 子路径的报错（运行时行为零变化）
+
+### 提示
+- 注意：面向宿主 0.2.3-alpha 频道用户（`dsh plugin add dsh-argp@2.1.1-beta.0`）；stable 宿主（0.2.2 线）继续用 2.1.0
+- 测试：全量 341 例（339 通过、2 跳过）
+
 ## [2.1.0] - 2026-11-19（tool 因子键 + 交互族预览 + search_history 内容发现 + 外评 Issue3/4/5）
 
 ### Added
