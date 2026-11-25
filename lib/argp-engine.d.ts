@@ -1,17 +1,3 @@
-/**
- * ARGP 压缩引擎（2.0 factor-only）。
- *
- * 宿主面 = `CompactionEngine`：pre-step 三通道（压力逃生口 / §9.37 出口闸 / §9.36
- * 浓缩闸二）、溢出 400 恢复、手动 `/compact`、`/argp` 只读状态。
- * 事务内核 = factor 引擎（R 贴标剪枝，0-LLM）+ 散文浓缩（唯一 LLM 摘要通路）。
- *
- * 读侧兼容：老墓碑文法、老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result
- * 克隆配对契约（老会话档案可回放）。
- *
- * 循环 import 规约：引擎是唯一组合根，向下单向依赖各功能模块；各模块经窄接口
- * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
- * 编译期断言、运行时同一实例。
- */
 import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction';

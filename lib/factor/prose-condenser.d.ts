@@ -3,6 +3,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { type PruneTxHost } from '../prune-tx.ts';
 import type { Atom } from '../argp-types.ts';
+import { type HostReinjectedMode } from './ua-input.ts';
 import { type AgentRouteHint } from '../llm/llm-adapter.ts';
 /** 散文占比触发线（分母=声明窗，含 system 头）。§9.36 合取双闸之闸一（50% 线原样保留）；
  *  闸二（总上下文 ≥ windowRatio×声明窗）在引擎侧 condenseGate 把关，两闸齐过才开压。 */
@@ -15,9 +16,17 @@ export declare const PROSE_CHECKPOINT_PREFIX = "[\u6563\u6587\u538B\u7F29]";
  * 小声明窗守卫（H5）：实际传入 = min(本值, 0.2×声明窗 − 指令预算)，见 condense()。
  */
 export declare const PROSE_SUMMARY_MAX_TOKENS = 20480;
-/** 事件读侧探针（同 ua-input 口径：source.form + 附件块）。 */
+/** 小窗守卫给指令与协议开销留的 token 数（H5 式子中的常数项）。 */
+export declare const PROSE_INSTRUCTION_TOKEN_RESERVE = 512;
+/**
+ * §B 分派器用：摘要请求的**发送尺寸**（除上下文外的固定分量）——指令预留 + 输出
+ * 预算（与 H5 小窗守卫同源）。判"能不能直发摘要求"：C + 本值 ≤ W_eff。
+ */
+export declare function summarySendTokens(declaredWindow: number): number;
+/** 事件读侧探针（同 ua-input 口径：source.form + source.kind + 附件块）。 */
 export interface ProseEventProbe {
     form?: string;
+    kind?: string;
     attachment: boolean;
 }
 /** 轮级贪心计划（纯函数输出；发射在 ProseCondenser.condense）。 */
@@ -77,8 +86,12 @@ export declare class ProseCondenser {
     condense(session: Session, route: AgentRouteHint, windowTokens: number, signal?: AbortSignal, declaredWindow?: number): Promise<CompactionResult | null>;
     /** 焦点轮数活读：宿主侧旋钮与 FactorEngine 同源（引擎构造期传 getter 到本类）。 */
     focalTurnsOf(): number;
-    /** 散文占比统计（触发线日志/遥测复用；不读 LLM）。 */
-    proseStats(session: Session): {
+    /**
+     * 散文占比统计（触发线日志/遥测复用；不读 LLM）。
+     * `hostReinjected`：宿主再注入三件套的归类模式（缺省 'prose'=现网口径不变；
+     * §B 分派器度量传 'exclude'——假量不撑大判据②，见 classifyUaAtom 分期注释）。
+     */
+    proseStats(session: Session, hostReinjected?: HostReinjectedMode): {
         sysChars: number;
         proseCharsAll: number;
     };

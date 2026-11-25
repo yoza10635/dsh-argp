@@ -12,6 +12,7 @@
  * （LifecycleHost / BudgetHost / RecallHost / PruneTxHost / FactorEngineHost …）回指，
  * 编译期断言、运行时同一实例。
  */
+import { appendFileSync } from 'node:fs'
 import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { CompactionEngine } from '@deepseek-ai/dsh-compaction'
@@ -47,7 +48,8 @@ export { scaleBudgets } from './budget.js'
 import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { registerSearchHistory } from './factor/search-history.ts'
-import { ProseCondenser } from './factor/prose-condenser.ts'
+import { ProseCondenser, summarySendTokens } from './factor/prose-condenser.ts'
+import { planForm, resolveDispatchShadowEnabled, resolveDispatchShadowLogPath } from './factor/dispatch.ts'
 // 召回模块（2.0 只留共享语义）：shadowed 增量账本 + 召回字符预算。本地使用。
 import { shadowedSeqsOf, budgetRecallText, type RecallHost } from './recall.js'
 // 剪枝事务模块：prune-tx 事务骨架（factor 参数化复用）+ 台账记录类型。
@@ -1084,6 +1086,35 @@ export class ArgpEngine extends CompactionEngine {
       return null
     }
     let measurement = this.measureTokens(session, incomingTokens)
+    // §B-1 影子分派（ARGP_FACTOR_DISPATCH=1）：只读采快照 → 纯函数定形态 → 记日志。
+    // 不改变任何发射（现网动作序照旧），供实机三域回放对照决策表；接管在 §B-2。
+    if (resolveDispatchShadowEnabled() && (trigger === 'context-overflow' || declaredKnown)) {
+      try {
+        const wEff = this.effectiveWindowFor(session)
+        const b6 = this.b6RiskSummary(session)
+        // 'exclude'：宿主再注入三件套不计散文（假量）；现网 condense 通路仍 legacy 口径，
+        // 待 §B-2 结构去重驱逐落地后统一翻缺省。
+        const pst = this.prose.proseStats(session, 'exclude')
+        const cpt = Math.max(1, this.liveCharsPerToken(session))
+        const proseTok = Math.ceil(pst.proseCharsAll / cpt)
+        const sendTok = summarySendTokens(wEff)
+        const cTok = measurement.contextTokens
+        const snapshot = {
+          trigger, contextTokens: cTok, retainTokens, windowEff: wEff,
+          floorTokens: b6.nonPrunableTokens, prunableTokens: Math.max(0, cTok - b6.nonPrunableTokens),
+          condensableProseTokens: proseTok, summarySendTokens: sendTok,
+        }
+        const decision = planForm(snapshot)
+        const record = { t: Date.now(), ...snapshot, form: decision.form, reason: decision.reason }
+        this.log.info('[argp-dispatch-shadow] ' + JSON.stringify(record))
+        const dispatchLogPath = resolveDispatchShadowLogPath()
+        if (dispatchLogPath !== undefined) {
+          try { appendFileSync(dispatchLogPath, JSON.stringify(record) + '\n') } catch { /* 落盘失败不改变任何发射 */ }
+        }
+      } catch (e) {
+        this.log.warn('[argp-dispatch-shadow] 影子决策异常（不影响发射）：' + (e instanceof Error ? e.message : String(e)))
+      }
+    }
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
     // 退役（factorPressure 仅存于 ARGP_FACTOR_PRESSURE=1 逃生口）。事务内动作序：

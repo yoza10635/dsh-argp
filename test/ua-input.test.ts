@@ -32,3 +32,19 @@ test('分类器四类 + 二次浓缩禁令（UI1/UI2 锁）', () => {
   uinfo.sourceSeq = 5
   assert.equal(classifyUaAtom(uinfo, clean), 'excluded', 'U-info 聚合副本禁二次浓缩')
 })
+
+test('宿主再注入三件套归类分期：缺省 prose=现网字节不变，exclude=分派器度量口径', () => {
+  // AGENTS.md / git 快照 / 技能目录：宿主每次压缩重注入一份——旧副本被 condenser 吞掉
+  // 是唯一回收通道（§B-2 结构去重落地前不能断），故缺省仍按 textA（现网不变）；
+  // 分派器散文度量显式 'exclude'（假量不撑大判据②，轮1 焦点域实锤 10972→1020）。
+  const glossaryProbe = { attachment: false, form: 'instructions', kind: 'agent-instructions' }
+  assert.equal(classifyUaAtom(atom(9, 'U', 1, 'alpha bravo ...'), glossaryProbe), 'textA', '缺省=现网口径（condense 吞旧副本通道保留）')
+  assert.equal(classifyUaAtom(atom(9, 'U', 1, 'alpha bravo ...'), glossaryProbe, 'exclude'), 'excluded', 'exclude 模式：AGENTS.md 词汇表非可浓缩散文')
+  assert.equal(classifyUaAtom(atom(10, 'U', 1, 'git status...'), { attachment: false, form: 'snapshot', kind: 'runtime-context' }, 'exclude'), 'excluded', '运行时快照排除')
+  assert.equal(classifyUaAtom(atom(11, 'U', 1, 'skill list...'), { attachment: false, form: 'catalog', kind: 'skill-catalog' }, 'exclude'), 'excluded', '技能目录排除')
+  // 单通道命中也排除（宿主两字段都给，任一为权威判据）。
+  assert.equal(classifyUaAtom(atom(12, 'U', 1, 'x'), { attachment: false, kind: 'agent-instructions' }, 'exclude'), 'excluded', 'kind 单通道命中即排除')
+  assert.equal(classifyUaAtom(atom(13, 'U', 1, 'x'), { attachment: false, form: 'catalog' }, 'exclude'), 'excluded', 'form 单通道命中即排除')
+  // 真用户消息（kind=user / 无 form）两模式下都是可浓缩散文——排除面精确不误伤。
+  assert.equal(classifyUaAtom(atom(14, 'U', 1, 'real prose'), { attachment: false, kind: 'user' }, 'exclude'), 'textA', '真 user 消息不受影响')
+})

@@ -8,13 +8,33 @@
  */
 import type { Atom } from '../argp-types.ts';
 export type SummaryInputClass = 'textA' | 'toolCallA' | 'rPair' | 'excluded' | 'barrier';
-/** 事件读侧探针（atom 上无 source.form / 附件块——编排侧从日志投影后喂进来）。 */
+/** 事件读侧探针（atom 上无 source.form / source.kind / 附件块——编排侧从日志投影后喂进来）。 */
 export interface UaEventProbe {
-    /** source.form（relay/notice ⇒ excluded）。 */
+    /** source.form（relay/notice/宿主再注入形态 ⇒ excluded）。 */
     form?: string;
+    /** source.kind（宿主注入通道枚举：agent-instructions/runtime-context/skill-catalog）。 */
+    kind?: string;
     /** 内容含 image/file 块 ⇒ barrier（浓缩不吃附件，且切断段）。 */
     attachment: boolean;
 }
 /** 已浓缩形态（二次浓缩禁令；与 constants.DEFAULT_SKIP_CONTEXT_FORMS 同名单）。 */
 export declare const SKIP_SUMMARY_FORMS: readonly string[];
-export declare function classifyUaAtom(atom: Atom, probe: UaEventProbe): SummaryInputClass;
+/**
+ * 宿主每请求**再注入**的上下文三件套（实机铁证 2026-11-25 三域影子对照：prose 域
+ * 32K 会话 skill-catalog 注入 4 次 ×8.5KB——压缩驱逐后宿主立即重新注入）。驱逐它们
+ * 释放的是**假量**（下一请求原样回来），喂进摘要 transcript 还白烧 LLM token。
+ * 焦点域 30KB AGENTS.md 词汇表曾被计为可浓缩散文 10972 tok，把「不该摘」的 B-6
+ * 场景误判成「摘」（影子对照抓出的口径 bug）。
+ */
+export declare const HOST_REINJECTED_FORMS: readonly string[];
+export declare const HOST_REINJECTED_KINDS: readonly string[];
+/**
+ * 宿主再注入三件套的归类模式（§B-2 接管的分期安全垫）：
+ *  - 'prose'（**缺省=现网字节不变**）：按旧行为计 textA——condenser 会吞进摘要并
+ *    驱逐旧副本；宿主每次压缩重注入一份，虽然烧 LLM token 但 surface 不累积。
+ *  - 'exclude'：判 excluded——dispatch 散文度量用它（假量不再撑大判据②）。
+ * 等 §B-2 的 0-LLM 结构去重驱逐落地后，缺省才翻到 exclude——否则旧副本永远
+ * 留在 surface（排除=不再被驱逐 ∧ 宿主每压必重注入 ⇒ 重复累积，档案实锤）。
+ */
+export type HostReinjectedMode = 'prose' | 'exclude';
+export declare function classifyUaAtom(atom: Atom, probe: UaEventProbe, hostReinjected?: HostReinjectedMode): SummaryInputClass;

@@ -33,7 +33,7 @@ import { eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
-import { classifyUaAtom, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
+import { classifyUaAtom, type HostReinjectedMode, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
 import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
 import { DEFAULT_FOCAL_TURNS, FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { liveBlendCharsPerToken } from '../budget.js'
@@ -54,7 +54,15 @@ export const PROSE_CHECKPOINT_PREFIX = '[散文压缩]'
 export const PROSE_SUMMARY_MAX_TOKENS = 20_480
 
 /** 小窗守卫给指令与协议开销留的 token 数（H5 式子中的常数项）。 */
-const PROSE_INSTRUCTION_TOKEN_RESERVE = 512
+export const PROSE_INSTRUCTION_TOKEN_RESERVE = 512
+
+/**
+ * §B 分派器用：摘要请求的**发送尺寸**（除上下文外的固定分量）——指令预留 + 输出
+ * 预算（与 H5 小窗守卫同源）。判"能不能直发摘要求"：C + 本值 ≤ W_eff。
+ */
+export function summarySendTokens(declaredWindow: number): number {
+  return PROSE_INSTRUCTION_TOKEN_RESERVE + summaryMaxTokensOut(declaredWindow)
+}
 
 /** LLM 超时（DEFAULT_LLM_TIMEOUT_MS 同源口径）。 */
 const PROSE_LLM_TIMEOUT_MS = 180_000
@@ -106,9 +114,10 @@ const PROSE_COMPACTION_INSTRUCTION = [
   '- Output only the checkpoint text: do not call any tool or take any other action.',
 ].join('\n')
 
-/** 事件读侧探针（同 ua-input 口径：source.form + 附件块）。 */
+/** 事件读侧探针（同 ua-input 口径：source.form + source.kind + 附件块）。 */
 export interface ProseEventProbe {
   form?: string
+  kind?: string
   attachment: boolean
 }
 
@@ -405,8 +414,12 @@ export class ProseCondenser {
     return this.cfg.focalTurns()
   }
 
-  /** 散文占比统计（触发线日志/遥测复用；不读 LLM）。 */
-  proseStats(session: Session): { sysChars: number; proseCharsAll: number } {
+  /**
+   * 散文占比统计（触发线日志/遥测复用；不读 LLM）。
+   * `hostReinjected`：宿主再注入三件套的归类模式（缺省 'prose'=现网口径不变；
+   * §B 分派器度量传 'exclude'——假量不撑大判据②，见 classifyUaAtom 分期注释）。
+   */
+  proseStats(session: Session, hostReinjected: HostReinjectedMode = 'prose'): { sysChars: number; proseCharsAll: number } {
     const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string }>
     const surfaceSeqs = [...session.surface.nodes] as unknown as number[]
     let sysChars = 0
@@ -417,7 +430,7 @@ export class ProseCondenser {
     let proseCharsAll = 0
     for (const a of this.host.atomize(session)) {
       const probe = probes.get(a.seq) ?? { attachment: false }
-      if (classifyUaAtom(a, probe) === 'textA') proseCharsAll += a.text.length
+      if (classifyUaAtom(a, probe, hostReinjected) === 'textA') proseCharsAll += a.text.length
     }
     return { sysChars, proseCharsAll }
   }
@@ -428,11 +441,15 @@ export class ProseCondenser {
     for (const seq of session.surface.nodes as unknown as number[]) {
       const data = events[seq]?.data
       if (data === undefined) continue
-      const src = (data['source'] ?? (data['message'] as { source?: unknown } | undefined)?.source) as { form?: string } | undefined
+      const src = (data['source'] ?? (data['message'] as { source?: unknown } | undefined)?.source) as { form?: string; kind?: string } | undefined
       // 附件判据与 factor 硬保护同源：递归 tool-result 嵌套 content（顶层扫会漏掉
       // R 里的 image/file，浓缩时附件被摘要吞掉）。
       const attachment = hasAttachmentBlocks(data)
-      probes.set(seq, { form: typeof src?.form === 'string' ? src.form : undefined, attachment })
+      probes.set(seq, {
+        form: typeof src?.form === 'string' ? src.form : undefined,
+        kind: typeof src?.kind === 'string' ? src.kind : undefined,
+        attachment,
+      })
     }
     return probes
   }
