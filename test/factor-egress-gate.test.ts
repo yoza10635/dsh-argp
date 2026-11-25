@@ -6,7 +6,7 @@
  *    的才可以"+ 宁缺勿错交 400 兜底网）；
  *  ③pre-step 接线：开闸（env=1）且过线剪 ⇒ 同 step 浓缩闸顺延（EG-6/6c，防同步双重重铸）；
  *  ④缺省关：无 env ⇒ egress 不挂、浓缩闸照旧（EG-6b，M4 锁；2026-11-15 用户裁定对照臂
- *    形态=缺省，贴墙交 400 兜底网 + 闸二浓缩）；'1' 是唯一开档（EG-7，档位语义同 resolveClipEnabled）。
+ *    形态=缺省(本套钉 off 世界)，贴墙交 400 兜底网；'1' 为显式开档；接管世界缺省开见 EG-7（2026-11-25 翻转）。
  *
  * 变异台账（摘除必红，cp 快照回滚）：
  *  M1 摘 anchored 守卫 ⇒ EG-3 红；M2 声明窗未知退默认大窗 ⇒ EG-5 红；
@@ -338,15 +338,19 @@ test('EG-6b 缺省（无 env）⇒ egress 不挂、浓缩闸照旧（M4 锁）',
   assert.deepEqual(calls, ['condense'], '缺省=对照臂形态（egress 零触达，浓缩闸照旧）')
 })
 
-test('EG-7 resolveEgress：env=0 硬关 > 设置阈值比例线 > env=1 旧公式线 > 全无=关', () => {
-  assert.deepEqual(resolveEgress({}), { enabled: false, lineRatio: null }, '全无 = 关（撞墙 400 兜底）')
-  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '0' }), { enabled: false, lineRatio: null }, 'env=0 = 关')
-  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: 'false' }), { enabled: false, lineRatio: null }, '非法值 ⇒ 关（缺省安全）')
+test('EG-7 resolveEgress：env=0 硬关 > 设置比例线 > env=1 开 > 全无=按分派世界（接管开/旧关）', () => {
+  assert.deepEqual(resolveEgress({}), { enabled: true, lineRatio: null }, '全无+接管缺省世界 = 开（旧公式线；2026-11-25 翻转：贴线饿死带唯一防线）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_DISPATCH: '0' }), { enabled: false, lineRatio: null }, 'off 世界全无 = 关（旧世界现网不变，撞墙 400 兜底）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_DISPATCH: '1' }), { enabled: false, lineRatio: null }, 'shadow 世界全无 = 关（只记录世界不改触发时序）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '0' }), { enabled: false, lineRatio: null }, 'env=0 = 关（接管世界逃生口）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: 'false' }), { enabled: true, lineRatio: null }, '非法值=未设 ⇒ 随世界缺省（接管开）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: 'false', ARGP_FACTOR_DISPATCH: '0' }), { enabled: false, lineRatio: null }, '非法值+off 世界 ⇒ 关')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_DISPATCH: '0', ARGP_FACTOR_EGRESS: '1' }), { enabled: true, lineRatio: null }, 'env=1 恒开：正交于分派世界')
   assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '1' }), { enabled: true, lineRatio: null }, 'env=1 = 开（旧公式线）')
   assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '0' }, 0.5), { enabled: false, lineRatio: null }, 'env=0 硬覆盖：设置阈值也不开（对照臂优先）')
   assert.deepEqual(resolveEgress({}, 0.5), { enabled: true, lineRatio: 0.5 }, '设置压缩阈值 >0 → 比例线（线 = 窗 × 0.5）')
   assert.deepEqual(resolveEgress({ ARGP_FACTOR_EGRESS: '1' }, 0.5), { enabled: true, lineRatio: 0.5 }, '设置优先于 env=1（用户显式选择）')
-  assert.deepEqual(resolveEgress({}, 0), { enabled: false, lineRatio: null }, '设置 0 = 关（撞墙兜底，档位语义同 resolveClipEnabled 的安全方向）')
+  assert.deepEqual(resolveEgress({ ARGP_FACTOR_DISPATCH: '0' }, 0), { enabled: false, lineRatio: null }, 'off 世界 + 设置 0 = 关（撞墙兜底，档位安全方向）')
 })
 
 // EG-13/13b：冷 resume（2026-11-13 R2 实锤）——headless 每轮新进程 resume 时，历史

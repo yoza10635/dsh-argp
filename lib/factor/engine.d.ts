@@ -83,7 +83,14 @@ export declare function resolveQScoreEnabled(env?: NodeJS.ProcessEnv): boolean;
  *  - 设置 compactionThreshold > 0 = 开，线 = 声明窗 × 比例（「压缩阈值」语义，
  *    2026-11-15 用户裁定：可开启并自行设置比例）；
  *  - env ARGP_FACTOR_EGRESS=1（无设置）= 开，线 = 旧公式（窗 − 输出预算 − 2%，
- *    评测/对照口径）；都没有 = 关（撞墙 400 兜底）。
+ *    评测/对照口径）；
+ *  - 都没设：**接管世界（ARGP_FACTOR_DISPATCH 缺省=takeover）⇒ 开（旧公式线）**；
+ *    off/shadow 世界 ⇒ 关（撞墙 400 兜底，旧世界发射字节不变）。
+ *    2026-11-25 翻转依据：宿主把 max_tokens 钳至 窗−估算prompt，钳制线（≈W−输出预算）
+ *    低于 pressure 线（0.8W）——大固定面会话落入两线间死亡带时，缺省世界无任何压缩
+ *    触发点，轮次被钳到 out=1 空转（台架 6 轮死复现；README 亦记录过真实端点同款
+ *    「门关轮次空转」）。接管判据表三域+64K 实机与门关 6/44 vs 门开 44/44 对照背书后，
+ *    旧保守裁定的前提不再成立。逃生口：ARGP_FACTOR_EGRESS=0 显式关。
  */
 export interface EgressResolution {
     enabled: boolean;

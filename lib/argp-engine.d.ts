@@ -317,10 +317,11 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     private condenseGate;
     /**
-     * §9.37 出口闸（缺省关；开启面 = 设置「压缩阈值」compactionThreshold>0 或 env
-     * ARGP_FACTOR_EGRESS=1；env=0 为对照硬覆盖）——2026-11-15 用户裁定改判：
-     * 对照臂形态即缺省形态，贴墙由 400 兜底网 + §9.36 闸二浓缩接管；本闸降级为
-     * 评测/对照/防死流开关，它根除的链见 P6-④ 贴墙账（T24-J R2 实锤）：
+     * §9.37 出口闸（接管世界缺省开=旧公式线；off/shadow 缺省关；env=1 或设置
+     * 「压缩阈值」>0 恒开；env=0 对照硬覆盖）——2026-11-15 裁定「关为缺省」的前提
+     * （旧双闸误触发风险 + 真实墙≈声明窗时 400 兜底可达）已被接管判据表实机 +
+     * 真实墙≫声明窗端点的钳制饿死证据推翻，2026-11-25 翻转。它根除的链见 P6-④
+     * 贴墙账（T24-J R2 实锤）：
      * 贴墙轮先发出**必然超窗**的请求（`400 … request (273639
      * tokens) exceeds the available context size (262144)`——6 笔零 usage 死流恰每笔事务
      * 轮一发，这串 prefill 在 usage 账里完全隐形）→ 拒收后剪 → 重试再全量重灌；端点窗边
