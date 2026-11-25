@@ -10,7 +10,7 @@
 
 **Long sessions fill the window, and per-turn LLM summaries are expensive while shredding the prefix cache.** This plugin is a context compaction plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh): only stale, superseded, out-of-focus tool results are pruned deterministically by entity label (0 LLM); pruned originals stay in the append-only log and come back verbatim by label or keyword; conversation prose is summarized by LLM only inside compaction transactions.
 
-Same 46-turn workload, measured (n=1, caliber in the appendix below): **¥11.58 → ¥3.69** · **114.7 min → 43.3 min** · **97.8% prefix cache hit rate**. Full replay on 2026-11-23: the host's native compaction **never fired once** — 4 ARGP compaction transactions, ≈0.66M tokens shadowed in total; desktop screenshot below.
+Same 46-turn workload, measured (n=1, **2.2.0 build, 2026-11-26**; caliber in the appendix below): **¥11.58 → ¥4.18** · **114.7 min → 40.8 min** · **96.5% prefix cache hit rate**. The same workload under the 2.0.0 default (egress gate off) measured ¥3.69 / 43.3 min / 97.8% — the 2.2.0 egress gate moves the trigger earlier (here: 73%×window, mct=65536) and buys clamp-starvation protection with window utilization; the gap shrinks toward zero at typical desktop output budgets. Full replay on 2026-11-23: the host's native compaction **never fired once**; desktop screenshot below.
 
 ![Desktop screenshot: the turn-40 compaction transaction — 113 atoms / ≈155,576 tok booked in one shot](assets/desktop-compaction-t40.png)
 
@@ -57,19 +57,21 @@ Strategy values are fixed (trigger line = the earliest of 0.8× the declared win
 
 Same prompts, same materials, fully serial single-arm, same endpoint/model/window 262,144; provider-reported token usage broken out in full, with one row folded into a DeepSeek off-peak reference price (caliber notes in the appendix):
 
-| Dimension | v1.11.2 | Native (host compaction-basic) | v2.0.0 |
+| Dimension | v1.11.2 | Native (host compaction-basic) | v2.2.0 |
 |---|---|---|---|
-| Compaction mechanism | LLM summaries + contiguous-prune rewrites + system-head rewrite every turn | est-driven pre-clamp prune + periodic LLM summaries | **Deterministic label group-prune** + prose-condense dual gates + turn-boundary budget trigger |
-| Wall clock | 114.7 min | 61.8 min | 43.3 min |
-| Input miss tokens (miss) | 9.287M | 1.979M | 1.363M |
-| Input hit tokens (hit) | 46.21M | 43.49M | 60.06M |
-| Output tokens (output) | 0.343M | 0.378M | 0.283M |
-| Prefix cache hit rate | 83.3% | 95.6% | 97.8% |
-| **DeepSeek off-peak reference price** | **¥11.58** | **¥4.36** | **¥3.69** |
-| Declared-window context utilization | 78.9% | 50.0% | 98.4% |
+| Compaction mechanism | LLM summaries + contiguous-prune rewrites + system-head rewrite every turn | est-driven pre-clamp prune + periodic LLM summaries | **Deterministic label group-prune + dispatch decision table** + §G cache-shaped summary + egress gate on by default |
+| Wall clock | 114.7 min | 61.8 min | 40.8 min |
+| Input miss tokens (miss) | 9.287M | 1.979M | 1.817M |
+| Input hit tokens (hit) | 46.21M | 43.49M | 50.62M |
+| Output tokens (output) | 0.343M | 0.378M | 0.338M |
+| Prefix cache hit rate | 83.3% | 95.6% | 96.5% |
+| **DeepSeek off-peak reference price** | **¥11.58** | **¥4.36** | **¥4.18** |
+| Declared-window context utilization | 78.9% | 50.0% | 73.0%† |
 | Forgetting reversible | ✓ `recall`/`recall_detail` | ✗ | ✓ `recall_history` by label + `search_history` by content (prose too) |
-| Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (supplementary recall turns) |
-| Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 |
+| Long-term memory (recall-allowed turn) | 7/10 | 2/10 | 8/10 (2.0.0-era run; re-measure pending) |
+| Hidden artifact suite (T0) | 19/20 | 18/20 | 20/20 (2.0.0-era run; re-measure pending) |
+
+† v1.11.2 / native columns measured 2026-11-14/15 (host unchanged since, comparable); the v2.2.0 column 2026-11-26 (46/46, 0 dead turns; one client-side stream stall at T37 re-sent and passed, counted as INFRA). 73.0% is the priced shape of the egress gate at mct=65536 (trigger = W − mct − 2%); 6 of the 9 transactions were §G-shaped summaries whose own miss share was 0.3–4%.
 
 ## Model requirements
 
@@ -98,7 +100,7 @@ Same prompts, same materials, fully serial single-arm, same endpoint/model/windo
 - **The single setting, "Compaction threshold"** (Settings → Plugins, unset by default): set a 0–1 ratio and the egress line becomes declaredWindow × ratio — context reaching that line is **compacted before sending** (live, no restart; prose condensation still rides dispatch approval, "prose ≥ 50% of the declared window" being one of the criteria). **When unset, the egress gate still runs on the legacy formula line under takeover** (since 2.2.0, sealing the "host clamp line < pressure line" starvation band); in the compressor's legacy worlds (`ARGP_FACTOR_DISPATCH=0/1`) it stays off by default — there, compaction transactions are triggered by the provider's overflow rejection (400) or by manual `/compact` (precondition: real wall ≈ declared window). The five other old knobs stay retired (same-named keys in old profiles are tolerated with a warning).
 - **Base**: local Qwen3.8-Flash-Next (declared window 262,144), same 46-turn workload, fully serial single-arm, n=1 per arm.
 - **Token and price caliber**: token counts are provider-reported usage summed over the run (miss = uncached input, hit = cached input, output = completion); the reference price folds them at **DeepSeek off-peak rates of 1 / 0.02 / 4 元 per 1M tokens**.
-- **v2.0.0 column**: the 46-turn run with the pre-send overflow check off (the default shape during 2.0.1–2.1.0; since 2.2.0 the egress gate is on by default under takeover; eval-tier details in [ARCHITECTURE.md](ARCHITECTURE.md) §11); declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context.
+- **v2.2.0 column**: full re-measure on 2026-11-26 in the default shape (dispatch takeover + §G cache-shaped summaries + egress gate on); 46/46 completed, 0 dead turns (one T37 client-side stall, re-sent, INFRA). At this config's mct=65536 the egress line sits at ~73%×window — the utilization/bill delta vs the 2.0.0-era numbers (¥3.69 / 98.4%) is exactly the price of that early trigger, and it converges back toward the old shape at typical desktop output budgets. Historical v2.0.0 column: 46-turn run with the pre-send overflow check off (the default shape during 2.0.1–2.1.0; eval-tier details in [ARCHITECTURE.md](ARCHITECTURE.md) §11); declared-window context utilization is the server's cached_tokens (KV-resident prefix), while 305K is request size, not context. Long-term memory and T0 rows are 2.0.0-era measurements; 2.2.0 re-runs are scheduled.
 - **Long-term memory**: v2.0.0 answered 3/3 on the first turn (coverage 3/10), and 3 supplementary recall turns (budget reset each turn) recovered 5 more → **8/10**; the remaining 2 are unreachable: one page was touched only by a directory-level grep (scope directory address only; the recall guidance teaches document/command/errorcode), and one page was never read — its content never entered the session log. The model answered C honestly. 1.x's 7/10 comes from its seq-addressed recall stack (`recall`/`recall_detail`) — a real capability, at 2.4× the price and 2.3× the wall clock.
 - **T0**: hidden artifact suite 20/20; comparison summary in `CHANGELOG` 2.0.0.
 

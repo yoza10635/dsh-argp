@@ -37,7 +37,7 @@
 
 ### 提示
 - 注意：2.2.0 直发 stable（npm `latest`）。preset 覆盖块按宿主 0.2.3-alpha.2 出厂对齐——对 stable 宿主 0.2.2-rc.5 经逐项 diff 核验：出厂条目零丢失，仅 4 处良性对齐（standard +tool-cordis 在 0.2.2 可解析可加载；tool-skill.excludedSkills 被 0.2.2 宽容忽略；ptc customSkillDirs 0.2.2 已支持；plugin-manager 启用条件与其他 preset 一致）
-- 测试：全量 371 例（369 通过、2 跳过）；三域台架 32K 全长 + 64K 76 轮 + 58K 固定面实机（read 62/62、probe 2/2（tool）、hit 88-92%、dead=0）；focus 域第二探测轮在缺省新时序下 1/2×2（模型选路漂移：view=outline/绝对路径 label；原文恒在日志、正确 label+full 视图可逐字取回，改进项入 2.2.0）
+- 测试：全量 371 例（369 通过、2 跳过）；46 轮头条负载全量复测（2026-11-26，2.2.0 构建）：46/46 完赛、0 死轮（T37 客户端断流一次重发即过，INFRA 不计）、96.5% 命中、40.8 min、4.18 元——同负载 2.0.0 旧账 3.69 元/98.4% 利用率的差即出口闸前移的定价（本配置 mct=65536，线=W−mct−2%），README 表已按新列刷新；三域台架 32K 全长 + 64K 76 轮 + 58K 固定面实机（read 62/62、probe 2/2（tool）、hit 88-92%、dead=0）；focus 域第二探测轮在缺省新时序下 1/2×2（模型选路漂移：view=outline/绝对路径 label；原文恒在日志、正确 label+full 视图可逐字取回，改进项入 2.2.0）
 
 ## [2.1.0] - 2026-11-19（tool 因子键 + 交互族预览 + search_history 内容发现 + 外评 Issue3/4/5）
 
