@@ -6,17 +6,33 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
-## [2.1.1-beta.0] - 2026-11-24（beta 渠道：宿主 0.2.3-alpha 预适配）
+## [2.1.1-beta.0] - 2026-11-25（beta 渠道：宿主 0.2.3-alpha 预适配 + 压缩分派接管 + 摘要缓存形）
 
-### 优化
+### Added
+- **压缩分派器（判据表主权）** `ARGP_FACTOR_DISPATCH`：未设=接管、`1`=影子（只记录不改发射）、`0`=旧双闸逃生口。单函数纯判据：C≤R→none；F>W_eff→terminal-b6（连 3 轮不空转）；缺口 ≤ max(1536, 0.2×W_eff)→仅剪；散文补不上缺口→求生剪不摘；否则摘要先行（输出预算=W_eff−transcript−指令）。「先剪后摘」在本架构不可达（摘要请求自起就不含工具原子），枚举位保留。
+- **摘要输入=宿主同款上下文装配（§G）**：摘要请求与前驱 agent 请求逐字节同前缀——surface 头部到驱逐 span 末的全部可派生消息（含检查点/note 等头原子）+ `requestHeader().tools` + 路由连 `reasoningEffort` 原值照搬 `header.config` + 尾部指令 user 消息。radiance 实锤：流式×`reasoning_effort=null` 不复用深前缀（同字节 body 读 0~2048 块 vs 同值 medium 97.6%，low 与 medium 不共享）。三域实测摘要命中 93-98%，摘要侧计费 −77%。
+- **G2 摘要账单落库**：`compaction/summary` 事件回填 provider/model/maxTokens/usage（含 `cacheReadTokens`）/rawOutput/llmStreamCall——摘要调用在账单里不再是隐形人。
+- **结构去重驱逐（0-LLM）**：宿主再注入三件套旧副本按 kind 保最新整节点离场；接管事务摘要先行、去重排在摘要发出后（热前缀不被扰动）。
+- **churn 最小保护（§F）**：prune-only 上次实际释放 < max(1536, 5%×W_eff) 且入场无新可剪面 ⇒ 跳过组剪（结构去重照发）；摘要发射清零账本；健康锯齿（每轮释放 ≥ 地板）不受影响。
+- **observedCap 有效窗（§A）**：从数字型 400 学真实上限，预算/出口闸/散文分母统一 min(声明, 真实)。
+- **量化排序对照臂（§D）** `ARGP_FACTOR_QSCORE=1`：绝对净代价排序；三域 A/B 焦点域回退，缺省维持字典序，臂归档。
+
+### Changed
 - preset: 覆盖块对宿主 dsh-v0.2.3-alpha.2 重生成（standard 新增 tool-cordis 条目、cordis 的 tool-skill 新增 excludedSkills、ptc 的 skill-filesystem 新增 customSkillDirs 且 plugin-manager 恢复出厂启用条件，均出厂对齐）
+- **出口闸在接管世界缺省开启**（旧公式线 = 窗 − 输出预算 − 2%）：封死「宿主 max_tokens 钳制线（≈窗−输出预算）低于 pressure 线（0.8×窗）」的贴线饿死死亡带——大固定面会话落带时压缩无触发点、轮次被钳成 out=1 空转（台架 58K 词汇表面第 6-8 轮死复现；真实端点同款「门关轮次空转」README 曾有记录）。58K 面翻转后 44/44 满程（闸线入场 23971、53 次介入）；off/shadow 世界缺省仍关，`ARGP_FACTOR_EGRESS=0` 硬关逃生口、设置「压缩阈值」比例线仍优先。
+- 接管组剪与出口闸同口径测量（含 incomingTokens），修复此前双事务/双驱逐。
+- 散文双闸主权移交判据表：approved 跳闸一；宿主再注入原子不计散文（exclude 分类与接管同进退）。
+- README：出口闸/盲区缓解段改写为「接管缺省开」；EG 套显式钉 `ARGP_FACTOR_DISPATCH=0` 旧世界。
 
-### 修复
+### Fixed
 - deps: CommandId 类型导入改 dsh-commands 根出口，规避宿主 0.2.3 移除 ./brand 子路径的报错（运行时行为零变化）
+- 摘要领头原子错位：跳过领头检查点使第 2 条起摘要前缀从 msg#1 分叉、缓存掉回 1 块（g4 实锤）——全前缀回放修复，单测锁。
+- takeover 主权闭环：快照异常/窗口未知的决策缺失不再落回旧双闸（旧闸 condense 为 legacy transcript 形：缓存不友好、绕过判据主权、G2 不可见），兜底 prune-only 0-LLM 求生剪 + `decision-failed` 取证流水。
+- terminal-b6 空转：连 3 轮不发事务。
 
 ### 提示
 - 注意：面向宿主 0.2.3-alpha 频道用户（`dsh plugin add dsh-argp@2.1.1-beta.0`）；stable 宿主（0.2.2 线）继续用 2.1.0
-- 测试：全量 341 例（339 通过、2 跳过）
+- 测试：全量 370 例（368 通过、2 跳过）；三域台架 32K 全长 + 64K 76 轮 + 58K 固定面实机（read 62/62、probe 2/2（tool）、hit 88-92%、dead=0）；focus 域第二探测轮在缺省新时序下 1/2×2（模型选路漂移：view=outline/绝对路径 label；原文恒在日志、正确 label+full 视图可逐字取回，改进项入 2.2.0）
 
 ## [2.1.0] - 2026-11-19（tool 因子键 + 交互族预览 + search_history 内容发现 + 外评 Issue3/4/5）
 
