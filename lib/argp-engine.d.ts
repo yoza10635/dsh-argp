@@ -97,6 +97,13 @@ export declare function stripTrailingCitesIfNeeded(session: Session, event: {
     seq: number;
     data?: Record<string, unknown>;
 }): void;
+/**
+ * §A：从 400 溢出报文里解析**真实上下文上限**（observedCap）。只在报文带了明确
+ * 数字上限时返回；pi-ai 通用文案（"detected context overflow"，无数）返回 undefined
+ * ⇒ 调用方保留声明窗（行为不变）。返回的是模型窗（token），取报文里的"上限"侧数字。
+ * 导出供单测。
+ */
+export declare function parseObservedContextCap(message: string | undefined): number | undefined;
 export declare class ArgpEngine extends CompactionEngine {
     /**
      * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
@@ -172,6 +179,11 @@ export declare class ArgpEngine extends CompactionEngine {
      *  真环境联调实证：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
      *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
     private readonly declaredContextWindows;
+    /** §A observedCap（session → 从数字型 400 报文学到的**真实**上下文上限）。
+     *  仅当 provider 在 400 里报了真实 max（如 OpenAI "maximum context length is N tokens"）
+     *  才落账；未知 ⇒ 有效窗退回声明（行为不变）。用于 `W_eff = min(声明, observedCap)`，
+     *  修「声明窗 > 真实上限 ⇒ 压力/散文闸永不触发」的死锁。 */
+    private readonly observedContextWindows;
     /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
     get lastRealAnchorSeq(): number;
     set lastRealAnchorSeq(v: number);
@@ -355,6 +367,14 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     /** 压缩阈值实时值（volatile thunk / 裸值两态兼容；0 或缺省 = 关）。 */
     private get compactionThreshold();
+    /**
+     * §A 有效上下文窗：`min(声明窗, observedCap)`；任一未知则取已知的那个。
+     * 只有当 400 报文报出真实上限（observedCap）时才会 < 声明窗，进而修死锁；
+     * observedCap 未知 ⇒ 等于声明窗（默认行为字节不变）。
+     */
+    private effectiveWindowFor;
+    /** §A budget.ts 钩子：本会话已学到的 observedCap（未学到 ⇒ undefined，budget 不封顶）。 */
+    observedContextWindow(session: Session): number | undefined;
     /**
      * Issue4（2026-11-17，design-2.1.0-batch §2）：B-6 盲区风险摘要——**只读、近似诊断**。
      * 触发 = 不可剪 live 估算 ≥ windowRatio × 声明窗：可剪面全剪光后仍会逼近声明窗，

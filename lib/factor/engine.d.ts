@@ -60,6 +60,13 @@ export declare function resolvePressureTriggerEnabled(env?: NodeJS.ProcessEnv): 
  */
 export declare function resolveClipEnabled(env?: NodeJS.ProcessEnv): boolean;
 /**
+ * §D 影子反事实逃生口（同 clip 纪律：env 唯一通道，缺省关=字节不变）：
+ * `ARGP_FACTOR_SHADOW=1` 打开；日志落到 `ARGP_FACTOR_SHADOW_LOG`（未设则只读不写）。
+ * 只旁路重算并**记录**「把 sticky/focal/err 从硬保护降级为软评分」后的剪序差异，
+ * 发射用的 plan 不受任何影响。
+ */
+export declare function resolveShadowEnabled(env?: NodeJS.ProcessEnv): boolean;
+/**
  * §9.37 出口闸解析（每次 pre-step 调用，读实时设置——设置页改动免重挂生效）：
  *  - env ARGP_FACTOR_EGRESS=0 = 硬关（对照臂覆盖一切，压缩阈值设置也不开）；
  *  - 设置 compactionThreshold > 0 = 开，线 = 声明窗 × 比例（「压缩阈值」语义，
@@ -213,6 +220,12 @@ export declare class FactorEngine {
     private observe;
     /** 纯决策（无发射副作用）：单测主对象。targetReleaseChars = 需释放的下界。 */
     decide(session: Session, targetReleaseChars: number): FactorDecision;
+    /**
+     * §D 影子反事实记录（只读）：在同一批候选上，把 sticky/focal/err 从硬保护降级为
+     * 软排序后重算一次 planPrune，把「多释放了哪些枚、各因哪个降级位、cur vs shadow 的
+     * released/shortfall」写进日志。发射用的 plan 完全不受影响——本方法不返回、不改状态。
+     */
+    private logShadowCounterfactual;
     /**
      * 压力剪一笔：决策 → 协议组（A+R 整组 + K pack）/ R-only 空桩 → prune-tx 成对发射。
      * 目标不达不放宽；组剪收益按区间实际 chars 复核。

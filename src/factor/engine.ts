@@ -17,6 +17,7 @@
  *  - 本类只剪 R（content-only 最小桩，宿主 assertToolResultRewrite 形态）；
  *    A 永不入剪枝区间（恒留待摘要），协议组互锁因此天然满足。
  */
+import { appendFileSync } from 'node:fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
@@ -28,7 +29,7 @@ import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEve
 import { isRecallTool } from './recall-tools.ts'
 import { CLIP_MARK, clipFamilyOf, clipReserveChars, clipText } from './clip-shape.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
-import { computeScore, planPrune, type PrunePlan, type ScoredEntry } from './retention-score.ts'
+import { computeScore, planPrune, type PrunePlan, type ScoreInput, type ScoredEntry } from './retention-score.ts'
 import { factorAssistantTombstone } from '../tombstone-text.js'
 import { READ_TOOLS } from './tag-extract.ts'
 import { INTERACTIVE_PREVIEW_TOOLS, interactiveCheckpointText, isInteractiveToolKey } from './interactive.ts'
@@ -94,6 +95,16 @@ export function resolvePressureTriggerEnabled(env: NodeJS.ProcessEnv = process.e
  */
 export function resolveClipEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env['ARGP_FACTOR_CLIP'] === '1'
+}
+
+/**
+ * §D 影子反事实逃生口（同 clip 纪律：env 唯一通道，缺省关=字节不变）：
+ * `ARGP_FACTOR_SHADOW=1` 打开；日志落到 `ARGP_FACTOR_SHADOW_LOG`（未设则只读不写）。
+ * 只旁路重算并**记录**「把 sticky/focal/err 从硬保护降级为软评分」后的剪序差异，
+ * 发射用的 plan 不受任何影响。
+ */
+export function resolveShadowEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['ARGP_FACTOR_SHADOW'] === '1'
 }
 
 /**
@@ -643,6 +654,10 @@ export class FactorEngine {
     let focalDocHardChars = 0
     let mediumBandChars = 0
     const focalBandBySeq = new Map<number, 0 | 1 | 2>()
+    // §D shadow counterfactual state — read-only; only used to log, never to emit.
+    const shadowEnabled = resolveShadowEnabled(process.env)
+    const shadowEntries: ScoredEntry[] = []
+    const shadowHardBySeq = new Map<number, string[]>()
     for (const f of facts) {
       // 焦点尾窗降级时，焦点外 R 的 turn/label 焦点保护全部失效（组剪已按 focusSeqs
       // 保护最新 10 组；旧的同文档读不再因 label 命中被连带硬保）。
@@ -659,32 +674,47 @@ export class FactorEngine {
         : (effectiveFocal ? 1 : 0)
       if (tiered && effectiveBand === 1) mediumBandChars += f.input.tags.sizeChars
       focalBandBySeq.set(f.seq, effectiveBand)
-      entries.push({
-        rootSeq: f.seq,
-        score: computeScore({
-          rootSeq: f.seq, turn: f.turn, currentTurn: latestTurn, tags: f.input.tags,
-          // P6-③ 裁定 2：召回对全部硬保护位失效（无条件进剪序；可再生=再召回一次）。
-          hard: f.isRecall ? {} : {
-            // 焦点尾窗降级时，open 轮只保焦点组；焦点外旧组可离场（尾窗之外=旧工作集）。
-            failureNoFollowR: f.inOpenTurn && (!focusEscalated || f.inFocus),
-            // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
-            stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
-            // 附件保护：空文本（纯附件 R）或文本+附件混合——文本桩会把 image/file 一起丢。
-            attachment: f.input.resultText.length === 0 || f.input.hasAttachment === true,
-            // flat：现行为；tiered：焦点 hard 只认 document facet（v1.2 裸码降出），
-            // 且经 focalDocStrong 连可再生枚一并保住。
-            focalNonRegenerable: !tiered && focusGate && f.focalMatch && f.regenerable !== true,
-            focalDocStrong,
-            errSignatureHard: tiered && errSigHardSeqs.has(f.seq),
-          },
-          regenerable: f.regenerable,
-          // v1.4 superseded 焦点豁免：命中焦点的枚不按"被新版覆盖"插队先剪
-          // （spike54 冲突面 90 枚/211KB；spike55 定案：非焦点释放阀保留）。
-          superseded: tiered && effectiveFocal ? undefined : superseded.get(f.seq) === true ? true : undefined,
-          focal: effectiveFocal,
-          focalBand: tiered ? effectiveBand : undefined,
-        }),
-      })
+      // P6-③ 裁定 2：召回对全部硬保护位失效（无条件进剪序；可再生=再召回一次）。
+      const hardFlags = f.isRecall ? {} : {
+        // 焦点尾窗降级时，open 轮只保焦点组；焦点外旧组可离场（尾窗之外=旧工作集）。
+        failureNoFollowR: f.inOpenTurn && (!focusEscalated || f.inFocus),
+        // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
+        stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
+        // 附件保护：空文本（纯附件 R）或文本+附件混合——文本桩会把 image/file 一起丢。
+        attachment: f.input.resultText.length === 0 || f.input.hasAttachment === true,
+        // flat：现行为；tiered：焦点 hard 只认 document facet（v1.2 裸码降出），
+        // 且经 focalDocStrong 连可再生枚一并保住。
+        focalNonRegenerable: !tiered && focusGate && f.focalMatch && f.regenerable !== true,
+        focalDocStrong,
+        errSignatureHard: tiered && errSigHardSeqs.has(f.seq),
+      }
+      const scoreInput: ScoreInput = {
+        rootSeq: f.seq, turn: f.turn, currentTurn: latestTurn, tags: f.input.tags,
+        hard: hardFlags,
+        regenerable: f.regenerable,
+        // v1.4 superseded 焦点豁免：命中焦点的枚不按"被新版覆盖"插队先剪
+        // （spike54 冲突面 90 枚/211KB；spike55 定案：非焦点释放阀保留）。
+        superseded: tiered && effectiveFocal ? undefined : superseded.get(f.seq) === true ? true : undefined,
+        focal: effectiveFocal,
+        focalBand: tiered ? effectiveBand : undefined,
+      }
+      entries.push({ rootSeq: f.seq, score: computeScore(scoreInput) })
+      // §D shadow counterfactual (read-only, env-gated): demote the *content-value*
+      // hard flags (sticky/focal/err) to soft ordering, KEEP protocol + attachment +
+      // open-turn hard. Recomputed here; the emitted `plan` below is NOT affected.
+      // Include every candidate (recall pairs already had hard={} so they match).
+      if (shadowEnabled) {
+        shadowHardBySeq.set(f.seq, Object.keys(hardFlags).filter(k =>
+          (hardFlags as Record<string, boolean>)[k] === true
+          && k !== 'failureNoFollowR' && k !== 'attachment'))
+        shadowEntries.push({
+          rootSeq: f.seq,
+          score: computeScore({ ...scoreInput, hard: {
+            failureNoFollowR: hardFlags.failureNoFollowR,
+            attachment: hardFlags.attachment,
+          } }),
+        })
+      }
     }
     // P6-③ 裁定 3：中断轮驱逐（closed 轮）——半截 A（有 tool-call 却有未应答 call）+
     // 孤儿 R（callId 无在世 issuer A， issuer 已被先行事务带走）无条件强制先行，"驱逐时机
@@ -725,6 +755,11 @@ export class FactorEngine {
       // C10：夹剪预留按工具族模板经回调注入（语义归位在本模块，形状归 clip-shape）。
       ...(clipOn ? { clip: { reserveCharsOf: (e: ScoredEntry) => clipReserveChars(clipFamilyOf(tagsBySeq.get(e.rootSeq)?.tool ?? '')) } } : {}),
     })
+    // §D shadow counterfactual: run the same prune on the hard-demoted candidate set
+    // and log cur-vs-shadow. This is observation only — `plan` above is what emits.
+    if (shadowEnabled) this.logShadowCounterfactual(shadowEntries, plan, {
+      targetReleaseChars, forcedFirst, clipOn, tagsBySeq, shadowHardBySeq, latestTurn,
+    })
     return {
       plan, candidates, tagsBySeq, latestTurn,
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
@@ -735,6 +770,47 @@ export class FactorEngine {
       focusEscalated, focusSeqs: focusTail.focusSeqs,
       focusGroupCount: focusTail.groupCount, latestTurnShare: focusTail.latestTurnShare,
     }
+  }
+
+  /**
+   * §D 影子反事实记录（只读）：在同一批候选上，把 sticky/focal/err 从硬保护降级为
+   * 软排序后重算一次 planPrune，把「多释放了哪些枚、各因哪个降级位、cur vs shadow 的
+   * released/shortfall」写进日志。发射用的 plan 完全不受影响——本方法不返回、不改状态。
+   */
+  private logShadowCounterfactual(
+    shadowEntries: ScoredEntry[],
+    plan: PrunePlan,
+    o: {
+      targetReleaseChars: number
+      forcedFirst: number[]
+      clipOn: boolean
+      tagsBySeq: Map<number, { tool: string; tags: { sizeChars: number } }>
+      shadowHardBySeq: Map<number, string[]>
+      latestTurn: number
+    },
+  ): void {
+    const path = process.env['ARGP_FACTOR_SHADOW_LOG']
+    if (path === undefined || path === '') return
+    try {
+      const shadowPlan = planPrune(shadowEntries, {
+        targetReleaseChars: o.targetReleaseChars,
+        forcedFirstSeqs: o.forcedFirst,
+        ...(o.clipOn ? { clip: { reserveCharsOf: (e: ScoredEntry) => clipReserveChars(clipFamilyOf(o.tagsBySeq.get(e.rootSeq)?.tool ?? '')) } } : {}),
+      })
+      const curOrder = new Set(plan.pruneOrder)
+      const chars = (s: number): number => o.tagsBySeq.get(s)?.tags.sizeChars ?? 0
+      const extraSeqs = shadowPlan.pruneOrder.filter(s => !curOrder.has(s)).map(s => ({
+        seq: s, chars: chars(s), demoted: o.shadowHardBySeq.get(s) ?? [],
+      }))
+      appendFileSync(path, JSON.stringify({
+        t: Date.now(), target: o.targetReleaseChars, latestTurn: o.latestTurn,
+        candidates: shadowEntries.length,
+        curReleased: plan.releasedChars, shadowReleased: shadowPlan.releasedChars,
+        curShortfall: plan.shortfallChars, shadowShortfall: shadowPlan.shortfallChars,
+        extraCount: extraSeqs.length, extraChars: extraSeqs.reduce((a, e) => a + e.chars, 0),
+        extraSeqs,
+      }) + '\n')
+    } catch { /* observability must never affect the emitted decision */ }
   }
 
   /**

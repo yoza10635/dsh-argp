@@ -80,6 +80,8 @@ export interface BudgetHost {
     retainTokens: number;
     reserveTokens: number;
     declaredContextWindows: WeakMap<Session, number>;
+    /** §A observedCap：从数字型 400 学到的真实上限（未学到 ⇒ undefined，不封顶）。 */
+    observedContextWindow?: (session: Session) => number | undefined;
     log: {
         info: (msg: string) => void;
         warn: (msg: string) => void;

@@ -170,6 +170,32 @@ interface NativeToolResultPruner {
   pruneSession?: (session: Session) => { pruned?: readonly unknown[]; charsRemoved?: number }
 }
 
+/**
+ * §A：从 400 溢出报文里解析**真实上下文上限**（observedCap）。只在报文带了明确
+ * 数字上限时返回；pi-ai 通用文案（"detected context overflow"，无数）返回 undefined
+ * ⇒ 调用方保留声明窗（行为不变）。返回的是模型窗（token），取报文里的"上限"侧数字。
+ * 导出供单测。
+ */
+export function parseObservedContextCap(message: string | undefined): number | undefined {
+  if (message === undefined || message === '') return undefined
+  const num = (s: string): number => parseInt(s.replace(/,/g, ''), 10)
+  const rules: Array<[RegExp, (m: RegExpMatchArray) => number]> = [
+    [/maximum context length[^0-9]*([0-9][0-9,]*)\s*tokens/i, m => num(m[1] as string)],
+    [/context (?:window )?length\D*([0-9][0-9,]*)/i, m => num(m[1] as string)],
+    [/prompt is too long[^0-9]*[0-9][0-9,]*\s*tokens?[^\d]*([0-9][0-9,]*)/i, m => num(m[1] as string)],
+    [/([0-9][0-9,]*)\s*tokens?\s*(?:exceeds|>)\s*(?:the\s*)?(?:model'?s?\s*)?[^0-9]*([0-9][0-9,]*)/i, m => num(m[2] as string)],
+    [/(?:max(?:imum)?|limit(?:\s+of)?|of)\D{0,15}([0-9][0-9,]*)\s*tokens/i, m => num(m[1] as string)],
+  ]
+  for (const [re, pick] of rules) {
+    const m = message.match(re)
+    if (m !== null) {
+      const v = pick(m)
+      if (Number.isFinite(v) && v >= 1024) return v
+    }
+  }
+  return undefined
+}
+
 export class ArgpEngine extends CompactionEngine {
   /**
    * UI 设置页旋钮（dsh 0.1.7+）。Settings 通过扫描插件的 `static Config` 生成
@@ -246,6 +272,11 @@ export class ArgpEngine extends CompactionEngine {
    *  真环境联调实证：物理窗口探测（llama.cpp n_ctx=262144）与声明窗口（32000）
    *  在 pre-step 时刻可能错位，声明值缺失时宁可跳过检查也不用物理口径。 */
   private readonly declaredContextWindows = new WeakMap<Session, number>()
+  /** §A observedCap（session → 从数字型 400 报文学到的**真实**上下文上限）。
+   *  仅当 provider 在 400 里报了真实 max（如 OpenAI "maximum context length is N tokens"）
+   *  才落账；未知 ⇒ 有效窗退回声明（行为不变）。用于 `W_eff = min(声明, observedCap)`，
+   *  修「声明窗 > 真实上限 ⇒ 压力/散文闸永不触发」的死锁。 */
+  private readonly observedContextWindows = new WeakMap<Session, number>()
   /** 锚点：lastRealPromptTokens 已覆盖的 surface 最大 seq（其后新增内容需增量估算）。 */
   get lastRealAnchorSeq(): number { return this.rt.lastRealAnchorSeq }
   set lastRealAnchorSeq(v: number) { this.rt.lastRealAnchorSeq = v }
@@ -415,6 +446,20 @@ export class ArgpEngine extends CompactionEngine {
       const overflowLike = failure.code === CONTEXT_WINDOW_EXCEEDED_CODE
         || isContextWindowExceededError(failure.message ?? '')
       if (!overflowLike || signal.aborted) return next()
+      // §A：报文若报了真实上限（如 "maximum context length is 131072 tokens"），
+      // 学到 observedCap → 后续有效窗 = min(声明, 真实)，解开声明>真实的压力/散文闸死锁。
+      // pi-ai 通用文案无数 ⇒ parse 返回 undefined ⇒ 不记（行为不变）。取更小者为准。
+      const cap = parseObservedContextCap(failure.message)
+      if (cap !== undefined) {
+        const prev = this.observedContextWindows.get(agent.session)
+        if (prev === undefined || cap < prev) {
+          this.observedContextWindows.set(agent.session, cap)
+          const declaredNow = this.declaredContextWindows.get(agent.session) ?? 0
+          this.log.info(`[argp-engine] observedCap learned: ${cap} tokens`
+            + (declaredNow > 0 ? ` (declared=${declaredNow}, effective=${Math.min(cap, declaredNow)})` : '')
+            + `; 400 msg: ${(failure.message ?? '').slice(0, 140)}`)
+        }
+      }
       this.overflowAgents.set(agent.session, agent)
       const retries = this.overflowRetries.get(agent) ?? 0
       if (retries >= this.maxOverflowRetries) return next()
@@ -430,7 +475,7 @@ export class ArgpEngine extends CompactionEngine {
         // 替换）。只要 surface 换代了，这次减量就是重试的充分凭证，不丢弃。
         if (!signal.aborted && session.surface.replaceGeneration > genBefore) {
           // 审查 P1-1：durable surface progress ≠ 减够；仍 ≥ 窗则不 retry（同一超窗请求重发只会再 400）。
-          const declaredAfterCatch = this.declaredContextWindows.get(session) ?? 0
+          const declaredAfterCatch = this.effectiveWindowFor(session)
           if (declaredAfterCatch > 0 && this.postPruneProjection(session) >= declaredAfterCatch) {
             this.log.warn(`[argp-engine] overflow prune partial progress but still ≥ window: ${message}; not retrying`)
             return next()
@@ -451,7 +496,7 @@ export class ArgpEngine extends CompactionEngine {
       }
       // 2026-11-13 T34 实锤：surface 换代 ≠ 减够。事务后二次测量；仍 ≥ 声明窗 ⇒ 不 retry
       // （重发同一超窗请求只会再吃一发 400），保留原始错误交给下一轮/用户。
-      const declaredForGuard = this.declaredContextWindows.get(session) ?? 0
+      const declaredForGuard = this.effectiveWindowFor(session)
       if (declaredForGuard > 0) {
         const after = this.postPruneProjection(session)
         if (after >= declaredForGuard) {
@@ -782,7 +827,7 @@ export class ArgpEngine extends CompactionEngine {
     if (measurement.contextTokens < windowTokens) return
     this.log.info('[argp-factor-prose] ctx 闸过线: contextTokens=' + measurement.contextTokens
       + ' ≥ ' + windowTokens + '（声明窗=' + (this.declaredContextWindows.get(session) ?? '?') + '），清扫式浓缩')
-    const res = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
+    const res = await this.prose.condense(session, agent.options, windowTokens, signal, this.effectiveWindowFor(session))
     if (res !== null) await this.refreshFactorNoteSafe(agent) // P6-② note 纪律：变化时机=压缩时机（未发射不写 note）
   }
 
@@ -830,6 +875,24 @@ export class ArgpEngine extends CompactionEngine {
   }
 
   /**
+   * §A 有效上下文窗：`min(声明窗, observedCap)`；任一未知则取已知的那个。
+   * 只有当 400 报文报出真实上限（observedCap）时才会 < 声明窗，进而修死锁；
+   * observedCap 未知 ⇒ 等于声明窗（默认行为字节不变）。
+   */
+  private effectiveWindowFor(session: Session): number {
+    const declared = this.declaredContextWindows.get(session) ?? 0
+    const observed = this.observedContextWindows.get(session) ?? 0
+    if (declared > 0 && observed > 0) return Math.min(declared, observed)
+    return Math.max(declared, observed)
+  }
+
+  /** §A budget.ts 钩子：本会话已学到的 observedCap（未学到 ⇒ undefined，budget 不封顶）。 */
+  observedContextWindow(session: Session): number | undefined {
+    const v = this.observedContextWindows.get(session)
+    return v !== undefined && v > 0 ? v : undefined
+  }
+
+  /**
    * Issue4（2026-11-17，design-2.1.0-batch §2）：B-6 盲区风险摘要——**只读、近似诊断**。
    * 触发 = 不可剪 live 估算 ≥ windowRatio × 声明窗：可剪面全剪光后仍会逼近声明窗，
    * 宿主组装层将无痕截断最旧 live 节点（README 已知限制 B-6，根治在 dsh 侧）。
@@ -839,7 +902,7 @@ export class ArgpEngine extends CompactionEngine {
    * ledger/观察游标/快照采样副作用（factor/engine.ts:459-496），卡面渲染不得污染压缩状态。
    */
   b6RiskSummary(session: Session): { declaredWindow: number; nonPrunableTokens: number; ratioPct: number; warn: boolean } {
-    const declared = this.declaredContextWindows.get(session) ?? 0
+    const declared = this.effectiveWindowFor(session)
     if (declared <= 0) return { declaredWindow: 0, nonPrunableTokens: 0, ratioPct: 0, warn: false }
     const openTurn = detectOpenTurn(session)
     const atoms = atomize(this as unknown as GraphBuildHost, session)
@@ -883,6 +946,10 @@ export class ArgpEngine extends CompactionEngine {
       }
     }
     if (declaredWindow <= 0) return false // 声明窗未知：宁缺勿错，交给 400 兜底网
+    // §A：若学到真实上限，压力线按有效窗（min 声明/真实）计——否则声明>真实时
+    // 0.8×声明线永不可达、闸永不触发（死锁）。
+    const observedEgress = this.observedContextWindows.get(session) ?? 0
+    if (observedEgress > 0) declaredWindow = Math.min(declaredWindow, observedEgress)
     const measurement = this.measureTokens(session, incomingTokens)
     if (measurement.source !== 'anchored') return false
     // 两种线形（resolveEgress）：设置「压缩阈值」比例线（lineRatio 非空）直接取窗×比例，
@@ -1049,7 +1116,7 @@ export class ArgpEngine extends CompactionEngine {
       const proseGateOk = trigger === 'context-overflow' || measurement.contextTokens >= windowTokens
       if (declaredKnown && proseGateOk) {
         try {
-          proseResult = await this.prose.condense(session, agent.options, windowTokens, signal, this.declaredContextWindows.get(session) ?? 0)
+          proseResult = await this.prose.condense(session, agent.options, windowTokens, signal, this.effectiveWindowFor(session))
         } catch (e) {
           this.log.warn('[argp-factor-prose] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
         }
@@ -1098,7 +1165,7 @@ export class ArgpEngine extends CompactionEngine {
         this.bindSession(agent.session) // D2：await 窗口内焦点可能换装——回绑再写 surface
         if (declaredKnown) {
           try {
-            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, opSignal, this.declaredContextWindows.get(agent.session) ?? 0)
+            proseResult = await this.prose.condense(agent.session, agent.options, windowTokens, opSignal, this.effectiveWindowFor(agent.session))
           } catch (e) {
             if (opSignal.aborted) throw e // 取消不是"本轮不处置"：必须向上传播
             this.log.warn('[argp-factor-prose] 手动散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))

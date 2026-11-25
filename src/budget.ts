@@ -121,6 +121,8 @@ export interface BudgetHost {
   retainTokens: number
   reserveTokens: number
   declaredContextWindows: WeakMap<Session, number>
+  /** §A observedCap：从数字型 400 学到的真实上限（未学到 ⇒ undefined，不封顶）。 */
+  observedContextWindow?: (session: Session) => number | undefined
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
   windowRatio: number
   retainRatio: number
@@ -205,7 +207,13 @@ export async function resolveScaledBudgets(
   if (!declaredKnown) {
     host.log.info('[argp-engine] declared contextWindow not yet known; early pressure checks will skip until the first request/context lands')
   }
-  const scaled = scaleBudgets(contextWindow, {
+  // §A：用有效窗喂预算比例——真实上限 < 声明窗时按真实上限定 trigger/retain，
+  // 否则「0.8×声明」这条线在真实上限处永远够不到、压缩不触发（死锁）。
+  const observedCap = host.observedContextWindow?.(agent.session)
+  const effectiveWindow = observedCap !== undefined && observedCap > 0 && contextWindow !== undefined && contextWindow > 0
+    ? Math.min(contextWindow, observedCap)
+    : contextWindow
+  const scaled = scaleBudgets(effectiveWindow, {
     explicitWindow, explicitRetain,
     windowRatio: host.windowRatio, retainRatio: host.retainRatio,
     fallbackWindow: host.windowTokens, fallbackRetain: host.retainTokens,

@@ -11,6 +11,9 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -219,4 +222,41 @@ test('降级链：目标不可达只报缺口，不拉硬保护入区、不静�
   const result = factor.compactIfNeeded(session, 500)
   assert.equal(result, null, '可剪面为零：不发射')
   assert.equal(sessionEvents(session).length, before, '不发射 = 零写入')
+})
+
+test('§D 影子反事实：开/关发射逐字节同；shadow 只旁路记录，降级硬保护只可能多释放', async () => {
+  const build = async (id: string) => {
+    const { host, factor } = await makeFactorEngine()
+    const session = makeSession(id)
+    host.bindSession(session)
+    appendUser(session, '修 CI')
+    appendGroup(session, 1, 'f1', 'edit', '{"file_path":"C:/Proj/a.ts"}', 'ERROR ERESOLVE cannot resolve\nexit code 1', true)
+    appendGroup(session, 2, 'w1', 'write', '{"file_path":"C:/Proj/a.ts"}', 'written')
+    appendGroup(session, 3, 'f2', 'edit', '{"file_path":"C:/Proj/a.ts"}', 'ERROR ERESOLVE cannot resolve\nexit code 1', true)
+    appendUser(session, '继续')
+    return { factor, session }
+  }
+  // OFF: baseline emitted order.
+  const off = await build('shadow-off')
+  const orderOff = [...off.factor.decide(off.session, 100000).plan.pruneOrder]
+
+  // ON: env-gated; must emit the identical plan, and write a shadow log line.
+  const logf = join(tmpdir(), 'argp-shadow-' + Date.now() + '.jsonl')
+  process.env['ARGP_FACTOR_SHADOW'] = '1'
+  process.env['ARGP_FACTOR_SHADOW_LOG'] = logf
+  try {
+    const on = await build('shadow-on')
+    const dOn = on.factor.decide(on.session, 100000)
+    assert.deepEqual(dOn.plan.pruneOrder, orderOff, 'shadow 开关不得改变发射 pruneOrder')
+    assert.ok(existsSync(logf), 'shadow 日志应落盘')
+    const line = JSON.parse(readFileSync(logf, 'utf-8').trim().split('\n').pop() as string)
+    assert.ok(line.shadowReleased >= line.curReleased, '把 sticky/focal/err 降级为软排序只可能多释放')
+    assert.ok(line.shadowShortfall <= line.curShortfall, '降级后缺口不可能变大')
+    assert.ok((line.extraSeqs ?? []).some((e: { demoted: string[] }) => e.demoted.length > 0),
+      '额外释放的枚必来自被降级的硬保护位')
+  } finally {
+    delete process.env['ARGP_FACTOR_SHADOW']
+    delete process.env['ARGP_FACTOR_SHADOW_LOG']
+    if (existsSync(logf)) unlinkSync(logf)
+  }
 })
