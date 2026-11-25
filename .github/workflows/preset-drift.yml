@@ -6,6 +6,9 @@
 # 基线 = npm `@deepseek-ai/dsh` dist-tags.latest 对应的 dsh-v<version> tag——
 # **稳定频道用户手里的宿主**才是快照要贴合的现实；alpha/master 的前瞻漂移不该
 # 天天红灯淹没真信号（想看上游用 workflow_dispatch 的 ref 输入，如 master）。
+# 【2.2.0 班车临时钉】2.2.0 直发 stable 时快照已对齐 dsh-v0.2.3-alpha.2 出厂 preset
+# （本地 --check 对该 tag in sync；与 npm latest=0.2.2-rc.5 基线的差异=审计过的 4 处
+# 良性对齐）——基线暂钉快照真实出处，摘钉条件见 Resolve 步 TODO。
 # 注意 peer 包（@deepseek-ai/dsh-agent 等）的 npm 版本线与宿主版本线不同步，
 # 宿主版本必须经 @deepseek-ai/dsh 查询，勿拿 peer 包当前缀。
 name: Preset drift
@@ -41,8 +44,10 @@ jobs:
         run: |
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
-            V=$(npm view @deepseek-ai/dsh dist-tags.latest --registry=https://registry.npmjs.org)
-            REF="dsh-v$V"
+            # 2.2.0 班车临时钉（2026-11-26）：快照= dsh-v0.2.3-alpha.2 快照（stable 直发裁决）。
+            # TODO 摘钉：宿主 npm latest 进入与 alpha.2 preset 一致正式版（≥0.2.3 stable）后，
+            # 恢复下行 npm latest→dsh-v$V 两行解析并删本钉。
+            REF="dsh-v0.2.3-alpha.2"
           fi
           echo "host ref: $REF"
           echo "HOST_REF=$REF" >> "$GITHUB_ENV"
