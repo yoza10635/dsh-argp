@@ -71,5 +71,9 @@ export interface SessionRuntimeState {
     searchQuery: string;
     /** §B-2 terminal-b6 连续计数（接管形态）：≥N 轮不空转（只报不剪）；非 b6 决策归零。 */
     b6Streak: number;
+    /** §F churn 状态：最近一次 prune-only 发射的**实际释放**（-1=无记录；摘要发射清零）。 */
+    lastPruneRelease: number;
+    /** §F churn 状态：最近一次 prune-only 处置（发射或被抑制）的入场 contextTokens（0=无）。 */
+    lastPruneEntryCtx: number;
 }
 export declare function createSessionRuntimeState(): SessionRuntimeState;

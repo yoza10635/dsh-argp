@@ -194,6 +194,60 @@ test('§G takeover 主权闭环：快照异常决策缺失 ⇒ 兜底 prune-only
   }
 })
 
+test('§F churn 抑制：上次 prune-only 释放不足地板且入场无新面 ⇒ 跳过组剪；新面 ≥ 地板自动解锁', async () => {
+  process.env['ARGP_FACTOR_DISPATCH'] = '2'
+  try {
+    const { engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+    const session = Session.create(SessionId('tko-churn'))
+    session.append('system/message', { content: 'persona' } as never, { surfaceOp: 'append' })
+    ;(engine as unknown as { declaredContextWindows: WeakMap<Session, number> }).declaredContextWindows.set(session, 32_768)
+    ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+    appendUser(session, '开始')
+    appendGroup(session, 1, 'c1', 'read', '{}', 'OLD '.repeat(400)) // ≈400 tok，释放 < 地板 1638
+    appendUser(session, '收尾')
+    const agent = { session, options: {} } as never
+    const r1 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r1 !== null, '首轮 prune-only 照常发射（churn 账本记下小释放）')
+    // 第二轮：只添一枚小原子——入场增量 < 地板 ∧ 上次释放 < 地板 ⇒ 抑制（g2 的 11 连发形状）
+    appendUser(session, 'ping', 2)
+    const evBefore = sessionEvents(session).length
+    const r2 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.equal(r2, null, 'churn 抑制：无效连发不成组剪')
+    assert.equal(sessionEvents(session).length, evBefore, '抑制轮零事务写入')
+    // 第三轮：入场出现 ≥ 地板的新可剪面 ⇒ 自动解锁（健康锯齿不误伤的同一机制）
+    appendGroup(session, 3, 'c3', 'read', '{}', 'BIG '.repeat(6000)) // ≈6K tok > 地板
+    appendUser(session, '尾', 4)
+    const r3 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r3 !== null, '入场新面 ≥ 地板 ⇒ 自动解锁再发射')
+    assert.ok(!surfTexts(session).some(t => t.includes('BIG BIG BIG')), '新组随组剪离场')
+  } finally {
+    delete process.env['ARGP_FACTOR_DISPATCH']
+  }
+})
+
+test('§F 健康锯齿不误伤：每次事务释放充分（≥地板）时连发不受抑制', async () => {
+  process.env['ARGP_FACTOR_DISPATCH'] = '2'
+  try {
+    const { engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+    const session = Session.create(SessionId('tko-churn-healthy'))
+    session.append('system/message', { content: 'persona' } as never, { surfaceOp: 'append' })
+    ;(engine as unknown as { declaredContextWindows: WeakMap<Session, number> }).declaredContextWindows.set(session, 32_768)
+    ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+    appendUser(session, '开始')
+    appendGroup(session, 1, 'c1', 'read', '{}', 'OLD '.repeat(3000)) // ≈3K tok 释放 > 地板
+    appendUser(session, '收尾')
+    const agent = { session, options: {} } as never
+    const r1 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r1 !== null, '首轮发射且释放充分')
+    appendGroup(session, 2, 'c2', 'read', '{}', 'NEW '.repeat(3000))
+    appendUser(session, '再收尾', 3)
+    const r2 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r2 !== null, '上次释放 ≥ 地板 ⇒ 上轮有效，本轮照剪（不是 churn）')
+  } finally {
+    delete process.env['ARGP_FACTOR_DISPATCH']
+  }
+})
+
 // ── §G：上下文形摘要装配（宿主同款）——ctx.llm stub 捕获请求形状 + usage 回填 ──
 test('§G approved 走上下文装配：system 前缀+区原文+尾指令+tools+header 路由；usage 回填 summary 事件', async () => {
   const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })

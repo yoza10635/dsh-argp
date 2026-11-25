@@ -79,6 +79,11 @@ export const DEFAULT_GAP_FLOOR_RATIO = 0.2
 export const TRANSCRIPT_SAFETY_RATIO = 1.1
 export const DEFAULT_INSTRUCTION_TOKENS = 512
 export const DEFAULT_MIN_SUMMARY_OUT_TOKENS = 1024
+/** §F churn 保护地板：prune-only 连发且净释放 < max(此值, ratio×W_eff) 视为贴保护线的
+ *  空转（g2 实锤：26-29K 同一面上 11 连发、bill 416K），抑制本轮组剪（dedup 照发）。
+ *  有状态判定在发射侧（argp-engine），纯函数只持有口径常量。 */
+export const CHURN_MIN_RELEASE_TOKENS = 1536
+export const CHURN_RELEASE_FLOOR_RATIO = 0.05
 
 /**
  * 决策序（定稿）：
