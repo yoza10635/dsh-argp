@@ -182,7 +182,7 @@ const zhCopy: StatusCopy = {
   audit: (count, latest) => '审计：' + count + ' 条警告 · 最近：' + latest,
   recall: (calls, hits, pct) => '召回：' + calls + ' 次调用 · ' + hits + ' 次命中（' + pct + '）[本进程]',
   b6Risk: (nonPrunable, pct, line) => '⚠ B-6 盲区风险：不可剪 live ≈ ' + nonPrunable + ' tok（占声明窗 ' + pct
-    + '%，风险线 ' + line + '）——可剪面全剪后请求仍逼近声明窗，宿主组装层会无痕截断最旧 live 节点（README 已知限制）[近似]',
+    + '%，风险线 ' + line + '）——可剪面全剪后请求仍逼近声明窗，宿主会把输出预算钳到「窗 − prompt」（轮次趋零空转；严格端点则 400 拒收），非无痕截断（2026-11-19 勘误）；出口闸接管下缺省已开，可设「压缩阈值」前移触发（README 已知限制）[近似]',
 }
 
 /**

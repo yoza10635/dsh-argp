@@ -449,3 +449,17 @@ test('EG-14b 有 claim 用户消息时不得 reject（否则丢 prompt）', asyn
   const decision = await emitPreStep(ctx, makeAgent(session), [claimed as never])
   assert.notDeepEqual(decision, { kind: 'reject' }, '有 user 输入时不得 reject（prompt 会丢）')
 })
+
+// EG-15（2.2.0 发布前审查实锤）：接管世界 pre-step 不挂独立浓缩闸。本闸五参直调
+// prose.condense 不经分派核准——过线时会以旧形（hrMode 退回 prose）绕过判据表发摘要
+// 且对 G2 账单隐形。summarize 杠杆主权在判据表：pressure/egress 事务按核准发 §G 形。
+test('EG-15 takeover ⇒ pre-step 不挂独立浓缩闸（主权归判据表）', async () => {
+  delete process.env['ARGP_FACTOR_DISPATCH'] // 缺省即 takeover（钩子的 '0' 钉是旧世界语义锁）
+  const { ctx, internals } = await bootFactor()
+  const session = heavyAnchoredSession('eg-sovereign', 100)
+  const calls: string[] = []
+  internals.egressGate = async () => { calls.push('egress'); return false }
+  internals.condenseGate = async () => { calls.push('condense') }
+  await emitPreStep(ctx, makeAgent(session))
+  assert.deepEqual(calls, ['egress'], 'takeover 下 egress 未发剪也不接浓缩闸——summarize 只从判据表核准路径发')
+})

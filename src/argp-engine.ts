@@ -569,7 +569,11 @@ export class ArgpEngine extends CompactionEngine {
       }
       // §9.36 浓缩通道闸二（ctx 闸）：上一请求 usage 已锚、下一请求未发——双闸合取里
       // "总上下文 ≥ windowRatio×声明窗"的把关位（闸一散文线在 condense 内）。
-      if (!signal.aborted && !egressPruned) {
+      // 接管世界（2.2.0 起）本独立通道不挂：正文浓缩主权在分派判据表——pressure 线与
+      // 出口闸事务都经 dispatch 核准发 summarize 形（§G 缓存形与 G2 账单只在核准路径
+      // 生效）；本闸五参直调不经核准，过线时以旧形（hrMode 退回 prose）绕过判据表发
+      // 摘要且对 G2 隐形（发布前审查实锤：调用点原无世界门控）。旧世界 off/shadow 照旧。
+      if (!signal.aborted && !egressPruned && resolveDispatchMode(process.env) !== 'takeover') {
         try {
           await this.condenseGate(agent, signal, incoming)
         } catch (e) {
