@@ -6,20 +6,22 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
-## [2.1.1-beta.0] - 2026-11-25（beta 渠道：宿主 0.2.3-alpha 预适配 + 压缩分派接管 + 摘要缓存形）
+## [2.2.0] - 2026-11-26（stable 直发：压缩分派接管 + 摘要缓存形 + 出口闸缺省开；preset 快照对齐宿主 0.2.3-alpha.2）
 
 ### Added
-- **压缩分派器（判据表主权）** `ARGP_FACTOR_DISPATCH`：未设=接管、`1`=影子（只记录不改发射）、`0`=旧双闸逃生口。单函数纯判据：C≤R→none；F>W_eff→terminal-b6（连 3 轮不空转）；缺口 ≤ max(1536, 0.2×W_eff)→仅剪；散文补不上缺口→求生剪不摘；否则摘要先行（输出预算=W_eff−transcript−指令）。「先剪后摘」在本架构不可达（摘要请求自起就不含工具原子），枚举位保留。
+- **压缩分派器（判据表主权）** `ARGP_FACTOR_DISPATCH`：未设=接管、`1`=影子（只记录不改发射）、`0`=旧双闸逃生口。单函数纯判据：C≤R→none；F>W_eff→terminal-b6（连 3 轮不再发剪/摘事务，结构去重照旧）；缺口 ≤ max(1536, 0.2×W_eff)→仅剪；散文补不上缺口→求生剪不摘；否则摘要先行（输出预算=W_eff−transcript−指令）。「先剪后摘」在本架构不可达（摘要请求自起就不含工具原子），枚举位保留。
 - **摘要输入=宿主同款上下文装配（§G）**：摘要请求与前驱 agent 请求逐字节同前缀——surface 头部到驱逐 span 末的全部可派生消息（含检查点/note 等头原子）+ `requestHeader().tools` + 路由连 `reasoningEffort` 原值照搬 `header.config` + 尾部指令 user 消息。radiance 实锤：流式×`reasoning_effort=null` 不复用深前缀（同字节 body 读 0~2048 块 vs 同值 medium 97.6%，low 与 medium 不共享）。三域实测摘要命中 93-98%，摘要侧计费 −77%。
 - **G2 摘要账单落库**：`compaction/summary` 事件回填 provider/model/maxTokens/usage（含 `cacheReadTokens`）/rawOutput/llmStreamCall——摘要调用在账单里不再是隐形人。
 - **结构去重驱逐（0-LLM）**：宿主再注入三件套旧副本按 kind 保最新整节点离场；接管事务摘要先行、去重排在摘要发出后（热前缀不被扰动）。
 - **churn 最小保护（§F）**：prune-only 上次实际释放 < max(1536, 5%×W_eff) 且入场无新可剪面 ⇒ 跳过组剪（结构去重照发）；摘要发射清零账本；健康锯齿（每轮释放 ≥ 地板）不受影响。
 - **observedCap 有效窗（§A）**：从数字型 400 学真实上限，预算/出口闸/散文分母统一 min(声明, 真实)。
 - **量化排序对照臂（§D）** `ARGP_FACTOR_QSCORE=1`：绝对净代价排序；三域 A/B 焦点域回退，缺省维持字典序，臂归档。
+- **影子判据流水通道** `ARGP_FACTOR_SHADOW=1` + `ARGP_FACTOR_SHADOW_LOG=<path>`：三形态判据的只记不发记录流，独立于分派开关——判据离线核验与台架三域影子审计流由此供数。
+- **preset 快照漂移哨兵**：`generate-preset-overrides.ts` 加 `--check`（重建 GENERATED 段与包内快照只比对不写盘，漂移退 1）+ 独立 `preset-drift` workflow（宿主 preset 不随 npm 发包，从宿主仓库 sparse 拉 presets 目录；push/PR/每日定时）。
 
 ### Changed
 - preset: 覆盖块对宿主 dsh-v0.2.3-alpha.2 重生成（standard 新增 tool-cordis 条目、cordis 的 tool-skill 新增 excludedSkills、ptc 的 skill-filesystem 新增 customSkillDirs 且 plugin-manager 恢复出厂启用条件，均出厂对齐）
-- **出口闸在接管世界缺省开启**（旧公式线 = 窗 − 输出预算 − 2%）：封死「宿主 max_tokens 钳制线（≈窗−输出预算）低于 pressure 线（0.8×窗）」的贴线饿死死亡带——大固定面会话落带时压缩无触发点、轮次被钳成 out=1 空转（台架 58K 词汇表面第 6-8 轮死复现；真实端点同款「门关轮次空转」README 曾有记录）。58K 面翻转后 44/44 满程（闸线入场 23971、53 次介入）；off/shadow 世界缺省仍关，`ARGP_FACTOR_EGRESS=0` 硬关逃生口、设置「压缩阈值」比例线仍优先。
+- **出口闸在接管世界缺省开启**（旧公式线 = 窗 − 输出预算 − 2%）：封死「宿主 max_tokens 钳制线（≈窗−输出预算）低于 pressure 线（0.8×窗）」的贴线饿死死亡带——大固定面会话落带时压缩无触发点、轮次被钳成 out=1 空转（台架 58K 词汇表面第 6-8 轮死复现；真实端点同款「门关轮次空转」README 曾有记录）。58K 面翻转后 44/44 满程（g12 复测：47 次介入全 prune-only、闸线最小入场 23962；尾部 3 轮因轮内工具增长越过 pre-step 闸可见位、被宿主钳制截断 out<1.2K——轮内增量的钳制尾差留档后续）；off/shadow 世界缺省仍关，`ARGP_FACTOR_EGRESS=0` 硬关逃生口、设置「压缩阈值」比例线仍优先。
 - 接管组剪与出口闸同口径测量（含 incomingTokens），修复此前双事务/双驱逐。
 - 散文双闸主权移交判据表：approved 跳闸一；宿主再注入原子不计散文（exclude 分类与接管同进退）。
 - README：出口闸/盲区缓解段改写为「接管缺省开」；EG 套显式钉 `ARGP_FACTOR_DISPATCH=0` 旧世界。
@@ -29,10 +31,13 @@
 - 摘要领头原子错位：跳过领头检查点使第 2 条起摘要前缀从 msg#1 分叉、缓存掉回 1 块（g4 实锤）——全前缀回放修复，单测锁。
 - takeover 主权闭环：快照异常/窗口未知的决策缺失不再落回旧双闸（旧闸 condense 为 legacy transcript 形：缓存不友好、绕过判据主权、G2 不可见），兜底 prune-only 0-LLM 求生剪 + `decision-failed` 取证流水。
 - terminal-b6 空转：连 3 轮不发事务。
+- 召回副本可见性裁决：缺省查询/词表/sticky 观察面剔除召回工具自身被剪的结果（「副本的副本」不再冒充证据面），点名 `tool:` 召回族键保留审计通道（RV1–RV5 契约锁）。
+- pre-step 独立浓缩闸补世界门控：接管下 §9.36 闸二不再挂载——该闸五参直调不经分派核准，过线时会以旧形（再注入原子计回散文）绕过判据表发摘要且对 G2 账单隐形（发布前审查实锤调用点无门控；EG-15 锁）。off/shadow 旧世界照旧。
+- `/argp` 风险行文案对齐 2026-11-19 勘误：「宿主无痕截断最旧 live」改为实测形态「输出预算钳到窗−prompt（轮次趋零空转）/严格端点 400 拒收」，并注明出口闸接管下缺省已开。
 
 ### 提示
-- 注意：面向宿主 0.2.3-alpha 频道用户（`dsh plugin add dsh-argp@2.1.1-beta.0`）；stable 宿主（0.2.2 线）继续用 2.1.0
-- 测试：全量 370 例（368 通过、2 跳过）；三域台架 32K 全长 + 64K 76 轮 + 58K 固定面实机（read 62/62、probe 2/2（tool）、hit 88-92%、dead=0）；focus 域第二探测轮在缺省新时序下 1/2×2（模型选路漂移：view=outline/绝对路径 label；原文恒在日志、正确 label+full 视图可逐字取回，改进项入 2.2.0）
+- 注意：2.2.0 直发 stable（npm `latest`）。preset 覆盖块按宿主 0.2.3-alpha.2 出厂对齐——对 stable 宿主 0.2.2-rc.5 经逐项 diff 核验：出厂条目零丢失，仅 4 处良性对齐（standard +tool-cordis 在 0.2.2 可解析可加载；tool-skill.excludedSkills 被 0.2.2 宽容忽略；ptc customSkillDirs 0.2.2 已支持；plugin-manager 启用条件与其他 preset 一致）
+- 测试：全量 371 例（369 通过、2 跳过）；三域台架 32K 全长 + 64K 76 轮 + 58K 固定面实机（read 62/62、probe 2/2（tool）、hit 88-92%、dead=0）；focus 域第二探测轮在缺省新时序下 1/2×2（模型选路漂移：view=outline/绝对路径 label；原文恒在日志、正确 label+full 视图可逐字取回，改进项入 2.2.0）
 
 ## [2.1.0] - 2026-11-19（tool 因子键 + 交互族预览 + search_history 内容发现 + 外评 Issue3/4/5）
 
