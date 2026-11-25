@@ -1115,13 +1115,23 @@ export class ArgpEngine extends CompactionEngine {
           try { appendFileSync(dispatchLogPath, JSON.stringify(record) + '\n') } catch { /* 落盘失败不改变任何发射 */ }
         }
       } catch (e) {
-        this.log.warn('[argp-dispatch] 分派决策异常（不影响发射）：' + (e instanceof Error ? e.message : String(e)))
+        const msg = e instanceof Error ? (e.stack ?? e.message) : String(e)
+        this.log.warn('[argp-dispatch] 分派决策异常（不影响发射）：' + msg)
+        const failPath = resolveDispatchShadowLogPath()
+        if (failPath !== undefined) {
+          try { appendFileSync(failPath, JSON.stringify({ t: Date.now(), mode: dispatchMode, form: 'decision-failed', reason: msg.split('\n')[0] }) + '\n') } catch { /* 落盘失败不改变任何发射 */ }
+        }
         dispatchDecision = null
       }
     }
-    if (dispatchMode === 'takeover' && dispatchDecision !== null) {
+    if (dispatchMode === 'takeover') {
       // dispatchDecision 非 null 已蕴含进入条件（overflow 或 declaredKnown）。
-      return await this.compactByDispatch(agent, session, dispatchDecision, windowTokens, retainTokens, incomingTokens, signal)
+      // 主权闭环：决策缺失（快照异常/window 未知）不得落回旧双闸——旧闸 condense 是
+      // legacy transcript 形（缓存不友好、绕过判据主权、G2 不可见，g5-focus 实锤漏道）；
+      // 兜底形 = prune-only 0-LLM 求生剪（dedup+组剪，LLM 杠杆在无决策时禁用）。
+      return await this.compactByDispatch(agent, session,
+        dispatchDecision ?? { form: 'prune-only', reason: 'takeover 兜底：分派决策缺失（快照异常或窗口未知），禁用 LLM 通路' },
+        windowTokens, retainTokens, incomingTokens, signal)
     }
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
@@ -1193,7 +1203,10 @@ export class ArgpEngine extends CompactionEngine {
     incomingTokens: number,
     signal: AbortSignal,
   ): Promise<CompactionResult | null> {
-    const dedup = this.factor.dedupeReinjected(session)
+    // §G 排序：摘要形态必须**先发 LLM**（P 还是热前缀，逐字节复用缓存），dedup/组剪
+    // 等 surface 变更一律排在其后；其余形态 dedup 照旧打头。
+    const isSummarize = decision.form === 'summarize-only' || decision.form === 'summarize-then-prune'
+    let dedup: CompactionResult | null = isSummarize ? null : this.factor.dedupeReinjected(session)
     signal.throwIfAborted()
     let pruned: CompactionResult | null = dedup
     let proseResult: CompactionResult | null = null
@@ -1231,6 +1244,7 @@ export class ArgpEngine extends CompactionEngine {
         }
         signal.throwIfAborted()
         this.bindSession(session) // D2：condense await 窗口内焦点可能换装——回绑再写 surface
+        dedup = this.factor.dedupeReinjected(session) // 摘要请求已发出，surface 现在可以动了
         pruned = (decision.form === 'summarize-then-prune' ? doGroupPrune() : null) ?? dedup
         break
       }

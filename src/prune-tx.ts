@@ -38,6 +38,16 @@ import { isMergeableTombstoneText, seqRangeTombstone, toolTombstone, toolTombsto
  * **事件类型**过滤（只认 user/message），与文本判据构成双保险，防孤儿 tool_calls。
  * 导出供测试锁定行为。
  */
+/** §G2 摘要信封：provider/model/maxTokens/usage（含 cacheReadTokens）/rawOutput/llmStreamCall。 */
+export interface CompactionSummaryMeta {
+  provider?: string
+  model?: string
+  maxTokens?: number
+  usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number }
+  rawOutput?: unknown[]
+  llmStreamCall?: true
+}
+
 export function isMergeableTombstone(text: string): boolean {
   return isMergeableTombstoneText(text)
 }
@@ -136,7 +146,9 @@ export function pruneIntervals(
   candidateCount: number,
   forced: boolean,
   tombstones?: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string } | { type: 'developer'; form?: string; kind?: 'group' | 'a' | 'orphan' })[],
-  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-prose',
+  summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune',
+  /** §G2：LLM 摘要调用的真实账单/信封回填 compaction/summary（宿主字段词典；0-LLM 事务不传）。 */
+  summaryMeta?: CompactionSummaryMeta,
 ): CompactionResult | null {
   // P1.2（2026-09-21）：事务开始前预校验 tool 占位墓碑的可克隆性。带 tool 墓碑的单 R 区间
   // 必须克隆原 R data（只改 inner text）以配对 issuer A 的 tool_calls；若原事件
@@ -276,8 +288,12 @@ export function pruneIntervals(
       shadowedRange: { start: first, end: last },
       shadowedSeqs: rangeSeqs,
       shadowedTokenCount: shadowedTokensOf(charsBefore0),
-      provider: 'argp',
-      model: summaryKind === 'factor-prose' ? 'llm-prose-checkpoint' : 'deterministic-guards',
+      provider: summaryMeta?.provider ?? 'argp',
+      model: summaryMeta?.model ?? (summaryKind === 'factor-prose' ? 'llm-prose-checkpoint' : 'deterministic-guards'),
+      ...(summaryMeta?.usage !== undefined ? { usage: summaryMeta.usage } : {}),
+      ...(summaryMeta?.maxTokens !== undefined ? { maxTokens: summaryMeta.maxTokens } : {}),
+      ...(summaryMeta?.rawOutput !== undefined ? { rawOutput: summaryMeta.rawOutput } : {}),
+      ...(summaryMeta?.llmStreamCall === true ? { llmStreamCall: true } : {}),
     } as never)
     if (useTombstones !== undefined && useTombstones.length !== useIntervals.length) {
       // 审查 P1-5：绝不能静默回退到 seq 指针墓碑（零指针纪律）；数量错配 = 调用方 bug。

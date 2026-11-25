@@ -15,6 +15,19 @@ import type { SessionRuntimeState } from './session-state.js';
  * **事件类型**过滤（只认 user/message），与文本判据构成双保险，防孤儿 tool_calls。
  * 导出供测试锁定行为。
  */
+/** §G2 摘要信封：provider/model/maxTokens/usage（含 cacheReadTokens）/rawOutput/llmStreamCall。 */
+export interface CompactionSummaryMeta {
+    provider?: string;
+    model?: string;
+    maxTokens?: number;
+    usage?: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+    };
+    rawOutput?: unknown[];
+    llmStreamCall?: true;
+}
 export declare function isMergeableTombstone(text: string): boolean;
 export interface GraphPruneRecord {
     at: string;
@@ -121,4 +134,6 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
     type: 'developer';
     form?: string;
     kind?: 'group' | 'a' | 'orphan';
-})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prune' | 'factor-prose'): CompactionResult | null;
+})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune', 
+/** §G2：LLM 摘要调用的真实账单/信封回填 compaction/summary（宿主字段词典；0-LLM 事务不传）。 */
+summaryMeta?: CompactionSummaryMeta): CompactionResult | null;

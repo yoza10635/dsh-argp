@@ -23,6 +23,12 @@ export declare const PROSE_INSTRUCTION_TOKEN_RESERVE = 512;
  * 预算（与 H5 小窗守卫同源）。判"能不能直发摘要求"：C + 本值 ≤ W_eff。
  */
 export declare function summarySendTokens(declaredWindow: number): number;
+/**
+ * §G 上下文形头：输入=会话路由原样（含工具原子，逐字节复用热前缀缓存——宿主
+ * compaction-basic 同款装配）。11-13 输出契约由本指令维持：工具输出体不转录，
+ * 只记路径/命令/决定/结果级事实（原文经 recall_history(labels) 召回）。
+ */
+export declare const CTX_COMPACTION_INSTRUCTION: string;
 /** 事件读侧探针（同 ua-input 口径：source.form + source.kind + 附件块）。 */
 export interface ProseEventProbe {
     form?: string;
@@ -127,6 +133,19 @@ export declare class ProseCondenser {
      */
     private buildProseMessages;
     private callLlm;
+    /**
+     * §G 宿主同款上下文装配（buildSummarizationInput 照搬）：
+     * messages = surface 头部到 span 末的**全部路由消息**（含检查点/note/钉死指令等不可驱逐
+     * 头原子——它们在 wire 上就在那儿，跳过反而打断前缀），tools = requestHeader().tools，
+     * route = requestHeader().config（含 reasoningEffort；与主对话同参数=命中前提）。
+     * 与上一轮路由请求逐字节一致的前缀 ⇒ 服务端 warm prefix cache 命中到尾部指令为止
+     * （2026-11-25 g4 实锤：只回放 span 时第 2 条摘要起前缀从 msg#1 分叉，cache 掉回
+     * 1 块；头原子入队后 @102 形态 cache=24576/25283）。
+     * 驱逐集合仍只有 spanSeqs——入队≠驱逐。
+     */
+    private buildCtxInput;
+    /** §G 上下文形调用：A 形态前缀 + 尾部指令 user 消息（适配器原语），返回带 usage。 */
+    private callLlmCtx;
     /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */
     private resolveSpec;
 }

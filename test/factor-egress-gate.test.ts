@@ -128,13 +128,20 @@ const sig = (): AbortSignal => new AbortController().signal
 // 缺省关世界（2026-11-15 用户裁定）：门控类 EG 测试显式开闸；env 是构造期快照，
 // 钩子在引擎 mount 前置位、测后还原。
 let savedEgress: string | undefined
+let savedDispatch: string | undefined
 beforeEach(() => {
   savedEgress = process.env['ARGP_FACTOR_EGRESS']
   process.env['ARGP_FACTOR_EGRESS'] = '1'
+  // EG 套 = 旧双闸/出口闸语义锁（§9.36 原样）：显式钉 off 世界。takeover 缺省世界曾靠
+  // stub 无 proseStats ⇒ 决策缺失 ⇒ 恰落回旧闸而通过——该漏道已被主权闭环禁用（g5 实锤）。
+  savedDispatch = process.env['ARGP_FACTOR_DISPATCH']
+  process.env['ARGP_FACTOR_DISPATCH'] = '0'
 })
 afterEach(() => {
   if (savedEgress === undefined) delete process.env['ARGP_FACTOR_EGRESS']
   else process.env['ARGP_FACTOR_EGRESS'] = savedEgress
+  if (savedDispatch === undefined) delete process.env['ARGP_FACTOR_DISPATCH']
+  else process.env['ARGP_FACTOR_DISPATCH'] = savedDispatch
 })
 
 // 缺省线（声明窗 1000）：outputBudget=floor(1000×0.25)=250，margin=round(1000×0.02)=20 ⇒ line=730。

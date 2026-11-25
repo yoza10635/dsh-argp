@@ -30,6 +30,8 @@ export interface DshLlmSpec {
 export interface PeratomLlmUsage {
   promptTokens: number
   completionTokens: number
+  /** §G 缓存验收关键量：命中缓存的前缀 token 数（宿主 usage 块透传）。 */
+  cacheReadTokens?: number
 }
 
 export interface PeratomLlmResult {
@@ -49,7 +51,11 @@ interface LlmRuntimeView {
     purpose?: 'compaction' | 'session-title'
     /** A 形态前缀的 tools 透传（GenerateOptions.tools，真身支持）。 */
     tools?: unknown[]
-  }): AsyncIterable<{ type: string; text?: string; usage?: { inputTokens?: number; outputTokens?: number } }>
+    /** 思考档透传（GenerateOptions.reasoningEffort）。§G 前缀缓存命中的硬前提：
+     * radiance 在流式 + reasoning_effort=null 下不复用深前缀（只读 system 块），
+     * 摘要必须与 agent 上一发同档（2026-11-25 wire diff + 生产尺度变体实锤）。 */
+    reasoningEffort?: string
+  }): AsyncIterable<{ type: string; text?: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } }>
 }
 
 /** 解析宿主 llm 服务。真宿主 cordis 对属性访问做 inject 检查（2026-08-28 联调实测：
@@ -83,6 +89,7 @@ export async function completeViaDshLlm(
   contextTools?: readonly ToolSchema[],
   signal?: AbortSignal,
   maxTokens?: number,
+  reasoningEffort?: string,
 ): Promise<PeratomLlmResult> {
   const llm = resolveLlmRuntime(ctx)
   if (llm === undefined) throw new Error('dsh-llm backend: host has no llm service')
@@ -99,6 +106,7 @@ export async function completeViaDshLlm(
     // 思考型模型可无限输出 reasoning 烧穿压缩调用预算（fetch 路径早有 maxCompletionTokens，
     // 双后端不对称）。completeViaDshLlm 新增可选 maxTokens 参数，调用方传 peratom 配置值。
     ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     purpose: 'compaction',
     // 外部取消与超时合并——任一触发即断流（abort 优先透传给调用方）。
     signal: signal === undefined ? AbortSignal.timeout(timeoutMs) : AbortSignal.any([AbortSignal.timeout(timeoutMs), signal]),
@@ -111,7 +119,11 @@ export async function completeViaDshLlm(
       chunks += 1
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
       else if (chunk.type === 'usage' && chunk.usage !== undefined) {
-        usage = { promptTokens: chunk.usage.inputTokens ?? 0, completionTokens: chunk.usage.outputTokens ?? 0 }
+        usage = {
+          promptTokens: chunk.usage.inputTokens ?? 0,
+          completionTokens: chunk.usage.outputTokens ?? 0,
+          ...(chunk.usage.cacheReadTokens !== undefined ? { cacheReadTokens: chunk.usage.cacheReadTokens } : {}),
+        }
       }
     }
   } finally {

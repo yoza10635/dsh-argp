@@ -25,15 +25,15 @@
  * （turn=0 伪轮天然在焦点号之下，位置上若落在 open 区已被位置守卫拦住）。
  */
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { Message } from '@deepseek-ai/dsh-llm'
+import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
-import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
+import { pruneIntervals, type CompactionSummaryMeta, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
-import { classifyUaAtom, type HostReinjectedMode, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
+import { classifyUaAtom, HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS, type HostReinjectedMode, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
 import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
 import { DEFAULT_FOCAL_TURNS, FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { liveBlendCharsPerToken } from '../budget.js'
@@ -78,8 +78,8 @@ const CHECKPOINT_PREAMBLE = 'This is an automatically generated checkpoint conde
  * transcript 面 = "U:" 用户 / "A:" 助手 / "CALL name(args)" 工具调用 / "RESULT ..."
  * 工具结果（均日志原文）。旧 v1 的 "Tool outputs are NOT included" 规则行随全栈裁定删除。
  */
-const PROSE_COMPACTION_INSTRUCTION = [
-  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation transcript ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context. The transcript contains only the conversational prose: "U:" user messages and "A:" assistant final messages. Tool calls and tool outputs are NOT part of this transcript (they are recallable by label if needed).',
+/** 指令共用尾段（结构模板 + 规则）；head 段按输入面形态分叉。 */
+const PROSE_INSTRUCTION_TAIL = [
   '',
   'Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.',
   '',
@@ -113,6 +113,20 @@ const PROSE_COMPACTION_INSTRUCTION = [
   '- Do NOT mention this summarization request or that the context was compacted.',
   '- Output only the checkpoint text: do not call any tool or take any other action.',
 ].join('\n')
+
+/** 旧 A 形态头（重建 transcript，仅 prose）——逃生口/影子世界逐字不变。 */
+const PROSE_COMPACTION_INSTRUCTION =
+  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation transcript ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context. The transcript contains only the conversational prose: "U:" user messages and "A:" assistant final messages. Tool calls and tool outputs are NOT part of this transcript (they are recallable by label if needed).' +
+  PROSE_INSTRUCTION_TAIL
+
+/**
+ * §G 上下文形头：输入=会话路由原样（含工具原子，逐字节复用热前缀缓存——宿主
+ * compaction-basic 同款装配）。11-13 输出契约由本指令维持：工具输出体不转录，
+ * 只记路径/命令/决定/结果级事实（原文经 recall_history(labels) 召回）。
+ */
+export const CTX_COMPACTION_INSTRUCTION =
+  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context. The conversation above is the live routed transcript INCLUDING tool calls and tool outputs: do NOT transcribe tool output bodies — tool-level facts are recallable by label, so record only file paths, commands, decisions, and outcome-level results that the prose depends on.' +
+  PROSE_INSTRUCTION_TAIL
 
 /** 事件读侧探针（同 ua-input 口径：source.form + source.kind + 附件块）。 */
 export interface ProseEventProbe {
@@ -169,12 +183,17 @@ export function planProseEviction(
 ): ProseEvictPlan {
   const atomsBySeq = new Map<number, Atom>(atoms.map(a => [a.seq, a]))
   const hrMode: HostReinjectedMode = options.hostReinjected ?? 'prose'
-  const clsOf = (atom: Atom): { cls: SummaryInputClass; swallowableX: boolean } => {
+  const clsOf = (atom: Atom): { cls: SummaryInputClass; swallowableX: boolean; spanTransparent: boolean } => {
     const probe = probes.get(atom.seq) ?? { attachment: false }
     const cls = classifyUaAtom(atom, probe, hrMode)
     // X 的可吞性细化：可并墓碑（[elided 空格族）+ 本链历史浓缩节点（[散文压缩]）
     // + 桩族（STUB_PREFIX：因子桩/夹剪/占位桩）+ 协议组空占位（argp-removed）。
     // 宿主官方 checkpoint / 词表 note / system-reminder 等 excluded-X 永不吞。
+    // §G span 透明性：exclude 模式下宿主再注入 U 原子**不碎段**——它计入区间、随 span
+    // 原样回放（head 逐字节连续=缓存命中前提）与驱逐（宿主下一轮重注入，副本离场无损），
+    // 但不计散文量（proseOf 只认 textA）。缺它则 turn-1 注入把 run 打断 ⇒ 回放头错位 ⇒ cached=0。
+    const reinjectedU = atom.type === 'U' && ((probe.form !== undefined && HOST_REINJECTED_FORMS.includes(probe.form))
+      || (probe.kind !== undefined && HOST_REINJECTED_KINDS.includes(probe.kind)))
     const swallowableX = cls === 'excluded' && atom.type === 'X'
       && (probe?.form === 'argp-removed'
         || atom.text.trimStart().startsWith(FACTOR_COMPACTED_MARKER)
@@ -183,7 +202,7 @@ export function planProseEviction(
         || isFactorTombstoneText(atom.text)
         || atom.text.trimStart().startsWith(PROSE_CHECKPOINT_PREFIX)
         || atom.text.trimStart().startsWith(STUB_PREFIX))
-    return { cls, swallowableX }
+    return { cls, swallowableX, spanTransparent: swallowableX || (hrMode === 'exclude' && reinjectedU) }
   }
   const proseOf = (atom: Atom, cls: SummaryInputClass): number =>
     cls === 'textA' ? atom.text.length : 0
@@ -236,8 +255,8 @@ export function planProseEviction(
     for (const seq of run.seqs) {
       const atom = atomsBySeq.get(seq)
       if (atom === undefined) { whole = false; break }
-      const { cls, swallowableX } = clsOf(atom)
-      if (cls === 'barrier' || (cls === 'excluded' && !swallowableX)) { whole = false; break }
+      const { cls, spanTransparent } = clsOf(atom)
+      if (cls === 'barrier' || (cls === 'excluded' && !spanTransparent)) { whole = false; break }
       runProse += proseOf(atom, cls)
     }
     if (whole && runProse > 0) {
@@ -415,10 +434,38 @@ export class ProseCondenser {
     const spanMessages = this.buildProseMessages(atoms, probes, surfaceSeqs, evictedSet, hrMode)
     // 接管时输出预算用分派器给的剩余空间（仍封顶 PROSE_SUMMARY_MAX_TOKENS、保底 1024）；
     // 未授权 ⇒ summaryMaxTokensOut(declaredWindow) H5 标准式，现网不变。
-    const summary = await this.callLlm(spec, spanMessages, signal, declaredWindow,
-      dispatch?.approved === true
-        ? Math.max(1024, Math.min(PROSE_SUMMARY_MAX_TOKENS, dispatch.maxOutputTokens))
-        : undefined)
+    const outBudget = dispatch?.approved === true
+      ? Math.max(1024, Math.min(PROSE_SUMMARY_MAX_TOKENS, dispatch.maxOutputTokens))
+      : undefined
+    // §G：接管授权 ⇒ 宿主同款上下文装配（热前缀逐字节复用）；未授权走旧 A 形态，现网不变。
+    let summary: string
+    let summaryMeta: CompactionSummaryMeta | undefined
+    if (dispatch?.approved === true) {
+      const ctxInput = this.buildCtxInput(session, plan.spanSeqs)
+      // 路由（含 reasoningEffort 原值）全部取 header.config——与 agent 上一发同参数
+      // 是前缀缓存复用的前提（2026-11-25 wire 实锤：同字节 body 在
+      // reasoning_effort=null+流式 下读 0~2048 块，同值 medium 读 97.6%；low≠medium 不共享）。
+      const specCtx = ctxInput.route?.provider !== undefined && ctxInput.route?.model !== undefined
+        ? { provider: ctxInput.route.provider, model: ctxInput.route.model }
+        : spec
+      const llmOut = await this.callLlmCtx(specCtx, ctxInput, signal, outBudget, ctxInput.route?.reasoningEffort)
+      summary = llmOut.text
+      if (llmOut.usage !== undefined) {
+        summaryMeta = {
+          provider: specCtx.provider, model: specCtx.model,
+          ...(outBudget !== undefined ? { maxTokens: outBudget } : {}),
+          usage: {
+            inputTokens: llmOut.usage.promptTokens,
+            outputTokens: llmOut.usage.completionTokens,
+            ...(llmOut.usage.cacheReadTokens !== undefined ? { cacheReadTokens: llmOut.usage.cacheReadTokens } : {}),
+          },
+          rawOutput: [{ type: 'text', text: summary }],
+          llmStreamCall: true,
+        }
+      }
+    } else {
+      summary = await this.callLlm(spec, spanMessages, signal, declaredWindow, undefined)
+    }
     if (summary.trim().length === 0) {
       this.host.log.warn('[argp-factor-prose] LLM 摘要空输出（保原文，本轮不浓缩）')
       return null
@@ -435,7 +482,7 @@ export class ProseCondenser {
     if (intervals.length === 0) return null
     this.host.log.info('[argp-factor-prose] 浓缩 ' + plan.spanSeqs.length + ' 整轮节点（' + spanChars
       + ' chars）→ 单检查点；散点 ' + plan.partialSeqs.length + ' 个原样保留（无指针）；stop=' + plan.stopReason)
-    return pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'factor-prose')
+    return pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'factor-prose', summaryMeta)
   }
 
   /** 焦点轮数活读：宿主侧旋钮与 FactorEngine 同源（引擎构造期传 getter 到本类）。 */
@@ -597,6 +644,74 @@ export class ProseCondenser {
     }
     return (await completeViaDshLlm(this.ctx, spec, PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs,
       spanMessages, undefined, signal, maxOutTokens ?? summaryMaxTokensOut(declaredWindow))).text
+  }
+
+  /**
+   * §G 宿主同款上下文装配（buildSummarizationInput 照搬）：
+   * messages = surface 头部到 span 末的**全部路由消息**（含检查点/note/钉死指令等不可驱逐
+   * 头原子——它们在 wire 上就在那儿，跳过反而打断前缀），tools = requestHeader().tools，
+   * route = requestHeader().config（含 reasoningEffort；与主对话同参数=命中前提）。
+   * 与上一轮路由请求逐字节一致的前缀 ⇒ 服务端 warm prefix cache 命中到尾部指令为止
+   * （2026-11-25 g4 实锤：只回放 span 时第 2 条摘要起前缀从 msg#1 分叉，cache 掉回
+   * 1 块；头原子入队后 @102 形态 cache=24576/25283）。
+   * 驱逐集合仍只有 spanSeqs——入队≠驱逐。
+   */
+  private buildCtxInput(session: Session, spanSeqs: readonly number[]): {
+    messages: Message[]
+    tools?: ToolSchema[]
+    route?: { provider?: string; model?: string; reasoningEffort?: string }
+  } {
+    const header = session.requestHeader() as {
+      config?: { provider?: string; model?: string; reasoningEffort?: string }
+      tools?: ToolSchema[]
+    } | undefined
+    const msgs: Message[] = []
+    const spanEnd = spanSeqs.length > 0 ? Math.max(...spanSeqs) : -1
+    // derive 容错：仅真路由事件形状可靠（测试夹具/损坏事件 derive 抛 ⇒ 跳过该枚，
+    // 前缀退化为可用子集——语义与缓存双双降级但不炸调用）。
+    const deriveSafe = (seq: number): Message | null => {
+      try {
+        const ev = session.eventAt(seq as never)
+        if (ev === undefined) return null
+        return session.deriveEventMessage(ev) as Message | null
+      } catch { return null }
+    }
+    for (const node of session.surface.nodes) {
+      const seq = node as number
+      if (seq > spanEnd) break
+      const m = deriveSafe(seq)
+      if (m !== null) msgs.push(m)
+    }
+    const tools = header?.tools
+    const route = header?.config
+    return {
+      messages: msgs,
+      ...(tools !== undefined && tools.length > 0 ? { tools } : {}),
+      ...(route !== undefined
+        ? { route: { provider: route.provider, model: route.model, reasoningEffort: route.reasoningEffort } }
+        : {}),
+    }
+  }
+
+  /** §G 上下文形调用：A 形态前缀 + 尾部指令 user 消息（适配器原语），返回带 usage。 */
+  private async callLlmCtx(
+    spec: { provider: string; model: string },
+    input: { messages: Message[]; tools?: ToolSchema[] },
+    signal: AbortSignal | undefined,
+    maxOutTokens: number | undefined,
+    reasoningEffort?: string,
+  ): Promise<{ text: string; usage?: { promptTokens: number; completionTokens: number; cacheReadTokens?: number } }> {
+    if (this.cfg.complete !== undefined) {
+      const flat = input.messages.map(m => {
+        const blocks = (m as unknown as { content?: ReadonlyArray<{ type?: string; text?: string }> }).content ?? []
+        return blocks.map(b => typeof b.text === 'string' ? b.text : '').join('')
+      }).join('\n')
+      const text = await this.cfg.complete(spec, flat + '\n\n' + CTX_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs)
+      return { text }
+    }
+    const r = await completeViaDshLlm(this.ctx, spec, CTX_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs,
+      input.messages, input.tools, signal, maxOutTokens, reasoningEffort)
+    return { text: r.text, ...(r.usage !== undefined ? { usage: r.usage } : {}) }
   }
 
   /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */

@@ -8,6 +8,8 @@ export interface DshLlmSpec {
 export interface PeratomLlmUsage {
     promptTokens: number;
     completionTokens: number;
+    /** §G 缓存验收关键量：命中缓存的前缀 token 数（宿主 usage 块透传）。 */
+    cacheReadTokens?: number;
 }
 export interface PeratomLlmResult {
     text: string;
@@ -22,7 +24,7 @@ export interface PeratomLlmResult {
  * agent 上一发共享前缀，KV 块原地命中（设计文档 §4；ctk 须配
  * preserve_thinking:true，见 serializeWireMessages 头注）。
  */
-export declare function completeViaDshLlm(ctx: Context, spec: DshLlmSpec, prompt: string, timeoutMs: number, contextMessages?: readonly Message[], contextTools?: readonly ToolSchema[], signal?: AbortSignal, maxTokens?: number): Promise<PeratomLlmResult>;
+export declare function completeViaDshLlm(ctx: Context, spec: DshLlmSpec, prompt: string, timeoutMs: number, contextMessages?: readonly Message[], contextTools?: readonly ToolSchema[], signal?: AbortSignal, maxTokens?: number, reasoningEffort?: string): Promise<PeratomLlmResult>;
 /** agent 路由提示：AgentContext.options 的结构最小视图（provider/model）。 */
 export interface AgentRouteHint {
     provider?: string;
