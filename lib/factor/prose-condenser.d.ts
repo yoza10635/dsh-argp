@@ -29,6 +29,16 @@ export interface ProseEventProbe {
     kind?: string;
     attachment: boolean;
 }
+/**
+ * §B-2/§C 接管授权：分派器（factor/dispatch.ts）已按「F/缺口地板/transcript 发送
+ * 判据」核准浓缩，闸一双闸主权移交分派器。`maxOutputTokens`=W_eff−transcript−指令
+ * 的剩余空间（可能小于 H5 标准 0.2×声明窗），发射时覆盖浓缩输出预算。缺省（未授权）
+ * ⇒ 现网双闸字节不变。
+ */
+export interface CondenseDispatch {
+    approved: true;
+    maxOutputTokens: number;
+}
 /** 轮级贪心计划（纯函数输出；发射在 ProseCondenser.condense）。 */
 export interface ProseEvictPlan {
     /** 连续整轮段的 surface seqs（一笔 replace → 单浓缩节点；按 surface 位置升序）。 */
@@ -82,8 +92,11 @@ export declare class ProseCondenser {
      * 保证（condenseGate / 400 事务天然满足；手动 compactNow 免闸二）。
      * windowTokens = 触发线（分母口径同旧：声明窗×windowRatio 前的声明值——引擎传缩放后
      * windowTokens，此处仅作分母）；declaredWindow = 适配器声明窗原值（H5 小窗守卫用）。
+     * `dispatch`（§B-2/§C 接管）：分派器已按 F/缺口地板/transcript 判据核准浓缩——
+     * 闸一双闸主权移交判据表，本方法跳过闸一；输出预算用分派器给的
+     * `maxOutputTokens`（W_eff−transcript−指令 的剩余空间，可能小于 H5 标准式）。
      */
-    condense(session: Session, route: AgentRouteHint, windowTokens: number, signal?: AbortSignal, declaredWindow?: number): Promise<CompactionResult | null>;
+    condense(session: Session, route: AgentRouteHint, windowTokens: number, signal?: AbortSignal, declaredWindow?: number, dispatch?: CondenseDispatch): Promise<CompactionResult | null>;
     /** 焦点轮数活读：宿主侧旋钮与 FactorEngine 同源（引擎构造期传 getter 到本类）。 */
     focalTurnsOf(): number;
     /**

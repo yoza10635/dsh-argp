@@ -121,6 +121,17 @@ export interface ProseEventProbe {
   attachment: boolean
 }
 
+/**
+ * §B-2/§C 接管授权：分派器（factor/dispatch.ts）已按「F/缺口地板/transcript 发送
+ * 判据」核准浓缩，闸一双闸主权移交分派器。`maxOutputTokens`=W_eff−transcript−指令
+ * 的剩余空间（可能小于 H5 标准 0.2×声明窗），发射时覆盖浓缩输出预算。缺省（未授权）
+ * ⇒ 现网双闸字节不变。
+ */
+export interface CondenseDispatch {
+  approved: true
+  maxOutputTokens: number
+}
+
 /** 轮级贪心计划（纯函数输出；发射在 ProseCondenser.condense）。 */
 export interface ProseEvictPlan {
   /** 连续整轮段的 surface seqs（一笔 replace → 单浓缩节点；按 surface 位置升序）。 */
@@ -307,6 +318,9 @@ export class ProseCondenser {
    * 保证（condenseGate / 400 事务天然满足；手动 compactNow 免闸二）。
    * windowTokens = 触发线（分母口径同旧：声明窗×windowRatio 前的声明值——引擎传缩放后
    * windowTokens，此处仅作分母）；declaredWindow = 适配器声明窗原值（H5 小窗守卫用）。
+   * `dispatch`（§B-2/§C 接管）：分派器已按 F/缺口地板/transcript 判据核准浓缩——
+   * 闸一双闸主权移交判据表，本方法跳过闸一；输出预算用分派器给的
+   * `maxOutputTokens`（W_eff−transcript−指令 的剩余空间，可能小于 H5 标准式）。
    */
   async condense(
     session: Session,
@@ -314,6 +328,7 @@ export class ProseCondenser {
     windowTokens: number,
     signal?: AbortSignal,
     declaredWindow = 0,
+    dispatch?: CondenseDispatch,
   ): Promise<CompactionResult | null> {
     if (windowTokens <= 0) {
       this.host.log.info('[argp-factor-prose] 声明窗未知（windowTokens<=0）：散文浓缩跳过（分母=声明窗，不猜物理口径）')
@@ -349,10 +364,14 @@ export class ProseCondenser {
     })
     const proseCharsAll = pre.proseCharsAll
     const needChars = sysChars + proseCharsAll - lineChars
-    if (needChars <= 0) {
+    if (needChars <= 0 && dispatch?.approved !== true) {
       this.host.log.info('[argp-factor-prose] 散文占比 ' + Math.round(((sysChars + proseCharsAll) / Math.max(windowChars, 1)) * 100)
         + '% ≤ 触发线 ' + Math.round(PROSE_TRIGGER_RATIO * 100) + '%：不浓缩')
       return null
+    }
+    if (dispatch?.approved === true && needChars <= 0) {
+      this.host.log.info('[argp-factor-prose] 分派器核准浓缩（占比 ' + Math.round(((sysChars + proseCharsAll) / Math.max(windowChars, 1)) * 100)
+        + '% 未过旧闸一，主权在分派器，跳过）')
     }
     // 注：needChars 至此只作闸一（散文线）判据用；驱逐计划不再按需量收刀（下方清扫式）。
     // 保护窗：open turn 位置 + 焦点轮号（与 factor decide 同焦点口径）。
@@ -389,7 +408,12 @@ export class ProseCondenser {
     // 离场但不喂 LLM，原文经 recall_history(labels) 召回。
     const evictedSet = new Set<number>(plan.spanSeqs)
     const spanMessages = this.buildProseMessages(atoms, probes, surfaceSeqs, evictedSet)
-    const summary = await this.callLlm(spec, spanMessages, signal, declaredWindow)
+    // 接管时输出预算用分派器给的剩余空间（仍封顶 PROSE_SUMMARY_MAX_TOKENS、保底 1024）；
+    // 未授权 ⇒ summaryMaxTokensOut(declaredWindow) H5 标准式，现网不变。
+    const summary = await this.callLlm(spec, spanMessages, signal, declaredWindow,
+      dispatch?.approved === true
+        ? Math.max(1024, Math.min(PROSE_SUMMARY_MAX_TOKENS, dispatch.maxOutputTokens))
+        : undefined)
     if (summary.trim().length === 0) {
       this.host.log.warn('[argp-factor-prose] LLM 摘要空输出（保原文，本轮不浓缩）')
       return null
@@ -555,7 +579,7 @@ export class ProseCondenser {
     return messages
   }
 
-  private async callLlm(spec: { provider: string; model: string }, spanMessages: Message[], signal?: AbortSignal, declaredWindow = 0): Promise<string> {
+  private async callLlm(spec: { provider: string; model: string }, spanMessages: Message[], signal?: AbortSignal, declaredWindow = 0, maxOutTokens?: number): Promise<string> {
     if (this.cfg.complete !== undefined) {
       // 测试注入形：span 栈平铺进 prompt（形状同构：前缀 replay + 尾部指令）。
       // 行内标记（U:/A:）已在 buildProseMessages 写入文本，此处不再叠角色前缀。
@@ -566,7 +590,7 @@ export class ProseCondenser {
       return await this.cfg.complete(spec, flat + '\n\n' + PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs)
     }
     return (await completeViaDshLlm(this.ctx, spec, PROSE_COMPACTION_INSTRUCTION, this.cfg.llmTimeoutMs,
-      spanMessages, undefined, signal, summaryMaxTokensOut(declaredWindow))).text
+      spanMessages, undefined, signal, maxOutTokens ?? summaryMaxTokensOut(declaredWindow))).text
   }
 
   /** spec 解析（compressor 优先序 auto 档口径）：路由齐 + 宿主 llm 服务在位，缺一即 disabled。 */

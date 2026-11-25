@@ -402,6 +402,19 @@ export declare class ArgpEngine extends CompactionEngine {
     compactIfNeeded(agent: CompactionAgentContext, trigger: CompactionTrigger, signal: AbortSignal, 
     /** 本步已 claim 未落盘的 user 消息估值（轮初专用；其余调用点省略）。 */
     incomingTokens?: number): Promise<CompactionResult | null>;
+    /**
+     * §B-2b 接管事务（ARGP_FACTOR_DISPATCH=2）：按分派形态发射，双闸主权在判据表。
+     * 公共前缀：结构去重（宿主再注入旧副本回收，0-LLM）。形态语义：
+     *  - prune-only → 组剪 + native 收紧，**不调**浓缩链；
+     *  - summarize-then-prune → 先浓缩（dispatchApproved + 分派器输出预算）→ **复测**，
+     *    仍有 deficit 才补组剪（§B 定稿：复测判据，不凭决策时的旧 deficit）；
+     *  - summarize-only → 只浓缩；
+     *  - terminal-b6 → 会话级连续计数：≥3 轮不空转（去重 + 上报，不再组剪），
+     *    否则降级求生组剪（能减一点是一点）；
+     *  - none → 如实上报（below-retain 不该进到这里 / stop+report）。
+     * note 刷新沿用现不变量：有真事务才刷（空转不动 surface）。
+     */
+    private compactByDispatch;
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(_start: number, _end: number, _agent: CompactionAgentContext, _signal?: AbortSignal): Promise<CompactionResult>;
     /**

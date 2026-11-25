@@ -232,6 +232,15 @@ export declare class FactorEngine {
      */
     compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null;
     /**
+     * §B-2a 结构去重驱逐（0-LLM）：宿主**每次压缩后**把再注入三件套
+     * （agent-instructions/runtime-context/skill-catalog）重新注入一份——档案实锤
+     * 2026-11-25（prose 域 catalog ×4 = 首注 + 3 次压缩）。旧副本与新副本内容同源，
+     * 驱逐无需摘要、无需入账（U 无召回标签）。每 kind 保留 surface 最新一枚，旧者
+     * 整节点离场（中性检查点墓碑）。时机：重复只在**下一笔事务前**存在（重注入发生
+     * 在压缩事务之后），本方法在接管事务的开头回收。
+     */
+    dedupeReinjected(session: Session): CompactionResult | null;
+    /**
      * C10 夹剪臂（ARGP_FACTOR_CLIP=1）的旧语义：R-only 夹剪/最小桩 + A 仅 forced 时 user 墓碑。
      * 与 2026-11-13 的 A+R 组剪互斥（组剪是新默认；夹剪是显式对照世界，A/B 需要字节可复现）。
      */

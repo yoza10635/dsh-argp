@@ -84,6 +84,8 @@ export interface SessionRuntimeState {
   searchIndex: Map<number, { kind: 'R' | 'U' | 'A'; turn: number | string }> | null
   /** 最近一次 search_history 的查询词（第二跳「被覆盖」话术如实披露；刀 C）。 */
   searchQuery: string
+  /** §B-2 terminal-b6 连续计数（接管形态）：≥N 轮不空转（只报不剪）；非 b6 决策归零。 */
+  b6Streak: number
 }
 
 export function createSessionRuntimeState(): SessionRuntimeState {
@@ -107,5 +109,6 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     shadowedPending: null,
     searchIndex: null,
     searchQuery: '',
+    b6Streak: 0,
   }
 }

@@ -67,6 +67,8 @@ export interface DispatchSnapshot {
 export interface DispatchDecision {
   form: CompactForm
   reason: string
+  /** 摘要形态专用：W_eff − transcript − 指令 的剩余输出预算（发射时覆盖标准 0.2×W）。 */
+  outBudget?: number
 }
 
 export const DEFAULT_SUPPLY_MARGIN = 1.2
@@ -138,8 +140,8 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
   if (roomForOutput >= minOut) {
     const shrunk = roomForOutput < s.summarySendTokens - instruction
     return s.prunableTokens > 0
-      ? { form: 'summarize-then-prune', reason: `transcript ${transcript}+指令 装得下 W_eff ${s.windowEff}（输出预算 ${roomForOutput}${shrunk ? ' < 标准 ' + (s.summarySendTokens - instruction) + '→收缩' : ''}）：先摘后剪（摘后复测仍有 deficit 才补剪）` }
-      : { form: 'summarize-only', reason: `transcript ${transcript} 装得下且无可剪供给：仅摘（输出预算 ${roomForOutput}）` }
+      ? { form: 'summarize-then-prune', outBudget: roomForOutput, reason: `transcript ${transcript}+指令 装得下 W_eff ${s.windowEff}（输出预算 ${roomForOutput}${shrunk ? ' < 标准 ' + (s.summarySendTokens - instruction) + '→收缩' : ''}）：先摘后剪（摘后复测仍有 deficit 才补剪）` }
+      : { form: 'summarize-only', outBudget: roomForOutput, reason: `transcript ${transcript} 装得下且无可剪供给：仅摘（输出预算 ${roomForOutput}）` }
   }
   return {
     form: 'prune-only',
@@ -147,9 +149,22 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
   }
 }
 
-/** 影子分派日志开关（ARGP_FACTOR_DISPATCH=1）：只记录决策，不改变发射。 */
+/**
+ * §B 分派模式（ARGP_FACTOR_DISPATCH）：
+ *  - 未设/其它 ⇒ 'off'（现网字节不变）；
+ *  - '1' ⇒ 'shadow'：只记录决策（日志+文件 sink），不改变发射；
+ *  - '2' ⇒ 'takeover'：按形态接管事务（结构去重 → 三形态发射；双闸主权移交判据表）。
+ */
+export type DispatchMode = 'off' | 'shadow' | 'takeover'
+
+export function resolveDispatchMode(env: Record<string, string | undefined> = process.env): DispatchMode {
+  const v = env['ARGP_FACTOR_DISPATCH']
+  return v === '2' ? 'takeover' : v === '1' ? 'shadow' : 'off'
+}
+
+/** 影子分派日志开关（ARGP_FACTOR_DISPATCH=1/2 都记录）：shadow 模式只记录不改发射。 */
 export function resolveDispatchShadowEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return env['ARGP_FACTOR_DISPATCH'] === '1'
+  return resolveDispatchMode(env) !== 'off'
 }
 
 /**

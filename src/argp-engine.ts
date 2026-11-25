@@ -48,8 +48,8 @@ export { scaleBudgets } from './budget.js'
 import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { registerSearchHistory } from './factor/search-history.ts'
-import { ProseCondenser, summarySendTokens } from './factor/prose-condenser.ts'
-import { planForm, resolveDispatchShadowEnabled, resolveDispatchShadowLogPath } from './factor/dispatch.ts'
+import { ProseCondenser, summarySendTokens, summaryMaxTokensOut } from './factor/prose-condenser.ts'
+import { planForm, resolveDispatchMode, resolveDispatchShadowLogPath, type DispatchDecision } from './factor/dispatch.ts'
 // 召回模块（2.0 只留共享语义）：shadowed 增量账本 + 召回字符预算。本地使用。
 import { shadowedSeqsOf, budgetRecallText, type RecallHost } from './recall.js'
 // 剪枝事务模块：prune-tx 事务骨架（factor 参数化复用）+ 台账记录类型。
@@ -1086,14 +1086,16 @@ export class ArgpEngine extends CompactionEngine {
       return null
     }
     let measurement = this.measureTokens(session, incomingTokens)
-    // §B-1 影子分派（ARGP_FACTOR_DISPATCH=1）：只读采快照 → 纯函数定形态 → 记日志。
-    // 不改变任何发射（现网动作序照旧），供实机三域回放对照决策表；接管在 §B-2。
-    if (resolveDispatchShadowEnabled() && (trigger === 'context-overflow' || declaredKnown)) {
+    // §B 分派（ARGP_FACTOR_DISPATCH=1 影子 / =2 接管）：只读采快照 → 纯函数定形态。
+    // shadow 只记日志不改发射；takeover 按形态走 compactByDispatch（判据表主权）。
+    const dispatchMode = resolveDispatchMode()
+    let dispatchDecision: DispatchDecision | null = null
+    if (dispatchMode !== 'off' && (trigger === 'context-overflow' || declaredKnown)) {
       try {
         const wEff = this.effectiveWindowFor(session)
         const b6 = this.b6RiskSummary(session)
-        // 'exclude'：宿主再注入三件套不计散文（假量）；现网 condense 通路仍 legacy 口径，
-        // 待 §B-2 结构去重驱逐落地后统一翻缺省。
+        // 'exclude'：宿主再注入三件套不计散文（假量）。takeover 事务开头有结构去重
+        // （dedupeReinjected），旧副本回收通道在接管形态下已闭合。
         const pst = this.prose.proseStats(session, 'exclude')
         const cpt = Math.max(1, this.liveCharsPerToken(session))
         const proseTok = Math.ceil(pst.proseCharsAll / cpt)
@@ -1104,16 +1106,21 @@ export class ArgpEngine extends CompactionEngine {
           floorTokens: b6.nonPrunableTokens, prunableTokens: Math.max(0, cTok - b6.nonPrunableTokens),
           condensableProseTokens: proseTok, summarySendTokens: sendTok,
         }
-        const decision = planForm(snapshot)
-        const record = { t: Date.now(), ...snapshot, form: decision.form, reason: decision.reason }
-        this.log.info('[argp-dispatch-shadow] ' + JSON.stringify(record))
+        dispatchDecision = planForm(snapshot)
+        const record = { t: Date.now(), mode: dispatchMode, ...snapshot, form: dispatchDecision.form, reason: dispatchDecision.reason, outBudget: dispatchDecision.outBudget }
+        this.log.info('[argp-dispatch] ' + JSON.stringify(record))
         const dispatchLogPath = resolveDispatchShadowLogPath()
         if (dispatchLogPath !== undefined) {
           try { appendFileSync(dispatchLogPath, JSON.stringify(record) + '\n') } catch { /* 落盘失败不改变任何发射 */ }
         }
       } catch (e) {
-        this.log.warn('[argp-dispatch-shadow] 影子决策异常（不影响发射）：' + (e instanceof Error ? e.message : String(e)))
+        this.log.warn('[argp-dispatch] 分派决策异常（不影响发射）：' + (e instanceof Error ? e.message : String(e)))
+        dispatchDecision = null
       }
+    }
+    if (dispatchMode === 'takeover' && dispatchDecision !== null) {
+      // dispatchDecision 非 null 已蕴含进入条件（overflow 或 declaredKnown）。
+      return await this.compactByDispatch(agent, session, dispatchDecision, windowTokens, retainTokens, signal)
     }
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
@@ -1159,6 +1166,86 @@ export class ArgpEngine extends CompactionEngine {
       return proseResult ?? pruned
     }
     return null
+  }
+
+  /**
+   * §B-2b 接管事务（ARGP_FACTOR_DISPATCH=2）：按分派形态发射，双闸主权在判据表。
+   * 公共前缀：结构去重（宿主再注入旧副本回收，0-LLM）。形态语义：
+   *  - prune-only → 组剪 + native 收紧，**不调**浓缩链；
+   *  - summarize-then-prune → 先浓缩（dispatchApproved + 分派器输出预算）→ **复测**，
+   *    仍有 deficit 才补组剪（§B 定稿：复测判据，不凭决策时的旧 deficit）；
+   *  - summarize-only → 只浓缩；
+   *  - terminal-b6 → 会话级连续计数：≥3 轮不空转（去重 + 上报，不再组剪），
+   *    否则降级求生组剪（能减一点是一点）；
+   *  - none → 如实上报（below-retain 不该进到这里 / stop+report）。
+   * note 刷新沿用现不变量：有真事务才刷（空转不动 surface）。
+   */
+  private async compactByDispatch(
+    agent: CompactionAgentContext,
+    session: Session,
+    decision: DispatchDecision,
+    windowTokens: number,
+    retainTokens: number,
+    signal: AbortSignal,
+  ): Promise<CompactionResult | null> {
+    const dedup = this.factor.dedupeReinjected(session)
+    signal.throwIfAborted()
+    let pruned: CompactionResult | null = dedup
+    let proseResult: CompactionResult | null = null
+    const st = this.stateOf(session)
+    const doGroupPrune = (): CompactionResult | null => {
+      // 复测口径：浓缩/去重后 surface 已变，deficit 用当前测量重算。
+      const deficit = this.measureTokens(session).contextTokens - retainTokens
+      let r: CompactionResult | null = null
+      if (deficit > 0) r = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)))
+      this.nativePruneToolResults(session)
+      return r
+    }
+    switch (decision.form) {
+      case 'terminal-b6': {
+        st.b6Streak += 1
+        if (st.b6Streak >= 3) {
+          this.log.warn('[argp-dispatch] terminal-b6 连续 ' + st.b6Streak + ' 轮：不空转（仅去重+上报）：' + decision.reason)
+          if (dedup !== null) await this.refreshFactorNoteSafe(agent)
+          return dedup
+        }
+        this.log.warn('[argp-dispatch] terminal-b6（第 ' + st.b6Streak + ' 轮）：降级求生组剪：' + decision.reason)
+        pruned = doGroupPrune() ?? dedup
+        break
+      }
+      case 'summarize-only':
+      case 'summarize-then-prune': {
+        st.b6Streak = 0
+        try {
+          proseResult = await this.prose.condense(session, agent.options, windowTokens, signal,
+            this.effectiveWindowFor(session),
+            { approved: true, maxOutputTokens: decision.outBudget ?? summaryMaxTokensOut(this.effectiveWindowFor(session)) })
+        } catch (e) {
+          if (signal.aborted) throw e
+          this.log.warn('[argp-dispatch] 散文浓缩异常（本轮不处置）：' + (e instanceof Error ? e.message : String(e)))
+        }
+        signal.throwIfAborted()
+        this.bindSession(session) // D2：condense await 窗口内焦点可能换装——回绑再写 surface
+        pruned = (decision.form === 'summarize-then-prune' ? doGroupPrune() : null) ?? dedup
+        break
+      }
+      case 'prune-only': {
+        st.b6Streak = 0
+        this.log.info('[argp-dispatch] prune-only：' + decision.reason)
+        pruned = doGroupPrune() ?? dedup
+        break
+      }
+      default: {
+        // 'none'（below-retain / stop+report）与不可达形态的防御出口：不动作，只上报。
+        st.b6Streak = decision.form === 'none' && decision.reason.includes('无需压缩') ? 0 : st.b6Streak
+        if (decision.reason.includes('停止并上报') || decision.form === 'prune-then-summarize') {
+          this.log.warn('[argp-dispatch] stop+report：' + decision.reason)
+        }
+        pruned = dedup
+      }
+    }
+    if (proseResult !== null || pruned !== null) await this.refreshFactorNoteSafe(agent)
+    return proseResult ?? pruned
   }
 
   override async compactNow(

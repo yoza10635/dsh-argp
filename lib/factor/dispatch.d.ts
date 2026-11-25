@@ -58,6 +58,8 @@ export interface DispatchSnapshot {
 export interface DispatchDecision {
     form: CompactForm;
     reason: string;
+    /** 摘要形态专用：W_eff − transcript − 指令 的剩余输出预算（发射时覆盖标准 0.2×W）。 */
+    outBudget?: number;
 }
 export declare const DEFAULT_SUPPLY_MARGIN = 1.2;
 export declare const DEFAULT_PROSE_MIN_TOKENS = 1536;
@@ -85,7 +87,15 @@ export declare const DEFAULT_MIN_SUMMARY_OUT_TOKENS = 1024;
  *     transcript ≤ C ≤ W_eff 量级）。
  */
 export declare function planForm(s: DispatchSnapshot): DispatchDecision;
-/** 影子分派日志开关（ARGP_FACTOR_DISPATCH=1）：只记录决策，不改变发射。 */
+/**
+ * §B 分派模式（ARGP_FACTOR_DISPATCH）：
+ *  - 未设/其它 ⇒ 'off'（现网字节不变）；
+ *  - '1' ⇒ 'shadow'：只记录决策（日志+文件 sink），不改变发射；
+ *  - '2' ⇒ 'takeover'：按形态接管事务（结构去重 → 三形态发射；双闸主权移交判据表）。
+ */
+export type DispatchMode = 'off' | 'shadow' | 'takeover';
+export declare function resolveDispatchMode(env?: Record<string, string | undefined>): DispatchMode;
+/** 影子分派日志开关（ARGP_FACTOR_DISPATCH=1/2 都记录）：shadow 模式只记录不改发射。 */
 export declare function resolveDispatchShadowEnabled(env?: Record<string, string | undefined>): boolean;
 /**
  * 影子决策落盘路径（ARGP_FACTOR_DISPATCH_LOG）：DSH CLI 的 logger 不进 harness 的
