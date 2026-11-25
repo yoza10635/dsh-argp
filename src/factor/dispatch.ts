@@ -151,15 +151,19 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
 
 /**
  * §B 分派模式（ARGP_FACTOR_DISPATCH）：
- *  - 未设/其它 ⇒ 'off'（现网字节不变）；
- *  - '1' ⇒ 'shadow'：只记录决策（日志+文件 sink），不改变发射；
- *  - '2' ⇒ 'takeover'：按形态接管事务（结构去重 → 三形态发射；双闸主权移交判据表）。
+ *  - 未设/其它 ⇒ **'takeover'（2.2.0 裁定：缺省即接管）**——按形态事务（结构去重 →
+ *    三形态发射；散文双闸主权移交判据表）。三域实机验收 + 混合世界反例（exclude
+ *    分类器必须与接管同进退）背书；
+ *  - '0' ⇒ 'off'：显式退回旧双闸世界（逃生口；配 legacy 对照评测/故障回退）；
+ *  - '1' ⇒ 'shadow'：只记录决策（日志+文件 sink），不改变发射（用户自发诊断/回归取证）。
  */
 export type DispatchMode = 'off' | 'shadow' | 'takeover'
 
 export function resolveDispatchMode(env: Record<string, string | undefined> = process.env): DispatchMode {
   const v = env['ARGP_FACTOR_DISPATCH']
-  return v === '2' ? 'takeover' : v === '1' ? 'shadow' : 'off'
+  if (v === '0') return 'off'
+  if (v === '1') return 'shadow'
+  return 'takeover'
 }
 
 /** 影子分派日志开关（ARGP_FACTOR_DISPATCH=1/2 都记录）：shadow 模式只记录不改发射。 */

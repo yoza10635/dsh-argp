@@ -152,6 +152,8 @@ export interface ProseEvictOptions {
   protectFromTurn: number
   /** open turn 首节点的 surface 位置（null = 无 open turn）；run 起点 ≥ 该位置即停。 */
   openTurnFromPos: number | null
+  /** 宿主再注入三件套归类（缺省 'prose'=现网；接管授权 ⇒ 'exclude'，去重通道已闭合）。 */
+  hostReinjected?: HostReinjectedMode
 }
 
 /**
@@ -166,9 +168,10 @@ export function planProseEviction(
   options: ProseEvictOptions,
 ): ProseEvictPlan {
   const atomsBySeq = new Map<number, Atom>(atoms.map(a => [a.seq, a]))
+  const hrMode: HostReinjectedMode = options.hostReinjected ?? 'prose'
   const clsOf = (atom: Atom): { cls: SummaryInputClass; swallowableX: boolean } => {
     const probe = probes.get(atom.seq) ?? { attachment: false }
-    const cls = classifyUaAtom(atom, probe)
+    const cls = classifyUaAtom(atom, probe, hrMode)
     // X 的可吞性细化：可并墓碑（[elided 空格族）+ 本链历史浓缩节点（[散文压缩]）
     // + 桩族（STUB_PREFIX：因子桩/夹剪/占位桩）+ 协议组空占位（argp-removed）。
     // 宿主官方 checkpoint / 词表 note / system-reminder 等 excluded-X 永不吞。
@@ -190,7 +193,7 @@ export function planProseEviction(
   let proseCharsAll = 0
   for (const a of atoms) {
     const probe = probes.get(a.seq) ?? { attachment: false }
-    if (classifyUaAtom(a, probe) === 'textA') proseCharsAll += a.text.length
+    if (classifyUaAtom(a, probe, hrMode) === 'textA') proseCharsAll += a.text.length
   }
 
   // surface 连续 run 分组：相邻节点同 turn 号归一段；无原子节点（system 头/未知类型）断段。
@@ -359,8 +362,10 @@ export class ProseCondenser {
     // 同一声明窗对应的字符线更低、闸一更早动作。非 CJK surface 精确回 charsPerToken（等价）。
     const windowChars = gateWindow * liveBlendCharsPerToken(session, this.host.charsPerToken)
     const lineChars = Math.floor(windowChars * PROSE_TRIGGER_RATIO)
+    // 接管授权世界：transcript/统计都用 exclude（再注入假散文既不占判据也不进摘要）。
+    const hrMode: HostReinjectedMode = dispatch?.approved === true ? 'exclude' : 'prose'
     const pre = planProseEviction(atoms, probes, [], {
-      needChars: 0, protectFromTurn: Number.POSITIVE_INFINITY, openTurnFromPos: null,
+      needChars: 0, protectFromTurn: Number.POSITIVE_INFINITY, openTurnFromPos: null, hostReinjected: hrMode,
     })
     const proseCharsAll = pre.proseCharsAll
     const needChars = sysChars + proseCharsAll - lineChars
@@ -383,7 +388,7 @@ export class ProseCondenser {
     // §9.36 H2 终裁=清扫式合并：span=焦点外可驱前缀一轮全吞（顶到焦点/open/洞界），
     // 不按需量收刀——压缩比不可控的刀不挂"压到线 X"的保证语义（容量归确定性剪枝层）。
     const plan = planProseEviction(atoms, probes, surfaceSeqs, {
-      needChars: Number.POSITIVE_INFINITY, protectFromTurn, openTurnFromPos,
+      needChars: Number.POSITIVE_INFINITY, protectFromTurn, openTurnFromPos, hostReinjected: hrMode,
     })
     if (plan.stopReason === 'no-candidate') {
       this.host.log.info('[argp-factor-prose] 无可驱逐散文段（全部受保护/含 barrier）：不浓缩')
@@ -407,7 +412,7 @@ export class ProseCondenser {
     // 工具原子（toolCallA/rPair）不进摘要，由 factor 协议组剪负责；span 内工具原子随整轮
     // 离场但不喂 LLM，原文经 recall_history(labels) 召回。
     const evictedSet = new Set<number>(plan.spanSeqs)
-    const spanMessages = this.buildProseMessages(atoms, probes, surfaceSeqs, evictedSet)
+    const spanMessages = this.buildProseMessages(atoms, probes, surfaceSeqs, evictedSet, hrMode)
     // 接管时输出预算用分派器给的剩余空间（仍封顶 PROSE_SUMMARY_MAX_TOKENS、保底 1024）；
     // 未授权 ⇒ summaryMaxTokensOut(declaredWindow) H5 标准式，现网不变。
     const summary = await this.callLlm(spec, spanMessages, signal, declaredWindow,
@@ -550,6 +555,7 @@ export class ProseCondenser {
     probes: ReadonlyMap<number, ProseEventProbe>,
     surfaceSeqs: readonly number[],
     evicted: Set<number>,
+    hostReinjected: HostReinjectedMode = 'prose',
   ): Message[] {
     const atomBySeq = new Map<number, Atom>(atoms.map(a => [a.seq, a]))
     const messages: Message[] = []
@@ -566,7 +572,7 @@ export class ProseCondenser {
         continue
       }
       const probe = probes.get(seq) ?? { attachment: false }
-      if (classifyUaAtom(atom, probe) !== 'textA') continue
+      if (classifyUaAtom(atom, probe, hostReinjected) !== 'textA') continue
       if (atom.type === 'U') {
         messages.push(createUserMessage({ content: [{ type: 'text', text: 'U: ' + atom.text }], source: { kind: 'user' } }))
       } else if (atom.type === 'A') {

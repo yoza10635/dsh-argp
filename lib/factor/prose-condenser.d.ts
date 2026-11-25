@@ -58,6 +58,8 @@ export interface ProseEvictOptions {
     protectFromTurn: number;
     /** open turn 首节点的 surface 位置（null = 无 open turn）；run 起点 ≥ 该位置即停。 */
     openTurnFromPos: number | null;
+    /** 宿主再注入三件套归类（缺省 'prose'=现网；接管授权 ⇒ 'exclude'，去重通道已闭合）。 */
+    hostReinjected?: HostReinjectedMode;
 }
 /**
  * 轮级贪心（纯函数，单测主对象）。surface 按**连续 run** 分组（相邻同 turn 号），逐段晋升：

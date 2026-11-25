@@ -8,7 +8,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { planForm, resolveDispatchShadowEnabled, resolveDispatchShadowLogPath,
+import { planForm, resolveDispatchMode, resolveDispatchShadowEnabled, resolveDispatchShadowLogPath,
   DEFAULT_PROSE_MIN_TOKENS, DEFAULT_GAP_FLOOR_RATIO, TRANSCRIPT_SAFETY_RATIO, DEFAULT_INSTRUCTION_TOKENS, DEFAULT_MIN_SUMMARY_OUT_TOKENS,
   type DispatchSnapshot } from '../src/factor/dispatch.ts'
 
@@ -147,10 +147,13 @@ test('不变量：形态守恒——摘要形态只在 transcript 装得下 W_ef
   }
 })
 
-test('影子门：ARGP_FACTOR_DISPATCH=1 才开', () => {
-  assert.equal(resolveDispatchShadowEnabled({}), false)
+test('分派模式：缺省即接管（2.2.0 裁定）；0=旧世界逃生口；1=影子；2=显式接管', () => {
+  assert.equal(resolveDispatchMode({}), 'takeover', '未设 ⇒ 接管')
+  assert.equal(resolveDispatchMode({ ARGP_FACTOR_DISPATCH: '0' }), 'off', '显式退回旧双闸世界')
+  assert.equal(resolveDispatchMode({ ARGP_FACTOR_DISPATCH: '1' }), 'shadow')
+  assert.equal(resolveDispatchMode({ ARGP_FACTOR_DISPATCH: '2' }), 'takeover')
   assert.equal(resolveDispatchShadowEnabled({ ARGP_FACTOR_DISPATCH: '0' }), false)
-  assert.equal(resolveDispatchShadowEnabled({ ARGP_FACTOR_DISPATCH: '1' }), true)
+  assert.equal(resolveDispatchShadowEnabled({}), true, '接管也记决策日志（取证面）')
   assert.equal(resolveDispatchShadowLogPath({}), undefined)
   assert.equal(resolveDispatchShadowLogPath({ ARGP_FACTOR_DISPATCH_LOG: '' }), undefined)
   assert.equal(resolveDispatchShadowLogPath({ ARGP_FACTOR_DISPATCH_LOG: 'x.jsonl' }), 'x.jsonl')
@@ -209,9 +212,15 @@ async function runOnce(id: string): Promise<string[]> {
   return [normalized, ...events.map(e => e.type), ...[...session.surface.nodes].map(s => eventText(session, s as number))]
 }
 
-test('§B-1 影子集成：ARGP_FACTOR_DISPATCH 开/关，compactIfNeeded 发射与返回值逐字节一致；开时决策落盘', async () => {
-  const off = await runOnce('dispatch-shadow-off')
+test('§B-1 影子集成：旧世界(0)与影子(1)compactIfNeeded 发射逐字节一致；影子决策落盘', async () => {
   const logf = join(tmpdir(), 'argp-dispatch-shadow-' + Date.now() + '.jsonl')
+  let off: string[]
+  process.env['ARGP_FACTOR_DISPATCH'] = '0'
+  try {
+    off = await runOnce('dispatch-shadow-off')
+  } finally {
+    delete process.env['ARGP_FACTOR_DISPATCH']
+  }
   process.env['ARGP_FACTOR_DISPATCH'] = '1'
   process.env['ARGP_FACTOR_DISPATCH_LOG'] = logf
   let on: string[]

@@ -1121,7 +1121,7 @@ export class ArgpEngine extends CompactionEngine {
     }
     if (dispatchMode === 'takeover' && dispatchDecision !== null) {
       // dispatchDecision 非 null 已蕴含进入条件（overflow 或 declaredKnown）。
-      return await this.compactByDispatch(agent, session, dispatchDecision, windowTokens, retainTokens, signal)
+      return await this.compactByDispatch(agent, session, dispatchDecision, windowTokens, retainTokens, incomingTokens, signal)
     }
     // ── factor 分发（P6-④ 触发收敛后口径）：本方法只被两信号驱进
     // （手动 compactNow / request-error 钩子的 context-overflow）——pre-step 估算驱动已
@@ -1187,6 +1187,10 @@ export class ArgpEngine extends CompactionEngine {
     decision: DispatchDecision,
     windowTokens: number,
     retainTokens: number,
+    /** 本步已 claim 未落盘的 user 消息估值——必须与出口闸/进入判据**同口径**计入，
+     *  否则每笔事务系统性欠剪「本轮启动量」一档（工具域实锤：残留高一档 → 出口闸
+     *  再触发 → 入账笔数与累计驱逐翻倍，read 35→27）。 */
+    incomingTokens: number,
     signal: AbortSignal,
   ): Promise<CompactionResult | null> {
     const dedup = this.factor.dedupeReinjected(session)
@@ -1195,8 +1199,8 @@ export class ArgpEngine extends CompactionEngine {
     let proseResult: CompactionResult | null = null
     const st = this.stateOf(session)
     const doGroupPrune = (): CompactionResult | null => {
-      // 复测口径：浓缩/去重后 surface 已变，deficit 用当前测量重算。
-      const deficit = this.measureTokens(session).contextTokens - retainTokens
+      // 复测口径：浓缩/去重后 surface 已变，deficit 用当前测量重算（含 incomingTokens）。
+      const deficit = this.measureTokens(session, incomingTokens).contextTokens - retainTokens
       let r: CompactionResult | null = null
       if (deficit > 0) r = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)))
       this.nativePruneToolResults(session)
