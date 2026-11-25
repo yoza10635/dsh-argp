@@ -45,7 +45,7 @@ export type { CiteStats } from './atomize.js'
 import { resolveScaledBudgets, measureTokens, liveBlendCharsPerToken, type BudgetHost, type TokenMeter } from './budget.js'
 import { countCjkChars, estTokensFromStats } from './cjk.js'
 export { scaleBudgets } from './budget.js'
-import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, type FactorEngineHost } from './factor/engine.ts'
+import { FactorEngine, resolveClipEnabled, resolveEgress, resolveFocalTiered, resolvePressureTriggerEnabled, resolveQScoreEnabled, type FactorEngineHost } from './factor/engine.ts'
 import { registerRecallLabels, type RecallLabelsHost } from './factor/recall-labels.ts'
 import { registerSearchHistory } from './factor/search-history.ts'
 import { ProseCondenser, summarySendTokens, summaryMaxTokensOut } from './factor/prose-condenser.ts'
@@ -347,6 +347,7 @@ export class ArgpEngine extends CompactionEngine {
       focalTiered: resolveFocalTiered(),
       // C10 夹剪层（三态保留）：构造期快照 env，缺省关=shadow 二态字节不变（R2 A/B 通道）。
       clipEnabled: resolveClipEnabled(),
+      qScoreEnabled: resolveQScoreEnabled(),
       // 散文扫描带 cap 裸项透传（缺省 undefined=窗相对现算；0=关闭散文带）。
       proseScanCapChars: config.proseScanCapChars,
     })

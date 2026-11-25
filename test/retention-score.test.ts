@@ -139,3 +139,23 @@ test('焦点轮非再生 R* 条件保护位（引擎给位，模块只 AND）', 
   assert.deepEqual(plan.pruneOrder, [2])
   assert.deepEqual(plan.hardProtected, [1])
 })
+
+test('§D 量化臂：净代价标量序（死大先于活小；硬保护不解锁；缺省 lex 不变；臂差异可证）', () => {
+  const deadBig = mk(1, { tags: mkTags({ sizeChars: 9000 }), regenerable: true, superseded: true, focalBand: 0 })
+  const liveSmall = mk(2, { turn: 10, tags: mkTags({ sizeChars: 2000 }), focalBand: 2 })
+  const hardOne = mk(3, { tags: mkTags({ sizeChars: 50000 }), hard: { attachment: true } })
+  assert.ok(compareForPrune(deadBig, liveSmall, 'quant') < 0, 'quant：死大净代价高，先剪')
+  const planQ = planPrune([liveSmall, deadBig, hardOne], { targetReleaseChars: Infinity, orderMode: 'quant' })
+  assert.deepEqual(planQ.hardProtected, [3], 'quant 臂硬保护位绝不入区（§D 不解锁实锤）')
+  assert.deepEqual(planQ.pruneOrder, [1, 2], 'quant 序：净代价降序')
+  const planL = planPrune([liveSmall, deadBig, hardOne], { targetReleaseChars: Infinity })
+  assert.deepEqual(planL.pruneOrder, [1, 2], '缺省 lex 字节不变')
+  // 臂差异可证：旧小 vs 中龄大——lex ④age 一票否决旧者先；quant ④⑤连续竞争，
+  // 中龄大枚净代价（dead×(size−税)）回补排前。
+  const oldSmall = mk(10, { turn: 1, tags: mkTags({ sizeChars: 600 }) })
+  const midBig = mk(11, { turn: 4, tags: mkTags({ sizeChars: 8000 }) })
+  assert.ok(compareForPrune(oldSmall, midBig, 'lex') < 0, 'lex：④旧者先（age 一票否决）')
+  assert.ok(compareForPrune(midBig, oldSmall, 'quant') < 0, 'quant：中龄大枚净代价回补排前')
+  // ⚠ 正是这条「中龄大枚先剪」性质导致焦点域 A/B 回退（反复重读的大文件被先驱逐，
+  // read 24/36 vs 36/36）——quant 保留为对照臂、缺省维持 lex（台账见 retention-score.ts）。
+})

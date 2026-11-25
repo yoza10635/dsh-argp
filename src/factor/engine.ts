@@ -59,6 +59,11 @@ export interface FactorEngineConfig {
    */
   clipEnabled?: boolean
   /**
+   * §D 量化排序臂（软集净代价标量序）。同 clip 纪律：内部裸项，严禁进 static
+   * Config schema，env ARGP_FACTOR_QSCORE 唯一触达通道（resolveQScoreEnabled）。
+   */
+  qScoreEnabled?: boolean
+  /**
    * 散文扫描带上限（design-prose-keyword-recall §1.1）。内部裸项，严禁进 static
    * Config（ZK1）：undefined=窗相对现算 defaultProseCapChars；测试/bench 直给小值
    * 触发截断路径；**0=search_history 散文带整体关闭**（评测对照臂，S6 裁定 config
@@ -109,6 +114,15 @@ export function resolveShadowEnabled(env: NodeJS.ProcessEnv = process.env): bool
 }
 
 /**
+ * §D 量化排序臂（同 clip/shadow 纪律：env 唯一通道，缺省关=字典序字节不变）：
+ * `ARGP_FACTOR_QSCORE=1` ⇒ 软集按净保留代价标量排序（retention-score.qPriority）。
+ * 硬保护位不解锁（§D 影子实锤）；A/B 达标才谈翻缺省。
+ */
+export function resolveQScoreEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['ARGP_FACTOR_QSCORE'] === '1'
+}
+
+/**
  * §9.37 出口闸解析（每次 pre-step 调用，读实时设置——设置页改动免重挂生效）：
  *  - env ARGP_FACTOR_EGRESS=0 = 硬关（对照臂覆盖一切，压缩阈值设置也不开）；
  *  - 设置 compactionThreshold > 0 = 开，线 = 声明窗 × 比例（「压缩阈值」语义，
@@ -148,6 +162,8 @@ export interface FactorDecision {
   focalTiered: 'flat' | 'tiered'
   /** C10 夹剪层档（遥测：夹剪臂/shadow 臂区分；归位集在 plan.clipOrder）。 */
   clipEnabled: boolean
+  /** §D 量化排序臂档（遥测：quant/lex 区分）。 */
+  qScoreEnabled: boolean
   /** tiered：焦点文档 hard 的字节量（flat 恒 0）。 */
   focalDocHardChars: number
   /** tiered：宽度熔断是否触发（触发 ⇒ 每文档只保最新一枚）。 */
@@ -415,6 +431,7 @@ export class FactorEngine {
     stickyWindowTurns: number; vocabBudgetChars: number
     focalTiered: 'flat' | 'tiered'
     clipEnabled: boolean
+    qScoreEnabled: boolean
     proseScanCapChars: number | undefined
   }
 
@@ -431,6 +448,7 @@ export class FactorEngine {
       vocabBudgetChars: config.vocabBudgetChars ?? 4000,
       focalTiered: config.focalTiered ?? 'flat',
       clipEnabled: config.clipEnabled === true,
+      qScoreEnabled: config.qScoreEnabled === true,
       proseScanCapChars: config.proseScanCapChars,
     }
   }
@@ -755,6 +773,8 @@ export class FactorEngine {
       forcedFirstSeqs: forcedFirst,
       // C10：夹剪预留按工具族模板经回调注入（语义归位在本模块，形状归 clip-shape）。
       ...(clipOn ? { clip: { reserveCharsOf: (e: ScoredEntry) => clipReserveChars(clipFamilyOf(tagsBySeq.get(e.rootSeq)?.tool ?? '')) } } : {}),
+      // §D 量化臂：只作用于发射 plan 的软集排序；shadow 反事实臂恒 lex（对照基线不动）。
+      ...(this.cfg.qScoreEnabled ? { orderMode: 'quant' as const } : {}),
     })
     // §D shadow counterfactual: run the same prune on the hard-demoted candidate set
     // and log cur-vs-shadow. This is observation only — `plan` above is what emits.
@@ -764,7 +784,7 @@ export class FactorEngine {
     return {
       plan, candidates, tagsBySeq, latestTurn,
       focalSize: focal.size, stickyActive: sticky.length, shortfallChars: plan.shortfallChars,
-      focalTiered: this.cfg.focalTiered, clipEnabled: clipOn, focalDocHardChars, focalDocFuse: fuseActive,
+      focalTiered: this.cfg.focalTiered, clipEnabled: clipOn, qScoreEnabled: this.cfg.qScoreEnabled, focalDocHardChars, focalDocFuse: fuseActive,
       errSigHardCount: errSigHardSeqs.size,
       focalMediumSize: focalMedium.size, mediumBandChars, focalBandBySeq,
       interruptedForcedSeqs: forcedFirst,
