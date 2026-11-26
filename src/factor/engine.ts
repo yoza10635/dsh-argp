@@ -271,7 +271,10 @@ export interface FocusTailPlan {
    * 被 superseded 判死）在 decide 裁决。升级态为空。
    */
   demotedGroups: number[][]
-  /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。 */
+  /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。
+   *  注意：升级态 cap=10 路径获胜，本字段仍是 δ 折算值（计算先于 cap 分流）——
+   *  纯计算量非生效量；升级态 demotedGroups=[] 且 [argp-quota] 行不发（band=0），
+   *  观察哨不会读到幻影名额。 */
   quotaUsed: number
 }
 
@@ -961,6 +964,8 @@ export class FactorEngine {
     const clipOn = this.cfg.clipEnabled === true
     // C10 夹剪臂 = 显式对照世界（ARGP_FACTOR_CLIP=1）：保留旧 R-only 夹剪/桩语义，
     // 不启用 A+R 组剪（组剪是 2026-11-13 新默认；两臂互斥，便于同域 A/B）。
+    // 对照世界早退：decide 的 demotedR 放宽已进 plan（superseded⇒可桩，行为可辩护），
+    // 但 [argp-quota] 遥测行只挂组剪计划路径——clip 臂无降级档驱逐列，A/B 对照时知悉。
     if (clipOn) return this.compactClipArm(session, plan, tagsBySeq, atomsBySeq)
     // 派生视图 provenance（审查 P0-3 + 2026-11-14 alpha3 实锤）：不按文本前缀判桩——
     // 「replace 克隆 ∧ root 已 shadowed」一律算 stub，覆盖两类派生副本：

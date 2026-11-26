@@ -60,6 +60,9 @@ export declare function eventTextOf(event: SessionEvent): string;
 /**
  * 日志尾部的 open turn（从日志末尾向前找：最近的 turn/start 且其后无 turn/end）。
  * 返回 open turn 号；无开放轮（末尾已闭合 / 会话头）返回 null。
+ * **-1 = 存在未闭合的 turn/start 但轮号不可读**（畸形日志）——fail-closed 哨兵：
+ * 消费方按「一切皆开放轮」处理（焦点降级带清零、驱逐全停、预剪跳过），
+ * 绝不允许把「号读不出」误折叠成 null=「无开放轮」而放行 open 区驱逐。
  */
 export declare function detectOpenTurn(session: Session): number | null;
 /**

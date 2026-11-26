@@ -43,9 +43,10 @@ export interface DispatchSnapshot {
      *  摘要请求的 transcript 基底——发送可行性按它判，不按全上下文 C。 */
     condensableProseTokens: number;
     /** 三桶 aged 口径：span 实际可驱逐的 textA（barrier/洞截断段、partial 散点、焦点窗
-     *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total），
-     *  旧 fixture 与判据④ transcript 口径字节不变（design-2.2.x §1.2）。
-     *  供给判据在包一b（commit 4）切到本字段。 */
+     *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total）：
+     *  回退只保证**口径输入**不变（判据④ transcript 亦 total 口径）；规则A 的存在性
+     *  地板本体对旧快照同样生效——旧 fixture 的判形可能与 2.2.0 不同（T42 型翻转即
+     *  预期，勿在旧快照上锁决策级字节兼容断言）。 */
     condensableProseAgedTokens?: number;
     /** 摘要指令 + 摘要输出预留（标准预算；空间不足时决策内部收缩输出分量）。 */
     summarySendTokens: number;

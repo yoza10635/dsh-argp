@@ -147,7 +147,7 @@ test('scope 地址端到端：仅目录级 grep 的 R 被剪后可按 scope:<dir
   appendUser(session, '开始任务')
   // turn1：目录级 grep（args 只有 path=目录，无文件键 ⇒ 无 document，仅 scope 地址）；
   // turn2：read 焦点留守，驱动剪枝发射——t38 型原子的最小复刻。
-  appendGroup(session, 1, 'g1', 'grep', '{"path":"C:/Proj/.material","pattern":"NOTE"}', 'MATERIAL LINE 1307152B ' + 'x'.repeat(260))
+  appendGroup(session, 1, 'g1', 'grep', '{"path":"C:/Proj/.material","pattern":"NOTE"}', 'MATERIAL LINE QK-3391-SCAN ' + 'x'.repeat(260))
   appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'NEW CONTENT'.repeat(50))
   assert.ok(factor.compactIfNeeded(session, 1000) !== null, '前置剪枝必须发射')
   const res = await execTool(ctx, {
@@ -155,7 +155,7 @@ test('scope 地址端到端：仅目录级 grep 的 R 被剪后可按 scope:<dir
     args: { labels: ['scope:c:/proj/.material'] },
   })
   const text = toolText(res)
-  assert.ok(text.includes('MATERIAL LINE 1307152B'), 'scope 标签取回 grep 原文逐字（t38 型洞的机制通路）')
+  assert.ok(text.includes('MATERIAL LINE QK-3391-SCAN'), 'scope 标签取回 grep 原文逐字（t38 型洞的机制通路）')
   assert.ok(text.includes('state=shadowed'), '取回内容标记为当前不可见')
   const bare = await execTool(ctx, {
     name: 'recall_history', callId: 'q2', agentSession: session,

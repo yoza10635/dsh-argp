@@ -188,7 +188,10 @@ export interface FocusTailPlan {
      * 被 superseded 判死）在 decide 裁决。升级态为空。
      */
     demotedGroups: number[][];
-    /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。 */
+    /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。
+     *  注意：升级态 cap=10 路径获胜，本字段仍是 δ 折算值（计算先于 cap 分流）——
+     *  纯计算量非生效量；升级态 demotedGroups=[] 且 [argp-quota] 行不发（band=0），
+     *  观察哨不会读到幻影名额。 */
     quotaUsed: number;
 }
 /**

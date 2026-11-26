@@ -5,16 +5,18 @@
  *  - 降级后最老的 2 组 A+R 可整组驱逐，最新 10 组保留；
  *  - open turn 内同样只保焦点 10 组（open 硬保护同步收窄）。
  *
- * 2.2.1 包二（A1 焦点名额，FT7–FT12）：非升级态下焦点区按名额保护——
+ * 2.2.1 包二（A1 焦点名额，FT7–FT13）：非升级态下焦点区按名额保护——
  *  - 名额 = min(20, ⌊δ·W_eff·cpt / 组均字节⌋)，下限 1；窗未知回退 20（FT9）；
  *  - 超名额的**旧侧**组只有全组 R 被 superseded 判死才整组降级离场（FT7 绿/FT8 红）；
  *  - barrier/附件组豁免不占名额（FT11）；open 区组不入降级带（FT12）；
+ *  - 畸形 turn/start（号不可读）按 -1 哨兵全区当 open，降级带清零（FT13 fail-closed）；
  *  - 升级态走原 cap 路径，降级带恒空（FT10；FT1–FT6 即升级态字节锁）。
  *
  * 变异锁：摘 focusEscalated 条件 / 摘 cap / 摘 planProtocolGroups focusSeqs 判据 ⇒ 红；
  * 摘 demotedGroups 计算 ⇒ FT7/FT9/FT11 红；摘 decide 事实门（按位置整带降级）⇒ FT8 红；
  * 摘附件豁免 ⇒ FT11 红；摘 open 排除 ⇒ FT12 红；摘 demotedSeqs 透传（发射端仍按
- * 位置门拦）⇒ FT7 红；升级态塞降级带 ⇒ FT10 红。
+ * 位置门拦）⇒ FT7 红；升级态塞降级带 ⇒ FT10 红；detectOpenTurn 摘 -1 哨兵回退
+ * `?? null` ⇒ FT13 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -398,4 +400,24 @@ test('FT12 open 区不入带：本轮协议现场的焦点组即使超名额也�
   assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c0')))
   assert.ok(factor.compactIfNeeded(session, 1_000_000) !== null)
   assert.ok(surfaceDump(session).includes('A0-xxxx'), '焦点/open 组全部留面')
+})
+
+test('FT13 畸形 turn/start fail-closed：开放轮存在但号不可读 ⇒ 降级带清零、驱逐全停', async () => {
+  // 审查 F1（发布前复核）：旧实现把「turn/start 无数字段」折叠成 null=「无开放轮」，
+  // openFromPos=+∞ ⇒ 本轮协议现场整组可判死降级（fail-open）。修后 detectOpenTurn 返回
+  // -1 哨兵 ⇒ 一切按开放轮处理。变异锁：摘 -1 回退 `?? null` ⇒ 本测试红（band=1、降级 1）。
+  const { host, factor } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft13')
+  host.bindSession(session)
+  buildGroups(session, 2, 20, 'a')
+  appendGroup(session, 2, 'c0dup', 'C:/Proj/a0.ts', 'A0-RELOADED-' + 'y'.repeat(200))
+  session.append('turn/start', {} as unknown as { turn: number }) // 畸形：未闭合开放轮、号不可读
+  const d = factor.decide(session, 1_000_000)
+  assert.equal(d.focusEscalated, false)
+  assert.equal(d.quotaBandGroups, 0, '-1 哨兵 ⇒ 全区按 open 处理，无组入带')
+  assert.equal(d.demotedGroupCount, 0)
+  assert.ok(!d.plan.pruneOrder.includes(seqOfR(d, 'c0')), '判死组 R 也不进剪序')
+  // 全区当 open ⇒ 组剪无处可剪 ⇒ 无事务发射（比 FT12 更保守：连旧轮也不可赶）。
+  assert.equal(factor.compactIfNeeded(session, 1_000_000), null, 'fail-closed：无可剪面不发事务')
+  assert.ok(surfaceDump(session).includes('A0-xxxx'), '判死组也留面')
 })

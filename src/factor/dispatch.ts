@@ -51,9 +51,10 @@ export interface DispatchSnapshot {
    *  摘要请求的 transcript 基底——发送可行性按它判，不按全上下文 C。 */
   condensableProseTokens: number
   /** 三桶 aged 口径：span 实际可驱逐的 textA（barrier/洞截断段、partial 散点、焦点窗
-   *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total），
-   *  旧 fixture 与判据④ transcript 口径字节不变（design-2.2.x §1.2）。
-   *  供给判据在包一b（commit 4）切到本字段。 */
+   *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total）：
+   *  回退只保证**口径输入**不变（判据④ transcript 亦 total 口径）；规则A 的存在性
+   *  地板本体对旧快照同样生效——旧 fixture 的判形可能与 2.2.0 不同（T42 型翻转即
+   *  预期，勿在旧快照上锁决策级字节兼容断言）。 */
   condensableProseAgedTokens?: number
   /** 摘要指令 + 摘要输出预留（标准预算；空间不足时决策内部收缩输出分量）。 */
   summarySendTokens: number
@@ -146,8 +147,8 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
       reason: `F ${s.floorTokens} 高出 R ${gap} ≤ 地板 ${Math.floor(gapFloor)}（max(proseMin, ρ·W_eff)）：保留位软目标，仅剪可容忍超调，摘要不值一次 miss`,
     }
   }
-  // 判据②③（规则A，2.2.1 包一）：供给口径=三桶 **aged**（缺省回退 total ⇒ 旧快照字节
-  // 不变）；开单判据=**存在性地板** max(proseMin, 5%·W_eff)，不再是「散文补得上缺口」
+  // 判据②③（规则A，2.2.1 包一）：供给口径=三桶 **aged**（缺省回退 total=口径输入回退，
+  // 本判据对旧快照照常生效）；开单判据=**存在性地板** max(proseMin, 5%·W_eff)，不再是「散文补得上缺口」
   // 的释放量预测——扫荡式摘要 span 整吞远超 aged（T36 aged 38K 实吞 115K），缺口口径
   // 系统性低估合形释放、把 T42 型负载推成浅剪连发（46 轮账本 + 反事实回放实锤）。
   // barrier 断供/散点/焦点面在 aged 口径下不计供给（v1 年龄公式的虚高形态已由 run
