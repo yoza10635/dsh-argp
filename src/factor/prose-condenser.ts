@@ -504,9 +504,11 @@ export class ProseCondenser {
    * span 晋升量——age 之外的类型/位置边界天然在内（审查实锤：年龄公式作废）。
    * 保护窗与 condense 的 plan 调用同参（清扫式 needChars=∞）：快照与浓缩之间 surface
    * 无写入点（接管形态动作序 dedup/组剪都在浓缩之后）⇒ 同面同参 ⇒ 同域 by construction。
+   * 顺带产出 toolFaceChars（份额闸工具面=toolCallA+rPair，口径见 §1.3）——同一批
+   * 分类结果，~免费。
    */
   scanProseBuckets(session: Session, hostReinjected: HostReinjectedMode = 'prose'): {
-    sysChars: number; totalChars: number; agedChars: number; freshChars: number
+    sysChars: number; totalChars: number; agedChars: number; freshChars: number; toolFaceChars: number
   } {
     const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string }>
     const surfaceSeqs = [...session.surface.nodes] as unknown as number[]
@@ -526,7 +528,16 @@ export class ProseCondenser {
     })
     const totalChars = plan.proseCharsAll
     const agedChars = plan.spanProseChars
-    return { sysChars, totalChars, agedChars, freshChars: Math.max(0, totalChars - agedChars) }
+    // 份额闸工具面（design-2.2.x §1.3 口径定案）：toolCallA（含 args）+ rPair 文本和。
+    // 两向偏差入档：toolCallA 含 final-A 散文=高估；带附件 R 落 barrier 类=低估
+    //（附件密集时份额闸更易触发抑制——方向安全：宁多剪不早摘）。
+    let toolFaceChars = 0
+    for (const a of atoms) {
+      const probe = probes.get(a.seq) ?? { attachment: false }
+      const cls = classifyUaAtom(a, probe, hostReinjected)
+      if (cls === 'toolCallA' || cls === 'rPair') toolFaceChars += a.text.length
+    }
+    return { sysChars, totalChars, agedChars, freshChars: Math.max(0, totalChars - agedChars), toolFaceChars }
   }
 
   private buildProbes(session: Session): Map<number, ProseEventProbe> {

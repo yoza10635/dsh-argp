@@ -63,6 +63,10 @@ export interface DispatchSnapshot {
   proseMinTokens?: number
   /** ①缺口地板比例：F−R < max(proseMin, ρ·W_eff) 视为可容忍超调，不摘（ρ 缺省 0.2）。 */
   gapFloorRatio?: number
+  /** 工具面 token（口径=toolCallA+rPair 文本和；附件 R 落 barrier 类=低估、
+   *  toolCallA 含 final-A 散文=高估，两向偏差入档 design-2.2.x §1.3）。
+   *  **可选**——缺省 0 ⇒ 份额闸永不触发，旧快照/旧 fixture 字节不变。 */
+  toolFaceTokens?: number
   /** 摘要指令 token（transcript 发送判据独立用；缺省 512 与 prose-condenser 同源）。 */
   instructionTokens?: number
   /** 摘要输出地板：低于此值摘了也放不下像样的 checkpoint（缺省 1024）。 */
@@ -80,6 +84,11 @@ export const DEFAULT_SUPPLY_MARGIN = 1.2
 export const DEFAULT_PROSE_MIN_TOKENS = 1536
 /** ①缺口地板：F−R 低于 max(proseMin, ρ·W_eff) = 保留位可容忍超调，摘要不值一次 miss。 */
 export const DEFAULT_GAP_FLOOR_RATIO = 0.2
+/** ②开单地板比例（规则A，2.3.0）：aged 散文 ≥ max(proseMin, 此比例×W_eff) 才起扫荡单
+ *  ——存在性判据，非释放量预测（扫荡 span 整吞远超 aged）。 */
+export const DEFAULT_AGED_FLOOR_RATIO = 0.05
+/** 份额闸 θ（2.3.0，固化不进设置）：工具面/C ≥ θ ⇒ 摘要通道本轮关闭（剪扛杠杆）。 */
+export const DEFAULT_TOOLFACE_SHARE_THETA = 0.5
 /** transcript 安全垫：U:/A: 前缀 + 分词误差（可浓缩散文 ×1.1）。 */
 export const TRANSCRIPT_SAFETY_RATIO = 1.1
 export const DEFAULT_INSTRUCTION_TOKENS = 512
@@ -99,8 +108,11 @@ export const CHURN_RELEASE_FLOOR_RATIO = 0.05
  *     摘要判据① F>R 不成立，多一次 miss 没有对象可摘）。
  *  3. F > R：缺口先过地板 max(proseMin, ρ·W_eff)——保留位是软目标，几个 K 的超调
  *     下一轮再剪即可（轮2 工具域实锤：gap 169~4894 全被旧判据放行去摘，血亏）；
- *     过得了地板再判闸②③散文是否补得上缺口：补不上 → 仅剪到下限求生
- *     （B-6 良性/焦点域：残余是 system/焦点，摘不掉）。
+ *     过得了地板再判②③：**老化（span 可驱逐口径）散文 ≥ 开单地板
+ *     max(proseMin, 5%·W_eff)**——扫荡开单判据=存在性，不是释放量预测（2.3.0 规则A）；
+ *     不过 → 仅剪到下限求生（B-6 良性/焦点域/barrier 断供：残余摘不掉）。
+ *  3.5 份额闸：工具面（toolCallA+rPair）/C ≥ θ(0.5) → 仅剪（剪扛杠杆，摘要等
+ *     主导权交替；饥饿侧由序 3 前提 F>R 结构保证，纯工具稳态循环归观察哨）。
  *  4. 摘要值得做：发送判据按 **transcript**（摘要请求只含散文，工具不在其中）：
  *     transcript×1.1 + 指令 ≤ W_eff − 输出地板(1024) 即「摘得出去」（输出预算不足
  *     时按剩余空间收缩，§B-2 落地）→ 先摘后剪（有可剪面）/ 仅摘（无）。
@@ -134,10 +146,29 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
       reason: `F ${s.floorTokens} 高出 R ${gap} ≤ 地板 ${Math.floor(gapFloor)}（max(proseMin, ρ·W_eff)）：保留位软目标，仅剪可容忍超调，摘要不值一次 miss`,
     }
   }
-  if (s.condensableProseTokens < proseMin || s.condensableProseTokens < gap) {
+  // 判据②③（规则A，2.3.0 包一）：供给口径=三桶 **aged**（缺省回退 total ⇒ 旧快照字节
+  // 不变）；开单判据=**存在性地板** max(proseMin, 5%·W_eff)，不再是「散文补得上缺口」
+  // 的释放量预测——扫荡式摘要 span 整吞远超 aged（T36 aged 38K 实吞 115K），缺口口径
+  // 系统性低估合形释放、把 T42 型负载推成浅剪连发（46 轮账本 + 反事实回放实锤）。
+  // barrier 断供/散点/焦点面在 aged 口径下不计供给（v1 年龄公式的虚高形态已由 run
+  // 分组构造封死，见 prose-condenser.scanProseBuckets）。
+  const aged = s.condensableProseAgedTokens ?? s.condensableProseTokens
+  const agedFloor = Math.max(proseMin, DEFAULT_AGED_FLOOR_RATIO * s.windowEff)
+  if (aged < agedFloor) {
     return {
       form: 'prune-only',
-      reason: `F ${s.floorTokens} > R 但可浓缩散文 ${s.condensableProseTokens} 补不上缺口 ${gap}（或 < ${proseMin} 下限）：仅剪到下限，不摘要`,
+      reason: `F ${s.floorTokens} > R 但老化可浓缩散文 ${aged} < 开单地板 ${Math.floor(agedFloor)}（max(proseMin, 5%·W_eff)）：焦点/barrier 面不算供给，不摘要`,
+    }
+  }
+  // 份额闸（2.3.0 包一，θ=0.5 固化）：工具面（toolCallA+rPair，附件 R 落 barrier 低估
+  // ⇒ 方向安全）仍占当前上下文 ≥θ ⇒ 剪扛杠杆、摘要等主导权交替。饥饿不属本闸：
+  // 能走到这里必须已过序 3 前提 F > R（剪必不达 R）；工具份额稳态 ≥θ 的纯工具循环
+  // 摘要通道设计性关闭，归观察哨管辖（design-2.2.x §1.3/§2）。
+  const toolShare = s.contextTokens > 0 ? (s.toolFaceTokens ?? 0) / s.contextTokens : 0
+  if (toolShare >= DEFAULT_TOOLFACE_SHARE_THETA) {
+    return {
+      form: 'prune-only',
+      reason: `工具面仍主导 ${(toolShare * 100).toFixed(1)}% ≥ θ ${DEFAULT_TOOLFACE_SHARE_THETA}：剪扛杠杆，摘要等主导权交替`,
     }
   }
   // 发送可行性按摘要**请求体**判：它只回放被驱逐 span 的 textA（散文 transcript），

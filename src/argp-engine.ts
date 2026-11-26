@@ -1115,6 +1115,7 @@ export class ArgpEngine extends CompactionEngine {
           floorTokens: b6.nonPrunableTokens, prunableTokens: Math.max(0, cTok - b6.nonPrunableTokens),
           condensableProseTokens: proseTok, summarySendTokens: sendTok,
           condensableProseAgedTokens: Math.ceil(pst.agedChars / cpt),
+          toolFaceTokens: Math.ceil(pst.toolFaceChars / cpt),
         }
         dispatchDecision = planForm(snapshot)
         const record = { t: Date.now(), mode: dispatchMode, ...snapshot, form: dispatchDecision.form, reason: dispatchDecision.reason, outBudget: dispatchDecision.outBudget }

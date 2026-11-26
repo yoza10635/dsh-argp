@@ -5,6 +5,11 @@
  *  - 工具域（32K/64K）：F ≤ R ∧ 供给足 → 仅剪（0 LLM）；
  *  - 散文域（32K/64K）：F > R ∧ 散文 ≥ F−R ∧ 直发可行 → 先摘后剪；
  *  - 焦点/B-6 域（32K）：F=12377 > R=6553 ∧ 散文 3721 < F−R=5824 → 不摘要、剪到下限求生。
+ *
+ * 2.3.0 规则A 口径改（design-2.2.x §1.2/§1.3）：判据②③ = **aged（span 可驱逐口径）散文
+ * ≥ 开单地板 max(1536, 5%·W_eff)**（存在性判据，非释放量预测）∧ 份额闸 工具面/C < 0.5
+ * （θ 固化）；①缺口地板与④transcript（total 口径）不变。三域地面真值形态不动
+ * （aged 缺省回退 total），新增 46 轮账本判决级行见文末。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -51,7 +56,8 @@ test('2b 仅剪弱余量：F ≤ R 但 P < α·D 也不转摘要（判据① F>R
 
 test('3 不摘要的求生剪：F > R 过地板但散文补不上缺口（焦点域轮2 实录）', () => {
   // 轮2 实机快照（disp2 focus 19:15:01）：gap 7454 > 地板 6554，prose 1020（真 user 散文）
-  // < 缺口 → 正确拒绝摘要。旧代码把 30KB 再注入词汇表算进散文（10972）才会误判该摘。
+  // < 开单地板 1638（max(1536, 5%·32768)，2.3.0 口径；旧口径为 < 缺口）→ 正确拒绝摘要。
+  // 旧代码把 30KB 再注入词汇表算进散文（10972）才会误判该摘（exclude 分类器同进退）。
   const d = planForm(snap({
     contextTokens: 27_023, retainTokens: 5_242, windowEff: 32_768,
     floorTokens: 12_696, prunableTokens: 14_327, condensableProseTokens: 1_020,
@@ -78,7 +84,7 @@ test('3b sub-K 散文不起摘要（③下限，非判据）', () => {
     condensableProseTokens: DEFAULT_PROSE_MIN_TOKENS - 1,
   }))
   assert.equal(d.form, 'prune-only')
-  assert.match(d.reason, /补不上|下限/)
+  assert.match(d.reason, /补不上|下限|开单地板/)
 })
 
 test('4 先摘后剪：摘要值得做且直发可行、有可剪面（散文域真值形态）', () => {
@@ -144,6 +150,73 @@ test('不变量：形态守恒——摘要形态只在 transcript 装得下 W_ef
         }
       }
     }
+  }
+})
+
+// ── 2.3.0 规则A：aged 开单判据 + 份额闸（design-2.2.x §1.2/§1.3，T42 翻转为判决级锚）──
+test('T42 翻转：aged ≥ 开单地板但 total 补不上缺口 ⇒ 旧缺口口径误判仅剪，新 aged 口径先摘后剪', () => {
+  // §0 表 T42 行：入场 C 191.5K、老化散文 38.8K、total 散文 111.1K、工具份额 18.8%。
+  // F 取 160K（gap 118K > total 111.1K）⇒ 旧判据「prose < gap」判仅剪（g2 型浅剪连发）；
+  // 新判据② aged 38.8K ≥ 开单地板 13.1K、份额闸 18.8% < θ ⇒ 过闸 → transcript 装得下 → 先摘后剪。
+  const s = snap({
+    contextTokens: 191_471, retainTokens: 41_943, windowEff: 262_144,
+    floorTokens: 160_000, prunableTokens: 31_471,
+    condensableProseTokens: 111_140, condensableProseAgedTokens: 38_800, toolFaceTokens: 36_000,
+  })
+  const d = planForm(s)
+  assert.equal(d.form, 'summarize-then-prune', '新 aged 口径必须放行摘要（翻转为绿）')
+  assert.match(d.reason, /transcript/)
+  // 变异锁（git 回滚验红）：判据② 回退旧「total < gap」缺口释放预测 ⇒ total 111.1K <
+  // gap 118K ⇒ prune-only，本条红。aged 字段缺省回退只护旧快照，不恢复缺口比较。
+})
+
+test('barrier 断供：aged < 开单地板但 total 足 ⇒ 仅剪（焦点/barrier 面不算供给，护原文）', () => {
+  const s = snap({
+    contextTokens: 100_000, retainTokens: 12_800, windowEff: 100_000,
+    floorTokens: 50_000, prunableTokens: 50_000,
+    condensableProseTokens: 40_000, condensableProseAgedTokens: 2_000,
+  })
+  const d = planForm(s)
+  assert.equal(d.form, 'prune-only', 'aged 2K < 地板 5K ⇒ 不摘要（gap 37.2K < total 40K 旧口径会误摘）')
+  assert.match(d.reason, /老化可浓缩散文/)
+})
+
+test('份额闸：工具面/C ≥ θ(0.5) ⇒ 仅剪（剪扛杠杆）；toolFaceTokens 缺省 0 ⇒ 旧全测不触发（兼容锚）', () => {
+  const s = snap({
+    contextTokens: 100_000, retainTokens: 12_800, windowEff: 100_000,
+    floorTokens: 80_000, prunableTokens: 20_000,
+    condensableProseTokens: 18_000, condensableProseAgedTokens: 18_000, toolFaceTokens: 60_000,
+  })
+  const d = planForm(s)
+  assert.equal(d.form, 'prune-only', '工具面 60% ≥ θ ⇒ 份额闸关闭摘要')
+  assert.match(d.reason, /工具面仍主导/)
+  // 同参去掉 toolFaceTokens ⇒ 份额闸不触发，回落到 transcript 判据放行摘要（兼容性锚）。
+  assert.equal(planForm(snap({ ...s, toolFaceTokens: undefined })).form, 'summarize-then-prune',
+    'toolFaceTokens 缺省 ⇒ 份额闸恒不触发（旧快照行为不变）')
+})
+
+test('§0 表复演：6 摘要行（aged 足、工具非主导）过新判据；3 仅剪/none 行（T40b/T43b 小窗 line-0）', () => {
+  // 六笔扫荡式摘要事务入场（aged ≥ 地板、工具份额 <θ、transcript 装得下 W_eff）。
+  const summarizeRows = [
+    { contextTokens: 184_600, aged: 88_200, tool: 44_000 }, // T13
+    { contextTokens: 186_700, aged: 100_700, tool: 42_600 }, // T21
+    { contextTokens: 184_500, aged: 70_400, tool: 46_900 }, // T31
+    { contextTokens: 185_000, aged: 38_000, tool: 35_100 }, // T36（aged 38K 实吞 115K=存在性非释放）
+    { contextTokens: 172_700, aged: 74_500, tool: 23_000 }, // T40a
+    { contextTokens: 170_400, aged: 75_600, tool: 23_900 }, // T43a
+  ]
+  for (const r of summarizeRows) {
+    const d = planForm(snap({
+      trigger: 'context-overflow', contextTokens: r.contextTokens, retainTokens: 41_943, windowEff: 262_144,
+      floorTokens: r.contextTokens - 20_000, prunableTokens: 20_000,
+      condensableProseTokens: r.aged + 60_000, condensableProseAgedTokens: r.aged, toolFaceTokens: r.tool,
+    }))
+    assert.equal(d.form, 'summarize-then-prune', `摘要行 C=${r.contextTokens} 必须放行`)
+  }
+  // T40b/T43b：小入场窗（22.7K/49K）< R 侧 ⇒ line-0 无摘要（缺省 retain 口径下 none/prune-only）。
+  for (const c of [22_700, 49_000]) {
+    const d = planForm(snap({ contextTokens: c, retainTokens: 41_943, windowEff: 262_144, floorTokens: c - 5_000, prunableTokens: 5_000, condensableProseTokens: 2_000, condensableProseAgedTokens: 2_000 }))
+    assert.ok(d.form === 'none' || d.form === 'prune-only', `小窗 C=${c} 不得摘要`)
   }
 })
 
