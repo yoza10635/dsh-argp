@@ -9,6 +9,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **夹剪臂轮间隙地雷：无开放轮整臂跳过（`tool/result` replace 的最后一个生产点）**。`compactClipArm`（`ARGP_FACTOR_CLIP=1` 对照臂）是 2.x 里唯一仍会发「非 append `tool/result`」的路径：它以 `replace(startSeq=R.seq, endSeq=R.seq)` 改写原 R 的 inner text 保 callId 配对，而宿主 v4 fold 对这类节点执行 `requireTurn()`——手动 /compact 可落在轮间隙（存档实锤 `compaction/start.data.turn === null`），此时该形态**无任何合法表达**，下次加载整档判 corrupt 拒载。修：① 调用点先判 `detectOpenTurn(session)`，无开放轮 ⇒ **整臂跳过并回落标准组剪**（用户检查点不受轮约束，压缩照常发生，仅失去夹剪收益；半拆缺口照旧进 shortfall 账）；② `compactClipArm` 内部加同判据二次防线：非 issuer 离场的 R 一律不剪、不落桩（warn 计数），防未来调用点绕过。锁 **CL10 轮间隙锁**：夹具 `openTurn:false` 复刻轮间隙，断言发射后零「非 append `tool/result`」（该判据即宿主 fold 的 corrupt 判据）。
 - **补召轮 0/7 根因：冷恢复「窗口初值伪装已解析值」**。`session-state` 桶的 `resolvedWindowTokens` 初值 = `DEFAULT_WINDOW_TOKENS`(16,384)，只有 `resolveScaledBudgets` 跑过才会被真实声明窗覆盖；而出口闸关闭、本进程无压力事务的低压力轮（headless resume 每轮新进程）**全程零次解析**，散文检索面 cap = `window × charsPerToken × 2.7` 便按 16K 种子算——262K 声明窗会话实测 cap=110,861，与事故指纹逐位吻合，素材页整程不进检索带。修：`restoreDeclaredWindow` 回填声明窗的同时向会话桶播种 `min(声明窗, observedCap) × windowRatio`（显式窗配置让位、首次真解析自然覆盖）。锁 L7 三态 + 变异账 LL7。
 - **检索不可翻页：`search_history` 新增 `offset` 续读游标**。旧行为散文带「cap 触线即 break」且页脚只说 retry/refine——重试恒从最旧重扫，更新内容永远出不了界；`hit=` 二跳对超长原文只回头部切片、"retry next turn" 是空承诺。修：扫描侧改**事件对齐选择窗** `[offset, offset+cap)`（首事件超 cap 照收防分页死锁），二跳侧按 offset 切读取窗；两处页脚如实给 `offset=<next>` 续翻指针与总面读数，越界如实报而非返回空文本。锁 SH15/SH16。
 - 定点回放（`spike/08-recall-cap-replay.ts`，真存档→真 Session→真工具面，金值只在进程内比对）：修复前 0/7、修复后 **7/7**；全量套件 390 例（388 通过、2 跳过）。

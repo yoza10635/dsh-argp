@@ -88,7 +88,10 @@ missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁�
   孤儿 tool result 撞 provider 400）。动机：宿主 v4 fold 要求「非 append 的 tool/result
   必须处于开放轮内」，写入侧（`Session.append` 核心）不拦、加载侧整档判 corrupt——轮次
   间隙手动 /compact 一落毒即不可加载（6 枚实锤）。裁定后 tool/result replace 唯一剩余
-  来源 = clip opt-in 臂（轮内合法，同受本防线罩）；自动路径恒在轮内 ⇒ 常态零行为变化。
+  来源 = clip opt-in 臂，故该臂**双层自锁**（2.2.2 根修）：调用点无开放轮 ⇒ 整臂跳过、
+  回落标准组剪（用户检查点不受轮约束，压缩照常、仅失去夹剪收益）；臂内再加同判据——
+  非 issuer 离场的 R 一律不剪、不落桩（warn 计数），不依赖 `pruneIntervals` 预检兜底。
+  自动路径恒在轮内 ⇒ 常态零行为变化；锁 CL10（轮间隙 zero non-append tool/result）。
 - 事务尾把 usage 锚重置为 chars 估算（`lastRealPromptTokens = visibleChars/charsPerToken`），
   下一笔成功请求由 provider usage 重锚；
 - `shadowedSeqsOf` 只认 `compaction/prune.shadowedSeqs`——权威账本，不从 replace 形态推断

@@ -33,7 +33,7 @@ import { FactorEngine, resolveClipEnabled, type FactorEngineHost } from '../src/
 import { CLIP_MARK, clipText } from '../src/factor/clip-shape.ts'
 import { STUB_PREFIX } from '../src/factor/factor-atoms.ts'
 import { isMergeableTombstone } from '../src/prune-tx.ts'
-import { rawEventText, sessionEvents } from '../src/log-access.ts'
+import { detectOpenTurn, rawEventText, sessionEvents } from '../src/log-access.ts'
 import { FACTOR_COMPACTED_MARKER } from '../src/constants.ts'
 
 async function makeClipEngine(clipEnabled: boolean): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
@@ -77,11 +77,12 @@ function makeSession(id: string): Session {
 
 /** 旧 bash + 旧 read（turn1）→ turn2 焦点换位（factor-engine.test.ts 同款）把 a.ts
  *  推出焦点窗 ⇒ 两枚皆软可剪；b.ts 是焦点非再生 = hard（不入序不入账）。 */
-function buildOld(session: Session, bashText: string, readText: string): void {
+function buildOld(session: Session, bashText: string, readText: string, opts: { openTurn?: boolean } = {}): void {
   // 2.2.2 存档地雷锁：夹剪臂发射 tool/result replace，宿主 v4 fold 要求其在开放轮内
   // （prune-tx 预检按 detectOpenTurn 剔除轮间隙 tool 桩）；真实 pre-step 恒在轮内，
   // fixture 照实补开轮。轮号取大于全部原子轮次 ⇒ 只喂 detectOpenTurn，不动任何决策口径。
-  session.append('turn/start', { turn: 999 } as never)
+  // openTurn:false = 轮间隙形态（手动 /compact 实测：compaction/start 的 data.turn === null）。
+  if (opts.openTurn !== false) session.append('turn/start', { turn: 999 } as never)
   appendUser(session, '开始任务')
   appendGroup(session, 1, 'cb', 'bash', '{"command":"npm test"}', bashText)
   appendGroup(session, 1, 'cr', 'read', '{"file_path":"C:/Proj/a.ts"}', readText)
@@ -274,4 +275,26 @@ test('CL9 逃生口锁：只认 ARGP_FACTOR_CLIP==="1"', () => {
   assert.equal(resolveClipEnabled({ ARGP_FACTOR_CLIP: '0' }), false)
   assert.equal(resolveClipEnabled({ ARGP_FACTOR_CLIP: 'yes' }), false, '非法值=关（缺省安全）')
   assert.equal(resolveClipEnabled({}), false)
+})
+
+/** 宿主 v4 fold 判据复刻（dsh-session-format-v3-to-v4: tool/result 且 surfaceOp !== append
+ *  ⇒ requireTurn()，轮外抛 "tool/result is outside an open turn"、整档判 corrupt 拒载）。 */
+function illegalToolReplaceCount(session: Session): number {
+  return (sessionEvents(session) as unknown as Array<{ type: string; surfaceOp?: unknown }>)
+    .filter(e => e.type === 'tool/result' && e.surfaceOp !== undefined && e.surfaceOp !== 'append').length
+}
+
+test('CL10 轮间隙锁：无开放轮时夹剪臂整臂跳过，零非 append tool/result（存档可加载）', async () => {
+  const { host, factor } = await makeClipEngine(true)
+  const session = makeSession('clip-cl10')
+  host.bindSession(session)
+  // 手动 /compact 实测形态：compaction 落在轮间隙（compaction/start 的 data.turn === null）。
+  buildOld(session, BIG_BASH, BIG_READ, { openTurn: false })
+  assert.equal(detectOpenTurn(session), null, '前置：夹具确在轮间隙')
+  assert.equal(illegalToolReplaceCount(session), 0, '前置：起点无非法形态')
+  factor.compactIfNeeded(session, 6000) // 回落标准组剪路径，返回值不作断言
+  assert.equal(illegalToolReplaceCount(session), 0,
+    '轮间隙禁止发射非 append tool/result —— 宿主 v4 fold 会整档判 corrupt（session-43df801e 案）')
+  const dump = surfaceDump(session)
+  assert.ok(!dump.includes('BIG_BASH') && !dump.includes('BIG_READ'), '回落标准组剪：旧组原文照常离场')
 })
