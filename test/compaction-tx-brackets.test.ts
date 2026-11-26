@@ -114,17 +114,47 @@ test('① pruneIntervals：成功 end 之后的语句抛出 ⇒ 恰好一条 end
 // ② 反向对照：成功 end 之前抛 ⇒ 必须补一条带 error 的 end（防守卫过度收紧）
 // ---------------------------------------------------------------------------
 
-test('② pruneIntervals：成功 end 之前 throw ⇒ 仍须补一条带 error 的 end（未配对 start 不留白）', () => {
+test('② pruneIntervals：区间首尾已离面 ⇒ **任何 append 之前**拒发，零事件落盘（2.2.2 落点重导）', () => {
   const { session, seqs } = buildPrunableSession('tx-brackets-graph-before-end')
   const host = makeStubHost()
-  // 故意把区间首 seq 指向一个**不在 surface** 的 seq（turn/start 的 seq=0，非 surface 事件）
-  // ⇒ 防御自检在成功 end 之前 throw。
+  // 故意把区间首 seq 指向一个**不在 surface** 的 seq（turn/start 的 seq=0，非 surface 事件）。
+  // 旧行为：start+summary+prune 已落盘，随后 replace 才被写入侧拒 ⇒ **毒 prune 永久留在日志**
+  // （加载侧对每条 prune 无条件跑 span()，error end 关闭的事务同样校验 ⇒ 整档拒载，2026-11-27
+  // 实机复现）。新行为：落点重导在事务开始前 throw，一条事件都不写。
   const intervals = [{ seqs: [0, ...seqs], chars: 800, atoms: [] }]
 
   assert.throws(
     () => pruneIntervals(host, session, intervals, 0, intervals.length, false),
-    /not a valid current surface span/,
-    '无效区间必须 throw',
+    /not a current surface slice/,
+    '陈旧区间必须在任何 append 之前 throw',
+  )
+
+  const { starts, ends } = bracketCounts(session)
+  assert.equal(starts, 0, '零落盘：连 compaction/start 都不写 ⇒ 毒 prune 无从产生')
+  assert.equal(ends, 0, '零落盘：不留下任何 compaction 事件')
+})
+
+// ---------------------------------------------------------------------------
+// ②b 反向对照（防守卫过度收紧）：落点重导**放行之后**才 throw ⇒ 括号必须闭合
+// ---------------------------------------------------------------------------
+
+test('②b 成功 end 之前 throw（受保护 system head 守卫）⇒ 仍须补一条带 error 的 end', () => {
+  const session = Session.create(SessionId('tx-brackets-system-head'))
+  session.append('system/message', { content: 'persona' } as never, { surfaceOp: 'append' })
+  const seqs: number[] = []
+  for (const text of ['u1:' + 'x'.repeat(400), 'u2:' + 'y'.repeat(400)]) {
+    seqs.push(session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text }],
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' }).seq)
+  }
+  const host = makeStubHost()
+  // 区间从 surface[0]（受保护 system 头）起：落点重导**通过**（是当前的连续切片），
+  // 由受保护头守卫在 start 之后拒发 ⇒ 必须补一条带 error 的 end，不留未配对 start。
+  assert.throws(
+    () => pruneIntervals(host, session, [{ seqs: [0, ...seqs], chars: 800, atoms: [] }], 0, 1, false),
+    /protected system head/,
+    '覆盖受保护 system 头必须 throw',
   )
 
   const { starts, ends, endData } = bracketCounts(session)

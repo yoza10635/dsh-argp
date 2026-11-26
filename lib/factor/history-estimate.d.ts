@@ -24,14 +24,20 @@ export interface HiddenHistoryEstimate {
     cjkChars: number;
     /** CJK 自适应密度估算的 token 数（3.5 / 1.7，浮点向上取整）。 */
     tokens: number;
+    /** 触及 `MAX_NODES` 上限被截断（结果偏小，仅供 debug 行标注，不静默吞掉）。 */
+    capped: boolean;
 }
 /**
  * 估算一组在场节点「代表的历史体量」。
  *
- * 规则：
- *  1. 对每个节点，沿 `sourceEventSeqs` 递归展开（替换副本 → 其代表的原始事件）；
- *  2. 有来源的节点：只计其原始事件文本（桩文本是替代品，不计入历史）；
- *  3. 无来源的节点：按其自身文本计；
- *  4. 全部 seq 全局去重，避免同一历史被多个桩重复计入。
+ * 规则（2026-11-27 复核修正）：
+ *  1. 从给定节点出发沿 `sourceEventSeqs` 递归展开（替换副本 → 其代表的原始事件）；
+ *  2. **只计量叶子**（自身无 `sourceEventSeqs` 的节点）= 真正的历史原文；
+ *  3. 中间替换副本（桩/检查点）一律**不计量**——它是替代品，其文本与它所代表的原文
+ *     是同一份信息的两层表示，两者都计就会重复计入（实测「摘要的摘要」两层链即虚高
+ *     3.39×：原文 10,000 字 + 中间检查点头尾预览 26,000 字全进同一个 chars）；
+ *  4. 记账事件（compaction/*、turn/*、step/*）不入叶子集也不入计数（实测 1 条真历史
+ *     曾被报成 4 条「原始事件」）；
+ *  5. 全部 seq 全局去重（`seen`），同一历史不会经多枚桩重复计入。
  */
 export declare function estimateHiddenHistory(session: Session, nodeSeqs: readonly number[]): HiddenHistoryEstimate;

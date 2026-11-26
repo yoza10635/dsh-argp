@@ -136,6 +136,6 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
 }[], semanticEdges: number, candidateCount: number, forced: boolean, tombstones?: readonly ({
     type: 'user';
     text: string;
-})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune', 
+})[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune' | 'injection-dedupe', 
 /** §G2：LLM 摘要调用的真实账单/信封回填 compaction/summary（宿主字段词典；0-LLM 事务不传）。 */
 summaryMeta?: CompactionSummaryMeta): CompactionResult | null;

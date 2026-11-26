@@ -289,3 +289,33 @@ test('⑧ 缓存断点锁：一笔压缩事务的 surface replace 数恰等于�
   assert.equal(outside.length, 0, '事务外零 surface replace（压缩之外不得产生额外缓存丢失）')
   assertShadowPriceContract(session)
 })
+
+test('⑨ 落点重导：外来 surface 替换落在 span 中段 ⇒ 事务成功且 prune 声明全部在场（2.2.2 blocker 锁）', () => {
+  // 病灶（2026-11-27 rev-fold 复核实机复现）：散文浓缩在 LLM 之前取整段 span 快照，等模型数秒后
+  // 才发射。窗口内任何 surface replace 落在 span **中段**时，旧的 summary 守卫只看首尾两点 ⇒
+  // 整笔放行 ⇒ prune 按陈旧 seqs 落盘 → 紧随的 replace 被写入侧拒（sourceEventSeqs must include
+  // every shadowed surface node）→ catch 只补 error end ⇒ **毒 prune 永久留在日志**（加载侧对每条
+  // prune 无条件跑 span()，error end 关闭的事务同样校验）⇒ 整档拒载。
+  const session = makeSession('tx-stale-mid')
+  appendUser(session, 1, 'task')
+  const n1 = appendUser(session, 2, 'A'.repeat(400))
+  const n2 = appendUser(session, 3, 'B'.repeat(400))
+  const n3 = appendUser(session, 4, 'C'.repeat(400))
+  const intervals = [{ seqs: [n1, n2, n3], chars: 1200, atoms: [] }]   // 决策时刻的 span 快照
+  // await 窗口内：外部替换掉中段的 n2（宿主 toolResultPruner / 外来压缩引擎的等价形态）
+  session.append('user/message', {
+    ...createUserMessage({ content: [{ type: 'text', text: '外来替换' }], source: { kind: 'user' } }),
+  } as never, {
+    surfaceOp: { op: 'replace', startSeq: n2 as never, endSeq: n2 as never },
+    sourceEventSeqs: [n2] as never,
+  })
+  const liveBefore = [...session.surface.nodes].map(Number)
+  const result = pruneIntervals(makeHost(), session, intervals, 0, 1, false, undefined, 'factor-prose')
+  assert.notEqual(result, null, '中段被换掉不得整笔蒸发（修复前此路留毒 prune 落盘）')
+  const claimed = pruneEvs(session).flatMap(e => e.data!.shadowedSeqs as number[])
+  assert.ok(claimed.every(q => liveBefore.includes(q)),
+    `prune 声明必须全部落在当前 surface 上：claimed=${JSON.stringify(claimed)} vs live=${JSON.stringify(liveBefore)}`)
+  assert.ok(!claimed.includes(n2), '已离面的 n2 不得再进声明（这就是旧版毒 prune 的成因）')
+  assert.equal(claimed.length, 3, '重导后声明 = 现读连续切片（外来替换被正常吞入本 span）')
+  assertShadowPriceContract(session)
+})

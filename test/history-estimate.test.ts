@@ -63,3 +63,25 @@ test('history-estimate: 链式桩解析 + 全局去重（同一历史不被重�
   assert.equal(est.chars, 3500)
   assert.equal(est.tokens, Math.ceil(3500 / 3.5))
 })
+
+test('history-estimate: 输入只有最新一枚桩时，不得把中间胖检查点文本也算进历史', () => {
+  // 2026-11-27 rev-search 实测旧实现虚高 3.39×：原文 10,000 字 + 中间检查点 26,000 字全进同一个
+  // chars。可达路径真实存在（夹剪组检查点带头尾预览、散文检查点可达 20K，且旧检查点会被后续
+  // 散文 span 吞并 ⇒「摘要的摘要」每层多计一层）。旧用例 2 恰好把 ck1 也放进输入集，绕开了这条。
+  const session = Session.create(SessionId('he-fat-chain'))
+  session.append('system/message', { content: 'persona' } as never, { surfaceOp: 'append' })
+  const big = 'X'.repeat(10_000)
+  const origin = session.append('assistant/message', {
+    stream: [], turn: 1, step: 1,
+    message: { source: { provider: 't', model: 't' }, content: [{ type: 'text', text: big }] },
+  } as never, { surfaceOp: 'append' })
+  const originSeq = (origin as unknown as { seq: number }).seq
+  const ckFat = checkpoint(session, [originSeq], '头尾留真预览'.repeat(4000)) // 24K 字符的胖检查点
+  const ckThin = checkpoint(session, [ckFat])
+
+  const est = estimateHiddenHistory(session, [ckThin])
+  assert.equal(est.chars, 10_000, `只应计原文 10,000 字，实测 ${est.chars}（中间桩文本被重复计入）`)
+  assert.equal(est.originSeqs.length, 1, `原始事件应恰 1 条，实测 ${est.originSeqs.length}`)
+  assert.deepEqual([...est.originSeqs], [originSeq], '叶子必须回到原始事件本体')
+  assert.equal(est.capped, false, '未触上限不应标记 capped')
+})
