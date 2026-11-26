@@ -25,6 +25,7 @@ import { estTokensFromStats } from './cjk.js'
 import { shadowedTokensOf } from './constants.js'
 import { pushBounded } from './telemetry.js'
 import { isMergeableTombstoneText, seqRangeTombstone } from './tombstone-text.js'
+import { estimateHiddenHistory } from './factor/history-estimate.js'
 
 /**
  * tombstone 可合并判据。
@@ -261,6 +262,13 @@ export function pruneIntervals(
   const sourceCommandIdField: { sourceCommandId?: CommandId } =
     host.compactSourceCommandId === undefined ? {} : { sourceCommandId: host.compactSourceCommandId }
   const allSeqs = useIntervals.flatMap(iv => iv.seqs)
+  // 统计口径（2026-11-27）：`shadowedTokenCount` = 本次从 surface 拿掉的文本（宿主 token-meter
+  // 记账口径，不可改）；`hiddenHistory` = 这些节点代表的历史原文体量（沿 sourceEventSeqs 链解析，
+  // CJK 自适应密度）。二者在 §11.8 墓碑归并上分离极大（145 桩 = 339 tok vs 代表历史数十万 tok），
+  // 日志/摘要必须分别报，否则「压缩收益 300 tok」会被读成事故。
+  const hiddenHistory = estimateHiddenHistory(session, allSeqs)
+  const historyNote = `${hiddenHistory.tokens} tok（${hiddenHistory.chars.toLocaleString('en-US')} 字符 / ${hiddenHistory.originSeqs.length} 条原始事件，估算）`
+
   const first = useIntervals[0]?.seqs[0] ?? 0
   const last = useIntervals[useIntervals.length - 1]?.seqs[useIntervals[useIntervals.length - 1]!.seqs.length - 1] ?? first
 
@@ -308,12 +316,12 @@ export function pruneIntervals(
         type: 'text',
         text: summaryKind === 'tombstone-merge'
           // 归并事务的区间 atoms 恒空（剪的是桩本身）⇒ 计数取表面节点数，不取 atoms。
-          ? `ARGP 墓碑归并（§11.8①）：${useIntervals.reduce((s, iv) => s + iv.seqs.length, 0)} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，search_history(keyword) / recall_history(labels) 可取回`
+          ? `ARGP 墓碑归并（§11.8①）：${useIntervals.reduce((s, iv) => s + iv.seqs.length, 0)} 墓碑 / ${useIntervals.length} 区间归并为聚合占位；增量 surface 释放 ≈ ${shadowedTokensOf(charsBefore0)} tok（仅桩文本合并）；代表历史 ≈ ${historyNote}；0-LLM；原文保留在 append-only 日志，search_history(keyword) / recall_history(labels) 可取回`
           : summaryKind === 'factor-prune'
-            ? `ARGP 协议组剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；A+R 组整体离场 + 压缩检查点占位（普通组中性标记「已压缩剪枝次要原子」；交互组专段带 tool: 即时指针）；原文保留在 append-only 日志，recall_history(labels) 可取回`
+            ? `ARGP 协议组剪：${prunedCount} 原子 / ${useIntervals.length} 区间；surface 释放 ≈ ${shadowedTokensOf(charsBefore0)} tok；历史体量 ≈ ${historyNote}；A+R 组整体离场 + 压缩检查点占位（普通组中性标记「已压缩剪枝次要原子」；交互组专段带 tool: 即时指针）；原文保留在 append-only 日志，recall_history(labels) 可取回`
             : summaryKind === 'factor-prose'
-              ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；清扫式合并（焦点外前缀一轮全吞，§9.36 H2 终裁）+ one-shot 原生式 LLM 浓缩（输入=U+final A/textA，工具原子零进）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
-              : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
+              ? `ARGP 散文浓缩：${prunedCount} 原子 / ${useIntervals.length} 区间；surface 释放 ≈ ${shadowedTokensOf(charsBefore0)} tok；历史体量 ≈ ${historyNote}；清扫式合并（焦点外前缀一轮全吞，§9.36 H2 终裁）+ one-shot 原生式 LLM 浓缩（输入=U+final A/textA，工具原子零进）；无逐字转写带（原始信息有 recall 兜底），整轮段无逐原子墓碑`
+              : `ARGP 图剪：${prunedCount} 原子 / ${useIntervals.length} 区间；surface 释放 ≈ ${shadowedTokensOf(charsBefore0)} tok；历史体量 ≈ ${historyNote}；确定性排序，0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`,
       }],
       shadowedRange: { start: first, end: last },
       shadowedSeqs: rangeSeqs,
@@ -370,6 +378,14 @@ export function pruneIntervals(
       ...sourceCommandIdField,
     })
     ended = true
+    // 统计口径日志（2026-11-27）：surface 释放（宿主 chars/4 口径）与历史体量（CJK 自适应）
+    // 分别报出。§11.8 墓碑归并的增量仅数百 tok，而其代表历史可达数十万 tok——只报前者会被
+    // 读成「压缩收益 300 tok」的荒谬结论；两者都由同一事务一次算出，便于对账。
+    host.log.info(
+      '[argp-engine] prune tx ' + (summaryKind ?? 'graph-prune')
+      + `: surface 释放 ≈ ${shadowedTokenCount} tok; 历史体量 ≈ ${hiddenHistory.tokens} tok`
+      + ` (${hiddenHistory.chars} chars / ${hiddenHistory.originSeqs.length} origin events, est.)`,
+    )
     // 批次 3-5（beta.1）：事务后 tool-pairing 不变量审计——per-atom 墓碑保配对是设计保证，
     // 此处是对该保证的可观测护栏）。任何悬空 tool_call 必然穿过 surface 尾切，对最后
     // 一个节点做一次 toolPairingBalancedAfter 即全局检测；孤儿 tool result 会使助手

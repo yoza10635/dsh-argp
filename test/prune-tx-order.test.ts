@@ -281,11 +281,11 @@ test('⑧ 缓存断点锁：一笔压缩事务的 surface replace 数恰等于�
   const bracket: [number, number][] = []
   let open: number | null = null
   for (const e of evs) {
-    if (e.type === 'compaction/start') open = e.seq as number
-    else if (e.type === 'compaction/end' && open !== null) { bracket.push([open, e.seq as number]); open = null }
+    if (e.type === 'compaction/start') open = (e as unknown as { seq: number }).seq
+    else if (e.type === 'compaction/end' && open !== null) { bracket.push([open, (e as unknown as { seq: number }).seq]); open = null }
   }
   assert.equal(bracket.length, 1, '恰一笔事务')
-  const outside = replaces.filter(e => { const s = e.seq as number; return !bracket.some(([a, b]) => s >= a && s <= b) })
+  const outside = replaces.filter(e => { const s = (e as unknown as { seq: number }).seq; return !bracket.some(([a, b]) => s >= a && s <= b) })
   assert.equal(outside.length, 0, '事务外零 surface replace（压缩之外不得产生额外缓存丢失）')
   assertShadowPriceContract(session)
 })

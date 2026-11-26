@@ -125,6 +125,13 @@ missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁�
 （后续事务才剪）。这是宿主 `span()` 相邻性契约的要求（§3 开头 fold 规则），不是账错；
 外评把它读成"账本污染"即三本混账之误。审计口径：**剪没剪只查 prune**。
 
+**token 计价的第四条口径（2026-11-27）：`shadowedTokenCount` ≠ 压缩收益。** 该字段 = 被替换
+在场节点文本 ÷ 4（宿主 `dsh-token-meter` 的记账口径，必须保持），描述"本次从 surface 拿掉多少字"；
+而节点经 `sourceEventSeqs` 链代表的历史体量由 `src/factor/history-estimate.ts` 单独估算（CJK 自适应
+3.5/1.7），只进日志与摘要文案。两者在 §11.8 归并上分离极大（145 桩 = 339 tok，代表历史 475 条 /
+82.5 万字符 ⇒ ≈ 30 万 tok）：只报前者会被读成"压缩收益 300 tok"。日志统一措辞：
+`surface 释放 ≈ X tok；历史体量 ≈ Y tok（Z 字符 / N 条原始事件，估算）`。
+
 ### 3.2 桩游程治理（2.2.2，session-43df801e 病灶）
 
 factor 组剪逐组落压缩检查点桩（`user/message` + `source.kind=compact-checkpoint`）；
