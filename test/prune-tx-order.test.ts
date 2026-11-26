@@ -249,3 +249,43 @@ test('⑦ 轮间隙锁：无开放轮时 user 检查点事务照常落盘，全�
     '整档不得存在非 append tool/result（加载校验毒形态结构性缺席）')
   assertShadowPriceContract(session)
 })
+
+test('⑧ 缓存断点锁：一笔压缩事务的 surface replace 数恰等于区间数（不引入额外前缀断点）', () => {
+  // 缓存命中 = 最长未变前缀。压缩事务本身必然改写历史前缀（固有代价），
+  // 但**每多一枚 replace 事件就是多一个前缀断点**——本锁保证发射面不增殖：
+  // 区间数 == replace 数 == prune 数（相邻 shadow-price 成对）。
+  const session = makeSession('tx-order-replace-count')
+  appendUser(session, 1, 'task')
+  const u1 = appendUser(session, 2, 'old ' + 'A'.repeat(400))
+  const u2 = appendUser(session, 3, 'mid ' + 'B'.repeat(300))
+  const u3 = appendUser(session, 4, 'tail ' + 'C'.repeat(200))
+  const intervals = [
+    { seqs: [u1], chars: 400, atoms: [] },
+    { seqs: [u2], chars: 300, atoms: [] },
+    { seqs: [u3], chars: 200, atoms: [] },
+  ]
+  const tombstones = [
+    { type: 'user' as const, text: 'cp-one' },
+    { type: 'user' as const, text: 'cp-two' },
+    { type: 'user' as const, text: 'cp-three' },
+  ]
+  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  assert.notEqual(result, null, '事务应落盘')
+  const evs = evsOf(session)
+  const isReplace = (e: EvLike): boolean => typeof (e as { surfaceOp?: unknown }).surfaceOp === 'object'
+    && (e as { surfaceOp?: unknown }).surfaceOp !== null
+  const replaces = evs.filter(isReplace)
+  assert.equal(replaces.length, intervals.length, '每个区间恰好一次 replace：多一次即多一个缓存前缀断点')
+  assert.equal(replaces.length, pruneEvs(session).length, 'replace 与 prune 一一对应（宿主 shadow-price 相邻契约）')
+  // 事务括号外零 replace：压缩之外不得再动前缀
+  const bracket: [number, number][] = []
+  let open: number | null = null
+  for (const e of evs) {
+    if (e.type === 'compaction/start') open = e.seq as number
+    else if (e.type === 'compaction/end' && open !== null) { bracket.push([open, e.seq as number]); open = null }
+  }
+  assert.equal(bracket.length, 1, '恰一笔事务')
+  const outside = replaces.filter(e => { const s = e.seq as number; return !bracket.some(([a, b]) => s >= a && s <= b) })
+  assert.equal(outside.length, 0, '事务外零 surface replace（压缩之外不得产生额外缓存丢失）')
+  assertShadowPriceContract(session)
+})
