@@ -50,6 +50,11 @@ export interface DispatchSnapshot {
   /** 可浓缩散文：浓缩器真能驱逐的 U+textA（钉死指令/note/焦点/附件/宿主再注入不计）。
    *  摘要请求的 transcript 基底——发送可行性按它判，不按全上下文 C。 */
   condensableProseTokens: number
+  /** 三桶 aged 口径：span 实际可驱逐的 textA（barrier/洞截断段、partial 散点、焦点窗
+   *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total），
+   *  旧 fixture 与判据④ transcript 口径字节不变（design-2.2.x §1.2）。
+   *  供给判据在包一b（commit 4）切到本字段。 */
+  condensableProseAgedTokens?: number
   /** 摘要指令 + 摘要输出预留（标准预算；空间不足时决策内部收缩输出分量）。 */
   summarySendTokens: number
   /** 供给余量系数 α：P ≥ α·deficit 视为剪可稳定到位（估算误差安全垫）。 */

@@ -154,6 +154,9 @@ export interface ProseEvictPlan {
   partialSeqs: number[]
   /** 计划驱逐的散文字符（span + partial 的 textA 文本和）。 */
   evictedProseChars: number
+  /** span（整轮晋升段）实际可驱逐的 textA 字符和——三桶 **aged 口径**（design-2.2.x §1.2）：
+   *  partial 散点、barrier/洞截断段、焦点窗与 open 轮之后的 run 一律不计。 */
+  spanProseChars: number
   /** 全上下文散文字符（U/A 文本和；触发统计口径，含受保护轮）。 */
   proseCharsAll: number
   stopReason: 'need-met' | 'exhausted' | 'no-candidate'
@@ -244,6 +247,7 @@ export function planProseEviction(
   const spanSeqs: number[] = []
   const partialSeqs: number[] = []
   let evicted = 0
+  let spanProse = 0
   let stopped = false
   for (const run of runs) {
     if (holePos >= 0 && run.startPos > holePos && (spanSeqs.length > 0 || partialSeqs.length > 0)) { stopped = true; break }
@@ -262,6 +266,7 @@ export function planProseEviction(
     if (whole && runProse > 0) {
       spanSeqs.push(...run.seqs)
       evicted += runProse
+      spanProse += runProse
       if (evicted >= options.needChars) { stopped = true; break }
       continue
     }
@@ -290,6 +295,7 @@ export function planProseEviction(
   return {
     spanSeqs, partialSeqs,
     evictedProseChars: evicted,
+    spanProseChars: spanProse,
     proseCharsAll,
     stopReason,
   }
@@ -491,11 +497,17 @@ export class ProseCondenser {
   }
 
   /**
-   * 散文占比统计（触发线日志/遥测复用；不读 LLM）。
-   * `hostReinjected`：宿主再注入三件套的归类模式（缺省 'prose'=现网口径不变；
-   * §B 分派器度量传 'exclude'——假量不撑大判据②，见 classifyUaAtom 分期注释）。
+   * 三桶合并扫描（design-2.2.x §1.2）：一次遍历产出**同域**三桶——
+   * aged（span 实际可驱逐的 textA）/ fresh（=total−aged：焦点窗、barrier/洞截断段、
+   * partial 散点之后的散文）/ total（=旧 proseStats.proseCharsAll，口径逐字节不变，
+   * 护住判据④ transcript 与全部旧 fixture；proseStats 由本扫描合并退役）。aged 定义直接取 planProseEviction run 分组的
+   * span 晋升量——age 之外的类型/位置边界天然在内（审查实锤：年龄公式作废）。
+   * 保护窗与 condense 的 plan 调用同参（清扫式 needChars=∞）：快照与浓缩之间 surface
+   * 无写入点（接管形态动作序 dedup/组剪都在浓缩之后）⇒ 同面同参 ⇒ 同域 by construction。
    */
-  proseStats(session: Session, hostReinjected: HostReinjectedMode = 'prose'): { sysChars: number; proseCharsAll: number } {
+  scanProseBuckets(session: Session, hostReinjected: HostReinjectedMode = 'prose'): {
+    sysChars: number; totalChars: number; agedChars: number; freshChars: number
+  } {
     const events = sessionEvents(session) as unknown as Array<{ seq: number; type: string }>
     const surfaceSeqs = [...session.surface.nodes] as unknown as number[]
     let sysChars = 0
@@ -503,12 +515,18 @@ export class ProseCondenser {
     const headEvent = headSeq !== undefined ? events[headSeq] : undefined
     if (headEvent !== undefined && headEvent.type === 'system/message') sysChars = eventText(session, headSeq as number).length
     const probes = this.buildProbes(session)
-    let proseCharsAll = 0
-    for (const a of this.host.atomize(session)) {
-      const probe = probes.get(a.seq) ?? { attachment: false }
-      if (classifyUaAtom(a, probe, hostReinjected) === 'textA') proseCharsAll += a.text.length
-    }
-    return { sysChars, proseCharsAll }
+    const atoms = this.host.atomize(session)
+    const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
+    const openTurnSeq = this.openTurnFirstSeq(session)
+    const openTurnFromPos = openTurnSeq === null ? null : Math.max(0, surfaceSeqs.indexOf(openTurnSeq))
+    const focalTurns = this.focalTurnsOf()
+    const protectFromTurn = focalTurns > 0 ? latestTurn - focalTurns + 1 : Number.POSITIVE_INFINITY
+    const plan = planProseEviction(atoms, probes, surfaceSeqs, {
+      needChars: Number.POSITIVE_INFINITY, protectFromTurn, openTurnFromPos, hostReinjected,
+    })
+    const totalChars = plan.proseCharsAll
+    const agedChars = plan.spanProseChars
+    return { sysChars, totalChars, agedChars, freshChars: Math.max(0, totalChars - agedChars) }
   }
 
   private buildProbes(session: Session): Map<number, ProseEventProbe> {

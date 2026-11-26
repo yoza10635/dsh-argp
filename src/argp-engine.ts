@@ -1104,15 +1104,17 @@ export class ArgpEngine extends CompactionEngine {
         const b6 = this.b6RiskSummary(session)
         // 'exclude'：宿主再注入三件套不计散文（假量）。takeover 事务开头有结构去重
         // （dedupeReinjected），旧副本回收通道在接管形态下已闭合。
-        const pst = this.prose.proseStats(session, 'exclude')
+        // 三桶合并扫描（§1.2）：total=旧 proseStats 口径字节不变；aged=span 实际可驱逐。
+        const pst = this.prose.scanProseBuckets(session, 'exclude')
         const cpt = Math.max(1, this.liveCharsPerToken(session))
-        const proseTok = Math.ceil(pst.proseCharsAll / cpt)
+        const proseTok = Math.ceil(pst.totalChars / cpt)
         const sendTok = summarySendTokens(wEff)
         const cTok = measurement.contextTokens
         const snapshot = {
           trigger, contextTokens: cTok, retainTokens, windowEff: wEff,
           floorTokens: b6.nonPrunableTokens, prunableTokens: Math.max(0, cTok - b6.nonPrunableTokens),
           condensableProseTokens: proseTok, summarySendTokens: sendTok,
+          condensableProseAgedTokens: Math.ceil(pst.agedChars / cpt),
         }
         dispatchDecision = planForm(snapshot)
         const record = { t: Date.now(), mode: dispatchMode, ...snapshot, form: dispatchDecision.form, reason: dispatchDecision.reason, outBudget: dispatchDecision.outBudget }

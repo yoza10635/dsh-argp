@@ -133,6 +133,7 @@ test('§B-2b takeover prune-only：按形态发射且不触浓缩链；决策落
     assert.equal(rec.mode, 'takeover')
     assert.equal(rec.form, 'prune-only')
     assert.match(rec.reason, /仅剪/)
+    assert.ok(typeof rec.condensableProseAgedTokens === 'number', '三桶 aged 字段必须随快照落影子流水（观察哨数据面）')
   } finally {
     delete process.env['ARGP_FACTOR_DISPATCH']
     delete process.env['ARGP_FACTOR_DISPATCH_LOG']

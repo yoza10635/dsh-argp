@@ -595,3 +595,51 @@ test('planProseEviction ⑨：词表 note 可吞（否则第二次散文永久�
   assert.ok(plan.spanSeqs.includes(3), '词表 note 必须可吞（不是永久 barrier）')
   assert.ok(plan.spanSeqs.includes(4), 'note 后的轮仍可进 span')
 })
+
+test('planProseEviction ⑩：spanProseChars=整轮 span 实际可驱量（三桶 aged 口径）；partial 散点与破段截断不计', () => {
+  const atoms = [
+    atom(1, 1, 'U', 'U1-'.padEnd(60, '文')),
+    atom(2, 1, 'A', 'A1-'.padEnd(60, '答')),
+    atom(3, 2, 'U', 'U2-'.padEnd(60, '文')),
+    atom(4, 2, 'A', 'A2-'.padEnd(60, '答')), // 破段轮内 textA → partial
+    atom(5, 3, 'U', 'U3-'.padEnd(60, '文')), // 贪心停后方：只进 total
+  ]
+  const probes = new Map<number, ProseEventProbe>([[4, { attachment: true }]])
+  const plan = planProseEviction(atoms, probes, [1, 2, 3, 4, 5], {
+    needChars: Number.POSITIVE_INFINITY, protectFromTurn: 99, openTurnFromPos: null,
+  })
+  assert.equal(plan.spanProseChars, 120, 'aged=turn1 整轮散文（120 chars），barrier 起不再计')
+  assert.equal(plan.evictedProseChars, 180, 'evicted=span+partial（U4 破段指针位也算驱逐量）——两口径必须分账')
+  assert.equal(plan.proseCharsAll, 240, 'total=全 textA（含破段轮与贪心停后方），与旧 proseStats 口径一致')
+})
+
+test('SB1 scanProseBuckets barrier-mid-history：aged 只计 span 晋升段，barrier/截断/焦点全落 fresh；total=旧口径字节不变', async () => {
+  const { ctx, internals } = await boot()
+  const prose = new ProseCondenser(ctx, internals as never, { focalTurns: 1, complete: async () => '不该被调用' })
+  const session = makeSession('sb1-barrier-mid')
+  internals.bindSession(session)
+  appendUser(session, 'U1-'.padEnd(60, '文'), 1) // turn1：整轮可晋升 → aged
+  appendUser(session, 'U2-'.padEnd(60, '文'), 2) // turn2 与附件 R 同轮 ⇒ 破段 → partial 位（不计 aged）
+  session.append('assistant/message', {
+    stream: [], turn: 2, step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'test', model: 'test' },
+      content: [{ type: 'tool-call', id: 'img', name: 'screenshot', arguments: '{}' } as never],
+    }),
+  } as never, { surfaceOp: 'append' })
+  session.append('tool/call', { turn: 2, callId: 'img', name: 'screenshot', arguments: '{}' } as never)
+  session.append('tool/result', {
+    turn: 2, step: 1,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool-result', toolCallId: 'img', content: [{ type: 'text', text: 'IMG' }, { type: 'image' } as never], isError: false }],
+      source: { kind: 'tool', callId: 'img' }, id: 'm_img',
+    },
+  } as never, { surfaceOp: 'append' })
+  appendUser(session, 'U3-'.padEnd(60, '文'), 3) // 贪心停后方 → fresh
+  appendUser(session, '焦点U'.padEnd(60, '点'), 4) // 焦点轮（latestTurn=4, focal=1 ⇒ protectFromTurn=4）→ fresh
+  const buckets = prose.scanProseBuckets(session)
+  assert.equal(buckets.totalChars, 4 * 60, 'total=全 textA（含 barrier 轮 U2 与焦点轮）——旧口径字节')
+  assert.equal(buckets.agedChars, 60, '★aged 只认 turn1 整轮段：barrier 断供不把 U2/U3/焦点记成供给（v1 年龄公式的虚高形态锁死）')
+  assert.equal(buckets.freshChars, buckets.totalChars - buckets.agedChars, 'fresh=total−aged 恒等')
+})
