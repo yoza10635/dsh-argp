@@ -79,19 +79,31 @@ missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁�
 
 - `pruneIntervals` **逐区间成对发射**（对齐官方 `compaction-tool-result-pruner`），
   一笔事务可含多个区间；
-- tool 桩**克隆原 R 的 data、只改内文**（保留 callId / role / id / isError），
-  配对 issuer A 的 tool_calls 防 400（`assertToolResultRewrite` 只允许改 inner text）；
-- **打包带走裁定（2.2.2，session-43df801e 存档加载失败案）**：半拆组「只剪 R 留空
-  `tool/result` 桩」分支**废止**——组不齐（issuer A 在世/R 不连续）⇒ R 一律不剪、随活体
-  保留（缺口进 shortfall 账）。防线在 `pruneIntervals` 预检：**无开放轮时一切 tool 桩
-  区间剔除**（保留活体 + warn，NP10 漏剪同方向；不可降级 user 桩——issuer 广告仍在，
-  孤儿 tool result 撞 provider 400）。动机：宿主 v4 fold 要求「非 append 的 tool/result
-  必须处于开放轮内」，写入侧（`Session.append` 核心）不拦、加载侧整档判 corrupt——轮次
-  间隙手动 /compact 一落毒即不可加载（6 枚实锤）。裁定后 tool/result replace 唯一剩余
-  来源 = clip opt-in 臂，故该臂**双层自锁**（2.2.2 根修）：调用点无开放轮 ⇒ 整臂跳过、
-  回落标准组剪（用户检查点不受轮约束，压缩照常、仅失去夹剪收益）；臂内再加同判据——
-  非 issuer 离场的 R 一律不剪、不落桩（warn 计数），不依赖 `pruneIntervals` 预检兜底。
-  自动路径恒在轮内 ⇒ 常态零行为变化；锁 CL10（轮间隙 zero non-append tool/result）。
+- **零 `tool/result` 形态桩（2.2.2 根修，session-43df801e 存档加载失败案）**：surface
+  `replace` **只发 user/message 检查点**——`prune-tx` 的 tombstone 类型收窄为
+  `{type:'user'}`，tool/developer 形态整类删除（运行时另有防线：收到非 user 墓碑在事务前
+  throw）。动机：宿主 v4 fold 要求「非 append 的 tool/result 必须处于开放轮内」
+  （`requireTurn`）、system/developer/assistant replace 还要求开放轮 + step 坐标匹配
+  （`requireStep`），而压缩事务可落在轮间隙（手动 /compact 走宿主 idle maintenance，
+  实证 `compaction/start.data.turn === null`）；写入侧 `Session.append` 只校验
+  content-only、**不校验轮** ⇒ 当场成功、下次加载整档判 corrupt 拒载。
+  user 检查点不受轮/步约束，是唯一与压缩时点无关的合法形态；
+- **打包带走裁定**：半拆组（issuer A 在世只剪 R）与不连续回退一律不剪——组不齐 ⇒ R 随
+  活体保留（缺口进 shortfall 账）；孤儿 R（issuer 已离场）走 user 检查点。组剪按
+  `[A … 最后一个 R]` 的**整区间**替换成**单条** user 检查点（A+R 同进退，无孤儿 tool_call）；
+- **C10 夹剪改走检查点文本**：旧夹剪臂直接改写原 R 节点（非 append tool/result replace，
+  轮间隙无合法表达）→ 根修后 clip 只决定组检查点的**文本**（头尾留真预览 vs 中性标记），
+  组选择/保护/守卫与 clip 关闭时相同（A/B 变量只剩检查点文本），轮内/轮间隙行为一致；
+- **写入侧落点守卫**（残余非 user replace 的兜底，如 cites 剥离的 assistant replace）：
+  `log-access.canAppendSurfaceReplace` 在 **append 前一刻**读日志尾状态，逐条复刻宿主
+  fold 判据（user 恒合法；tool/result 需开放轮；step 型需轮+开放 step 且 `data.turn/step`
+  匹配），非法时调用方放弃写回而不是污染存档。与"计划时判轮"不同，落点判据不会出现
+  「计划有轮、落点无轮」的分叉；
+- 锁：`prune-tx-order ⑥`（非 user 墓碑 fail-fast）、`prune-tx-order ⑦`
+  （轮间隙 user 事务零 tool/result replace）、`factor-clip CL4/CL10`（整组离场/轮间隙）、
+  `surface-fold-legality`（**直接 import 宿主 `assertReleasedV4Relationships` 当 oracle**：
+  轮内/轮间隙正向日志必须被宿主接受，轮间隙手工补一枚 tool/result replace 必须被宿主
+  拒载——阴性对照自证判据有判别力）；
 - 事务尾把 usage 锚重置为 chars 估算（`lastRealPromptTokens = visibleChars/charsPerToken`），
   下一笔成功请求由 provider usage 重锚；
 - `shadowedSeqsOf` 只认 `compaction/prune.shadowedSeqs`——权威账本，不从 replace 形态推断

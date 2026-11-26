@@ -1,17 +1,21 @@
 /**
  * C10 夹剪层——剪形模板（**位置归确定性**）：归位在 retention-score.planPrune
- * （语义：不可再生且未被覆盖的软序成员归 clip），机制在 prune-tx 区间 replace
+ * （语义：不可再生且未被覆盖的软序成员归 clip），机制在 prune-tx 的**组剪检查点文本**
  * （本模块只产替换文本，不碰事务）。
  *
- * 三态保留（C10 设计案 2026-11-12）：
+ * 三态保留（C10 设计案 2026-11-12；2.2.2 根修后落点统一为 user 检查点）：
  *  - full   —— 不入剪序（现状不变）；
- *  - clip   —— 头尾留真 + 中段省略标记（本模块模板）；
- *  - shadow —— 最小桩全遮（engine.stubText，现行为）。
+ *  - clip   —— 组离场时检查点文本携带该组 R 的头尾留真 + 中段省略标记（本模块模板）；
+ *  - shadow —— 中性标记全遮（FACTOR_COMPACTED_MARKER / 交互专段，现行为）。
  *
- * 可逆性契约：clip 文本走与桩同一条 `{type:'tool', seq, callId, text}` 通道
- * （prune-tx 克隆原事件只换内文），原文留在 append-only 日志，
- * recall_history(labels) 原样取回；pairing 不破。无实体标签的文本不可按标签召回
- * （文本里如实说明，不指向不存在的工具）。
+ * 可逆性契约：clip 文本随组检查点写入 **user/message**（宿主 v4 fold 对 user replace
+ * 无轮/步约束），原文留在 append-only 日志，recall_history(labels) 原样取回；组内
+ * A+R 成对离场，不产孤儿 tool_call。无实体标签的文本不可按标签召回（文本里如实说明，
+ * 不指向不存在的工具）。
+ *
+ * 历史注记（2.2.2 存档加载失败案）：旧实现把 clip 文本写回**原 R 节点本体**
+ * （非 append 的 tool/result replace）——宿主 v4 fold 的 requireTurn() 在轮间隙无合法
+ * 表达 ⇒ 整档 corrupt 拒载。根修把信息保留从节点形态挪到检查点文本，形态与轮状态解耦。
  *
  * 文本族纪律：首行以 STUB_PREFIX 开头——tagRsFromLog 的桩排除判据
  * （factor-atoms.ts `startsWith(STUB_PREFIX)`）据此把夹剪文本自动排除出再贴标；

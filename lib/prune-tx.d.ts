@@ -114,28 +114,28 @@ export interface PruneTxHost {
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
  * 发射前先做**相邻同文 user 墓碑归并**（surface 紧邻 + 文本逐字节相同 ⇒ 并条；
  * 2026-11-26 桩游程治理，见 pruneIntervals 内注释）。
- *  tombstone 类型（半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
- *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
- *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400；
- *  'developer' = 协议组整组离场的空占位（content:[]，source.form='argp-removed'；宿主请求投影
- *  丢弃未注册 developer ⇒ 模型零可见，不是 user 消息、不伪造轮边界）。
+ *
+ * **2.2.2 根修（2026-11-26 session-43df801e 存档加载失败案）：surface replace 只允许
+ * user 检查点。** tool/result 与 developer 形态的 replace 已从本模块整类删除——宿主
+ * v4 fold 对它们执行 `requireTurn()`/`requireStep()`（加载侧 dsh-session-format-v3-to-v4），
+ * 而压缩事务可能落在轮间隙（手动 /compact 是宿主 idle maintenance，实证
+ * `compaction/start.data.turn === null`），此时无任何合法表达；写入侧 `Session.append`
+ * 不拦 ⇒ 当场成功、下次加载整档判 corrupt 拒载。user 检查点不受轮/步约束，是唯一
+ * 与压缩时点无关的合法 surface 写回形态。
+ *
+ * 结构性保证（不再依赖"计划时有开放轮"的时点判断）：
+ *  - 本函数的 tombstones 参数类型只接受 `{type:'user'}`；其它形态在 TypeScript 层不可达，
+ *    运行时另有防线（收到非 user 墓碑直接 throw，见函数头）。
+ *  - 唯一剩余的 tool/result 语义（C10 夹剪文本 = 头尾留真预览）改由组剪检查点的
+ *    **文本**承载（factor/engine.ts `groupCheckpointText`），不再改写 R 节点本体。
  */
 export declare function pruneIntervals(host: PruneTxHost, session: Session, intervals: {
     seqs: number[];
     chars: number;
     atoms: Atom[];
-}[], semanticEdges: number, candidateCount: number, forced: boolean, tombstones?: ({
+}[], semanticEdges: number, candidateCount: number, forced: boolean, tombstones?: readonly ({
     type: 'user';
     text: string;
-} | {
-    type: 'tool';
-    seq: number;
-    callId: string;
-    text?: string;
-} | {
-    type: 'developer';
-    form?: string;
-    kind?: 'group' | 'a' | 'orphan';
 })[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune', 
 /** §G2：LLM 摘要调用的真实账单/信封回填 compaction/summary（宿主字段词典；0-LLM 事务不传）。 */
 summaryMeta?: CompactionSummaryMeta): CompactionResult | null;

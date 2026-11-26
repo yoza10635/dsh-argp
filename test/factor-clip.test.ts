@@ -1,30 +1,41 @@
 /**
  * C10 夹剪层（三态保留）契约测试——真 Session + graph 引擎宿主（factor-engine.test.ts 同款）。
  *
+ * 2.2.2 根修（session-43df801e 存档加载失败案）：夹剪不再改写 R 节点本体
+ * （旧形态 = 非 append 的 `tool/result` replace，宿主 v4 fold 的 requireTurn 在轮间隙
+ * 无合法表达 ⇒ 整档 corrupt 拒载），改为**组剪检查点的文本变体**——
+ * 组选择/保护/守卫与 clip 关闭时逐字节相同，只有 user 检查点文本携带该组 R 的
+ * 头尾预览（clip-shape 模板）。因此「信息悬崖 vs 头尾留真」仍可 A/B，且发射形态
+ * 与压缩时点无关（user replace 不受轮/步约束）。
+ *
  * 变异锁台账：
- *  CL1 归位锁：非再生∧未覆盖的软序大 R → clipOrder + 夹剪文本（头尾留真+省略线）；
- *      变异：删归位判据/regenerable 反号 ⇒ 红。
- *  CL2 缺省关字节不变：clipEnabled=false 时发射逐字节=R1 桩形态，clipOrder 恒空；
- *      变异：缺省改开/回落链断开 ⇒ 红。
+ *  CL1 归位+文本锁：非再生∧未覆盖的软序大 R → clipOrder，组检查点文本头尾留真带省略线；
+ *      变异：删归位判据/文本变体接线 ⇒ 红。
+ *  CL2 缺省关字节不变：clipEnabled=false 时检查点=中性标记，clipOrder 恒空；
+ *      变异：缺省改开/文本变体漏判 ⇒ 红。
  *  CL3 族形锁：command 尾重(160/640) vs read 头重(640/160)，元数据行报实数；
  *      变异：CLIP_SHAPE 头尾对调 ⇒ 红。
- *  CL4 配对锁：夹剪 replace 保留 callId（provider 400 防线），文本 ≥30 字符下限；
- *      变异：发射丢 callId ⇒ 红。
+ *  CL4 整组离场锁：夹剪事务后组 A/R 成对离场、surface 无悬空 tool_call（宿主
+ *      toolPairingBalancedAfter），且**不存在**非 append tool/result；
+ *      变异：退回旧 tool/result replace 形态 ⇒ 红。
  *  CL5 可逆锁：夹剪后 rawEventText(原 seq) 仍逐字取回原文（append-only 不破）；
  *      变异：机制误改日志本体 ⇒ 红。
  *  CL6 净账锁：同目标下 clip 记账按净收益 ⇒ 取用枚数 ≥ shadow 模式（防"名义达标"）；
  *      变异：reserve 归零/漏扣 ⇒ 红。
- *  CL7 小文本回落：净收益 < CLIP_MIN_SAVING ⇒ 归 shadow 最小桩（clip 不放字节不剪形）；
+ *  CL7 小文本回落：净收益 < CLIP_MIN_SAVING ⇒ 检查点回落中性标记（clip 不放字节不剪形）；
  *      变异：删收益下限 ⇒ 红。
  *  CL8 文本族锁：夹剪文本 startsWith(STUB_PREFIX)（再贴标自动排除）且不可合并
  *      （isMergeableTombstoneText=false，consolidate 永不吞）；
  *      变异：前缀漂移/误入 [elided 空格族 ⇒ 红。
  *  CL9 逃生口锁：resolveClipEnabled 只认 env==='1'（非法值=关，缺省安全）；
  *      变异：判反/真值放宽 ⇒ 红。
+ *  CL10 轮间隙锁：无开放轮（手动 /compact 实测形态）下夹剪文本仍正常发射（user 检查点），
+ *      全档零非 append tool/result；变异：任一 tool/result replace 回归 ⇒ 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
+import { toolPairingBalancedAfter } from '@deepseek-ai/dsh-compaction'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
@@ -77,12 +88,7 @@ function makeSession(id: string): Session {
 
 /** 旧 bash + 旧 read（turn1）→ turn2 焦点换位（factor-engine.test.ts 同款）把 a.ts
  *  推出焦点窗 ⇒ 两枚皆软可剪；b.ts 是焦点非再生 = hard（不入序不入账）。 */
-function buildOld(session: Session, bashText: string, readText: string, opts: { openTurn?: boolean } = {}): void {
-  // 2.2.2 存档地雷锁：夹剪臂发射 tool/result replace，宿主 v4 fold 要求其在开放轮内
-  // （prune-tx 预检按 detectOpenTurn 剔除轮间隙 tool 桩）；真实 pre-step 恒在轮内，
-  // fixture 照实补开轮。轮号取大于全部原子轮次 ⇒ 只喂 detectOpenTurn，不动任何决策口径。
-  // openTurn:false = 轮间隙形态（手动 /compact 实测：compaction/start 的 data.turn === null）。
-  if (opts.openTurn !== false) session.append('turn/start', { turn: 999 } as never)
+function buildOld(session: Session, bashText: string, readText: string): void {
   appendUser(session, '开始任务')
   appendGroup(session, 1, 'cb', 'bash', '{"command":"npm test"}', bashText)
   appendGroup(session, 1, 'cr', 'read', '{"file_path":"C:/Proj/a.ts"}', readText)
@@ -90,15 +96,26 @@ function buildOld(session: Session, bashText: string, readText: string, opts: { 
   appendUser(session, '收尾')
 }
 
-function emittedTexts(session: Session): { text: string; callId: string | undefined }[] {
-  const out: { text: string; callId: string | undefined }[] = []
-  for (const e of sessionEvents(session) as unknown as Array<{ type: string; data?: Record<string, unknown> }>) {
-    if (e.type !== 'tool/result' || e.data?.message === undefined) continue
-    const msg = e.data.message as { content?: { toolCallId?: string; content?: { text?: string }[] }[] }
-    for (const blk of msg.content ?? []) {
-      const t = blk.content?.[0]?.text ?? ''
-      if (t.startsWith(STUB_PREFIX)) out.push({ text: t, callId: blk.toolCallId })
-    }
+/** surface 上 user/message 检查点的可见文本（2.2.2 根修后的夹剪文本载体）。 */
+function checkpointTexts(session: Session): string[] {
+  const evs = sessionEvents(session) as unknown as Array<{ type: string; data?: { content?: { type?: string; text?: string }[] } }>
+  const out: string[] = []
+  for (const node of session.surface.nodes as readonly number[]) {
+    const e = evs[node as number]
+    if (e?.type !== 'user/message') continue
+    const text = (e.data?.content ?? []).filter(b => b?.type === 'text').map(b => b.text ?? '').join('\n')
+    if (text !== '') out.push(text)
+  }
+  return out
+}
+
+/** 原 R 的日志 seq（append 原文仍在 append-only 日志，可 recall）。 */
+function originalRSeqs(session: Session, needle: string): number[] {
+  const evs = sessionEvents(session) as unknown as Array<{ type: string; data?: { message?: { content?: { text?: string }[] } } }>
+  const out: number[] = []
+  for (let seq = 0; seq < evs.length; seq += 1) {
+    const raw = rawEventText(session, seq)
+    if (raw !== null && raw.text === needle) out.push(seq)
   }
   return out
 }
@@ -106,14 +123,14 @@ function emittedTexts(session: Session): { text: string; callId: string | undefi
 const BIG_BASH = 'HEAD-MARKER ok\n' + 'x'.repeat(4000) + '\nerror: exit code 7 TAIL-MARKER'
 const BIG_READ = 'FILEHEAD 1\n' + 'y'.repeat(4000) + '\nFILETAIL last'
 
-/** surface 原文 dump（组剪/桩形态判据，V3 形内嵌 text 也能读到）。 */
+/** surface 原文 dump（组剪/检查点形态判据）。 */
 function surfaceDump(session: Session): string {
   const evs = sessionEvents(session) as unknown as Array<{ seq: number; data?: unknown }>
   const nodes = new Set(session.surface.nodes as readonly number[])
   return [...nodes].map(s => JSON.stringify(evs[s]?.data ?? '')).join('\n')
 }
 
-/** surface 上的因子压缩检查点数（组剪默认形态：compact-checkpoint user message）。 */
+/** surface 上的因子中性压缩检查点数（组剪默认形态：compact-checkpoint user message）。 */
 function devCount(session: Session): number {
   const evs = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: unknown }>
   const nodes = new Set(session.surface.nodes as readonly number[])
@@ -125,7 +142,25 @@ function devCount(session: Session): number {
   }).length
 }
 
-test('CL1 归位锁：旧大 R 入 clipOrder，夹剪文本头尾留真带省略线', async () => {
+/** 宿主 v4 fold 判据：非 append 的 tool/result 一律拒载（整档 corrupt）。 */
+function illegalToolReplaceCount(session: Session): number {
+  return (sessionEvents(session) as unknown as Array<{ type: string; surfaceOp?: unknown }>)
+    .filter(e => e.type === 'tool/result' && e.surfaceOp !== undefined && e.surfaceOp !== 'append').length
+}
+
+/** 整档 tool-pairing 平衡（悬空 tool_call / 孤儿 tool result ⇒ false）。 */
+function pairingBalanced(session: Session): boolean {
+  const nodes = session.surface.nodes as readonly number[]
+  const tail = nodes[nodes.length - 1]
+  if (tail === undefined) return true
+  try {
+    return toolPairingBalancedAfter(session, tail as never)
+  } catch {
+    return false
+  }
+}
+
+test('CL1 归位+文本锁：旧大 R 入 clipOrder，组检查点文本头尾留真带省略线', async () => {
   const { host, factor } = await makeClipEngine(true)
   const session = makeSession('clip-cl1')
   host.bindSession(session)
@@ -134,18 +169,19 @@ test('CL1 归位锁：旧大 R 入 clipOrder，夹剪文本头尾留真带省略
   assert.ok(decision.clipEnabled, '遥测档必须可读')
   assert.equal(decision.plan.clipOrder.length, 2, 'bash+read 两枚均不可再生未覆盖 → clip')
   assert.ok(factor.compactIfNeeded(session, 6000) !== null)
-  const texts = emittedTexts(session)
-  assert.equal(texts.length, 2)
-  for (const t of texts) {
-    assert.ok(t.text.startsWith(CLIP_MARK), '夹剪文本带标记前缀')
-    assert.ok(t.text.includes('中段') && t.text.includes('省略'), '省略元数据在')
-    assert.ok(t.text.length < BIG_BASH.length, '净压缩')
+  const texts = checkpointTexts(session)
+  const clipped = texts.filter(t => t.startsWith(CLIP_MARK))
+  assert.equal(clipped.length, 2, '两个旧组各一枚夹剪检查点（文本变体）')
+  for (const t of clipped) {
+    assert.ok(t.includes('中段') && t.includes('省略'), '省略元数据在')
+    assert.ok(t.length < BIG_BASH.length, '净压缩')
   }
-  const bash = texts.find(t => t.text.includes('bash'))!
-  assert.ok(bash.text.includes('HEAD-MARKER') && bash.text.includes('TAIL-MARKER'), '头尾都在')
+  const bash = clipped.find(t => t.includes('bash'))!
+  assert.ok(bash.includes('HEAD-MARKER') && bash.includes('TAIL-MARKER'), '头尾都在')
+  assert.equal(illegalToolReplaceCount(session), 0, '根修后不再有 tool/result replace')
 })
 
-test('CL2 缺省关=组剪默认：clipOrder 空、旧 A+R 组离场 → 压缩检查点（无桩/无夹剪）', async () => {
+test('CL2 缺省关=组剪默认：clipOrder 空、旧 A+R 组离场 → 中性压缩检查点（无夹剪）', async () => {
   const { host, factor } = await makeClipEngine(false)
   const session = makeSession('clip-cl2')
   host.bindSession(session)
@@ -154,11 +190,10 @@ test('CL2 缺省关=组剪默认：clipOrder 空、旧 A+R 组离场 → 压缩�
   assert.equal(decision.plan.clipOrder.length, 0, '缺省关恒空集')
   assert.equal(decision.clipEnabled, false)
   assert.ok(factor.compactIfNeeded(session, 6000) !== null)
-  assert.equal(emittedTexts(session).length, 0, '新默认不产生 pointer/stub 文本')
   const dump = surfaceDump(session)
-  assert.ok(!dump.includes('BIG_BASH') && !dump.includes('BIG_READ'), '旧 A+R 组原文离场')
+  assert.ok(!dump.includes('HEAD-MARKER') && !dump.includes('FILEHEAD'), '旧 A+R 组原文离场')
   assert.ok(dump.includes('FOCUS CONTENT'), '焦点组保留')
-  assert.equal(devCount(session), 1, '旧 bash/read 两组相邻同文 → 事务内归并一枚压缩检查点（2.2.2 桩游程治理）')
+  assert.equal(devCount(session), 1, '旧 bash/read 两组相邻同文 → 事务内归并一枚中性检查点')
   assert.ok(!dump.includes(CLIP_MARK) && !dump.includes('省略'), '无夹剪结构线')
 })
 
@@ -177,18 +212,20 @@ test('CL3 族形锁：同文两模板——command 尾窗 640 深，read 头窗 
   assert.ok(!bash.includes('a'.repeat(300)), '尾重：头窗 154+尾窗前段 231 均串不满 300')
 })
 
-test('CL4 配对锁：夹剪 replace 保留 callId 且过 30 字符下限', async () => {
+test('CL4 整组离场锁：夹剪事务后 A/R 成对离场、无悬空 tool_call、零非 append tool/result', async () => {
   const { host, factor } = await makeClipEngine(true)
   const session = makeSession('clip-cl4')
   host.bindSession(session)
   buildOld(session, BIG_BASH, BIG_READ)
+  const rSeqs = [...originalRSeqs(session, BIG_BASH), ...originalRSeqs(session, BIG_READ)]
+  assert.equal(rSeqs.length, 2, '前置：两枚原 R 在日志')
   assert.ok(factor.compactIfNeeded(session, 6000) !== null)
-  const texts = emittedTexts(session)
-  assert.equal(texts.length, 2)
-  for (const t of texts) {
-    assert.ok(t.callId === 'cb' || t.callId === 'cr', 'callId 随文本一起换（配对不破）')
-    assert.ok(t.text.length >= 30, '§1.2 物理下限')
+  for (const seq of rSeqs) {
+    assert.ok(!(session.surface.nodes as readonly number[]).includes(seq as never), '原 R 已离场（整组带走）')
   }
+  assert.ok(!surfaceDump(session).includes('x'.repeat(4000)), '旧组中段原文不在 surface（检查点只留头尾预览）')
+  assert.equal(illegalToolReplaceCount(session), 0, '零非 append tool/result（宿主 load 判据）')
+  assert.ok(pairingBalanced(session), 'surface tool-pairing 平衡：无悬空 tool_call')
 })
 
 test('CL5 可逆锁：夹剪后原文逐字仍在 append-only 日志', async () => {
@@ -197,19 +234,10 @@ test('CL5 可逆锁：夹剪后原文逐字仍在 append-only 日志', async () 
   host.bindSession(session)
   buildOld(session, BIG_BASH, BIG_READ)
   assert.ok(factor.compactIfNeeded(session, 6000) !== null)
-  // 原 R 事件的 seq：surface 上被 replace 遮蔽，日志原文不动
-  let checked = 0
-  const events = sessionEvents(session) as unknown as Array<{ type: string; data?: Record<string, unknown> }>
-  for (let seq = 0; seq < events.length; seq++) {
-    const e = events[seq]!
-    if (e.type !== 'tool/result' || e.data?.message === undefined) continue
-    const raw = rawEventText(session, seq)
-    if (raw !== null && raw.text === BIG_BASH) {
-      checked++
-      assert.ok(raw.text.includes('x'.repeat(4000)), '中段逐字可取')
-    }
-  }
-  assert.ok(checked >= 1, '日志原文（append 原事件）必须仍在')
+  const seqs = originalRSeqs(session, BIG_BASH)
+  assert.ok(seqs.length >= 1, '日志原文（append 原事件）必须仍在')
+  const raw = rawEventText(session, seqs[0]!)
+  assert.ok(raw !== null && raw.text.includes('x'.repeat(4000)), '中段逐字可取')
 })
 
 test('CL6 净账锁：同目标 clip 取用枚数 ≥ shadow（净收益入账防名义达标）', async () => {
@@ -226,7 +254,6 @@ test('CL6 净账锁：同目标 clip 取用枚数 ≥ shadow（净收益入账�
   }
   // 每枚 size≈2000，净≈1040<2000 会全部回落——先验净账下限：用 BIG 两枚 + 目标略高于单枚净。
   const d1 = f1.decide(s1, 1)
-  const d2 = f2.decide(s2, 1)
   assert.equal(d1.plan.clipOrder.length, 0, '小文本全回落（CL7 面）')
   // 大文本对照组：目标=2×净+1 ⇒ clip 须取 3 枚，shadow 取 2 枚
   const g1 = makeSession('clip-cl6c'); h1.bindSession(g1)
@@ -249,7 +276,7 @@ test('CL6 净账锁：同目标 clip 取用枚数 ≥ shadow（净收益入账�
   assert.ok(e1.plan.pruneOrder.length > e2.plan.pruneOrder.length, 'clip 须多取一枚补净差（reserve 漏扣 ⇒ 此条红）')
 })
 
-test('CL7 小文本回落：净收益不足 ⇒ 归 shadow 最小桩', async () => {
+test('CL7 小文本回落：净收益不足 ⇒ 检查点用中性标记', async () => {
   const { host, factor } = await makeClipEngine(true)
   const session = makeSession('clip-cl7')
   host.bindSession(session)
@@ -257,8 +284,8 @@ test('CL7 小文本回落：净收益不足 ⇒ 归 shadow 最小桩', async () 
   const decision = factor.decide(session, 1)
   assert.equal(decision.plan.clipOrder.length, 0, '小文本不入 clip')
   assert.ok(factor.compactIfNeeded(session, 1) !== null)
-  for (const t of emittedTexts(session)) {
-    assert.ok(!t.text.startsWith(CLIP_MARK), '发射必为桩')
+  for (const t of checkpointTexts(session)) {
+    assert.ok(!t.startsWith(CLIP_MARK), '小文本检查点不带夹剪结构线')
   }
 })
 
@@ -277,24 +304,19 @@ test('CL9 逃生口锁：只认 ARGP_FACTOR_CLIP==="1"', () => {
   assert.equal(resolveClipEnabled({}), false)
 })
 
-/** 宿主 v4 fold 判据复刻（dsh-session-format-v3-to-v4: tool/result 且 surfaceOp !== append
- *  ⇒ requireTurn()，轮外抛 "tool/result is outside an open turn"、整档判 corrupt 拒载）。 */
-function illegalToolReplaceCount(session: Session): number {
-  return (sessionEvents(session) as unknown as Array<{ type: string; surfaceOp?: unknown }>)
-    .filter(e => e.type === 'tool/result' && e.surfaceOp !== undefined && e.surfaceOp !== 'append').length
-}
-
-test('CL10 轮间隙锁：无开放轮时夹剪臂整臂跳过，零非 append tool/result（存档可加载）', async () => {
+test('CL10 轮间隙锁：无开放轮时夹剪文本照常发射（user 检查点），全档零非 append tool/result', async () => {
   const { host, factor } = await makeClipEngine(true)
   const session = makeSession('clip-cl10')
   host.bindSession(session)
   // 手动 /compact 实测形态：compaction 落在轮间隙（compaction/start 的 data.turn === null）。
-  buildOld(session, BIG_BASH, BIG_READ, { openTurn: false })
+  buildOld(session, BIG_BASH, BIG_READ)
   assert.equal(detectOpenTurn(session), null, '前置：夹具确在轮间隙')
-  assert.equal(illegalToolReplaceCount(session), 0, '前置：起点无非法形态')
-  factor.compactIfNeeded(session, 6000) // 回落标准组剪路径，返回值不作断言
+  factor.compactIfNeeded(session, 6000)
   assert.equal(illegalToolReplaceCount(session), 0,
     '轮间隙禁止发射非 append tool/result —— 宿主 v4 fold 会整档判 corrupt（session-43df801e 案）')
-  const dump = surfaceDump(session)
-  assert.ok(!dump.includes('BIG_BASH') && !dump.includes('BIG_READ'), '回落标准组剪：旧组原文照常离场')
+  const clipped = checkpointTexts(session).filter(t => t.startsWith(CLIP_MARK))
+  assert.equal(clipped.length, 2, '根修后轮间隙也能保留夹剪信息轴（检查点文本变体）')
+  assert.equal(devCount(session), 0, '两枚夹剪检查点文本不同 ⇒ 不并条')
+  assert.ok(!surfaceDump(session).includes('x'.repeat(4000)), '旧组中段原文照常离场（检查点只留头尾预览）')
+  assert.ok(pairingBalanced(session), '整组离场后无悬空 tool_call')
 })

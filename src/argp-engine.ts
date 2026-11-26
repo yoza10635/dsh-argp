@@ -26,7 +26,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceede
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
-import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
+import { asSeq, canAppendSurfaceReplace, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
@@ -141,6 +141,20 @@ export function stripTrailingCitesIfNeeded(session: Session, event: { seq: numbe
   if (body === block.text) return // 无 cites 块，无需改写
   const newContent = content.slice()
   newContent[lastIdx] = { ...block, text: body }
+  // 2.2.2 根修（写侧落点守卫）：本 replace 是 assistant/message 形态，宿主 v4 fold 要求
+  // 落点在开放轮 + 开放 step 内且事件 data.turn/step 恰为当前坐标（requireStep）。调用点
+  // 经微任务延迟执行，理论上可能已跨越 step/turn 边界；非法时放弃本轮剥离——这是纯展示
+  // 净化，不能为它写坏存档（与 session-43df801e 案同类的"非 user replace"形态）。
+  const turn = (data as { turn?: unknown }).turn
+  const step = (data as { step?: unknown }).step
+  // 宿主替身/只读快照（strip-cites 纯文本单测用的 stub session 不暴露事件流）无法判定落点
+  // ⇒ 保持旧行为（继续剥离）；真实 Session 恒可判定，判定非法就跳过写回（不能为展示净化
+  // 写坏存档）。红线：真实调用点（微任务内、仍在开放轮 + step）必须照常剥离。
+  let legal = true
+  try {
+    legal = canAppendSurfaceReplace(session, 'assistant/message', { turn, step })
+  } catch { legal = true }
+  if (!legal) return
   session.append('assistant/message', {
     ...data,
     message: { ...(msg as object), content: newContent },

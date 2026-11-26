@@ -29,7 +29,7 @@ import assert from 'node:assert/strict'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { pruneIntervals, type PruneTxHost } from '../src/prune-tx.ts'
-import { sessionEvents } from '../src/log-access.ts'
+import { detectOpenTurn, sessionEvents } from '../src/log-access.ts'
 
 function makeHost(): PruneTxHost {
   return {
@@ -60,22 +60,23 @@ function appendUser(session: Session, turn: number, text: string): number {
   }), turn } as never, { surfaceOp: 'append' }).seq
 }
 
-function appendGroupV4(session: Session, turn: number, callId: string, resultText: string): number {
-  session.append('assistant/message', {
+function appendGroupV4(session: Session, turn: number, callId: string, resultText: string): { aSeq: number; rSeq: number; callId: string } {
+  const aSeq = session.append('assistant/message', {
     stream: [], turn, step: 1,
     message: createAssistantMessage({
       source: { provider: 'test', model: 'test' },
       content: [{ type: 'text', text: 'doing read' }, { type: 'tool-call', id: callId, name: 'read', arguments: '{}' } as never],
     }),
-  } as never, { surfaceOp: 'append' })
+  } as never, { surfaceOp: 'append' }).seq
   session.append('tool/call', { turn, callId, name: 'read', arguments: '{}' } as never)
-  return session.append('tool/result', {
+  const rSeq = session.append('tool/result', {
     turn, step: 1,
     message: {
       role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId,
       content: [{ type: 'text', text: resultText }], isError: false, id: 'm_' + callId,
     },
   } as never, { surfaceOp: 'append' }).seq
+  return { aSeq, rSeq, callId }
 }
 
 test('① 倒挂多区间事务：优先序喂入（尾…首）必须成功落盘，首尾极值按位置归正', () => {
@@ -96,29 +97,23 @@ test('① 倒挂多区间事务：优先序喂入（尾…首）必须成功落�
   }
 })
 
-test('② 倒挂 + tool 墓碑：排序必须与墓碑原子换位（配对=桩文/原 R/位点三者同轨）', () => {
-  const session = makeSession('tx-order-tool-desc')
-  session.append('turn/start', { turn: 1 } as never) // 2.2.2：tool 桩须落开放轮内（⑦同判据）
+test('② 倒挂 + 整组 user 检查点：排序必须与墓碑原子换位（检查点文本/位点同轨）', () => {
+  const session = makeSession('tx-order-group-desc')
   appendUser(session, 1, 'task')
-  const s1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
-  const s2 = appendGroupV4(session, 3, 'c2', 'R2 ' + 'B'.repeat(400))
-  const s3 = appendGroupV4(session, 4, 'c3', 'R3 ' + 'C'.repeat(400))
-  const desc = [s3, s2, s1]
-  const ids = ['c3', 'c2', 'c1']
-  const intervals = desc.map(seq => ({ seqs: [seq], chars: 400, atoms: [] }))
-  const tombstones = desc.map((seq, i) => ({
-    type: 'tool' as const, seq, callId: ids[i] as string, text: `STUB-${ids[i]}`,
-  }))
+  const g1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
+  const g2 = appendGroupV4(session, 3, 'c2', 'R2 ' + 'B'.repeat(400))
+  const g3 = appendGroupV4(session, 4, 'c3', 'R3 ' + 'C'.repeat(400))
+  const desc = [g3, g2, g1]
+  const intervals = desc.map(g => ({ seqs: [g.aSeq, g.rSeq], chars: 400, atoms: [] }))
+  const tombstones = desc.map(g => ({ type: 'user' as const, text: 'CHECK-' + g.callId }))
   const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
-  assert.notEqual(result, null, 'tool 墓碑形倒挂事务必须成功（拆配对会被宿主 sourceEventSeqs 校验拒 ⇒ null）')
-  // surface 序上桩文本必须 s1→s3 升序（replace 循环按排序后区间走），且每桩克隆自配对原 R（id=m_cX）
+  assert.notEqual(result, null, '倒挂优先序喂入不得撞守卫拒发（排序与墓碑必须原子换位）')
+  // surface 序上检查点文本必须 c1→c3 升序（replace 循环按排序后区间走）
   const events = sessionEvents(session)
   const surfTexts = [...session.surface.nodes].map(sq => JSON.stringify((events[sq as number] as { data?: unknown } | undefined)?.data ?? ''))
   const pos = (needle: string): number => surfTexts.findIndex(t => t.includes(needle))
-  const p1 = pos('STUB-c1'); const p2 = pos('STUB-c2'); const p3 = pos('STUB-c3')
-  assert.ok(p1 >= 0 && p1 < p2 && p2 < p3, `桩在 surface 上必须按 s1<s2<s3 位置排列（实际 ${p1},${p2},${p3}）`)
-  assert.ok(surfTexts[p1]?.includes('m_c1'), 'STUB-c1 必须克隆自 c1 的原 R（配对未被排序拆散）')
-  assert.ok(surfTexts[p3]?.includes('m_c3'), 'STUB-c3 必须克隆自 c3 的原 R')
+  const p1 = pos('CHECK-c1'); const p2 = pos('CHECK-c2'); const p3 = pos('CHECK-c3')
+  assert.ok(p1 >= 0 && p1 < p2 && p2 < p3, `检查点必须按 c1<c2<c3 位置排列（实际 ${p1},${p2},${p3}）`)
 })
 
 test('③ 已位置升序喂入（图臂常态形）：行为零变化（sort 稳定性锁）', () => {
@@ -209,44 +204,47 @@ test('⑤ 邻接门：同文被活体夹断不并；同文邻接对倒序喂入�
   assertShadowPriceContract(desc)
 })
 
-test('⑥ tool 结构桩豁免归并：邻接同文 tool 墓碑各剪各的（callId 配对语义不破）', () => {
-  const session = makeSession('tx-merge-tool')
-  session.append('turn/start', { turn: 1 } as never) // 2.2.2：tool 桩须落开放轮内（⑦同判据）
+test('⑥ 结构锁：tool/developer 形态墓碑整类废除（prune-tx 只发 user 检查点，事务前 fail-fast）', () => {
+  const session = makeSession('tx-non-user-guard')
   appendUser(session, 1, 'task')
-  const r1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
-  const r2 = appendGroupV4(session, 3, 'c2', 'R2 ' + 'B'.repeat(400))
-  const intervals = [{ seqs: [r1], chars: 400, atoms: [] }, { seqs: [r2], chars: 400, atoms: [] }]
-  const tombstones = [
-    { type: 'tool' as const, seq: r1, callId: 'c1', text: '同文豁免' },
-    { type: 'tool' as const, seq: r2, callId: 'c2', text: '同文豁免' },
-  ]
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
-  assert.notEqual(result, null)
-  assert.equal(pruneEvs(session).length, 2, 'tool 类型不参与归并（user 类型门）')
-  assert.equal(surfaceNeedleCount(session, '同文豁免'), 2)
-  assert.ok(surfaceNeedleCount(session, 'm_c1') === 1 && surfaceNeedleCount(session, 'm_c2') === 1,
-    '两条桩各自克隆原 R（callId/配对独立保留）')
-  assertShadowPriceContract(session)
+  const u = appendUser(session, 2, 'x'.repeat(300))
+  const intervals = [{ seqs: [u], chars: 300, atoms: [] }]
+  assert.throws(
+    () => pruneIntervals(
+      makeHost(), session, intervals, 0, 1, false,
+      [{ type: 'tool', seq: u, callId: 'c1', text: '毒桩' }] as never,
+      'factor-prune',
+    ),
+    /only emit user\/message checkpoints/,
+    '非 user 墓碑必须立即 throw（宿主 v4 fold 的毒形态结构性不可达）',
+  )
+  assert.equal(
+    sessionEvents(session).filter(e => e.type === 'compaction/start').length, 0,
+    'fail-fast 发生在事务开始前：不落 start，不留死括号',
+  )
 })
 
-test('⑦ 无开放轮防线（存档地雷锁）：轮间隙事务剔除 tool 桩区间，user 区间照常落盘', () => {
-  // 现场复刻：轮次间隙手动 /compact（turn/end 与下一 turn/start 之间）——非 append 的
-  // tool/result 出开放轮 ⇒ 宿主 v4 加载校验整档拒载（session-43df801e 6 枚实锤）。
-  const session = makeSession('tx-noturn-drop') // 无 turn/start：detectOpenTurn=null
+test('⑦ 轮间隙锁：无开放轮时 user 检查点事务照常落盘，全档零非 append tool/result', () => {
+  // 现场复刻：轮次间隙手动 /compact（compaction/start.data.turn === null）。旧实现会在
+  // 此处落非 append 的 tool/result（宿主 v4 fold requireTurn ⇒ 整档 corrupt）；根修后
+  // surface replace 只发 user 检查点，与轮状态无关，事务可安全落盘。
+  const session = makeSession('tx-gap-user') // 无 turn/start：detectOpenTurn=null
   appendUser(session, 1, 'task')
-  const r1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
-  const u2 = appendUser(session, 3, 'u2:' + 'B'.repeat(300))
-  const intervals = [{ seqs: [r1], chars: 400, atoms: [] }, { seqs: [u2], chars: 300, atoms: [] }]
+  const u1 = appendUser(session, 2, 'old ' + 'A'.repeat(400))
+  const u2 = appendUser(session, 3, 'tail ' + 'B'.repeat(300))
+  const intervals = [{ seqs: [u1], chars: 400, atoms: [] }, { seqs: [u2], chars: 300, atoms: [] }]
   const tombstones = [
-    { type: 'tool' as const, seq: r1, callId: 'c1', text: '间隙 tool 桩' },
-    { type: 'user' as const, text: '间隙 user 桩' },
+    { type: 'user' as const, text: '间隙检查点A' },
+    { type: 'user' as const, text: '间隙检查点B' },
   ]
   const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
-  assert.notEqual(result, null, 'user 区间不受防线影响，事务照常落盘')
-  assert.equal(pruneEvs(session).length, 1, '仅 user 区间成对发射（tool 区间预检剔除）')
-  assert.equal(surfaceNeedleCount(session, '间隙 tool 桩'), 0, 'tool 桩不落面')
-  assert.equal(surfaceNeedleCount(session, 'R1 '), 1, '原 R 保留活体（NP10 漏剪同方向）')
-  assert.equal(surfaceNeedleCount(session, '间隙 user 桩'), 1)
+  assert.equal(detectOpenTurn(session), null, '前置：事务确在轮间隙')
+  assert.notEqual(result, null, 'user 检查点不受轮约束，事务照常落盘')
+  assert.equal(pruneEvs(session).length, 2)
+  assert.equal(surfaceNeedleCount(session, '间隙检查点A'), 1)
+  assert.equal(surfaceNeedleCount(session, '间隙检查点B'), 1)
+  assert.equal(surfaceNeedleCount(session, 'old '), 0)
+  assert.equal(surfaceNeedleCount(session, 'tail '), 0)
   assert.ok(!sessionEvents(session).some(e => e.type === 'tool/result' && (e as { surfaceOp?: unknown }).surfaceOp !== 'append'),
     '整档不得存在非 append tool/result（加载校验毒形态结构性缺席）')
   assertShadowPriceContract(session)

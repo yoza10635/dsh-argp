@@ -514,6 +514,27 @@ function readSession(filePath, root) {
     })
   }
   session.decompressedBytes = Buffer.byteLength(text, 'utf8')
+  // 宿主契约复查：首帧必须恰好一行 header（assertZstdHeaderFrame）。违反时宿主
+  // list() 会静默摘除会话（不报错、像"没注册"），是比 fold 违规更隐蔽的故障。
+  if (zstdDecompressSync !== null && split.frames.length > 0) {
+    try {
+      const first = split.frames[0]
+      const head = zstdDecompressSync(buffer.subarray(first.start, first.end)).toString('utf8')
+      const body = head.endsWith('\n') ? head.slice(0, -1) : head
+      if (body.length === 0 || body.includes('\n')) {
+        session.violations.push({
+          kind: V.FRAME_CORRUPT,
+          seq: null,
+          type: null,
+          detail:
+            '首帧不是恰好一行 header（宿主 assertZstdHeaderFrame 拒载；list() 会静默摘除会话）——' +
+            '--fix 重写时须把 header 行单独装帧',
+        })
+      }
+    } catch {
+      /* 首帧解压失败已由 decompressFrames 的 errors 报告 */
+    }
+  }
   const lines = text.split('\n').filter((line) => line.length > 0)
   if (lines.length === 0) {
     session.violations.push({
@@ -1294,10 +1315,17 @@ function encodeZstdMultiFrame(text) {
     throw new FixProblem('当前 Node 没有 zlib.zstdCompressSync（需要 Node >= 22.15），无法重写存档', 2)
   }
   const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n')
-  const chunks = []
-  for (let index = 0; index < lines.length; index += FIX_WRITE_BATCH_LINES) {
+  if (lines.length === 0) return Buffer.alloc(0)
+  // 宿主契约（dsh-session-persistence-jsonl 的 assertZstdHeaderFrame）：
+  // 首帧必须**恰好只有一行 header**——多混一行都会让 list() 静默摘除会话（"没注册"故障）；
+  // 事件行才按批装帧。帧一律带 checksumFlag，对齐宿主写入侧的 CHECKSUM_OPTIONS。
+  const checksumFlag = nodeZlib.constants?.ZSTD_c_checksumFlag
+  const frameOptions =
+    typeof checksumFlag === 'number' ? { params: { [checksumFlag]: 1 } } : undefined
+  const chunks = [zstdCompressSync(Buffer.from(lines[0] + '\n', 'utf8'), frameOptions)]
+  for (let index = 1; index < lines.length; index += FIX_WRITE_BATCH_LINES) {
     const batch = lines.slice(index, index + FIX_WRITE_BATCH_LINES).join('\n') + '\n'
-    chunks.push(zstdCompressSync(Buffer.from(batch, 'utf8')))
+    chunks.push(zstdCompressSync(Buffer.from(batch, 'utf8'), frameOptions))
   }
   return Buffer.concat(chunks)
 }

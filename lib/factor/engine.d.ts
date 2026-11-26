@@ -294,6 +294,16 @@ export declare class FactorEngine {
     /**
      * 压力剪一笔：决策 → 协议组（A+R 整组 + K pack）/ R-only 空桩 → prune-tx 成对发射。
      * 目标不达不放宽；组剪收益按区间实际 chars 复核。
+     *
+     * **2.2.2 根修（2026-11-26 session-43df801e 存档加载失败案）：本引擎不再发射任何
+     * 非 append 的 tool/result。** 旧 C10 夹剪臂以「R-only tool/result replace 改写
+     * inner text 保 callId 配对」发射，宿主 v4 fold 对该形态执行 requireTurn()，而压缩
+     * 事务可落在轮间隙（手动 /compact 走宿主 idle maintenance，实证
+     * compaction/start.data.turn === null）⇒ 无合法表达、写入侧不拦、下次加载整档
+     * corrupt 拒载。根修把夹剪从「改写 R 节点」改为「组剪检查点的文本变体」：
+     * 同一整组区间照常以 user/message 检查点离场（user replace 不受轮约束），
+     * 检查点文本携带该组 R 的头尾预览（clip-shape 模板）而不是中性标记。
+     * 因此 C10 的信息轴（信息悬崖 vs 头尾留真）保留，且发射形态与压缩时点无关。
      */
     compactIfNeeded(session: Session, targetReleaseChars: number, opts?: {
         windowEffTokens?: number;
@@ -320,24 +330,23 @@ export declare class FactorEngine {
      */
     dedupeReinjected(session: Session): CompactionResult | null;
     /**
-     * C10 夹剪臂（ARGP_FACTOR_CLIP=1）的旧语义：R-only 夹剪/最小桩 + A 仅 forced 时 user 墓碑。
-     * 与 2026-11-13 的 A+R 组剪互斥（组剪是新默认；夹剪是显式对照世界，A/B 需要字节可复现）。
+     * 组剪检查点文本（2.2.2 根修后 C10 夹剪层的唯一合法落点）：把一个整组区间压缩成
+     * **单条 user/message 检查点**（user replace 不受轮/步约束，压缩事务可安全落在轮间隙），
+     * 文本三态由组内成员决定：
+     *  - 夹剪（clip 开 ∧ 组内有 clipOrder 成员 ∧ 原始 R 文本可读）⇒ 头尾预览文本；
+     *  - 交互组 ⇒ 专段带 tool: 即时指针（P7 带 + ZT7/ZT10）；
+     *  - 其余 ⇒ 零指针中性标记。
+     *
+     * 旧夹剪臂直接 replace 原 R 节点本体（tool/result replace）——宿主 v4 fold 的
+     * `requireTurn()` 让它在轮间隙无合法表达（session-43df801e 存档加载失败案）；
+     * 根修把「信息保留」从节点形态挪到检查点文本，且组剪决策面与 clip 关闭时相同，
+     * A/B 变量只剩「检查点是否携带头尾预览」。多 R 组取最大一枚的预览（预算有界）。
      */
-    private compactClipArm;
-    /**
-     * 三态替换文本（C10）：归位 ∈ clipOrder 的成员走夹剪模板（原文经 rawEventText
-     * 取回——**只读 append-only 日志**，不改日志本体）；模板拒绝（小文本）或原文
-     * 缺失 ⇒ 回落最小桩。clip 关闭时逐字节等于现行为（stubText）。
-     */
-    private replacementText;
-    /** 最小桩（§1.2 ~30 字符物理下限；禁引退役工具名）。前缀 STUB_PREFIX 是
-     *  tagRsFromLog 的桩排除判据（夹剪文本同带此前缀，同受排除）——单点引用，改文案不得动前缀。 */
-    private stubText;
-    /** 实体标签选择序：document → command → errorcode → scope → **tool**（stubText 与 clip
+    private groupCheckpointText;
+    /** 实体标签选择序：document → command → errorcode → scope → **tool**（夹剪检查点
      *  首行共用）。scope 也是词表键（factor-ledger.indexKeys）；漏掉会让只有目录的 grep R
      *  被标 "无实体标签"，而模型其实可以 recall_history(scope:…)。
-     *  tool 尾位（2026-11-16 design-tool-facet §1）：受益面只有 clip 对照臂（stubText 唯一
-     *  调用链 compactClipArm→replacementText，P0-1 亲验），非空门槛同 indexKeys。 */
+     *  tool 尾位（2026-11-16 design-tool-facet §1）：非空门槛同 indexKeys。 */
     private stubKey;
     /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;

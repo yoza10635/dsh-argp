@@ -65,6 +65,26 @@ export declare function eventTextOf(event: SessionEvent): string;
  * 绝不允许把「号读不出」误折叠成 null=「无开放轮」而放行 open 区驱逐。
  */
 export declare function detectOpenTurn(session: Session): number | null;
+/** 当前开放 step 的步号（无开放 step ⇒ null；turn/end、step/end、turn/start 均截断）。 */
+export declare function detectOpenStep(session: Session): number | null;
+/**
+ * 宿主 v4 fold 的**落点合法性**（写入侧 fail-fast，2.2.2 根修的结构性防线）。
+ *
+ * 加载侧 `dsh-session-format-v3-to-v4` 对 surface replace 的判据（本函数逐条复刻）：
+ *  - `user/message`：无轮/步约束（唯一任何时点都合法的 surface 写回形态）；
+ *  - `tool/result`：必须处于开放轮内（`requireTurn`，否则整档判 corrupt 拒载）；
+ *  - `system/message` / `developer/message` / `assistant/message`：必须处于开放轮 + 开放 step
+ *    且事件自带的 `data.turn` / `data.step` 恰为当前坐标（`requireStep`）。
+ *
+ * 与"计划时判轮"不同，本函数在 **append 前一刻**读日志尾状态 = 事件真实落点，故不会出现
+ * 「计划时有轮、落点无轮」的分叉（session-43df801e 案根因）。ARGP 的正式约束更强：
+ * 压缩只在 user 检查点上发射 replace（见 prune-tx 头注释）；本函数用于给残余的
+ * assistant replace（cites 剥离）等写回点兜底，非法时调用方跳过写回而不是污染存档。
+ */
+export declare function canAppendSurfaceReplace(session: Session, type: 'user/message' | 'tool/result' | 'system/message' | 'developer/message' | 'assistant/message', data?: {
+    turn?: unknown;
+    step?: unknown;
+}): boolean;
 /**
  * `SessionSeq` 品牌收窄（dsh 0.1.5 起 `SessionSeq = BrandedNumber<'SessionSeq'>`）。
  *

@@ -480,7 +480,7 @@ export class ProseCondenser {
     // 不走指针；partial 散点原样保留，避免产生任何 seq 指针墓碑）。
     const atomsBySeq = new Map<number, Atom>(atoms.map(a => [a.seq, a]))
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
-    const tombstones: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string })[] = []
+    const tombstones: { type: 'user'; text: string }[] = []
     const spanAtoms = plan.spanSeqs.map(s => atomsBySeq.get(s)).filter((a): a is Atom => a !== undefined)
     const spanChars = plan.spanSeqs.reduce((sum, s) => sum + (atomsBySeq.get(s)?.text.length ?? 0), 0)
     intervals.push({ seqs: [...plan.spanSeqs], chars: spanChars, atoms: spanAtoms })
