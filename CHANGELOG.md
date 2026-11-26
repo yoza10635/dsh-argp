@@ -6,6 +6,28 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [2.2.1] - 2026-11-26（stable 直发：分派判据规则A + A1 焦点名额；行为调优班车，无新增配置面）
+
+### Changed
+- **分派判据②③由「释放量预测」改「存在性判据」（规则A）**：旧口径问「total 散文补不补得上缺口」，新口径问 **aged（整轮 span 实际可驱逐口径）≥ 开单地板 max(1536, 5%·W_eff)**。扫荡式 span 整吞下 total 远超 aged（T36 aged 38K 实吞 115K），缺口口径把 T42 型负载推成浅剪连发；反事实回放合形 ~32% vs 浅剪连发 ~15.4%。判据①缺口地板与④transcript（total 口径）不动。
+- **决策序 3.5 新增份额闸**：工具面（toolCallA+rPair）/C ≥ θ(0.5) ⇒ 仅剪。θ 固化不进设置；工具面饥饿由序 3 前提 F>R 结构保证；纯工具稳态循环归观察哨。
+- **A1 焦点名额**：非升级态焦点保护从「整轮」归一为**名额制**——名额 = `min(20, ⌊0.3·W_eff·3.5 ÷ 组均字节⌋)`，下限 1，窗未知回退 20（字节兼容）。planFocusTail 产出降级带候选（barrier/附件组豁免不占名额、open 区不入带）；decide **事实门**裁决：全组 defined R 均 superseded（同文件后续成功读覆盖原范围）才判死，整组 A+R 同进退；发射端仅对降级组放宽 turn/位置两道位置门，missing/live R/附件/连续性事实门一律不放宽。升级态（焦点占比 ≥50% ∧ 组 >10）cap=10 原语义字节不变。decide/compactIfNeeded 增可选 windowEffTokens 管道，仅 dispatch 两调用点透传，manual/legacy 逃生口不传。
+- **三桶合并扫描（包一a）**：scanProseBuckets 一次遍历产出同域三桶 aged/fresh/total（total=旧 proseStats 口径字节不变，proseStats 合并退役）；planProseEviction 增 spanProseChars 与 evictedProseChars 分账；压缩快照新增可选字段 condensableProseAgedTokens / toolFaceTokens（缺省值 ⇒ 旧快照字节不变、份额闸恒不触发）。
+- **[argp-quota] 影子列**：quota 记录（t/mode/quotaUsed/quotaBandGroups/demotedGroups/evictedGroups/evictedChars）随 `ARGP_FACTOR_DISPATCH_LOG` 通道与 dispatch 决策同文件落盘——观察哨「降级档驱逐组数」信号走活路径。
+
+### Fixed
+- **§F churn 清账只看浓缩实果**：summarize 分支改为仅 `proseResult !== null` 时清账——断供轮（barrier 散点不发射/浓缩异常）surface 未重建却每轮抹账，g2 型浅剪连发复活；新增跨断供轮抑制复现（修复前红/修复后绿）。
+- **「宿主全局预剪」归因勘误（基线非缺陷）**：接管下宿主自主预剪已被 preset 摘除，唯一活调用方 = nativePruneToolResults 随事务发生；NP10a/c 按宿主拒收语义（open-turn 外 tool/result replace 被格式校验拒绝、真实 pruner fail-fast）钉死老轮超限 R 漏剪基线。
+
+### Docs
+- 双语 README 已知限制：**D-2 W_min 建议线**（建议窗 ≥64K，不含附件面与超大粘贴；barrier 为唯一无机制可释放项不计入；F 硬面标近似）。
+- ARCHITECTURE §2 焦点保护形态归一节（planFocusTail 两态与事实门）、§7.5 事务预剪节。
+
+### 提示
+- **口径裁定**：32K 场景不做适配，64K≈W_min 即极限场景——focus-32k（58K 固定面+32K 窗）的钳制风暴是建议线的实证，不记回归。
+- 测试：全量 386 例（384 通过、2 跳过）；名额 FT7–FT12 六锁 + 四变异验红（摘事实门→FT8、摘透传→FT7、摘豁免→FT11、摘排除→FT12）。
+- 门禁实测（2.2.1 构建）：46 轮头条负载 46/46 完赛 0 死轮、**96.14% 命中 / 44.6 min / 4.41 元**（vs 2.2.0 账 96.5%/40.8min/4.18：−0.34pp 为事务轮税加深与非事务 +2pp 的结构性对冲，总 miss 反降 ~20K；峰值 246K→151K、尾部 miss −176.5K）；三域台架 g13 形态全对（focus-64k 76/76、0 死、6 笔）；T0 隐藏套件 cand **19/20**（单红=历史同条 plugin_error_isolated）、native 臂 17/20；名额实料离线回放 9 笔事务零驱逐（T−1 剪 27 组、事实门 0/27——超带缘组全是活读被锁，设计行为）；长程记忆补充召回轮首基线：逐字 0/7 为材料散文结构性出带（扫荡合入无逐字转写带、散文带固定最旧 ~110.8K 字符不可翻页），诚实轴 7/7 C 如实、零编造锚点。
+
 ## [2.2.0] - 2026-11-26（stable 直发：压缩分派接管 + 摘要缓存形 + 出口闸缺省开；preset 快照对齐宿主 0.2.3-alpha.2）
 
 ### Added
