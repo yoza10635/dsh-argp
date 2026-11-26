@@ -5,7 +5,8 @@
  *   L3 焦点重绑不重放账目（rebuiltCompactionIds 不得清）；
  *   L4 事务后锚点不被日志里的旧 usage 复活（焦点切回不得重剪）；
  *   L5 measureTokens 计入锚点事件本身（assistant 消息属于下一请求）；
- *   L6 skipPresets 在 pre-step 三通道之前生效（minimal 下不得改写 surface）。
+ *   L6 skipPresets 在 pre-step 三通道之前生效（minimal 下不得改写 surface）；
+ *   L7 冷恢复声明窗→会话桶播种（16,384 默认种子不得伪装已解析值）。
  *
  * 变异台账（摘修复必须变红，已逐条 cp 快照验证）：
  *   LL1 删 turn/start 归零分支 ⇒ L1 红；
@@ -13,7 +14,9 @@
  *   LL3 bindSession 恢复 clear() ⇒ L3 红；
  *   LL4 删 restoreUsageAnchor 的"桶已有锚点即早退" ⇒ L4 红；
  *   LL5 budget 的增量比较改回 `>` ⇒ L5 红；
- *   LL6 删 pre-step 的 skipIfPreset 早退 ⇒ L6 红。
+ *   LL6 删 pre-step 的 skipIfPreset 早退 ⇒ L6 红；
+ *   LL7 摘 seedBucketFromDeclared 两处调用 ⇒ L7 红（散文扫描 cap 退回 16K 种子，
+ *       补召轮素材页永不进检索带——2026-11-26 定点回放实锤）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -27,6 +30,7 @@ import { asSeq, asSeqs, scanShadowedSeqs, sessionEvents } from '../src/log-acces
 import { createSessionRuntimeState } from '../src/session-state.ts'
 import { shadowedSeqsOf } from '../src/recall.ts'
 import { ArgpEngine } from '../src/argp-engine.ts'
+import { DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from '../src/constants.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { hasAttachmentBlocks } from '../src/factor/factor-atoms.ts'
 import type { SessionRuntimeState } from '../src/session-state.ts'
@@ -287,4 +291,27 @@ test('L10 冷 resume 首召回：进程内账本为空时必须先从日志重�
     name: 'recall_history', callId: 'q1', agentSession: session, args: { labels: ['document:c:/proj/a.ts'] },
   }))
   assert.ok(hit.includes('RESUME-VISIBLE CONTENT'), 'recall_history 冷 resume 必须取回原文')
+})
+
+test('L7 冷恢复声明窗→桶播种：出口闸关+零解析进程里 16,384 种子不得伪装已解析值', async () => {
+  // 非显式窗世界（补召 arm 同构）：日志带 request/context 262144。
+  const ctx = new Context()
+  await mountAgentLoopTestDependencies(ctx, { systemPrompt: { personaPrefix: 'seed persona' } })
+  await ctx.plugin(ArgpEngine, { engine: 'factor' } as never)
+  const internals = ctx.compaction as unknown as Internals
+  const declared = makeSession('lock-seed-declared')
+  declared.append('request/context', { contextWindow: 262144 } as never)
+  internals.bindSession(declared)
+  assert.equal(internals.stateOf(declared).resolvedWindowTokens, Math.floor(262144 * DEFAULT_WINDOW_RATIO),
+    'bindSession 即播种 0.8×声明窗（LL7：摘播种则停在 16,384，散文 cap 缩 1/16）')
+  // 日志无声明窗 ⇒ 种子不动（宁缺勿错，不凭空造窗）。
+  const bare = makeSession('lock-seed-bare')
+  internals.bindSession(bare)
+  assert.equal(internals.stateOf(bare).resolvedWindowTokens, DEFAULT_WINDOW_TOKENS)
+  // 显式窗配置 ⇒ 播种让位显式值（显式值由首次 resolve 落桶，restore 不抢权）。
+  const { internals: ex } = await boot()
+  const exp = makeSession('lock-seed-explicit')
+  exp.append('request/context', { contextWindow: 262144 } as never)
+  ex.bindSession(exp)
+  assert.equal(ex.stateOf(exp).resolvedWindowTokens, DEFAULT_WINDOW_TOKENS, '显式窗世界不播种')
 })

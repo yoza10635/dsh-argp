@@ -33,7 +33,7 @@ export { eventText } from './log-access.js'
 // 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
 import type { Atom, ArgpUserSettings } from './argp-types.js'
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js'
-import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_FOCAL_TURNS, DEFAULT_RETAIN_RATIO, DEFAULT_VOCAB_TOP_N, DEFAULT_WINDOW_RATIO } from './constants.js'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_FOCAL_TURNS, DEFAULT_RETAIN_RATIO, DEFAULT_VOCAB_TOP_N, DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
 export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
@@ -664,7 +664,11 @@ export class ArgpEngine extends CompactionEngine {
    * （WeakMap 已有值即早退；活事件更新不受影响）。
    */
   private restoreDeclaredWindow(session: Session): void {
-    if ((this.declaredContextWindows.get(session) ?? 0) > 0) return
+    const cached = this.declaredContextWindows.get(session) ?? 0
+    if (cached > 0) {
+      this.seedBucketFromDeclared(session, cached)
+      return
+    }
     try {
       const events = sessionEvents(session)
       for (let i = events.length - 1; i >= 0; i -= 1) {
@@ -673,6 +677,7 @@ export class ArgpEngine extends CompactionEngine {
         const declared = (event.data as { contextWindow?: unknown } | undefined)?.contextWindow
         if (typeof declared === 'number' && declared > 0) {
           this.declaredContextWindows.set(session, declared)
+          this.seedBucketFromDeclared(session, declared)
           this.log.info('[argp-engine] declared contextWindow restored from log: ' + declared)
           return
         }
@@ -680,6 +685,25 @@ export class ArgpEngine extends CompactionEngine {
     } catch {
       // 日志不可读：保持未知，宁缺勿错交给 400 兜底网（与 resolveScaledBudgets 同纪律）。
     }
+  }
+
+  /**
+   * 声明窗→会话桶播种（定点回放实锤 2026-11-26）：出口闸关且本进程无压力事务时
+   * `resolveScaledBudgets` 零执行，`stateOf(session).resolvedWindowTokens` 保持初始种子
+   * `DEFAULT_WINDOW_TOKENS=16,384` 并伪装成已解析值——派生读数（如散文扫描 cap
+   * = window × charsPerToken × 2.7）缩到声明窗的 1/16，262K 窗补召轮的素材页全程
+   * 不进检索带（46 轮 campaign 补充召回 0/7 根因，cap 实测 110,861 与 16K 种子
+   * 算术逐位吻合）。播种只覆盖"从未被解析触碰"的默认种子；首次真解析（含
+   * observedCap）由 resolveScaledBudgets 的桶写入自然覆盖。显式窗配置以显式值为
+   * 准，不播种。
+   */
+  private seedBucketFromDeclared(session: Session, declared: number): void {
+    if (this.explicitWindowTokens) return
+    const st = this.stateOf(session)
+    if (st.resolvedWindowTokens !== DEFAULT_WINDOW_TOKENS) return
+    const observed = this.observedContextWindow(session)
+    const effective = observed !== undefined && observed > 0 && observed < declared ? observed : declared
+    st.resolvedWindowTokens = Math.floor(effective * this.windowRatio)
   }
 
   /**

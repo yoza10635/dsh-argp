@@ -6,6 +6,13 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [Unreleased]
+
+### Fixed
+- **补召轮 0/7 根因：冷恢复「窗口初值伪装已解析值」**。`session-state` 桶的 `resolvedWindowTokens` 初值 = `DEFAULT_WINDOW_TOKENS`(16,384)，只有 `resolveScaledBudgets` 跑过才会被真实声明窗覆盖；而出口闸关闭、本进程无压力事务的低压力轮（headless resume 每轮新进程）**全程零次解析**，散文检索面 cap = `window × charsPerToken × 2.7` 便按 16K 种子算——262K 声明窗会话实测 cap=110,861，与事故指纹逐位吻合，素材页整程不进检索带。修：`restoreDeclaredWindow` 回填声明窗的同时向会话桶播种 `min(声明窗, observedCap) × windowRatio`（显式窗配置让位、首次真解析自然覆盖）。锁 L7 三态 + 变异账 LL7。
+- **检索不可翻页：`search_history` 新增 `offset` 续读游标**。旧行为散文带「cap 触线即 break」且页脚只说 retry/refine——重试恒从最旧重扫，更新内容永远出不了界；`hit=` 二跳对超长原文只回头部切片、"retry next turn" 是空承诺。修：扫描侧改**事件对齐选择窗** `[offset, offset+cap)`（首事件超 cap 照收防分页死锁），二跳侧按 offset 切读取窗；两处页脚如实给 `offset=<next>` 续翻指针与总面读数，越界如实报而非返回空文本。锁 SH15/SH16。
+- 定点回放（`spike/08-recall-cap-replay.ts`，真存档→真 Session→真工具面，金值只在进程内比对）：修复前 0/7、修复后 **7/7**；全量套件 390 例（388 通过、2 跳过）。
+
 ## [2.2.1] - 2026-11-26（stable 直发：分派判据规则A + A1 焦点名额；行为调优班车，无新增配置面）
 
 ### Changed

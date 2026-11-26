@@ -240,3 +240,38 @@ test('SH14 聚集命中退化为单 fragment + ×N：命中挤一簇不硬塞第
   assert.ok(out.includes('· ×3'), '三次命中如实报 ×3')
   assert.ok(!out.includes('⊕'), '命中聚一簇→单窗（重叠锚点跳过，不重复同段）')
 })
+
+test('SH15 hit= offset 续读：首页页脚给续读位，offset 读后页，越界如实报（旧"retry next turn"空承诺退役）', async () => {
+  const { ctx, session } = await bootSearch()
+  appendUser(session, 'kw-OFF start ' + 'x'.repeat(6000) + ' kw-OFF end')
+  const out = toolText(await execTool(ctx, { name: 'search_history', callId: 'o1', agentSession: session, args: { keyword: 'kw-OFF' } }))
+  const seq = seqsOf(out)[0]!
+  const p1 = toolText(await execTool(ctx, { name: 'search_history', callId: 'o2', agentSession: session, args: { hit: seq } }))
+  assert.ok(p1.includes('kw-OFF start') && !p1.includes('kw-OFF end'), '首页只装得下头部')
+  const m = p1.match(/showed chars 0–(\d+) of (\d+) \(budget cap\) — continue with hit=\d+ offset=\1/)
+  assert.ok(m, '页脚如实报窗口 [0–room)、总长、续读位')
+  const room = Number(m![1])
+  const p2 = toolText(await execTool(ctx, { name: 'search_history', callId: 'o3', agentSession: session, args: { hit: seq, offset: room } }))
+  assert.ok(p2.includes('offset=' + room), '头行回显当前 offset')
+  assert.ok(!p2.includes('kw-OFF start'), '续页已越过首页内容')
+  assert.ok(p2.match(/offset=\d+\n/)!, 'offset 后正文紧接换行')
+  const past = toolText(await execTool(ctx, { name: 'search_history', callId: 'o4', agentSession: session, args: { hit: seq, offset: 999999 } }))
+  assert.ok(past.includes('past the end'), '越界 offset 如实报，不返回空文本冒充读完')
+})
+
+test('SH16 keyword offset 扫描翻页：页脚 next 指针续翻到后页命中，hit= 地址随后页重建（补召素材页正路）', async () => {
+  const { ctx, session } = await bootFixture({ proseScanCapChars: 260 })
+  appendUser(session, 'kw-PG 第一段 ' + 'a'.repeat(90))
+  appendUser(session, 'kw-PG 第二段 ' + 'b'.repeat(90))
+  appendUser(session, 'kw-PG 第三段 关键料 kw-PG')
+  const p1 = toolText(await execTool(ctx, { name: 'search_history', callId: 'pg1', agentSession: session, args: { keyword: 'kw-PG' } }))
+  assert.ok(p1.includes('第一段') && !p1.includes('第三段'), '首页只装最旧窗')
+  const m = p1.match(/offset=(\d+)/)!
+  const p2 = toolText(await execTool(ctx, { name: 'search_history', callId: 'pg2', agentSession: session, args: { keyword: 'kw-PG', offset: Number(m[1]) } }))
+  assert.ok(p2.includes('第三段'), 'offset 续翻必达后页素材（旧世界此处永远出界）')
+  assert.ok(p2.includes('end of prose surface'), '末页如实报无后续页')
+  const seq2 = seqsOf(p2)
+  assert.ok(seq2.length > 0, '后页行带 hit= 地址')
+  const fetched = toolText(await execTool(ctx, { name: 'search_history', callId: 'pg3', agentSession: session, args: { hit: seq2[0] } }))
+  assert.ok(fetched.includes('关键料 kw-PG'), '后页地址二跳逐字回取打通')
+})

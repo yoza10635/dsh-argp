@@ -122,34 +122,52 @@ export interface ProseScanResult {
   hits: ProseHit[]
   /** 实际扫描的投影字符数（cap 计数基准=投影原始 chars，非 lower 后，P8★）。 */
   scannedChars: number
-  /** cap 触发截断=true：更旧扫描序内还有未扫内容，装配层必须 footer 显式。 */
+  /** cap 触发截断=true：扫描序更远处还有未扫内容，装配层必须 footer 显式。 */
   truncated: boolean
   /** cap=0 ⇒ 带关闭（与 truncated 区分：关闭无「未扫」告警义务）。 */
   disabled: boolean
+  /** 本页选择窗起点（=生效后的 offsetChars，装配层回显/续翻指针用）。 */
+  scanOffset: number
+  /** 全部候选散文投影字符数（截断 break 后如实补全，装配层页脚 total 读数用）。 */
+  totalChars: number
 }
 
 /**
  * 散文带扫描（events=sessionEvents 全量数组，needle=已小写化 needle）。
  * 从旧到新逐候选：投影 → 计数入 cap → 小写化找 hits/first；cap 触线即停。
+ *
+ * `offsetChars`（定点回放实锤 2026-11-26：旧世界 cap 触线 break 把"更新的内容"整段
+ * 判出界，页脚 retry 提示是空承诺）：选择窗 = 散文字符流 `[offsetChars,
+ * offsetChars+capChars)`，**事件对齐**——事件整体在窗前跳过、整事件越窗尾则止
+ * （预览偏移始终相对全文，无跨页切文本的位置漂移）。cap 语义从"扫描止损"变为
+ * "单页选择面"；全日志投影仍是一次遍历，成本与旧行为同阶。窗口首个事件超过 cap
+ * 时照收（否则单事件永远选不进=分页死锁，行预览宽度自有上限）。
  */
-export function scanProseHits(events: readonly ProseEventLike[], needle: string, capChars: number): ProseScanResult {
-  if (capChars <= 0) return { hits: [], scannedChars: 0, truncated: false, disabled: true }
+export function scanProseHits(events: readonly ProseEventLike[], needle: string, capChars: number, offsetChars = 0): ProseScanResult {
+  const off = Number.isFinite(offsetChars) && offsetChars > 0 ? Math.trunc(offsetChars) : 0
+  if (capChars <= 0) return { hits: [], scannedChars: 0, truncated: false, disabled: true, scanOffset: off, totalChars: 0 }
   const out: ProseHit[] = []
   let scanned = 0
+  let total = 0
   let truncated = false
+  // counting=true：truncated 后转纯计数模式补全 totalChars（页脚 total/续翻指针的
+  // 分母必须如实），不再匹配、不再入窗。
+  let counting = false
   for (let seq = 1; seq < events.length; seq += 1) {
     const ev = events[seq]
     if (ev === undefined || !isProseCandidate(ev)) continue
     const text = proseTextOf(ev)
     if (text === null || text === '') continue
-    if (scanned + text.length > capChars) {
-      truncated = true
-      break
-    }
+    const start = total
+    total += text.length
+    if (counting) continue
+    if (start + text.length <= off) continue // 整体在窗前：前页已读
+    if (start >= off + capChars) { truncated = true; counting = true; continue } // 窗已装满：本事件起留待下页
+    if (start > off && scanned > 0 && scanned + text.length > capChars) { truncated = true; counting = true; continue } // 越窗尾：整事件下页
     scanned += text.length
     const h = collectHits(text, needle)
     if (h.count === 0) continue
     out.push({ seq, hits: h.count, first: h.positions[0] as number, positions: h.positions, chars: text.length })
   }
-  return { hits: out, scannedChars: scanned, truncated, disabled: false }
+  return { hits: out, scannedChars: scanned, truncated, disabled: false, scanOffset: off, totalChars: total }
 }

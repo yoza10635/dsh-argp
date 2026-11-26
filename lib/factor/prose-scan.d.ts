@@ -45,14 +45,25 @@ export interface ProseScanResult {
     hits: ProseHit[];
     /** 实际扫描的投影字符数（cap 计数基准=投影原始 chars，非 lower 后，P8★）。 */
     scannedChars: number;
-    /** cap 触发截断=true：更旧扫描序内还有未扫内容，装配层必须 footer 显式。 */
+    /** cap 触发截断=true：扫描序更远处还有未扫内容，装配层必须 footer 显式。 */
     truncated: boolean;
     /** cap=0 ⇒ 带关闭（与 truncated 区分：关闭无「未扫」告警义务）。 */
     disabled: boolean;
+    /** 本页选择窗起点（=生效后的 offsetChars，装配层回显/续翻指针用）。 */
+    scanOffset: number;
+    /** 全部候选散文投影字符数（截断 break 后如实补全，装配层页脚 total 读数用）。 */
+    totalChars: number;
 }
 /**
  * 散文带扫描（events=sessionEvents 全量数组，needle=已小写化 needle）。
  * 从旧到新逐候选：投影 → 计数入 cap → 小写化找 hits/first；cap 触线即停。
+ *
+ * `offsetChars`（定点回放实锤 2026-11-26：旧世界 cap 触线 break 把"更新的内容"整段
+ * 判出界，页脚 retry 提示是空承诺）：选择窗 = 散文字符流 `[offsetChars,
+ * offsetChars+capChars)`，**事件对齐**——事件整体在窗前跳过、整事件越窗尾则止
+ * （预览偏移始终相对全文，无跨页切文本的位置漂移）。cap 语义从"扫描止损"变为
+ * "单页选择面"；全日志投影仍是一次遍历，成本与旧行为同阶。窗口首个事件超过 cap
+ * 时照收（否则单事件永远选不进=分页死锁，行预览宽度自有上限）。
  */
-export declare function scanProseHits(events: readonly ProseEventLike[], needle: string, capChars: number): ProseScanResult;
+export declare function scanProseHits(events: readonly ProseEventLike[], needle: string, capChars: number, offsetChars?: number): ProseScanResult;
 export {};

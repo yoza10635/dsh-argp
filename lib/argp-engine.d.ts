@@ -242,6 +242,17 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     private restoreDeclaredWindow;
     /**
+     * 声明窗→会话桶播种（定点回放实锤 2026-11-26）：出口闸关且本进程无压力事务时
+     * `resolveScaledBudgets` 零执行，`stateOf(session).resolvedWindowTokens` 保持初始种子
+     * `DEFAULT_WINDOW_TOKENS=16,384` 并伪装成已解析值——派生读数（如散文扫描 cap
+     * = window × charsPerToken × 2.7）缩到声明窗的 1/16，262K 窗补召轮的素材页全程
+     * 不进检索带（46 轮 campaign 补充召回 0/7 根因，cap 实测 110,861 与 16K 种子
+     * 算术逐位吻合）。播种只覆盖"从未被解析触碰"的默认种子；首次真解析（含
+     * observedCap）由 resolveScaledBudgets 的桶写入自然覆盖。显式窗配置以显式值为
+     * 准，不播种。
+     */
+    private seedBucketFromDeclared;
+    /**
      * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts）。
      */
     private shadowedSeqsOf;
