@@ -78,6 +78,10 @@ function makeSession(id: string): Session {
 /** 旧 bash + 旧 read（turn1）→ turn2 焦点换位（factor-engine.test.ts 同款）把 a.ts
  *  推出焦点窗 ⇒ 两枚皆软可剪；b.ts 是焦点非再生 = hard（不入序不入账）。 */
 function buildOld(session: Session, bashText: string, readText: string): void {
+  // 2.2.2 存档地雷锁：夹剪臂发射 tool/result replace，宿主 v4 fold 要求其在开放轮内
+  // （prune-tx 预检按 detectOpenTurn 剔除轮间隙 tool 桩）；真实 pre-step 恒在轮内，
+  // fixture 照实补开轮。轮号取大于全部原子轮次 ⇒ 只喂 detectOpenTurn，不动任何决策口径。
+  session.append('turn/start', { turn: 999 } as never)
   appendUser(session, '开始任务')
   appendGroup(session, 1, 'cb', 'bash', '{"command":"npm test"}', bashText)
   appendGroup(session, 1, 'cr', 'read', '{"file_path":"C:/Proj/a.ts"}', readText)

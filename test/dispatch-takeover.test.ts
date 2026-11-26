@@ -205,12 +205,14 @@ test('§F churn 抑制：上次 prune-only 释放不足地板且入场无新面 
     ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
     appendUser(session, '开始')
     appendGroup(session, 1, 'c1', 'read', '{}', 'OLD '.repeat(400)) // ≈400 tok，释放 < 地板 1638
-    appendUser(session, '收尾')
+    appendUser(session, '收尾', 2) // 2.2.2：老组必须非焦点才成组离场（打包带走裁定，半拆不剪）
     const agent = { session, options: {} } as never
     const r1 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
     assert.ok(r1 !== null, '首轮 prune-only 照常发射（churn 账本记下小释放）')
-    // 第二轮：只添一枚小原子——入场增量 < 地板 ∧ 上次释放 < 地板 ⇒ 抑制（g2 的 11 连发形状）
-    appendUser(session, 'ping', 2)
+    // 第二轮：入场只添一枚小可剪面——增量 < 地板 ∧ 上次释放 < 地板 ⇒ 抑制（g2 的 11 连发形状）。
+    // 2.2.2 注：小面给非焦点轮（组可整组离场），否则 r2 的 null 出自结构无可剪而非 churn 门。
+    appendGroup(session, 2, 'ck', 'read', '{}', 'ping '.repeat(60)) // ≈240 chars < 地板
+    appendUser(session, 'ping', 3)
     const evBefore = sessionEvents(session).length
     const r2 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
     assert.equal(r2, null, 'churn 抑制：无效连发不成组剪')
@@ -236,7 +238,7 @@ test('§F 健康锯齿不误伤：每次事务释放充分（≥地板）时连�
     ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
     appendUser(session, '开始')
     appendGroup(session, 1, 'c1', 'read', '{}', 'OLD '.repeat(3000)) // ≈3K tok 释放 > 地板
-    appendUser(session, '收尾')
+    appendUser(session, '收尾', 2) // 2.2.2：老组非焦点化（打包带走裁定下走整组离场）
     const agent = { session, options: {} } as never
     const r1 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
     assert.ok(r1 !== null, '首轮发射且释放充分')

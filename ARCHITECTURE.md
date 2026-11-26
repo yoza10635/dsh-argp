@@ -81,6 +81,14 @@ missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁�
   一笔事务可含多个区间；
 - tool 桩**克隆原 R 的 data、只改内文**（保留 callId / role / id / isError），
   配对 issuer A 的 tool_calls 防 400（`assertToolResultRewrite` 只允许改 inner text）；
+- **打包带走裁定（2.2.2，session-43df801e 存档加载失败案）**：半拆组「只剪 R 留空
+  `tool/result` 桩」分支**废止**——组不齐（issuer A 在世/R 不连续）⇒ R 一律不剪、随活体
+  保留（缺口进 shortfall 账）。防线在 `pruneIntervals` 预检：**无开放轮时一切 tool 桩
+  区间剔除**（保留活体 + warn，NP10 漏剪同方向；不可降级 user 桩——issuer 广告仍在，
+  孤儿 tool result 撞 provider 400）。动机：宿主 v4 fold 要求「非 append 的 tool/result
+  必须处于开放轮内」，写入侧（`Session.append` 核心）不拦、加载侧整档判 corrupt——轮次
+  间隙手动 /compact 一落毒即不可加载（6 枚实锤）。裁定后 tool/result replace 唯一剩余
+  来源 = clip opt-in 臂（轮内合法，同受本防线罩）；自动路径恒在轮内 ⇒ 常态零行为变化。
 - 事务尾把 usage 锚重置为 chars 估算（`lastRealPromptTokens = visibleChars/charsPerToken`），
   下一笔成功请求由 provider usage 重锚；
 - `shadowedSeqsOf` 只认 `compaction/prune.shadowedSeqs`——权威账本，不从 replace 形态推断

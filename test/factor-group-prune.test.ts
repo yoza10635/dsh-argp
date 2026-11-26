@@ -1,7 +1,8 @@
 /**
  * A+R 协议组剪回归锁（2026-11-13 用户裁定，docs/design-group-prune-2026-11-13.md）：
  *   G1 旧 A+R 组整组离场 → 空 developer 占位（模型不可见、轮中无 user 消息、无指针）；
- *   G2 闭包：A 的某个 R 仍是 live/hard ⇒ A 保留，selected R 走空 tool/result（配对不破）；
+ *   G2 闭包（2.2.2 打包带走修订）：A 的某个 R 仍是 live/hard ⇒ 组不齐，**A 与 selected R
+ *      都保留活体**（空 tool/result 桩分支废止——非 append tool/result 出开放轮即存档毒）;
  *   G3 K pack：旧 A+已剪桩组（R 未入选）也会被组剪；
  *   G4 孤儿 R（issuer 已离场）→ 空 developer，不落 tool 桩（否则孤儿 tool result → 400）；
  *   G5 标签召回：组剪后 recall_history(labels) 仍能取回 R 原文。
@@ -13,7 +14,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpEngine } from '../src/argp-engine.ts'
-import { eventText } from '../src/log-access.ts'
+import { eventText, sessionEvents } from '../src/log-access.ts'
 import { FACTOR_COMPACTED_MARKER } from '../src/constants.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
@@ -126,7 +127,7 @@ test('G1 A+R 组整组离场 → 压缩检查点（中性标记、无指针）',
   assert.ok(!texts.some(t => t.includes('[已剪·因子]') || t.includes('recall_history(')), '零指针/墓碑文本')
 })
 
-test('G2 闭包：一个 R 仍 live/hard ⇒ A 保留，selected R 走空 tool/result', async () => {
+test('G2 闭包（2.2.2 打包带走修订）：一个 R 仍 live/hard ⇒ 组不齐，A 与 selected R 都保留活体', async () => {
   const { internals } = await boot()
   const session = makeSession('group-closure')
   internals.bindSession(session)
@@ -160,15 +161,24 @@ test('G2 闭包：一个 R 仍 live/hard ⇒ A 保留，selected R 走空 tool/r
     },
   } as never, { surfaceOp: 'append' })
   appendGroup(session, 2, 'c3', 'C:/Proj/focus.ts', 'FOCUS CONTENT')
+  const c1Before = resultOf(session, 'c1')
+  assert.ok(c1Before !== null)
   const result = internals.factor.compactIfNeeded(session, 100_000)
-  assert.ok(result !== null)
   const texts = surfaceTexts(session)
   assert.ok(texts.some(t => t.includes('doing tools')), 'A 必须保留（有 live/hard R，闭包不成立）')
   assert.ok(texts.some(t => t.includes('IMG R')), '附件 R 硬保护保留')
-  assert.ok(!texts.some(t => t.includes('NORMAL R')), 'selected R 已剪')
-  const c1 = resultOf(session, 'c1')
-  assert.ok(c1 !== null, 'selected R 必须以空 tool/result 克隆留在面上（配对）')
-  assert.equal(c1.text, '', '空 tool/result 无指针文本')
+  // 2.2.2 裁定：**半拆不剪**——issuer 在世的 selected R 随活体保留，空 tool/result 桩
+  // 分支废止（非 append tool/result 出开放轮 = 存档不可加载，session-43df801e 实锤）。
+  assert.ok(texts.some(t => t.includes('NORMAL R')), '组不齐 ⇒ selected R 保留活体（不再落空桩）')
+  const c1Now = resultOf(session, 'c1')
+  assert.ok(c1Now !== null && c1Now.seq === c1Before.seq && c1Now.text === c1Before.text,
+    'c1 R 原封不动（同 seq 同文，未被 shadow/replace）')
+  const shadowed = new Set<number>((sessionEvents(session) as unknown as Array<{ type: string; data?: { shadowedSeqs?: number[] } }>)
+    .flatMap(e => e.type === 'compaction/prune' ? [...(e.data?.shadowedSeqs ?? [])] : []))
+  assert.ok(!shadowed.has(c1Before.seq), 'c1 R 不得进任何 prune 账本')
+  assert.ok(!sessionEvents(session).some(e => e.type === 'tool/result' && (e as { surfaceOp?: unknown }).surfaceOp !== 'append'),
+    '本会话不得出现任何 tool/result replace 事件（毒形态结构性缺席）')
+  void result
 })
 
 test('G3 K pack：旧 A+已剪桩组（R 未入选）也被组剪', async () => {
@@ -374,7 +384,7 @@ test('G9 压缩检查点事件形状可 deriveMessages（宿主 compact-checkpoi
   assert.ok(eventText(session, cps[0].seq).startsWith(FACTOR_COMPACTED_MARKER))
 })
 
-test('G10 组区间不连续（A 与 R 夹着官方 X）⇒ 组剪放弃，A 保留 + R 空桩（审查 P0-2）', async () => {
+test('G10 组区间不连续（A 与 R 夹着官方 X）⇒ 组剪放弃，R 随活体保留（审查 P0-2；2.2.2 空桩分支废止）', async () => {
   const { internals } = await boot()
   const session = makeSession('group-contiguity')
   internals.bindSession(session)
@@ -391,9 +401,11 @@ test('G10 组区间不连续（A 与 R 夹着官方 X）⇒ 组剪放弃，A 保
   appendResult(session, 1, 'c1', 'SPLIT R')
   appendGroup(session, 2, 'c2', 'C:/Proj/focus.ts', 'FOCUS CONTENT')
   const result = internals.factor.compactIfNeeded(session, 100_000)
-  assert.ok(result !== null)
   const texts = surfaceTexts(session)
   assert.ok(texts.some(t => t.includes('C:/Proj/a.ts')), 'A 保留（组不连续，不误吞夹心 X）')
-  assert.ok(!texts.some(t => t.includes('SPLIT R')), 'R 走空 tool/result')
+  assert.ok(texts.some(t => t.includes('SPLIT R')), '组不齐 ⇒ R 随活体保留（空 tool/result 桩分支废止，2.2.2）')
   assert.equal(factorCheckpoints(session).length, 0, '不得落 group 检查点（连续性检查拒绝）')
+  assert.ok(!sessionEvents(session).some(e => e.type === 'tool/result' && (e as { surfaceOp?: unknown }).surfaceOp !== 'append'),
+    '不得出现任何 tool/result replace（毒形态结构性缺席）')
+  void result
 })

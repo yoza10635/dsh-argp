@@ -331,6 +331,9 @@ test('ZT2：clip 对照臂桩文本含 tool: 地址（默认臂不产桩文本�
   const { host, factor } = await boot({ clipEnabled: true })
   const session = makeSession('zt2')
   host.bindSession(session)
+  // 2.2.2 存档地雷锁：clip 臂落 tool/result replace，宿主 v4 fold 要求开放轮内
+  //（真实 pre-step 恒在轮内）；轮号大于全部原子 ⇒ 只喂 detectOpenTurn，不动决策口径。
+  session.append('turn/start', { turn: 999 } as never)
   appendUser(session, '开始')
   appendGroup(session, 1, 'x1', 'custom-x', '{"foo":1}', 'HEADK ok\n' + 'w'.repeat(4000) + '\nTAIL end')
   appendGroup(session, 2, 'c2', 'read', '{"file_path":"C:/Proj/b.ts"}', 'FOCUS '.repeat(50))

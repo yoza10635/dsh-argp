@@ -1060,27 +1060,33 @@ export class FactorEngine {
       tombstones.push({ type: 'user', text: FACTOR_COMPACTED_MARKER })
       consumed.add(seq)
     }
-    // 3) R-only：A 保留 ⇒ 空 tool/result 克隆（无指针）；孤儿 R（issuer 已离场，
-    //    含本事务刚被组剪/forced-A 消费的 issuer）⇒ 压缩检查点。issuerAlive 必须
-    //    排除 consumed，否则会把"issuer 刚离场"的 R 落成 tool 桩 = 孤儿 tool result。
+    // 3) R-only（2.2.2 打包带走裁定，2026-11-26 存档加载失败案）：**issuer A 仍在世的
+    //    selected R 一律不剪**——旧「空 tool/result 克隆」桩形态废止。宿主 v4 fold 要求
+    //    非 append 的 tool/result 必须落在开放轮内，压缩事务可发生在 step/end↔step/start
+    //    之间甚至 turn 间隙（1147 等 6 枚实锤）⇒ 该形态是存档不可加载的毒源，且半拆
+    //    本身违背「A+R 打包离场」原始裁定。组不齐 ⇒ R 随活体保留（少剪并上报，缺口进
+    //    shortfall 账）。孤儿 R（issuer 已离场，含本事务刚被组剪/forced-A 消费的 issuer）
+    //    ⇒ 压缩检查点；issuerAlive 必须排除 consumed，否则"issuer 刚离场"的 R 会被
+    //    当活体配对而漏剪。
     const issuerAlive = new Set<string>()
     for (const a of atoms) {
       if (a.type === 'A' && !consumed.has(a.seq)) for (const cid of a.toolCallIds) issuerAlive.add(cid)
     }
+    let halfSplitHeld = 0
     for (const seq of groupPlan.rOnly) {
       if (consumed.has(seq)) continue
       const atom = atomsBySeq.get(seq)
       const input = tagsBySeq.get(seq)
       if (atom === undefined || input === undefined || input.callId === undefined) continue
       if (attachmentSeqs.has(seq)) continue // 附件 R 不可文本召回：保留活体，不落空桩
+      if (issuerAlive.has(input.callId)) { halfSplitHeld += 1; continue }
       consumed.add(seq)
       intervals.push({ seqs: [seq], chars: input.tags.sizeChars, atoms: [atom] })
-      if (!issuerAlive.has(input.callId)) {
-        tombstones.push({ type: 'user', text: FACTOR_COMPACTED_MARKER })
-        continue
-      }
-      // 新默认（clip off）：空 tool/result 克隆——无指针文本，配对保 callId。
-      tombstones.push({ type: 'tool', seq, callId: input.callId, text: '' })
+      tombstones.push({ type: 'user', text: FACTOR_COMPACTED_MARKER })
+    }
+    if (halfSplitHeld > 0) {
+      this.host.log.info('[argp-factor] 半拆组保留 ' + halfSplitHeld
+        + ' 枚 R（issuer 在世不剪单 R；打包带走裁定）')
     }
     if (intervals.length === 0) {
       if (plan.shortfallChars > 0) {

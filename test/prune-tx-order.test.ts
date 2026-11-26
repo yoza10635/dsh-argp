@@ -19,6 +19,10 @@
  *  ④ 摘除归并块 → ④三连同文出 4 剪红；摘「逐字节同文」判据 → ④异文条被并红；
  *  ⑤ 摘 surface 位置邻接判据（同文即并）→ ⑤活体夹断红；
  *  ⑥ 摘 user 类型门（tool 参与归并）→ ⑥两条 callId 桩塌一红。
+ *
+ * 2.2.2 存档加载地雷锁（⑦，session-43df801e 案）：非 append 的 tool/result 必须处于
+ *  开放轮内（宿主 v4 fold），prune-tx 预检按 detectOpenTurn 剔除轮间隙 tool 桩区间：
+ *  摘除 openTurnPre===null 剔除分支 → ⑦红（毒桩落盘）；剔除误伤 user 桩 → ⑦红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -94,6 +98,7 @@ test('① 倒挂多区间事务：优先序喂入（尾…首）必须成功落�
 
 test('② 倒挂 + tool 墓碑：排序必须与墓碑原子换位（配对=桩文/原 R/位点三者同轨）', () => {
   const session = makeSession('tx-order-tool-desc')
+  session.append('turn/start', { turn: 1 } as never) // 2.2.2：tool 桩须落开放轮内（⑦同判据）
   appendUser(session, 1, 'task')
   const s1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
   const s2 = appendGroupV4(session, 3, 'c2', 'R2 ' + 'B'.repeat(400))
@@ -206,6 +211,7 @@ test('⑤ 邻接门：同文被活体夹断不并；同文邻接对倒序喂入�
 
 test('⑥ tool 结构桩豁免归并：邻接同文 tool 墓碑各剪各的（callId 配对语义不破）', () => {
   const session = makeSession('tx-merge-tool')
+  session.append('turn/start', { turn: 1 } as never) // 2.2.2：tool 桩须落开放轮内（⑦同判据）
   appendUser(session, 1, 'task')
   const r1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
   const r2 = appendGroupV4(session, 3, 'c2', 'R2 ' + 'B'.repeat(400))
@@ -220,5 +226,28 @@ test('⑥ tool 结构桩豁免归并：邻接同文 tool 墓碑各剪各的（ca
   assert.equal(surfaceNeedleCount(session, '同文豁免'), 2)
   assert.ok(surfaceNeedleCount(session, 'm_c1') === 1 && surfaceNeedleCount(session, 'm_c2') === 1,
     '两条桩各自克隆原 R（callId/配对独立保留）')
+  assertShadowPriceContract(session)
+})
+
+test('⑦ 无开放轮防线（存档地雷锁）：轮间隙事务剔除 tool 桩区间，user 区间照常落盘', () => {
+  // 现场复刻：轮次间隙手动 /compact（turn/end 与下一 turn/start 之间）——非 append 的
+  // tool/result 出开放轮 ⇒ 宿主 v4 加载校验整档拒载（session-43df801e 6 枚实锤）。
+  const session = makeSession('tx-noturn-drop') // 无 turn/start：detectOpenTurn=null
+  appendUser(session, 1, 'task')
+  const r1 = appendGroupV4(session, 2, 'c1', 'R1 ' + 'A'.repeat(400))
+  const u2 = appendUser(session, 3, 'u2:' + 'B'.repeat(300))
+  const intervals = [{ seqs: [r1], chars: 400, atoms: [] }, { seqs: [u2], chars: 300, atoms: [] }]
+  const tombstones = [
+    { type: 'tool' as const, seq: r1, callId: 'c1', text: '间隙 tool 桩' },
+    { type: 'user' as const, text: '间隙 user 桩' },
+  ]
+  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  assert.notEqual(result, null, 'user 区间不受防线影响，事务照常落盘')
+  assert.equal(pruneEvs(session).length, 1, '仅 user 区间成对发射（tool 区间预检剔除）')
+  assert.equal(surfaceNeedleCount(session, '间隙 tool 桩'), 0, 'tool 桩不落面')
+  assert.equal(surfaceNeedleCount(session, 'R1 '), 1, '原 R 保留活体（NP10 漏剪同方向）')
+  assert.equal(surfaceNeedleCount(session, '间隙 user 桩'), 1)
+  assert.ok(!sessionEvents(session).some(e => e.type === 'tool/result' && (e as { surfaceOp?: unknown }).surfaceOp !== 'append'),
+    '整档不得存在非 append tool/result（加载校验毒形态结构性缺席）')
   assertShadowPriceContract(session)
 })
