@@ -60,6 +60,15 @@ sticky（近窗反复出现的标签）、superseded（同路径更新的读）�
 （读后文件未变 = 可重新读回）、锁定记忆。排序输出 `PrunePlan`；`plan.clipOrder` 是
 C10 夹剪层的归位段（env 开）。
 
+焦点保护形态（2.2.1 包二归一，`planFocusTail` 单机制两态）：**非升级态**按**名额**保护——
+名额 = min(20 组, ⌊δ·W_eff·cpt / 组均字节⌋)，δ=0.3、下限 1，窗未知（manual/legacy 调用面）
+回退 20；超出名额的旧侧组只有**全组 defined R 均被 superseded 判死**才整组降级进组剪
+（事实门在 `decide`，发射端 `planProtocolGroups` 对降级组仅放宽 turn/位置两道位置门，
+missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁免不占名额也永不降级，open 区组
+不入降级带。**升级态**（最新轮 A/R 占比 ≥50% ∧ 组 >10）维持原 cap=10 无事实离场语义。
+降级账目走 `[argp-quota]` 影子列日志行（quotaUsed/quotaBandGroups/demotedGroups/evicted*），
+是 §B-2b 观察哨「降级档驱逐」信号的落点。
+
 ## 3. 压缩事务（prune-tx）
 
 宿主 `token-meter/surface-projection.ts foldSurfaceProjection` 要求：**每次
