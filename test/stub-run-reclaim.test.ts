@@ -126,7 +126,7 @@ test('RR1 跨事务同文游程随剪归并：种子 2 连桩塌 1，扫荡当�
   const cps = checkpointSeqs(session)
   assert.equal(cps.length, 2, '种子游程归并 1 枚 + 扫荡当笔归并 1 枚（修复前=3：种子 2 + 扫荡 2 塌… 扫荡本就并 1）')
   assert.ok(!cps.includes(seed1) && !cps.includes(seed2), '种子桩原址已被归并事务 shadow')
-  assert.equal(summaryCount(session, '墓碑归并'), 1, '归并事务恰一笔（随剪顺带）')
+  assert.equal(summaryCount(session, '已整理压缩记录'), 1, '归并事务恰一笔（随剪顺带）')
   const mergePrunes = pruneEventShadowing(session, [seed1, seed2])
   assert.equal(mergePrunes.length, 1, '归并事务的 prune 恰覆盖种子游程')
   assert.equal(mergePrunes[0]!.shadowedRange && JSON.stringify(mergePrunes[0]!.shadowedRange),
@@ -145,9 +145,9 @@ test('RR1 跨事务同文游程随剪归并：种子 2 连桩塌 1，扫荡当�
   assert.ok(nxt !== undefined && nxt.op === 'replace' && nxt.startSeq === seed1 && nxt.endSeq === seed2,
     '归并 prune 必须紧跟同范围 replace（宿主 fold 邻接契约）')
   // 收敛锁：再按一次压缩钮不产生第二笔归并事务
-  const before = summaryCount(session, '墓碑归并')
+  const before = summaryCount(session, '已整理压缩记录')
   factor.compactIfNeeded(session, 1_000_000)
-  assert.equal(summaryCount(session, '墓碑归并'), before, '归并后游程塌缩 ⇒ 无重复维护事务')
+  assert.equal(summaryCount(session, '已整理压缩记录'), before, '归并后游程塌缩 ⇒ 无重复维护事务')
 })
 
 test('RR2 无压缩事务 ⇒ 回收器不发独立事务（种子游程原位保留）', async () => {
@@ -179,5 +179,5 @@ test('RR3 纪律门：孤桩与同文非邻接桩都不碰（有事务也只并�
   assert.notEqual(factor.compactIfNeeded(session, 1_000_000), null, '降级扫荡必须发射事务')
   // 扫荡 g0/g1 当笔并条成 1 桩；种子 a/b 各为游程 1（且被活体夹断）⇒ 全部保留
   assert.equal(checkpointSeqs(session).length, 3, '种子 2 枚游程 1 不触 + 扫荡 1 枚')
-  assert.equal(summaryCount(session, '墓碑归并'), 0, '无游程 ≥K ⇒ 回收器零事务（K=2 下限锁）')
+  assert.equal(summaryCount(session, '已整理压缩记录'), 0, '无游程 ≥K ⇒ 回收器零事务（K=2 下限锁）')
 })
