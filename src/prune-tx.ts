@@ -132,6 +132,8 @@ export interface PruneTxHost {
 
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
+ * 发射前先做**相邻同文 user 墓碑归并**（surface 紧邻 + 文本逐字节相同 ⇒ 并条；
+ * 2026-11-26 桩游程治理，见 pruneIntervals 内注释）。
  *  tombstone 类型（半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
  *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
  *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400；
@@ -216,6 +218,53 @@ export function pruneIntervals(
     }
     useIntervals = sortedIntervals
   }
+  // ---- 相邻同文墓碑归并（2026-11-26 session-43df801e 审计）----
+  // 一笔 114 区间的扫荡在表面产出 run=96 的同 9 字桩连排：角色交替破坏，模型读到
+  // 「用户连说 96 遍同一句话」。§11.8 归并通道随图臂退役（compactRegion 拒发），factor
+  // 世界零桩治理。规则：区间在 surface.nodes 上**紧邻**（next.seqs[0] 恰随 prev 末 seq，
+  // 中间无活体）且两条墓碑均为 user 且文本**逐字节相同** ⇒ 传递并条。同文相邻对模型
+  // 本已不可分辨 ⇒ 归并零信息损失；交互桩各组文本含不同 keys ⇒ 不并（指针语义保留）；
+  // tool/developer 结构性桩不参与（callId/空占位语义）。P1-5 数量校验随 resolved
+  // 计算上移到 start 事件之前：错配更早拒发，不再留 start+summary 死括号。
+  if (useTombstones !== undefined && useTombstones.length !== useIntervals.length) {
+    // 审查 P1-5：绝不能静默回退到 seq 指针墓碑（零指针纪律）；数量错配 = 调用方 bug。
+    throw new Error('prune-tx: tombstone count mismatch (' + useTombstones.length + ' vs ' + useIntervals.length + '); refusing pointer fallback')
+  }
+  let resolvedTombstones: ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string } | { type: 'developer'; form?: string; kind?: 'group' | 'a' | 'orphan' })[] =
+    useTombstones !== undefined && useTombstones.length === useIntervals.length
+      ? useTombstones
+      : useIntervals.map(iv => ({
+          type: 'user' as const,
+          text: seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number),
+        }))
+  if (useIntervals.length > 1) {
+    const txPosMap = new Map<number, number>()
+    for (let i = 0; i < txSurfaceNodes.length; i += 1) txPosMap.set(txSurfaceNodes[i] as number, i)
+    const mergedIntervals: typeof useIntervals = []
+    const mergedTombstones: typeof resolvedTombstones = []
+    for (let i = 0; i < useIntervals.length; i += 1) {
+      const iv = useIntervals[i] as { seqs: number[]; chars: number; atoms: Atom[] }
+      const ts = resolvedTombstones[i] as ({ type: 'user'; text: string } | { type: 'tool'; seq: number; callId: string; text?: string } | { type: 'developer'; form?: string; kind?: 'group' | 'a' | 'orphan' })
+      const prevIv = mergedIntervals[mergedIntervals.length - 1]
+      const prevTs = mergedTombstones[mergedTombstones.length - 1]
+      let merged = false
+      if (prevIv !== undefined && prevTs !== undefined && ts.type === 'user' && prevTs.type === 'user' && ts.text === prevTs.text) {
+        const p = txPosMap.get(prevIv.seqs[prevIv.seqs.length - 1] as number)
+        const q = txPosMap.get(iv.seqs[0] as number)
+        if (p !== undefined && q === p + 1) {
+          mergedIntervals[mergedIntervals.length - 1] = { seqs: [...prevIv.seqs, ...iv.seqs], chars: prevIv.chars + iv.chars, atoms: [...prevIv.atoms, ...iv.atoms] }
+          merged = true
+        }
+      }
+      if (!merged) {
+        mergedIntervals.push({ seqs: [...iv.seqs], chars: iv.chars, atoms: [...iv.atoms] })
+        mergedTombstones.push(ts)
+      }
+    }
+    useIntervals = mergedIntervals
+    useTombstones = mergedTombstones
+    resolvedTombstones = mergedTombstones
+  }
   const charsBefore = visibleChars(session)
   const openTurn = detectOpenTurn(session)
   // 'argp-graph-' = 历史 wire 前缀（会话日志既有形态）：非压缩时点零改写不变量 + 旧日志
@@ -278,7 +327,8 @@ export function pruneIntervals(
       summary: [{
         type: 'text',
         text: summaryKind === 'tombstone-merge'
-          ? `ARGP 墓碑归并（§11.8①）：${prunedCount} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，recall_pruned(seq) / list_pruned 可取回`
+          // 归并事务的区间 atoms 恒空（剪的是桩本身）⇒ 计数取表面节点数，不取 atoms。
+          ? `ARGP 墓碑归并（§11.8①）：${useIntervals.reduce((s, iv) => s + iv.seqs.length, 0)} 墓碑 / ${useIntervals.length} 区间归并为聚合占位（约 ${shadowedTokensOf(charsBefore0)} tok 回收）；0-LLM；原文保留在 append-only 日志，search_history(keyword) / recall_history(labels) 可取回`
           : summaryKind === 'factor-prune'
             ? `ARGP 协议组剪：${prunedCount} 原子 / ${useIntervals.length} 区间（约 ${shadowedTokensOf(charsBefore0)} tok）；A+R 组整体离场 + 压缩检查点占位（普通组中性标记「已压缩剪枝次要原子」；交互组专段带 tool: 即时指针）；原文保留在 append-only 日志，recall_history(labels) 可取回`
             : summaryKind === 'factor-prose'
@@ -295,16 +345,8 @@ export function pruneIntervals(
       ...(summaryMeta?.rawOutput !== undefined ? { rawOutput: summaryMeta.rawOutput } : {}),
       ...(summaryMeta?.llmStreamCall === true ? { llmStreamCall: true } : {}),
     } as never)
-    if (useTombstones !== undefined && useTombstones.length !== useIntervals.length) {
-      // 审查 P1-5：绝不能静默回退到 seq 指针墓碑（零指针纪律）；数量错配 = 调用方 bug。
-      throw new Error('prune-tx: tombstone count mismatch (' + useTombstones.length + ' vs ' + useIntervals.length + '); refusing pointer fallback')
-    }
-    const resolvedTombstones = useTombstones !== undefined && useTombstones.length === useIntervals.length
-      ? useTombstones
-      : useIntervals.map(iv => ({
-          type: 'user' as const,
-          text: seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number),
-        }))
+    // P1-5 校验与 resolvedTombstones（含相邻同文归并）已上移至事务开始**之前**
+    // （2026-11-26 桩游程治理）：错配拒发不再留下已落盘的 start+summary 死括号。
     const intervalRecords: { start: number; end: number; tombstoneSeq: number }[] = []
     let firstPruneSeq: number | undefined
     for (let i = 0; i < useIntervals.length; i += 1) {

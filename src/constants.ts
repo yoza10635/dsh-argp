@@ -114,6 +114,16 @@ export const VOCAB_NOTE_MARKER = '[argp-factor 词表]'
 export const FACTOR_COMPACTED_MARKER = '已压缩剪枝次要原子'
 
 /**
+ * 表面桩游程回收阈值（2026-11-26 session-43df801e 审计）：surface 上紧邻的
+ * compact-checkpoint 桩（文本逐字节相同）达到该数即随**当笔压缩事务**顺带归并
+ * （不独立发维护事务——surface 换代税只交一次）。阈=2 与事务内相邻同文并条
+ * （prune-tx 归并 pass）对称同判据：相邻同文桩对模型本已不可分辨。1.x 图臂的
+ * tombstoneMergeMinRun=8 旋钮已随 2.0 零旋钮退役（RETIRED_GRAPH_KEYS），不复活
+ * 配置面。
+ */
+export const FACTOR_STUB_RUN_MIN = 2
+
+/**
  * 焦点尾窗组数上限（2026-11-13 用户裁定）：最新轮 A/R 字节占当前 A/R 面
  * ≥ {@link FOCUS_TURN_SHARE_THRESHOLD} 时，焦点从"整轮"降级为该轮最新的
  * 至多 10 个 A+R 协议组——最后一轮本身过大时，整轮保护会让可剪面归零。

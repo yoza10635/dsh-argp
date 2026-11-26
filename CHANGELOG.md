@@ -12,6 +12,11 @@
 - **补召轮 0/7 根因：冷恢复「窗口初值伪装已解析值」**。`session-state` 桶的 `resolvedWindowTokens` 初值 = `DEFAULT_WINDOW_TOKENS`(16,384)，只有 `resolveScaledBudgets` 跑过才会被真实声明窗覆盖；而出口闸关闭、本进程无压力事务的低压力轮（headless resume 每轮新进程）**全程零次解析**，散文检索面 cap = `window × charsPerToken × 2.7` 便按 16K 种子算——262K 声明窗会话实测 cap=110,861，与事故指纹逐位吻合，素材页整程不进检索带。修：`restoreDeclaredWindow` 回填声明窗的同时向会话桶播种 `min(声明窗, observedCap) × windowRatio`（显式窗配置让位、首次真解析自然覆盖）。锁 L7 三态 + 变异账 LL7。
 - **检索不可翻页：`search_history` 新增 `offset` 续读游标**。旧行为散文带「cap 触线即 break」且页脚只说 retry/refine——重试恒从最旧重扫，更新内容永远出不了界；`hit=` 二跳对超长原文只回头部切片、"retry next turn" 是空承诺。修：扫描侧改**事件对齐选择窗** `[offset, offset+cap)`（首事件超 cap 照收防分页死锁），二跳侧按 offset 切读取窗；两处页脚如实给 `offset=<next>` 续翻指针与总面读数，越界如实报而非返回空文本。锁 SH15/SH16。
 - 定点回放（`spike/08-recall-cap-replay.ts`，真存档→真 Session→真工具面，金值只在进程内比对）：修复前 0/7、修复后 **7/7**；全量套件 390 例（388 通过、2 跳过）。
+- **桩游程治理：相邻同文检查点两层归并**。真存档审计（session-43df801e）：114 组扫荡在表面产出 **96 连排同 9 字压缩检查点桩**——角色交替破坏（模型读到「用户连说 96 遍同一句话」），且桩常规通道双盲不可回收（atomize 判 X + prose 三桶 own-kind 排除 + §11.8 图臂归并通道已退役）⇒ 跨事务累积泄漏。修两层同判据（surface 位置紧邻 + 文本逐字节相同）：**事务内**`pruneIntervals` 发射前归并 pass 把相邻同文 user 墓碑区间传递并条（新游程不再产生；交互桩异文不并、tool/developer 结构桩类型门豁免）；**跨事务**`reclaimStubRuns` 在主压缩事务落地后顺带扫表面 ≥`FACTOR_STUB_RUN_MIN`(2) 同文游程发一笔 `tombstone-merge` 并条（**绝不独立发维护事务**，换代税只交一次；归并后游程塌缩为 1 ⇒ 收敛）。零桩不是 API 可达形态——shadow-price 契约要求每个被剪区间留原位节点，「一段游程一枚桩」即上限。锁 prune-tx-order ④⑤⑥ + stub-run-reclaim RR1–RR3；G1/FT6/CL2 桩数锁按归并语义改标；全量 396 例（394 通过、2 跳过）。
+- **`tombstone-merge` 摘要文案收口**：取回通道指称由退役工具名（recall_pruned/list_pruned）改为现势双通道 `search_history(keyword) / recall_history(labels)`；归并事务计数改取表面节点数（其区间 atoms 恒空，atoms 口径恒报 0）。
+
+### Docs
+- ARCHITECTURE 新增 **§3.1 账本三本分治**（prune=召回权威账本 / summary=发射时点 span claim（宿主 fold 计价契约，非召回依据）/ records=引擎视图），以 session-43df801e 的 343 vs 260「超声称」为实锤案例——审计口径钉死：**剪没剪只查 prune**；**§3.2 桩游程治理**两层机制与豁免面。
 
 ## [2.2.1] - 2026-11-26（stable 直发：分派判据规则A + A1 焦点名额；行为调优班车，无新增配置面）
 

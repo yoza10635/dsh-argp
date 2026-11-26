@@ -118,7 +118,7 @@ test('G1 A+R 组整组离场 → 压缩检查点（中性标记、无指针）',
   assert.ok(!texts.some(t => t.includes('C:/Proj/b.ts')), '组 2 的 A（args）已离场')
   assert.ok(texts.some(t => t.includes('FOCUS CONTENT')), '焦点轮 R（hard）保留')
   const checkpoints = factorCheckpoints(session)
-  assert.equal(checkpoints.length, 2, '两个旧组 ⇒ 两个压缩检查点')
+  assert.equal(checkpoints.length, 1, '两个旧组相邻同文 ⇒ 事务内归并一枚压缩检查点（2.2.2 桩游程治理）')
   for (const c of checkpoints) {
     assert.ok(eventText(session, c.seq).startsWith(FACTOR_COMPACTED_MARKER), '检查点文案=已压缩剪枝次要原子（无指针）')
   }

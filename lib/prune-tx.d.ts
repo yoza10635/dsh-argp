@@ -112,6 +112,8 @@ export interface PruneTxHost {
 }
 /**
  * 一笔事务剪多个极大连续区间：start → summary → 每区间 checkpoint replace → end。
+ * 发射前先做**相邻同文 user 墓碑归并**（surface 紧邻 + 文本逐字节相同 ⇒ 并条；
+ * 2026-11-26 桩游程治理，见 pruneIntervals 内注释）。
  *  tombstone 类型（半拆组）：'user' = 普通/闭包墓碑文本；'tool' = tool/result
  *  占位墓碑（克隆原 R data、只改 inner text——V4 换 content 为单 text block / V3 改 tool-result block，
  *  保留 callId/isError/role/id——dsh assertToolResultRewrite 只允许改 inner text），配对 issuer A 的 tool_calls 防 400；

@@ -87,6 +87,41 @@ missing/live R/附件/连续性事实门不放宽）——barrier/附件组豁�
   （cites 剥离写回、单节点 replace 不得被误当"已剪"）；
 - 召回字符预算 `recallCharsUsed` 在事务成功时归零。
 
+### 3.1 账本三本分治（同一事务三条影子口径，别混账看）
+
+一笔压缩事务在日志里落三条互不相等的影子记录，各有单一权威读者：
+
+| 记录 | 语义 | 权威读者 |
+| --- | --- | --- |
+| `compaction/prune[].shadowedSeqs` | **权威账本**：逐区间成对、恰=该区间被剪节点并集 | 召回面（`shadowedSeqsOf`）、剪并集审计 |
+| `compaction/summary.shadowedSeqs` | **发射时点 span claim**：整个事务跨度 `[first..last]` 在当时的切片——含跨度内未剪活体 | 宿主 fold（净释放计价），**不是**召回依据 |
+| `stateOf(session).records[].shadowedSeqs` | **引擎视图**：本进程事务的 `allSeqs`（诚实并集） | WebUI/遥测面板 |
+
+实锤案例（session-43df801e，2026-11-26 审计）：summary=343 vs prune 并集=260，
+"超声称" 83 = 跨度 [20..1113] 内的 33 U + 2 D（活体轮边界/系统注入）+ 28 A + 20 R
+（后续事务才剪）。这是宿主 `span()` 相邻性契约的要求（§3 开头 fold 规则），不是账错；
+外评把它读成"账本污染"即三本混账之误。审计口径：**剪没剪只查 prune**。
+
+### 3.2 桩游程治理（2.2.2，session-43df801e 病灶）
+
+factor 组剪逐组落压缩检查点桩（`user/message` + `source.kind=compact-checkpoint`）；
+114 组扫荡曾在表面产出 **96 连排同 9 字桩**——角色交替破坏（模型读到"用户连说 96 遍
+同一句话"）。且桩常规通道双盲不可回收：atomize 判 X 类（永不进 A+R 剪枝面）+ prose
+三桶按 own-kind 排除 + §11.8 图臂归并通道已退役。治理两层，同一判据（surface 位置
+紧邻 + 墓碑文本逐字节相同）：
+
+1. **事务内并条**（`pruneIntervals` 归并 pass）：同笔事务的相邻同文 user 墓碑区间
+   传递合并，一条 prune+replace 对吃掉整段 ⇒ 新游程不再产生。交互桩文本含各自
+   `recall_history(keys)` 指针 ⇒ 异文自然不并；tool/developer 结构桩类型门豁免。
+2. **跨事务随剪回收**（`FactorEngine.reclaimStubRuns`）：主事务落地后扫表面 ≥
+   `FACTOR_STUB_RUN_MIN`(=2) 的同文桩游程，顺带发一笔 `tombstone-merge` 事务每条并一。
+   **绝不独立发维护事务**（surface 换代税只在主事务交一次；无事务则回收器静默）；
+   异常只记日志不伤主事务。归并结果游程塌缩为 1 ⇒ 收敛不复发。
+
+零桩不是 API 可达形态：shadow-price 契约要求每个被剪区间留一枚原位节点，聚合到
+"一段游程一枚桩"即上限。1.x 旋钮 `tombstoneMergeMinRun` 已随 2.0 零旋钮退役，不复活。
+锁面：prune-tx-order ④⑤⑥（事务内）+ stub-run-reclaim RR1–RR3（随剪/不独立/纪律门）。
+
 ## 4. 触发与两道闸
 
 ### 4.1 两条确定性信号

@@ -1,5 +1,5 @@
 import type { Session } from '@deepseek-ai/dsh-session';
-import type { CompactionResult } from '@deepseek-ai/dsh-compaction';
+import { type CompactionResult } from '@deepseek-ai/dsh-compaction';
 import { VOCAB_NOTE_MARKER } from '../constants.ts';
 import { type PruneTxHost } from '../prune-tx.ts';
 import type { Atom } from '../argp-types.ts';
@@ -298,6 +298,18 @@ export declare class FactorEngine {
     compactIfNeeded(session: Session, targetReleaseChars: number, opts?: {
         windowEffTokens?: number;
     }): CompactionResult | null;
+    /**
+     * 表面桩游程随剪回收（2026-11-26 审计：桩 kind=compact-checkpoint ⇒ atomize 判 X，
+     * 永不进 A+R 剪枝面；prose 三桶带按 own-kind 排除 ⇒ 双盲不可回收；§11.8 归并通道
+     * 随图臂退役 ⇒ 跨事务累积泄漏 + 同文连排破坏角色交替）。
+     * 事务内的相邻同文并条（prune-tx 归并 pass）已阻断新游程生成；本方法处理**跨事务
+     * 累积与存量会话**：扫当前表面极大同文 checkpoint 桩游程（≥FACTOR_STUB_RUN_MIN），
+     * 发一笔 tombstone-merge 事务每条并一。纪律：判据认 kind+逐字节同文，不认文案子串
+     * （避开图臂 '[elided ' 文案漂移坑）；同文 ⇒ 归并零信息损失（交互桩文本含各自
+     * keys，异文自然不并，指针语义保留）。**绝不独立发维护事务**——只在 compactIfNeeded
+     * 已有事务落地（surface 已换代、换代税已交）后随剪执行；异常只记日志不影响主事务。
+     */
+    private reclaimStubRuns;
     /**
      * §B-2a 结构去重驱逐（0-LLM）：宿主**每次压缩后**把再注入三件套
      * （agent-instructions/runtime-context/skill-catalog）重新注入一份——档案实锤

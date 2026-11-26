@@ -153,7 +153,7 @@ test('CL2 缺省关=组剪默认：clipOrder 空、旧 A+R 组离场 → 压缩�
   const dump = surfaceDump(session)
   assert.ok(!dump.includes('BIG_BASH') && !dump.includes('BIG_READ'), '旧 A+R 组原文离场')
   assert.ok(dump.includes('FOCUS CONTENT'), '焦点组保留')
-  assert.equal(devCount(session), 2, '旧 bash/read 两组 → 两个压缩检查点')
+  assert.equal(devCount(session), 1, '旧 bash/read 两组相邻同文 → 事务内归并一枚压缩检查点（2.2.2 桩游程治理）')
   assert.ok(!dump.includes(CLIP_MARK) && !dump.includes('省略'), '无夹剪结构线')
 })
 

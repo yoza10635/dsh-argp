@@ -181,7 +181,7 @@ test('FT5 planFocusTail 纯函数：cap/share/焦点闭包读数', async () => {
   assert.equal(plan.focusSeqs.has(aSeqs[11]!), true)
 })
 
-test('FT6 降级后焦点外旧组整组（A args + R 原文）离场，词表检查点计 2 枚', async () => {
+test('FT6 降级后焦点外旧组整组（A args + R 原文）离场，相邻同文检查点归并 1 枚', async () => {
   const { host, factor } = await makeFactor()
   const session = makeSession('focus-ft6')
   host.bindSession(session)
@@ -196,7 +196,7 @@ test('FT6 降级后焦点外旧组整组（A args + R 原文）离场，词表�
   const evs = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: unknown }>
   const checkpoints = [...session.surface.nodes].filter(s => evs[s as number]?.type === 'user/message'
     && JSON.stringify(evs[s as number]?.data).includes('已压缩剪枝次要原子'))
-  assert.equal(checkpoints.length, 2, '两组各一枚压缩检查点')
+  assert.equal(checkpoints.length, 1, '两相邻同文检查点随事务归并为一枚（2.2.2 桩游程治理：surface 紧邻+逐字节同文 ⇒ 并条）')
 })
 
 /** 带 image 块的组（G8 配方）：tool-result content 内嵌 {type:'image'} ⇒ barrier 面。 */
