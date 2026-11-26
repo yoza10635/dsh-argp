@@ -27,7 +27,7 @@ import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
 import { isRecallTool } from './recall-tools.ts'
-import { resolveDispatchMode } from './dispatch.ts'
+import { resolveDispatchMode, resolveDispatchShadowLogPath } from './dispatch.ts'
 import { HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS } from './ua-input.ts'
 import { CLIP_MARK, clipFamilyOf, clipReserveChars, clipText } from './clip-shape.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
@@ -1002,12 +1002,20 @@ export class FactorEngine {
     // 计划口径（事实门全过 ⇒ 组可驱逐，实际是否随区间落盘受 prune-tx 预检）。
     if (decision.demotedGroupCount > 0 || decision.quotaBandGroups > 0) {
       const demotedHit = groupPlan.groups.filter(g => decision.demotedSeqs.has(g.aSeq))
-      this.host.log.info('[argp-quota] ' + JSON.stringify({
+      const quotaRecord = {
+        t: Date.now(), mode: 'quota',
         quotaUsed: decision.quotaUsed, quotaBandGroups: decision.quotaBandGroups,
         demotedGroups: decision.demotedGroupCount,
         evictedGroups: demotedHit.length,
         evictedChars: demotedHit.reduce((n, g) => n + g.chars, 0),
-      }))
+      }
+      this.host.log.info('[argp-quota] ' + JSON.stringify(quotaRecord))
+      // 影子流水落盘（同 ARGP_FACTOR_DISPATCH_LOG 通道）：台架/评测臂靠这行判
+      // 「名额是否真咬」——log.info 在 bench 取证里不可见，不落盘=观察哨失明。
+      const quotaPath = resolveDispatchShadowLogPath()
+      if (quotaPath !== undefined) {
+        try { appendFileSync(quotaPath, JSON.stringify(quotaRecord) + '\n') } catch { /* 落盘失败不改变任何发射 */ }
+      }
     }
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
     const tombstones: ({ type: 'tool'; seq: number; callId: string; text: string }

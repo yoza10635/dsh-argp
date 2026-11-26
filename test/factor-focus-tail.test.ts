@@ -18,6 +18,9 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -243,6 +246,11 @@ test('FT7 名额 20/21 组边界：最老判死组整组（A+R）离场，其余
     if (m.startsWith('[argp-quota] ')) quotaLogs.push(m)
     origInfo(m)
   }
+  // 影子流水落盘：台架取证只读 ARGP_FACTOR_DISPATCH_LOG，log.info 在 bench 不可见 ⇒
+  // quota 记录必须与 dispatch 决策同文件落盘，否则观察哨「降级档驱逐」列失明。
+  const shadowPath = join(tmpdir(), 'argp-quota-shadow-' + Date.now() + '-' + process.pid + '.jsonl')
+  const prevShadowEnv = process.env['ARGP_FACTOR_DISPATCH_LOG']
+  process.env['ARGP_FACTOR_DISPATCH_LOG'] = shadowPath
   try {
     const d = factor.decide(session, 1_000_000)
     assert.equal(d.focusEscalated, false, '占比 <50% ⇒ 非升级态')
@@ -263,15 +271,28 @@ test('FT7 名额 20/21 组边界：最老判死组整组（A+R）离场，其余
     assert.equal(checkpointsOf(session), 2, 'turn1 超大旧组 + a0 降级组各一枚检查点')
   } finally {
     ;(host.log as { info: (m: string) => void }).info = origInfo
+    if (prevShadowEnv === undefined) delete process.env['ARGP_FACTOR_DISPATCH_LOG']
+    else process.env['ARGP_FACTOR_DISPATCH_LOG'] = prevShadowEnv
   }
   assert.equal(quotaLogs.length, 1, '[argp-quota] 影子列恰一行（发射侧）')
-  const rec = JSON.parse(quotaLogs[0]!.slice('[argp-quota] '.length)) as Record<string, number>
-  assert.deepEqual(Object.keys(rec).sort(), ['demotedGroups', 'evictedChars', 'evictedGroups', 'quotaBandGroups', 'quotaUsed'])
+  const rec = JSON.parse(quotaLogs[0]!.slice('[argp-quota] '.length)) as Record<string, number | string>
+  assert.deepEqual(Object.keys(rec).sort(), ['demotedGroups', 'evictedChars', 'evictedGroups', 'mode', 'quotaBandGroups', 'quotaUsed', 't'])
+  assert.equal(rec.mode, 'quota')
+  assert.equal(typeof rec.t, 'number')
   assert.equal(rec.quotaUsed, 20)
   assert.equal(rec.quotaBandGroups, 1)
   assert.equal(rec.demotedGroups, 1)
   assert.equal(rec.evictedGroups, 1, '组剪计划口径：降级组进组剪')
-  assert.ok(rec.evictedChars > 200 && rec.evictedChars < 500, 'chars 账 = A+R 实际文本量：实测 ' + rec.evictedChars)
+  const evictedChars = rec.evictedChars as number
+  assert.ok(evictedChars > 200 && evictedChars < 500, 'chars 账 = A+R 实际文本量：实测 ' + evictedChars)
+  // 影子流水文件：mode:'quota' 记录与 dispatch 决策同文件（台架可取证）
+  const shadowLines = readFileSync(shadowPath, 'utf8').trim().split('\n')
+  const quotaRec = JSON.parse(shadowLines.find(l => (JSON.parse(l) as { mode?: string }).mode === 'quota') ?? 'null') as Record<string, number> | null
+  assert.ok(quotaRec !== null, '影子流水须含 mode:quota 行')
+  assert.equal(quotaRec!.quotaBandGroups, 1)
+  assert.equal(quotaRec!.demotedGroups, 1)
+  assert.equal(quotaRec!.evictedGroups, 1)
+  try { unlinkSync(shadowPath) } catch { /* 清理失败不影响判定 */ }
 })
 
 test('FT8 事实门红锁：超名额但未判死的组照常硬保（放宽位置门≠放宽事实门）', async () => {
