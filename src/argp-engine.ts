@@ -1252,8 +1252,13 @@ export class ArgpEngine extends CompactionEngine {
         signal.throwIfAborted()
         this.bindSession(session) // D2：condense await 窗口内焦点可能换装——回绑再写 surface
         dedup = this.factor.dedupeReinjected(session) // 摘要请求已发出，surface 现在可以动了
-        st.lastPruneRelease = -1 // §F：摘要重建了面，churn 旧账作废
-        st.lastPruneEntryCtx = 0
+        // §F：只有摘要**真的重建了面**才作废 churn 旧账。proseResult=null（barrier 断供/
+        // 散点不发射/浓缩异常）⇒ surface 未动，此处清账会让断供轮每轮抹掉 §F 账、
+        // g2 型浅剪连发复活（2.2.x 设计稿 §1.2 附带修复）。
+        if (proseResult !== null) {
+          st.lastPruneRelease = -1
+          st.lastPruneEntryCtx = 0
+        }
         pruned = (decision.form === 'summarize-then-prune' ? doGroupPrune() : null) ?? dedup
         break
       }

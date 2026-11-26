@@ -248,6 +248,56 @@ test('§F 健康锯齿不误伤：每次事务释放充分（≥地板）时连�
   }
 })
 
+test('§F 摘要 no-op 不清 churn 账：浓缩断供轮保留旧账，浅剪连发仍被抑制（2.3.0 重置门修复）', async () => {
+  // 变异锁：摘回 summarize 分支的无条件重置（不看 proseResult）⇒ r3 断言红
+  //（g2 型浅剪连发复活）。断供形态用 stub 模拟（浓缩异常/barrier 散点不发射同形）；
+  // 真 barrier-mid-history fixture 判据级锁在包一（design-2.2.x §1.6）。
+  process.env['ARGP_FACTOR_DISPATCH'] = '2'
+  try {
+    const { engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+    const session = Session.create(SessionId('tko-churn-noop'))
+    session.append('system/message', { content: 'persona' } as never, { surfaceOp: 'append' })
+    ;(engine as unknown as { declaredContextWindows: WeakMap<Session, number> }).declaredContextWindows.set(session, 32_768)
+    ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+    appendUser(session, '开始')
+    appendGroup(session, 1, 'c1', 'read', '{}', 'OLD '.repeat(400)) // ≈400 tok < 地板 1638
+    appendUser(session, '收尾', 2)
+    session.append('turn/start', { turn: 2 })
+    appendGroup(session, 2, 'c2', 'read', '{}', 'KEPT '.repeat(400)) // open turn 保护，留待 r3
+    const agent = { session, options: {} } as never
+    const r1 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r1 !== null, '首轮 prune-only 发射（账本记 c1 小释放）')
+    const st = (engine as unknown as { stateOf: (s: Session) => { lastPruneRelease: number; lastPruneEntryCtx: number } }).stateOf(session)
+    assert.ok(st.lastPruneRelease >= 0 && st.lastPruneRelease < 1638, 'churn 账本记的是抑制前置形态')
+    // r2：强制 summarize-only + 浓缩断供（null）⇒ 该形态零驱逐零写入，只过重置门。
+    //（summarize-then-prune 的 doGroupPrune 不受 churn 门控——形态语义，本测试不掺入。）
+    ;(engine as unknown as { prose: { condense: () => Promise<null> } }).prose = { condense: async () => null }
+    const eng = engine as unknown as {
+      compactByDispatch: (...a: [never, never, { form: string }, number, number, number, AbortSignal]) => Promise<unknown>
+    }
+    const origDispatch = eng.compactByDispatch.bind(engine)
+    eng.compactByDispatch = (a, s, d, w, rt, inc, sig) => origDispatch(a, s, { ...d, form: 'summarize-only' }, w, rt, inc, sig)
+    appendUser(session, 'ping', 2)
+    const r2 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.equal(r2, null, '断供轮无事务')
+    assert.ok(st.lastPruneRelease >= 0, '★断供轮不清账（修复前此处即 -1）')
+    // r3：关 c2 的轮（turn/start 事件 off-surface，零 token 增长）⇒ 抑制条件依旧成立。
+    session.append('turn/start', { turn: 3 })
+    const evBefore = sessionEvents(session).length
+    const r3 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.equal(r3, null, '无新面 ⇒ churn 抑制必须跨过错过的断供轮继续生效')
+    assert.equal(sessionEvents(session).length, evBefore, '抑制轮零事务写入')
+    // r4 解锁对照：证明 r3 的 null 出自 churn 而非结构无可剪。
+    eng.compactByDispatch = origDispatch as never
+    appendGroup(session, 3, 'c3', 'read', '{}', 'BIG '.repeat(6000)) // ≈6K tok ≥ 地板
+    const r4 = await engine.compactIfNeeded(agent, 'pressure', new AbortController().signal)
+    assert.ok(r4 !== null, '入场新面 ≥ 地板 ⇒ 解锁再发射')
+    assert.ok(!surfTexts(session).some(t => t.includes('KEPT')), 'c2 随解锁轮离场')
+  } finally {
+    delete process.env['ARGP_FACTOR_DISPATCH']
+  }
+})
+
 // ── §G：上下文形摘要装配（宿主同款）——ctx.llm stub 捕获请求形状 + usage 回填 ──
 test('§G approved 走上下文装配：system 前缀+区原文+尾指令+tools+header 路由；usage 回填 summary 事件', async () => {
   const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
