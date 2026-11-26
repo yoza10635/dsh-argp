@@ -42,6 +42,11 @@ export interface DispatchSnapshot {
     /** 可浓缩散文：浓缩器真能驱逐的 U+textA（钉死指令/note/焦点/附件/宿主再注入不计）。
      *  摘要请求的 transcript 基底——发送可行性按它判，不按全上下文 C。 */
     condensableProseTokens: number;
+    /** 三桶 aged 口径：span 实际可驱逐的 textA（barrier/洞截断段、partial 散点、焦点窗
+     *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total），
+     *  旧 fixture 与判据④ transcript 口径字节不变（design-2.2.x §1.2）。
+     *  供给判据在包一b（commit 4）切到本字段。 */
+    condensableProseAgedTokens?: number;
     /** 摘要指令 + 摘要输出预留（标准预算；空间不足时决策内部收缩输出分量）。 */
     summarySendTokens: number;
     /** 供给余量系数 α：P ≥ α·deficit 视为剪可稳定到位（估算误差安全垫）。 */
@@ -50,6 +55,10 @@ export interface DispatchSnapshot {
     proseMinTokens?: number;
     /** ①缺口地板比例：F−R < max(proseMin, ρ·W_eff) 视为可容忍超调，不摘（ρ 缺省 0.2）。 */
     gapFloorRatio?: number;
+    /** 工具面 token（口径=toolCallA+rPair 文本和；附件 R 落 barrier 类=低估、
+     *  toolCallA 含 final-A 散文=高估，两向偏差入档 design-2.2.x §1.3）。
+     *  **可选**——缺省 0 ⇒ 份额闸永不触发，旧快照/旧 fixture 字节不变。 */
+    toolFaceTokens?: number;
     /** 摘要指令 token（transcript 发送判据独立用；缺省 512 与 prose-condenser 同源）。 */
     instructionTokens?: number;
     /** 摘要输出地板：低于此值摘了也放不下像样的 checkpoint（缺省 1024）。 */
@@ -65,6 +74,11 @@ export declare const DEFAULT_SUPPLY_MARGIN = 1.2;
 export declare const DEFAULT_PROSE_MIN_TOKENS = 1536;
 /** ①缺口地板：F−R 低于 max(proseMin, ρ·W_eff) = 保留位可容忍超调，摘要不值一次 miss。 */
 export declare const DEFAULT_GAP_FLOOR_RATIO = 0.2;
+/** ②开单地板比例（规则A，2.2.1）：aged 散文 ≥ max(proseMin, 此比例×W_eff) 才起扫荡单
+ *  ——存在性判据，非释放量预测（扫荡 span 整吞远超 aged）。 */
+export declare const DEFAULT_AGED_FLOOR_RATIO = 0.05;
+/** 份额闸 θ（2.2.1，固化不进设置）：工具面/C ≥ θ ⇒ 摘要通道本轮关闭（剪扛杠杆）。 */
+export declare const DEFAULT_TOOLFACE_SHARE_THETA = 0.5;
 /** transcript 安全垫：U:/A: 前缀 + 分词误差（可浓缩散文 ×1.1）。 */
 export declare const TRANSCRIPT_SAFETY_RATIO = 1.1;
 export declare const DEFAULT_INSTRUCTION_TOKENS = 512;
@@ -83,8 +97,11 @@ export declare const CHURN_RELEASE_FLOOR_RATIO = 0.05;
  *     摘要判据① F>R 不成立，多一次 miss 没有对象可摘）。
  *  3. F > R：缺口先过地板 max(proseMin, ρ·W_eff)——保留位是软目标，几个 K 的超调
  *     下一轮再剪即可（轮2 工具域实锤：gap 169~4894 全被旧判据放行去摘，血亏）；
- *     过得了地板再判闸②③散文是否补得上缺口：补不上 → 仅剪到下限求生
- *     （B-6 良性/焦点域：残余是 system/焦点，摘不掉）。
+ *     过得了地板再判②③：**老化（span 可驱逐口径）散文 ≥ 开单地板
+ *     max(proseMin, 5%·W_eff)**——扫荡开单判据=存在性，不是释放量预测（2.2.1 规则A）；
+ *     不过 → 仅剪到下限求生（B-6 良性/焦点域/barrier 断供：残余摘不掉）。
+ *  3.5 份额闸：工具面（toolCallA+rPair）/C ≥ θ(0.5) → 仅剪（剪扛杠杆，摘要等
+ *     主导权交替；饥饿侧由序 3 前提 F>R 结构保证，纯工具稳态循环归观察哨）。
  *  4. 摘要值得做：发送判据按 **transcript**（摘要请求只含散文，工具不在其中）：
  *     transcript×1.1 + 指令 ≤ W_eff − 输出地板(1024) 即「摘得出去」（输出预算不足
  *     时按剩余空间收缩，§B-2 落地）→ 先摘后剪（有可剪面）/ 仅摘（无）。

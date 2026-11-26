@@ -201,7 +201,7 @@ export interface FactorDecision {
   /** 最新轮 A/R 字节占全部 A/R 字节的比例（遥测/触发线复核）。 */
   latestTurnShare: number
   /**
-   * A1 降级集（2.3.0 包二，仅非升级态）：位置带（超名额）∧ 事实门（全组 defined R
+   * A1 降级集（2.2.1 包二，仅非升级态）：位置带（超名额）∧ 事实门（全组 defined R
    * 均 superseded 判死）双过的组的全部 seq。发射端（planProtocolGroups）据此放宽
    * 位置/轮次门；事实门（missing/live R/附件/连续性）一律不放宽。空集 = 零行为变化。
    */
@@ -266,7 +266,7 @@ export interface FocusTailPlan {
   /** 最新轮 A/R 字节 / 全部 A/R 字节。 */
   latestTurnShare: number
   /**
-   * A1 降级带候选（2.3.0 包二，**仅非升级态**）：超出焦点名额的组（barrier/附件组豁免
+   * A1 降级带候选（2.2.1 包二，**仅非升级态**）：超出焦点名额的组（barrier/附件组豁免
    * 不占名额；open 区组不入带）。本函数只管位置与组形；**事实门**（全组 defined R 均
    * 被 superseded 判死）在 decide 裁决。升级态为空。
    */
@@ -284,7 +284,7 @@ export interface FocusTailPlan {
  * 占比超过已有的一半"）。组按 A 的 surface 位置排序，取最新 cap 组；焦点集含
  * A 与其全部 live R（闭包，组不拆分）。
  *
- * 2.3.0 包二（A1）追加：非升级态下产出**降级带候选**（超出焦点名额的旧组）——
+ * 2.2.1 包二（A1）追加：非升级态下产出**降级带候选**（超出焦点名额的旧组）——
  * 位置门放宽，事实门（superseded 判死）在 decide 裁决；升级态走原 cap 路径字节不变。
  */
 export function planFocusTail(
@@ -292,7 +292,7 @@ export function planFocusTail(
   surfaceSeqs: readonly number[],
   opts: {
     protectFromTurn: number; cap: number; latestTurn: number; shareThreshold: number
-    /** A1 名额（2.3.0）：非升级态硬保护的尾部组数 N（δ 收缩前上界）与折算参数。 */
+    /** A1 名额（2.2.1）：非升级态硬保护的尾部组数 N（δ 收缩前上界）与折算参数。 */
     quotaGroups: number; openTurn: number | null; charsPerToken: number
     /** 附件 R 的 seq（barrier 面）：附件组豁免——不占名额、永不入降级带。 */
     attachmentSeqs: ReadonlySet<number>; quotaBudgetRatio: number
@@ -349,7 +349,7 @@ export function planFocusTail(
   if (escalated) {
     for (const g of groups.slice(-opts.cap)) for (const seq of g.seqs) focusSeqs.add(seq)
   }
-  // A1 降级带（2.3.0 包二，仅非升级态）：open 区组不入带（本轮协议现场）；附件组豁免
+  // A1 降级带（2.2.1 包二，仅非升级态）：open 区组不入带（本轮协议现场）；附件组豁免
   // 不占名额（附件本就不可文本召回，位置保护对它是恒保护）。可排名组按位置从新到旧
   // 取最新 quotaUsed 组仍硬保护，更旧的进候选带——**事实门**（全组 R 判死）在 decide
   // 裁决，这里只出位置与组形。名额 = min(N, ⌊δ·W_eff·cpt / 组均字节⌋)，下限 1；
@@ -390,7 +390,7 @@ export function planFocusTail(
    *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
    *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
    *    组（含 open 轮内）可整组驱逐；
-   *  - A1 降级集（2.3.0 包二，demotedSeqs，仅 focusSeqs=null 侧生效）：事实门已判死
+   *  - A1 降级集（2.2.1 包二，demotedSeqs，仅 focusSeqs=null 侧生效）：事实门已判死
    *    的组放宽位置/轮次两道**位置门**；missing/live R/附件/连续性**事实门一律不放宽**；
    *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
    */
@@ -406,7 +406,7 @@ export function planProtocolGroups(
     stubSeqs: ReadonlySet<number>
     attachmentSeqs: ReadonlySet<number>
     /**
-     * A1 降级集（2.3.0 包二）：decide 事实门（全组 R superseded 判死）放行的组 A seq
+     * A1 降级集（2.2.1 包二）：decide 事实门（全组 R superseded 判死）放行的组 A seq
      * 及其 R。仅 focusSeqs=null（非升级态）时被消费：放宽本函数的 turn/位置两道保护门，
      * 其余事实门照常。null/缺省 = 零行为变化（旧调用方字节不变）。
      */
@@ -631,7 +631,7 @@ export class FactorEngine {
     // 焦点尾窗降级（用户 2026-11-13）：只在最新轮自身占比 ≥50% 且组数 >10 时触发；
     // 否则 focusEscalated=false，下面所有焦点判据走现行 turn 路径（零行为变化）。
     const surfaceSeqs = [...session.surface.nodes] as unknown as number[]
-    // A1 名额的 barrier 豁免面（2.3.0 包二）：R 侧附件从 tagsBySeq 取（与硬保护位
+    // A1 名额的 barrier 豁免面（2.2.1 包二）：R 侧附件从 tagsBySeq 取（与硬保护位
     // attachment 同源）；A 侧附件罕见，由发射端 attachmentSeqs 事实门兜底（不降级≠可驱逐）。
     const barrierSeqs = new Set<number>()
     for (const [seq, input] of tagsBySeq) if (input.hasAttachment === true) barrierSeqs.add(seq)
@@ -658,7 +658,7 @@ export class FactorEngine {
       for (const k of focalCommandLabels(calls, latestTurn, focalTurns)) focalMedium.add(k)
     }
     const superseded = supersededMarks(tagsBySeq)
-    // A1 事实门（2.3.0 包二）：只有全组 defined R 均被 superseded 判死的组进降级集；
+    // A1 事实门（2.2.1 包二）：只有全组 defined R 均被 superseded 判死的组进降级集；
     // 无 R 的组（中断轮/纯 A）不因位置降级——事实门不放宽（missing/live 门发射端仍拦）。
     // 降级=整组（A 与其 R 同进退），发射端对集内 A 放宽位置/轮次门。
     const demotedSeqs = new Set<number>()
@@ -997,7 +997,7 @@ export class FactorEngine {
       // 非升级态透传事实门降级集——空集时发射面与旧行为逐字节一致。
       demotedSeqs: decision.focusEscalated ? null : (decision.demotedSeqs.size > 0 ? decision.demotedSeqs : null),
     })
-    // [argp-quota] 影子列（2.3.0 包二，纯遥测）：本笔降级带的组形/名额账。放在事务
+    // [argp-quota] 影子列（2.2.1 包二，纯遥测）：本笔降级带的组形/名额账。放在事务
     // 前是因为 dispatch 影子记录早于发射落盘、拿不到组剪后计数；evicted* 为本笔发射
     // 计划口径（事实门全过 ⇒ 组可驱逐，实际是否随区间落盘受 prune-tx 预检）。
     if (decision.demotedGroupCount > 0 || decision.quotaBandGroups > 0) {

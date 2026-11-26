@@ -249,7 +249,7 @@ test('§F 健康锯齿不误伤：每次事务释放充分（≥地板）时连�
   }
 })
 
-test('§F 摘要 no-op 不清 churn 账：浓缩断供轮保留旧账，浅剪连发仍被抑制（2.3.0 重置门修复）', async () => {
+test('§F 摘要 no-op 不清 churn 账：浓缩断供轮保留旧账，浅剪连发仍被抑制（2.2.1 重置门修复）', async () => {
   // 变异锁：摘回 summarize 分支的无条件重置（不看 proseResult）⇒ r3 断言红
   //（g2 型浅剪连发复活）。断供形态用 stub 模拟（浓缩异常/barrier 散点不发射同形）；
   // 真 barrier-mid-history fixture 判据级锁在包一（design-2.2.x §1.6）。

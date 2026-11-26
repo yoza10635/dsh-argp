@@ -143,6 +143,18 @@ export interface FactorDecision {
     focusGroupCount: number;
     /** 最新轮 A/R 字节占全部 A/R 字节的比例（遥测/触发线复核）。 */
     latestTurnShare: number;
+    /**
+     * A1 降级集（2.2.1 包二，仅非升级态）：位置带（超名额）∧ 事实门（全组 defined R
+     * 均 superseded 判死）双过的组的全部 seq。发射端（planProtocolGroups）据此放宽
+     * 位置/轮次门；事实门（missing/live R/附件/连续性）一律不放宽。空集 = 零行为变化。
+     */
+    demotedSeqs: ReadonlySet<number>;
+    /** 事实门后实际降级组数（遥测；[argp-quota] 影子列）。 */
+    demotedGroupCount: number;
+    /** 降级带候选组数（仅位置门，事实门之前；遥测）。 */
+    quotaBandGroups: number;
+    /** δ·W_eff 收缩后实际生效的焦点名额（遥测；窗未知 = 固化 N）。 */
+    quotaUsed: number;
 }
 /** 词表 note 的行首标记（单一事实源在 constants.ts；此处保留 re-export 供既有测试/调用方）。 */
 export { VOCAB_NOTE_MARKER };
@@ -170,6 +182,14 @@ export interface FocusTailPlan {
     latestTurnGroupCount: number;
     /** 最新轮 A/R 字节 / 全部 A/R 字节。 */
     latestTurnShare: number;
+    /**
+     * A1 降级带候选（2.2.1 包二，**仅非升级态**）：超出焦点名额的组（barrier/附件组豁免
+     * 不占名额；open 区组不入带）。本函数只管位置与组形；**事实门**（全组 defined R 均
+     * 被 superseded 判死）在 decide 裁决。升级态为空。
+     */
+    demotedGroups: number[][];
+    /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。 */
+    quotaUsed: number;
 }
 /**
  * 焦点尾窗规划（2026-11-13 用户裁定）：**只在最新轮自身过大时**把焦点从整轮
@@ -179,12 +199,24 @@ export interface FocusTailPlan {
  * 判据用 A/R 字节占比作代理（本轮真实 token 密度未知；用户原话"最后一轮上下文
  * 占比超过已有的一半"）。组按 A 的 surface 位置排序，取最新 cap 组；焦点集含
  * A 与其全部 live R（闭包，组不拆分）。
+ *
+ * 2.2.1 包二（A1）追加：非升级态下产出**降级带候选**（超出焦点名额的旧组）——
+ * 位置门放宽，事实门（superseded 判死）在 decide 裁决；升级态走原 cap 路径字节不变。
  */
 export declare function planFocusTail(atoms: readonly Atom[], surfaceSeqs: readonly number[], opts: {
     protectFromTurn: number;
     cap: number;
     latestTurn: number;
     shareThreshold: number;
+    /** A1 名额（2.2.1）：非升级态硬保护的尾部组数 N（δ 收缩前上界）与折算参数。 */
+    quotaGroups: number;
+    openTurn: number | null;
+    charsPerToken: number;
+    /** 附件 R 的 seq（barrier 面）：附件组豁免——不占名额、永不入降级带。 */
+    attachmentSeqs: ReadonlySet<number>;
+    quotaBudgetRatio: number;
+    /** W_eff（token）；未知/≤0 ⇒ 名额不收缩（manual 无快照回退 N）。 */
+    windowEffTokens?: number;
 }): FocusTailPlan;
 /**
  * A+R 组剪选择（2026-11-13 用户裁定，design-group-prune）：
@@ -192,11 +224,13 @@ export declare function planFocusTail(atoms: readonly Atom[], surfaceSeqs: reado
  *  - 旧 A+桩组（K pack）即使 R 未入选也驱逐（死重 GC，回收 K 面 args）；
  *  - A 有 live R（未入选）⇒ A 保留，selected R 走空 tool 桩；
  *  - 缺失 R 的 A（中断轮）只有在 forced（in selected）时才整组驱逐；
- *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
- *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
- *    组（含 open 轮内）可整组驱逐；
- *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
- */
+   *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
+   *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
+   *    组（含 open 轮内）可整组驱逐；
+   *  - A1 降级集（2.2.1 包二，demotedSeqs，仅 focusSeqs=null 侧生效）：事实门已判死
+   *    的组放宽位置/轮次两道**位置门**；missing/live R/附件/连续性**事实门一律不放宽**；
+   *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
+   */
 export declare function planProtocolGroups(atoms: readonly Atom[], surfaceSeqs: readonly number[], selected: ReadonlySet<number>, opts: {
     protectFromTurn: number;
     openTurn: number | null;
@@ -204,6 +238,12 @@ export declare function planProtocolGroups(atoms: readonly Atom[], surfaceSeqs: 
     focusSeqs: ReadonlySet<number> | null;
     stubSeqs: ReadonlySet<number>;
     attachmentSeqs: ReadonlySet<number>;
+    /**
+     * A1 降级集（2.2.1 包二）：decide 事实门（全组 R superseded 判死）放行的组 A seq
+     * 及其 R。仅 focusSeqs=null（非升级态）时被消费：放宽本函数的 turn/位置两道保护门，
+     * 其余事实门照常。null/缺省 = 零行为变化（旧调用方字节不变）。
+     */
+    demotedSeqs?: ReadonlySet<number> | null;
 }): ProtocolGroupPlan;
 export declare class FactorEngine {
     /**
@@ -239,7 +279,9 @@ export declare class FactorEngine {
      */
     private observe;
     /** 纯决策（无发射副作用）：单测主对象。targetReleaseChars = 需释放的下界。 */
-    decide(session: Session, targetReleaseChars: number): FactorDecision;
+    decide(session: Session, targetReleaseChars: number, opts?: {
+        windowEffTokens?: number;
+    }): FactorDecision;
     /**
      * §D 影子反事实记录（只读）：在同一批候选上，把 sticky/focal/err 从硬保护降级为
      * 软排序后重算一次 planPrune，把「多释放了哪些枚、各因哪个降级位、cur vs shadow 的
@@ -250,7 +292,9 @@ export declare class FactorEngine {
      * 压力剪一笔：决策 → 协议组（A+R 整组 + K pack）/ R-only 空桩 → prune-tx 成对发射。
      * 目标不达不放宽；组剪收益按区间实际 chars 复核。
      */
-    compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null;
+    compactIfNeeded(session: Session, targetReleaseChars: number, opts?: {
+        windowEffTokens?: number;
+    }): CompactionResult | null;
     /**
      * §B-2a 结构去重驱逐（0-LLM）：宿主**每次压缩后**把再注入三件套
      * （agent-instructions/runtime-context/skill-catalog）重新注入一份——档案实锤

@@ -53,6 +53,9 @@ export interface ProseEvictPlan {
     partialSeqs: number[];
     /** 计划驱逐的散文字符（span + partial 的 textA 文本和）。 */
     evictedProseChars: number;
+    /** span（整轮晋升段）实际可驱逐的 textA 字符和——三桶 **aged 口径**（design-2.2.x §1.2）：
+     *  partial 散点、barrier/洞截断段、焦点窗与 open 轮之后的 run 一律不计。 */
+    spanProseChars: number;
     /** 全上下文散文字符（U/A 文本和；触发统计口径，含受保护轮）。 */
     proseCharsAll: number;
     stopReason: 'need-met' | 'exhausted' | 'no-candidate';
@@ -108,13 +111,22 @@ export declare class ProseCondenser {
     /** 焦点轮数活读：宿主侧旋钮与 FactorEngine 同源（引擎构造期传 getter 到本类）。 */
     focalTurnsOf(): number;
     /**
-     * 散文占比统计（触发线日志/遥测复用；不读 LLM）。
-     * `hostReinjected`：宿主再注入三件套的归类模式（缺省 'prose'=现网口径不变；
-     * §B 分派器度量传 'exclude'——假量不撑大判据②，见 classifyUaAtom 分期注释）。
+     * 三桶合并扫描（design-2.2.x §1.2）：一次遍历产出**同域**三桶——
+     * aged（span 实际可驱逐的 textA）/ fresh（=total−aged：焦点窗、barrier/洞截断段、
+     * partial 散点之后的散文）/ total（=旧 proseStats.proseCharsAll，口径逐字节不变，
+     * 护住判据④ transcript 与全部旧 fixture；proseStats 由本扫描合并退役）。aged 定义直接取 planProseEviction run 分组的
+     * span 晋升量——age 之外的类型/位置边界天然在内（审查实锤：年龄公式作废）。
+     * 保护窗与 condense 的 plan 调用同参（清扫式 needChars=∞）：快照与浓缩之间 surface
+     * 无写入点（接管形态动作序 dedup/组剪都在浓缩之后）⇒ 同面同参 ⇒ 同域 by construction。
+     * 顺带产出 toolFaceChars（份额闸工具面=toolCallA+rPair，口径见 §1.3）——同一批
+     * 分类结果，~免费。
      */
-    proseStats(session: Session, hostReinjected?: HostReinjectedMode): {
+    scanProseBuckets(session: Session, hostReinjected?: HostReinjectedMode): {
         sysChars: number;
-        proseCharsAll: number;
+        totalChars: number;
+        agedChars: number;
+        freshChars: number;
+        toolFaceChars: number;
     };
     private buildProbes;
     /** open turn 首节点 seq（detectOpenTurn 的位置版：日志尾向前找最近 turn/start）。 */
