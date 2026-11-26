@@ -22,7 +22,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { detectOpenTurn, eventText, rawEventText, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
-import { DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACTOR_COMPACTED_MARKER, FOCAL_DOC_HARD_WIDTH_RATIO, FOCUS_GROUP_CAP, FOCUS_TURN_SHARE_THRESHOLD, VOCAB_NOTE_MARKER } from '../constants.ts'
+import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACTOR_COMPACTED_MARKER, FOCAL_DOC_HARD_WIDTH_RATIO, FOCUS_GROUP_CAP, FOCUS_QUOTA_BUDGET_RATIO, FOCUS_QUOTA_GROUPS, FOCUS_TURN_SHARE_THRESHOLD, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
@@ -200,6 +200,18 @@ export interface FactorDecision {
   focusGroupCount: number
   /** 最新轮 A/R 字节占全部 A/R 字节的比例（遥测/触发线复核）。 */
   latestTurnShare: number
+  /**
+   * A1 降级集（2.3.0 包二，仅非升级态）：位置带（超名额）∧ 事实门（全组 defined R
+   * 均 superseded 判死）双过的组的全部 seq。发射端（planProtocolGroups）据此放宽
+   * 位置/轮次门；事实门（missing/live R/附件/连续性）一律不放宽。空集 = 零行为变化。
+   */
+  demotedSeqs: ReadonlySet<number>
+  /** 事实门后实际降级组数（遥测；[argp-quota] 影子列）。 */
+  demotedGroupCount: number
+  /** 降级带候选组数（仅位置门，事实门之前；遥测）。 */
+  quotaBandGroups: number
+  /** δ·W_eff 收缩后实际生效的焦点名额（遥测；窗未知 = 固化 N）。 */
+  quotaUsed: number
 }
 
 interface SessionFactorState {
@@ -253,6 +265,14 @@ export interface FocusTailPlan {
   latestTurnGroupCount: number
   /** 最新轮 A/R 字节 / 全部 A/R 字节。 */
   latestTurnShare: number
+  /**
+   * A1 降级带候选（2.3.0 包二，**仅非升级态**）：超出焦点名额的组（barrier/附件组豁免
+   * 不占名额；open 区组不入带）。本函数只管位置与组形；**事实门**（全组 defined R 均
+   * 被 superseded 判死）在 decide 裁决。升级态为空。
+   */
+  demotedGroups: number[][]
+  /** δ·W_eff 收缩后本笔实际生效的名额数（遥测；窗未知 = 固化 N）。 */
+  quotaUsed: number
 }
 
 /**
@@ -263,14 +283,26 @@ export interface FocusTailPlan {
  * 判据用 A/R 字节占比作代理（本轮真实 token 密度未知；用户原话"最后一轮上下文
  * 占比超过已有的一半"）。组按 A 的 surface 位置排序，取最新 cap 组；焦点集含
  * A 与其全部 live R（闭包，组不拆分）。
+ *
+ * 2.3.0 包二（A1）追加：非升级态下产出**降级带候选**（超出焦点名额的旧组）——
+ * 位置门放宽，事实门（superseded 判死）在 decide 裁决；升级态走原 cap 路径字节不变。
  */
 export function planFocusTail(
   atoms: readonly Atom[],
   surfaceSeqs: readonly number[],
-  opts: { protectFromTurn: number; cap: number; latestTurn: number; shareThreshold: number },
+  opts: {
+    protectFromTurn: number; cap: number; latestTurn: number; shareThreshold: number
+    /** A1 名额（2.3.0）：非升级态硬保护的尾部组数 N（δ 收缩前上界）与折算参数。 */
+    quotaGroups: number; openTurn: number | null; charsPerToken: number
+    /** 附件 R 的 seq（barrier 面）：附件组豁免——不占名额、永不入降级带。 */
+    attachmentSeqs: ReadonlySet<number>; quotaBudgetRatio: number
+    /** W_eff（token）；未知/≤0 ⇒ 名额不收缩（manual 无快照回退 N）。 */
+    windowEffTokens?: number
+  },
 ): FocusTailPlan {
   const empty: FocusTailPlan = {
     escalated: false, focusSeqs: new Set(), groupCount: 0, latestTurnGroupCount: 0, latestTurnShare: 0,
+    demotedGroups: [], quotaUsed: opts.quotaGroups,
   }
   if (!Number.isFinite(opts.protectFromTurn) || opts.cap <= 0) return empty
   const atomBySeq = new Map<number, Atom>()
@@ -317,8 +349,35 @@ export function planFocusTail(
   if (escalated) {
     for (const g of groups.slice(-opts.cap)) for (const seq of g.seqs) focusSeqs.add(seq)
   }
+  // A1 降级带（2.3.0 包二，仅非升级态）：open 区组不入带（本轮协议现场）；附件组豁免
+  // 不占名额（附件本就不可文本召回，位置保护对它是恒保护）。可排名组按位置从新到旧
+  // 取最新 quotaUsed 组仍硬保护，更旧的进候选带——**事实门**（全组 R 判死）在 decide
+  // 裁决，这里只出位置与组形。名额 = min(N, ⌊δ·W_eff·cpt / 组均字节⌋)，下限 1；
+  // 窗未知/折算不可得 ⇒ 回退 N（manual/无快照字节兼容旧形态）。
+  let openFromPos = Number.POSITIVE_INFINITY
+  if (opts.openTurn !== null) {
+    for (let i = 0; i < surfaceSeqs.length; i += 1) {
+      const atom = atomBySeq.get(surfaceSeqs[i] as number)
+      if (atom !== undefined && atom.turn >= opts.openTurn) { openFromPos = i; break }
+    }
+  }
+  const rankable = groups.filter(g =>
+    g.pos < openFromPos && !g.seqs.some(s => opts.attachmentSeqs.has(s)))
+  const rankableChars = rankable.reduce((n, g) =>
+    n + g.seqs.reduce((m, s) => m + (atomBySeq.get(s)?.text.length ?? 0), 0), 0)
+  const avgGroupChars = rankable.length > 0 ? rankableChars / rankable.length : 0
+  const budgetChars = opts.windowEffTokens !== undefined && opts.windowEffTokens > 0
+    && opts.charsPerToken > 0 && avgGroupChars > 0
+    ? opts.quotaBudgetRatio * opts.windowEffTokens * opts.charsPerToken
+    : undefined
+  const quotaUsed = budgetChars === undefined
+    ? opts.quotaGroups
+    : Math.max(1, Math.min(opts.quotaGroups, Math.floor(budgetChars / avgGroupChars)))
+  const demotedGroups = escalated ? []
+    : rankable.slice(0, Math.max(0, rankable.length - quotaUsed)).map(g => [...g.seqs])
   return {
     escalated, focusSeqs, groupCount: groups.length, latestTurnGroupCount, latestTurnShare,
+    demotedGroups, quotaUsed,
   }
 }
 
@@ -328,11 +387,13 @@ export function planFocusTail(
  *  - 旧 A+桩组（K pack）即使 R 未入选也驱逐（死重 GC，回收 K 面 args）；
  *  - A 有 live R（未入选）⇒ A 保留，selected R 走空 tool 桩；
  *  - 缺失 R 的 A（中断轮）只有在 forced（in selected）时才整组驱逐；
- *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
- *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
- *    组（含 open 轮内）可整组驱逐；
- *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
- */
+   *  - 焦点/open 保护：默认（focusSeqs=null）非 forced 组必须 turn < protectFromTurn
+   *    且不在 open turn；焦点尾窗降级（focusSeqs≠null）时改按焦点原子集保护，焦点外
+   *    组（含 open 轮内）可整组驱逐；
+   *  - A1 降级集（2.3.0 包二，demotedSeqs，仅 focusSeqs=null 侧生效）：事实门已判死
+   *    的组放宽位置/轮次两道**位置门**；missing/live R/附件/连续性**事实门一律不放宽**；
+   *  - 组 seqs 必须是 surface 连续切片（防止 replace 区间吞掉夹在中间的节点）。
+   */
 export function planProtocolGroups(
   atoms: readonly Atom[],
   surfaceSeqs: readonly number[],
@@ -344,6 +405,12 @@ export function planProtocolGroups(
     focusSeqs: ReadonlySet<number> | null
     stubSeqs: ReadonlySet<number>
     attachmentSeqs: ReadonlySet<number>
+    /**
+     * A1 降级集（2.3.0 包二）：decide 事实门（全组 R superseded 判死）放行的组 A seq
+     * 及其 R。仅 focusSeqs=null（非升级态）时被消费：放宽本函数的 turn/位置两道保护门，
+     * 其余事实门照常。null/缺省 = 零行为变化（旧调用方字节不变）。
+     */
+    demotedSeqs?: ReadonlySet<number> | null
   },
 ): ProtocolGroupPlan {
   const atomBySeq = new Map<number, Atom>()
@@ -379,11 +446,14 @@ export function planProtocolGroups(
     const forced = selected.has(a.seq)
     const rs = a.toolCallIds.map(cid => rByCall.get(cid) ?? [])
     const defined = rs.flat()
+    // A1 降级组（仅非升级态消费）：放宽下面 turn 门与末尾位置门；事实门不动。
+    const demoted = opts.focusSeqs === null && opts.demotedSeqs !== undefined
+      && opts.demotedSeqs !== null && opts.demotedSeqs.has(a.seq)
     if (opts.focusSeqs !== null) {
       // 焦点尾窗降级：只保护焦点组；焦点外的 open 轮组也可整组离场（尾窗之外=旧工作集）。
       const inFocus = opts.focusSeqs.has(a.seq) || defined.some(r => opts.focusSeqs!.has(r.seq))
       if (inFocus && !forced) continue
-    } else {
+    } else if (!demoted) {
       if (opts.openTurn !== null && a.turn >= opts.openTurn) continue
       if (!forced && a.turn >= opts.protectFromTurn) continue
     }
@@ -407,7 +477,7 @@ export function planProtocolGroups(
     if (posMissing) continue
     const slice = surfaceSeqs.slice(start, end + 1)
     if (slice.length !== seqSet.size || !slice.every(s => seqSet.has(s))) continue // 非连续：不误吞夹心节点
-    if (opts.focusSeqs === null) {
+    if (opts.focusSeqs === null && !demoted) {
       if (start >= openFromPos) continue // 位置守卫：物理上已在 open 区（A.turn 缺失也拦住）
       if (!forced && start >= focalFromPos) continue // 位置守卫：物理上已进焦点区
     }
@@ -551,7 +621,7 @@ export class FactorEngine {
   }
 
   /** 纯决策（无发射副作用）：单测主对象。targetReleaseChars = 需释放的下界。 */
-  decide(session: Session, targetReleaseChars: number): FactorDecision {
+  decide(session: Session, targetReleaseChars: number, opts?: { windowEffTokens?: number }): FactorDecision {
     const { atoms, tagsBySeq, cwd } = this.observe(session)
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const openTurn = detectOpenTurn(session)
@@ -561,8 +631,15 @@ export class FactorEngine {
     // 焦点尾窗降级（用户 2026-11-13）：只在最新轮自身占比 ≥50% 且组数 >10 时触发；
     // 否则 focusEscalated=false，下面所有焦点判据走现行 turn 路径（零行为变化）。
     const surfaceSeqs = [...session.surface.nodes] as unknown as number[]
+    // A1 名额的 barrier 豁免面（2.3.0 包二）：R 侧附件从 tagsBySeq 取（与硬保护位
+    // attachment 同源）；A 侧附件罕见，由发射端 attachmentSeqs 事实门兜底（不降级≠可驱逐）。
+    const barrierSeqs = new Set<number>()
+    for (const [seq, input] of tagsBySeq) if (input.hasAttachment === true) barrierSeqs.add(seq)
     const focusTail = planFocusTail(atoms, surfaceSeqs, {
       protectFromTurn, cap: FOCUS_GROUP_CAP, latestTurn, shareThreshold: FOCUS_TURN_SHARE_THRESHOLD,
+      quotaGroups: FOCUS_QUOTA_GROUPS, quotaBudgetRatio: FOCUS_QUOTA_BUDGET_RATIO,
+      openTurn, charsPerToken: DEFAULT_CHARS_PER_TOKEN, attachmentSeqs: barrierSeqs,
+      windowEffTokens: opts?.windowEffTokens,
     })
     const focusEscalated = focusTail.escalated
     const focal = focalLabels(atoms as AtomLike[], latestTurn, focalTurns, cwd)
@@ -581,6 +658,23 @@ export class FactorEngine {
       for (const k of focalCommandLabels(calls, latestTurn, focalTurns)) focalMedium.add(k)
     }
     const superseded = supersededMarks(tagsBySeq)
+    // A1 事实门（2.3.0 包二）：只有全组 defined R 均被 superseded 判死的组进降级集；
+    // 无 R 的组（中断轮/纯 A）不因位置降级——事实门不放宽（missing/live 门发射端仍拦）。
+    // 降级=整组（A 与其 R 同进退），发射端对集内 A 放宽位置/轮次门。
+    const demotedSeqs = new Set<number>()
+    let demotedGroupCount = 0
+    if (!focusEscalated && focusTail.demotedGroups.length > 0) {
+      const typeBySeq = new Map<number, Atom['type']>()
+      for (const a of atoms) typeBySeq.set(a.seq, a.type)
+      for (const gseqs of focusTail.demotedGroups) {
+        const rs = gseqs.filter(s => typeBySeq.get(s) === 'R')
+        if (rs.length === 0) continue
+        if (rs.every(s => superseded.get(s) === true)) {
+          demotedGroupCount += 1
+          for (const s of gseqs) demotedSeqs.add(s)
+        }
+      }
+    }
     const st = this.stateOf(session)
     const sticky = this.ledgerOf(session).stickyActive()
     const candidates = new Map<number, RTagInput>()
@@ -691,14 +785,18 @@ export class FactorEngine {
     for (const f of facts) {
       // 焦点尾窗降级时，焦点外 R 的 turn/label 焦点保护全部失效（组剪已按 focusSeqs
       // 保护最新 10 组；旧的同文档读不再因 label 命中被连带硬保）。
-      const focusGate = !focusEscalated || f.inFocus
+      // A1（包二）：事实门已判死的降级带 R 同样摘焦点位——判死组保焦点豁免=白烧名额。
+      const demotedR = demotedSeqs.has(f.seq)
+      const focusGate = (!focusEscalated || f.inFocus) && !demotedR
       const focalDocStrong = tiered && focusGate && f.focalDocHit.length > 0
         && (!fuseActive || f.focalDocHit.some(lbl => docLatest.get(lbl) === f.seq))
       if (focalDocStrong) focalDocHardChars += f.input.tags.sizeChars
       // 三值焦点带（§2.5 v1.1）：strong=文档面命中（hard 与否都占带位——熔断退 hard 时
       // 排序位仍沉底）；medium=白名单命令面（★永不 hard）；其余 none。flat 走布尔回退。
       const focalBand = tiered ? (f.focalDocHit.length > 0 ? 2 : f.mediumHit ? 1 : 0) : undefined
-      const effectiveFocal = focusEscalated ? f.inFocus : f.focalMatch
+      // A1：降级带判死 R 的 label 焦点命中同样失效（flat 档的 focalNonRegenerable/
+      // superseded 焦点豁免/quant 焦点位都由本值裁决）。
+      const effectiveFocal = (focusEscalated ? f.inFocus : f.focalMatch) && !demotedR
       const effectiveBand: 0 | 1 | 2 = tiered
         ? (focusEscalated ? (f.inFocus ? (focalBand as 0 | 1 | 2) : 0) : (focalBand as 0 | 1 | 2))
         : (effectiveFocal ? 1 : 0)
@@ -707,7 +805,9 @@ export class FactorEngine {
       // P6-③ 裁定 2：召回对全部硬保护位失效（无条件进剪序；可再生=再召回一次）。
       const hardFlags = f.isRecall ? {} : {
         // 焦点尾窗降级时，open 轮只保焦点组；焦点外旧组可离场（尾窗之外=旧工作集）。
-        failureNoFollowR: f.inOpenTurn && (!focusEscalated || f.inFocus),
+        // A1：降级带按位置排除 open 区，demotedR 与 inOpenTurn 仅在现场轮 turn 数据
+        // 异常时共存——判死组不当本轮协议现场保（与 focusGate 同一放宽口径的兜底）。
+        failureNoFollowR: f.inOpenTurn && (!focusEscalated || f.inFocus) && !demotedR,
         // tiered：sticky 归因一枚化（只保 exemplar）；flat：逐枚硬保现行为。
         stickyMember: tiered ? f.stickyMember && stickyExemplarSeqs.has(f.seq) : f.stickyMember,
         // 附件保护：空文本（纯附件 R）或文本+附件混合——文本桩会把 image/file 一起丢。
@@ -801,6 +901,8 @@ export class FactorEngine {
       interruptedForcedSeqs: forcedFirst,
       focusEscalated, focusSeqs: focusTail.focusSeqs,
       focusGroupCount: focusTail.groupCount, latestTurnShare: focusTail.latestTurnShare,
+      demotedSeqs, demotedGroupCount,
+      quotaBandGroups: focusTail.demotedGroups.length, quotaUsed: focusTail.quotaUsed,
     }
   }
 
@@ -849,9 +951,9 @@ export class FactorEngine {
    * 压力剪一笔：决策 → 协议组（A+R 整组 + K pack）/ R-only 空桩 → prune-tx 成对发射。
    * 目标不达不放宽；组剪收益按区间实际 chars 复核。
    */
-  compactIfNeeded(session: Session, targetReleaseChars: number): CompactionResult | null {
+  compactIfNeeded(session: Session, targetReleaseChars: number, opts?: { windowEffTokens?: number }): CompactionResult | null {
     if (targetReleaseChars <= 0) return null
-    const decision = this.decide(session, targetReleaseChars)
+    const decision = this.decide(session, targetReleaseChars, opts)
     const { plan, tagsBySeq } = decision
     const atoms = this.host.atomize(session)
     const atomsBySeq = new Map<number, Atom>()
@@ -891,7 +993,22 @@ export class FactorEngine {
       // 焦点尾窗降级时只保护最新 10 组；未降级传 null = 旧 turn/open 判据字节不变。
       focusSeqs: decision.focusEscalated ? decision.focusSeqs : null,
       stubSeqs, attachmentSeqs,
+      // A1（包二）：升级态走原 cap 路径（demotedSeqs 本就为空，显式置 null 上双保险）；
+      // 非升级态透传事实门降级集——空集时发射面与旧行为逐字节一致。
+      demotedSeqs: decision.focusEscalated ? null : (decision.demotedSeqs.size > 0 ? decision.demotedSeqs : null),
     })
+    // [argp-quota] 影子列（2.3.0 包二，纯遥测）：本笔降级带的组形/名额账。放在事务
+    // 前是因为 dispatch 影子记录早于发射落盘、拿不到组剪后计数；evicted* 为本笔发射
+    // 计划口径（事实门全过 ⇒ 组可驱逐，实际是否随区间落盘受 prune-tx 预检）。
+    if (decision.demotedGroupCount > 0 || decision.quotaBandGroups > 0) {
+      const demotedHit = groupPlan.groups.filter(g => decision.demotedSeqs.has(g.aSeq))
+      this.host.log.info('[argp-quota] ' + JSON.stringify({
+        quotaUsed: decision.quotaUsed, quotaBandGroups: decision.quotaBandGroups,
+        demotedGroups: decision.demotedGroupCount,
+        evictedGroups: demotedHit.length,
+        evictedChars: demotedHit.reduce((n, g) => n + g.chars, 0),
+      }))
+    }
     const intervals: { seqs: number[]; chars: number; atoms: Atom[] }[] = []
     const tombstones: ({ type: 'tool'; seq: number; callId: string; text: string }
       | { type: 'user'; text: string })[] = []

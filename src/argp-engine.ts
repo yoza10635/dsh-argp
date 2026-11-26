@@ -1157,7 +1157,9 @@ export class ArgpEngine extends CompactionEngine {
       const deficit = measurement.contextTokens - retainTokens
       if (deficit > 0) {
         // Issue5：deficit→chars 按 live 面样本混合密度（CJK 重的面同额 token 只需更少字符）
-        pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)))
+        // 包二 A1：W_eff 透传 ⇒ 焦点名额按 δ·W_eff 预算收缩（窗未知才回退固化 N）。
+        pruned = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)),
+          { windowEffTokens: this.effectiveWindowFor(session) })
       }
       let native = { pruned: 0, charsRemoved: 0 }
       if (trigger === 'context-overflow' || measurement.contextTokens > retainTokens) {
@@ -1225,7 +1227,9 @@ export class ArgpEngine extends CompactionEngine {
       // 复测口径：浓缩/去重后 surface 已变，deficit 用当前测量重算（含 incomingTokens）。
       const deficit = this.measureTokens(session, incomingTokens).contextTokens - retainTokens
       let r: CompactionResult | null = null
-      if (deficit > 0) r = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)))
+      // 包二 A1：W_eff 透传（复测口径下 surface 已变，名额按当前窗重折）。
+      if (deficit > 0) r = this.factor.compactIfNeeded(session, Math.floor(deficit * this.liveCharsPerToken(session)),
+        { windowEffTokens: this.effectiveWindowFor(session) })
       this.nativePruneToolResults(session)
       return r
     }

@@ -5,7 +5,16 @@
  *  - 降级后最老的 2 组 A+R 可整组驱逐，最新 10 组保留；
  *  - open turn 内同样只保焦点 10 组（open 硬保护同步收窄）。
  *
- * 变异锁：摘 focusEscalated 条件 / 摘 cap / 摘 planProtocolGroups focusSeqs 判据 ⇒ 红。
+ * 2.3.0 包二（A1 焦点名额，FT7–FT12）：非升级态下焦点区按名额保护——
+ *  - 名额 = min(20, ⌊δ·W_eff·cpt / 组均字节⌋)，下限 1；窗未知回退 20（FT9）；
+ *  - 超名额的**旧侧**组只有全组 R 被 superseded 判死才整组降级离场（FT7 绿/FT8 红）；
+ *  - barrier/附件组豁免不占名额（FT11）；open 区组不入降级带（FT12）；
+ *  - 升级态走原 cap 路径，降级带恒空（FT10；FT1–FT6 即升级态字节锁）。
+ *
+ * 变异锁：摘 focusEscalated 条件 / 摘 cap / 摘 planProtocolGroups focusSeqs 判据 ⇒ 红；
+ * 摘 demotedGroups 计算 ⇒ FT7/FT9/FT11 红；摘 decide 事实门（按位置整带降级）⇒ FT8 红；
+ * 摘附件豁免 ⇒ FT11 红；摘 open 排除 ⇒ FT12 红；摘 demotedSeqs 透传（发射端仍按
+ * 位置门拦）⇒ FT7 红；升级态塞降级带 ⇒ FT10 红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -151,7 +160,10 @@ test('FT5 planFocusTail 纯函数：cap/share/焦点闭包读数', async () => {
   buildGroups(session, 1, 12)
   const atoms = host.atomize(session)
   const surface = [...session.surface.nodes] as unknown as number[]
-  const plan = planFocusTail(atoms, surface, { protectFromTurn: 1, cap: 10, latestTurn: 1, shareThreshold: 0.5 })
+  const plan = planFocusTail(atoms, surface, {
+    protectFromTurn: 1, cap: 10, latestTurn: 1, shareThreshold: 0.5,
+    quotaGroups: 20, quotaBudgetRatio: 0.3, openTurn: null, charsPerToken: 3.5, attachmentSeqs: new Set(),
+  })
   assert.equal(plan.escalated, true)
   assert.equal(plan.latestTurnGroupCount, 12)
   assert.equal(plan.groupCount, 12)
@@ -180,4 +192,189 @@ test('FT6 降级后焦点外旧组整组（A args + R 原文）离场，词表�
   const checkpoints = [...session.surface.nodes].filter(s => evs[s as number]?.type === 'user/message'
     && JSON.stringify(evs[s as number]?.data).includes('已压缩剪枝次要原子'))
   assert.equal(checkpoints.length, 2, '两组各一枚压缩检查点')
+})
+
+/** 带 image 块的组（G8 配方）：tool-result content 内嵌 {type:'image'} ⇒ barrier 面。 */
+function appendGroupImage(session: Session, turn: number, callId: string, filePath: string, resultText: string): void {
+  session.append('assistant/message', {
+    stream: [], turn, step: 1,
+    message: createAssistantMessage({
+      source: { provider: 'test', model: 'test' },
+      content: [{ type: 'text', text: 'doing read' }, { type: 'tool-call', id: callId, name: 'read', arguments: JSON.stringify({ file_path: filePath }) } as never],
+    }),
+  } as never, { surfaceOp: 'append' })
+  session.append('tool/call', { turn, callId, name: 'read', arguments: JSON.stringify({ file_path: filePath }) } as never)
+  session.append('tool/result', {
+    turn, step: 1,
+    message: {
+      role: 'user',
+      content: [{ type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: resultText }, { type: 'image' } as never], isError: false }],
+      source: { kind: 'tool', callId }, id: 'm_' + callId,
+    },
+  } as never, { surfaceOp: 'append' })
+}
+
+function checkpointsOf(session: Session): number {
+  const evs = sessionEvents(session) as unknown as Array<{ seq: number; type: string; data?: unknown }>
+  return [...session.surface.nodes].filter(s => evs[s as number]?.type === 'user/message'
+    && JSON.stringify(evs[s as number]?.data).includes('已压缩剪枝次要原子')).length
+}
+
+/** FT7–FT12 共用底架：turn1 超大旧组（把占比压到 <50%，堵升级态）+ turn2 焦点区组。 */
+function buildQuotaScaffold(id: string): Session {
+  const session = makeSession(id)
+  appendUser(session, 1, '开始任务')
+  appendGroup(session, 1, 'huge', 'C:/Proj/huge.ts', 'HUGE'.repeat(25_000))
+  appendUser(session, 2, '继续')
+  return session
+}
+
+test('FT7 名额 20/21 组边界：最老判死组整组（A+R）离场，其余 20 组硬保；[argp-quota] 影子列落日志', async () => {
+  const { host, factor } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft7')
+  host.bindSession(session)
+  buildGroups(session, 2, 20, 'a')
+  // 判死证据：文末重读 a0.ts（全量覆盖全量 ⇒ supersededMarks(c0)=true）。
+  appendGroup(session, 2, 'c0dup', 'C:/Proj/a0.ts', 'A0-RELOADED-' + 'y'.repeat(200))
+
+  const quotaLogs: string[] = []
+  const origInfo = host.log.info.bind(host.log)
+  ;(host.log as { info: (m: string) => void }).info = (m: string): void => {
+    if (m.startsWith('[argp-quota] ')) quotaLogs.push(m)
+    origInfo(m)
+  }
+  try {
+    const d = factor.decide(session, 1_000_000)
+    assert.equal(d.focusEscalated, false, '占比 <50% ⇒ 非升级态')
+    assert.equal(d.quotaUsed, 20, '窗未知（直接 decide）⇒ 名额回退固化 N=20')
+    assert.equal(d.quotaBandGroups, 1, '21 可排名组超名额 1 ⇒ 带=[a0]')
+    assert.equal(d.demotedGroupCount, 1, 'a0 全组 R 判死 ⇒ 事实门过')
+    assert.ok(d.demotedSeqs.size === 2, '降级=整组：A+R 同进退')
+    assert.ok(d.plan.pruneOrder.includes(seqOfR(d, 'c0')), '判死组 R 入剪序（焦点硬保已摘）')
+    assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c1')), '名额内 a1 仍整轮焦点硬保')
+    assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c0dup')), '覆盖读本身焦点硬保')
+
+    assert.ok(factor.compactIfNeeded(session, 1_000_000) !== null)
+    const dump = surfaceDump(session)
+    assert.ok(!dump.includes('A0-xxxx'), 'a0 判死组 R 原文离场')
+    assert.ok(dump.includes('A0-RELOADED'), '覆盖读（活体）保留')
+    assert.ok(dump.includes('A1-'), '名额内组不动')
+    assert.ok(dump.includes('A19-'), '名额内组不动')
+    assert.equal(checkpointsOf(session), 2, 'turn1 超大旧组 + a0 降级组各一枚检查点')
+  } finally {
+    ;(host.log as { info: (m: string) => void }).info = origInfo
+  }
+  assert.equal(quotaLogs.length, 1, '[argp-quota] 影子列恰一行（发射侧）')
+  const rec = JSON.parse(quotaLogs[0]!.slice('[argp-quota] '.length)) as Record<string, number>
+  assert.deepEqual(Object.keys(rec).sort(), ['demotedGroups', 'evictedChars', 'evictedGroups', 'quotaBandGroups', 'quotaUsed'])
+  assert.equal(rec.quotaUsed, 20)
+  assert.equal(rec.quotaBandGroups, 1)
+  assert.equal(rec.demotedGroups, 1)
+  assert.equal(rec.evictedGroups, 1, '组剪计划口径：降级组进组剪')
+  assert.ok(rec.evictedChars > 200 && rec.evictedChars < 500, 'chars 账 = A+R 实际文本量：实测 ' + rec.evictedChars)
+})
+
+test('FT8 事实门红锁：超名额但未判死的组照常硬保（放宽位置门≠放宽事实门）', async () => {
+  const { host, factor } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft8')
+  host.bindSession(session)
+  buildGroups(session, 2, 21, 'a') // 无覆盖读：a0 超名额但活着
+
+  const d = factor.decide(session, 1_000_000)
+  assert.equal(d.quotaBandGroups, 1, '位置门：a0 入带')
+  assert.equal(d.demotedGroupCount, 0, '事实门：无 superseded ⇒ 不降级')
+  assert.equal(d.demotedSeqs.size, 0)
+  assert.ok(!d.plan.pruneOrder.includes(seqOfR(d, 'c0')), 'a0 R 不进剪序')
+  assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c0')))
+
+  assert.ok(factor.compactIfNeeded(session, 1_000_000) !== null)
+  const dump = surfaceDump(session)
+  assert.ok(dump.includes('A0-xxxx'), 'a0 仍在面（仅 turn1 超大旧组离场）')
+  assert.equal(checkpointsOf(session), 1)
+})
+
+test('FT9 名额 δ·W_eff 折算（纯函数）：窗未知回退 20、预算收缩、下限 1、窗≤0 回退', async () => {
+  const { host } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft9')
+  buildGroups(session, 2, 20, 'a')
+  appendGroup(session, 2, 'c0dup', 'C:/Proj/a0.ts', 'A0-RELOADED-' + 'y'.repeat(200))
+  const atoms = host.atomize(session)
+  const surface = [...session.surface.nodes] as unknown as number[]
+  const base = { protectFromTurn: 2, cap: 10, latestTurn: 2, shareThreshold: 0.5,
+    quotaGroups: 20, quotaBudgetRatio: 0.3, openTurn: null, charsPerToken: 3.5, attachmentSeqs: new Set<number>() }
+  const rankableChars = atoms.filter(a => (a.type === 'A' || a.type === 'R') && a.turn === 2)
+    .reduce((n, a) => n + a.text.length, 0)
+  const avg = rankableChars / 21
+
+  const p1 = planFocusTail(atoms, surface, { ...base })
+  assert.equal(p1.escalated, false)
+  assert.equal(p1.quotaUsed, 20, '窗未知 ⇒ 回退 N')
+  assert.equal(p1.demotedGroups.length, 1)
+  const p2 = planFocusTail(atoms, surface, { ...base, windowEffTokens: 1000 })
+  assert.equal(p2.quotaUsed, Math.max(1, Math.floor(0.3 * 1000 * 3.5 / avg)), 'quota = ⌊δ·W_eff·cpt/组均字节⌋ 形态锁')
+  assert.ok(p2.quotaUsed < 20 && p2.quotaUsed > 1, `预算收缩应落在 (1,20)：实测 ${p2.quotaUsed}`)
+  assert.equal(p2.demotedGroups.length, 21 - p2.quotaUsed, '带 = 可排名组 − 名额（旧侧）')
+  assert.equal(p2.demotedGroups[0]![0], p1.demotedGroups[0]![0], '带仍从最老组起')
+  const p3 = planFocusTail(atoms, surface, { ...base, windowEffTokens: 1 })
+  assert.equal(p3.quotaUsed, 1, '预算再小也保底 1 组')
+  assert.equal(p3.demotedGroups.length, 20)
+  const p4 = planFocusTail(atoms, surface, { ...base, windowEffTokens: 0 })
+  assert.equal(p4.quotaUsed, 20, '窗 ≤0 = 未知 ⇒ 回退 N（manual 字节兼容）')
+})
+
+test('FT10 升级态共存锁：占比≥50% ∧ 组>10 ⇒ 原 cap 路径，降级带恒空', async () => {
+  const { host, factor } = await makeFactor()
+  const session = makeSession('quota-ft10')
+  host.bindSession(session)
+  appendUser(session, 1, '开始任务')
+  buildGroups(session, 1, 21, 'a') // 全在最新轮 ⇒ share=1 ⇒ 升级态
+  const d = factor.decide(session, 1_000_000)
+  assert.equal(d.focusEscalated, true, '21 组/100% ⇒ 升级（>10 组无条件离场语义不变）')
+  assert.equal(d.quotaBandGroups, 0, '升级态不产降级带（名额路径与 cap 路径互斥）')
+  assert.equal(d.demotedGroupCount, 0)
+  assert.equal(d.demotedSeqs.size, 0)
+  assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c11')), '焦点仍=最新 10 组（cap 原语义）')
+  assert.ok(d.plan.pruneOrder.includes(seqOfR(d, 'c0')))
+})
+
+test('FT11 barrier 豁免不占名额：附件组让位，判死的名额外活组照常降级离场', async () => {
+  const { host, factor } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft11')
+  host.bindSession(session)
+  // 显式造数（buildGroups 的 callId 固定 c0.. 会撞名）：k0 附件组豁免不占名额
+  // ⇒ 可排名组 = c1..c20 + 文末 b1 覆盖读 = 21 ⇒ 带 = [c1]（b1 判死）。
+  appendGroupImage(session, 2, 'k0', 'C:/Proj/b0.ts', 'B0-IMG-' + 'x'.repeat(200))
+  for (let i = 1; i <= 20; i += 1) appendGroup(session, 2, 'c' + i, 'C:/Proj/b' + i + '.ts', 'B' + i + '-' + 'x'.repeat(200))
+  appendGroup(session, 2, 'k1dup', 'C:/Proj/b1.ts', 'B1-RELOADED-' + 'y'.repeat(200))
+  const d = factor.decide(session, 1_000_000)
+  assert.equal(d.focusEscalated, false)
+  assert.equal(d.demotedGroupCount, 1)
+  assert.equal(d.quotaBandGroups, 1)
+  const b0r = seqOfR(d, 'k0'); const b1r = seqOfR(d, 'c1')
+  assert.equal(d.demotedSeqs.has(b0r), false, '附件组豁免：不占名额也永不入带')
+  assert.equal(d.demotedSeqs.has(b1r), true, 'b1 判死且超名额 ⇒ 降级')
+  assert.ok(d.plan.hardProtected.includes(b0r), '附件硬保护位独立于名额路径，照常生效')
+  assert.equal(factor.compactIfNeeded(session, 1_000_000) !== null, true)
+  const dump = surfaceDump(session)
+  assert.ok(dump.includes('B0-IMG'), 'barrier 组留面')
+  assert.ok(!dump.includes('B1-xxxx'), 'b1 判死组离场')
+  assert.ok(dump.includes('B1-RELOADED'), '覆盖读保留')
+  assert.ok(dump.includes('B2-'), '名额内组不动')
+})
+
+test('FT12 open 区不入带：本轮协议现场的焦点组即使超名额也不降级', async () => {
+  const { host, factor } = await makeFactor()
+  const session = buildQuotaScaffold('quota-ft12')
+  host.bindSession(session)
+  session.append('turn/start', { turn: 2 })
+  buildGroups(session, 2, 21, 'a')
+  appendGroup(session, 2, 'c0dup', 'C:/Proj/a0.ts', 'A0-RELOADED-' + 'y'.repeat(200))
+  const d = factor.decide(session, 1_000_000)
+  assert.equal(d.focusEscalated, false, '占比 <50%')
+  assert.equal(d.quotaBandGroups, 0, 'open 区组全部不入带')
+  assert.equal(d.demotedGroupCount, 0)
+  assert.ok(!d.plan.pruneOrder.includes(seqOfR(d, 'c0')), '判死但 open ⇒ 不剪')
+  assert.ok(d.plan.hardProtected.includes(seqOfR(d, 'c0')))
+  assert.ok(factor.compactIfNeeded(session, 1_000_000) !== null)
+  assert.ok(surfaceDump(session).includes('A0-xxxx'), '焦点/open 组全部留面')
 })
