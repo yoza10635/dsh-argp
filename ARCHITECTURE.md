@@ -185,6 +185,23 @@ ARGP 的写回全部是 `surfaceOp: { op: 'replace', startSeq, endSeq }`。0.1.5
 `system/message` **静默跳过、不产出原子** → node 0 永不进入剪枝区间。有意依赖，已由
 注释与测试钉死。
 
+### 7.5 全局预剪的归因与 open-turn 硬界（`nativePruneToolResults`）
+
+接管下宿主 preset 的 `tool-result-pruner` 行已被本包 override 摘除 ⇒ 宿主**不再自主**
+轮内预剪。同一服务（`ctx.get('toolResultPruner').pruneSession`）的唯一活调用方是
+`argp-engine.ts` 的 `nativePruneToolResults`：**随压缩事务**发生（组剪之后，2026-11-14
+裁定），服务缺失 / 无 open turn / 异常 ⇒ no-op 不阻断。
+
+硬界与基线（NP10a/NP10c 钉死）：宿主格式校验拒绝 open turn 外的 tool/result replace；
+而 `pruneSession` 是**全表面 oldest-first 扫描**、无焦点/年龄筛选，且对被拒替换 fail-fast
+（真实包 `@throws when the session rejects a replacement; replacements committed earlier
+in the pass remain durable`）。因此 surface 上只要残留一枚组剪当笔没赶走的**老轮 >8192 R**，
+本笔预剪整 pass 中止——open 轮超限 R（扫描序在后）连带漏剪，被拒节点留下一枚孤儿
+`compaction/prune`（shadow-price 协议先落盘、正文 replace 被拒）——孤儿不落组剪事务区间账，
+只给在位原 R 定价（疤痕入档）。老超限面的常态归宿是组剪兜底：随组赶旧整组离场。
+台架 testkit Session 不执行该校验，假 pruner 以 `rejectOutsideOpenTurn` 开关按上述真实
+语义模拟宿主拒绝。
+
 ## 8. 模块职责表（2.0）
 
 | 文件 | 职责 | 依赖 |
