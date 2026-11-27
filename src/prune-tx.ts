@@ -17,8 +17,9 @@ import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
 import type { Atom, AtomType } from './argp-types.js'
-import type { SessionRuntimeState } from './session-state.js'
-import { sessionEvents, asSeq, asSeqs, detectOpenTurn } from './log-access.js'
+import { notePrunedNode, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
+import { sessionEvents, asSeq, asSeqs, detectOpenTurn, turnOf, eventText } from './log-access.js'
+import { classifyUserMessage } from './atomize.js'
 import { visibleChars, visibleCharStats } from './budget.js'
 import { estTokensFromStats } from './cjk.js'
 import { shadowedTokensOf } from './constants.js'
@@ -128,6 +129,38 @@ export interface PruneTxHost {
   compactSourceCommandId: CommandId | undefined
   charsPerToken: number
   telemetryCap: number
+}
+
+function firstLineOf(text: string): string {
+  return text.split('\n', 1)[0]!.slice(0, 200)
+}
+
+/**
+ * §8-11 活体入账的明细构造：atoms 在手优先用（组剪/散文/去重臂带真实 type/turn/text）；
+ * tombstone-merge 臂 `atoms: []`（factor/engine.ts 归并只带 seqs）以及 atoms 未覆盖的
+ * seq 走日志反查——口径与 `session-lifecycle` 重建侧 typeOfSeq/turnOfSeq 一致
+ * （user/message 经 classifyUserMessage 分 U/X，assistant→A，tool/result→R，
+ * developer 与未知显式归 X）。
+ */
+function prunedNodeInfoFor(session: Session, seq: number, atom: Atom | undefined): PrunedNodeInfo {
+  if (atom !== undefined) {
+    return { seq, type: atom.type, turn: atom.turn, firstLine: firstLineOf(atom.text), citedBySeq: [], eff: 0 }
+  }
+  const event = sessionEvents(session)[seq]
+  let type: AtomType = 'X'
+  if (event !== undefined) {
+    if (event.type === 'user/message') type = classifyUserMessage(event.data)
+    else if (event.type === 'assistant/message') type = 'A'
+    else if (event.type === 'tool/result') type = 'R'
+  }
+  return {
+    seq,
+    type,
+    turn: event === undefined ? 0 : (turnOf(event) ?? 0),
+    firstLine: event === undefined ? '' : firstLineOf(eventText(session, seq)),
+    citedBySeq: [],
+    eff: 0,
+  }
 }
 
 /**
@@ -467,6 +500,17 @@ export function pruneIntervals(
       charsAfter,
       forced,
     }, host.telemetryCap)
+    // §8-11 活体入账（2026-11-27）：已剪明细目录（prunedNodeIndex）过去只在冷 resume 的
+    // 账本重建里材质化——活体事务不入账，`/argp` 的 `pruned index` 列在 compact 后不重启的
+    // 进程恒报 0。事务已提交（成功 end 落地 + records 入台账），逐 seq 经 notePrunedNode
+    // 补记：与重建路共用同一幂等入口（Map.has 吞掉冷重放撞进的已入账 seq，不双计）。
+    const atomBySeq = new Map<number, Atom>()
+    for (const iv of useIntervals) {
+      for (const a of iv.atoms) atomBySeq.set(a.seq, a)
+    }
+    for (const seq of allSeqs) {
+      notePrunedNode(st, seq, prunedNodeInfoFor(session, seq, atomBySeq.get(seq)))
+    }
     // P7：一笔 compaction 事务成功即重置 recall 字数预算（视图已换代，旧累计不应继续压制新一轮召回）；
     // 2026-11-14 起预算另有跨轮重置（recall.ts budgetRecallText 轮变归零），此处归零保留为双保险。
     st.recallCharsUsed = 0

@@ -119,10 +119,10 @@ export declare const FOCUS_GROUP_CAP = 10;
  */
 export declare const DEFAULT_STICKY_TRACK_CAP = 1024;
 /**
- * 已剪节点目录（`prunedNodeIndex`）明细上限（A5）：该 Map 只在冷 resume 的
- * 账本重建里一次性材质化（不逐轮增长），每条明细含 firstLine 字符串。超限淘汰
- * 最旧 seq 的明细；**计数不受影响**——`prunedNodeTotal` 单调累计，`/argp` 报数
- * 用它，而不是 Map 的当前长度。
+ * 已剪节点目录（`prunedNodeIndex`）明细上限（A5）：活体事务与账本重建都入账
+ * （§8-11 修复后），每条明细含 firstLine 字符串，会话内随事务逐笔增长——本上限
+ * 是它的有界化：超限淘汰 seq 数值最小（最旧）的明细；**计数不受影响**——
+ * `prunedNodeTotal` 单调累计，`/argp` 报数用它，而不是 Map 的当前长度。
  */
 export declare const DEFAULT_PRUNED_INDEX_CAP = 4096;
 /** 焦点尾窗降级的触发线：最新轮 A/R 字节占全部 A/R 字节的比例。 */

@@ -291,6 +291,8 @@ export function bindSession(host: LifecycleHost, session: Session): void {
  * compaction/end 事件重建 records/prunedNodeIndex/shadowedSeqsOf 状态；无 end 的 start 记 warn。
  * 不引入 WAL——日志本身即账目。幂等：已重建过的 compactionId 跳过（rebuiltCompactionIds 去重），
  * 使「setSession 自动重建」与「测试显式清空 records 后再重建」两种路径都安全。
+ * §8-11 后活体事务已由 prune-tx 成功收尾入账 prunedNodeIndex；同进程重放撞进的 seq 由
+ * notePrunedNode 的 seq 幂等吞掉，不双计。
  */
 export function rebuildLedgerFromLog(host: LifecycleHost): void {
   if (host.session === null) return

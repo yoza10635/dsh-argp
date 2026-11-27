@@ -26,7 +26,7 @@ import type { NodeState } from './log-access.js'
 import type { RequestCacheSample } from './cache-audit.js'
 
 /**
- * 已剪节点目录条目（seq -> 元数据）。账本重建与 /argp 仍读它。
+ * 已剪节点目录条目（seq -> 元数据）。活体事务（prune-tx）与账本重建写入，/argp 报数读它。
  */
 export interface PrunedNodeInfo {
   seq: number
@@ -47,7 +47,8 @@ export interface SessionRuntimeState {
   records: GraphPruneRecord[]
   /** 召回观测（有界；factor 两工具每命中一条记一笔，/argp 报数）。 */
   recallCalls: { seq: number; hit: boolean; state?: NodeState }[]
-  /** 已剪节点目录（seq -> 元数据；账本重建写，/argp 报数）。A5：明细有上限，
+  /** 已剪节点目录（seq -> 元数据；活体事务与账本重建同写——seq 幂等不双计，§8-11
+   *  修复后不再只有冷 resume 才有明细；/argp 报数）。A5：明细有上限，
    *  计数走 {@link prunedNodeTotal}（Map 长度会因淘汰而小于真实值）。 */
   prunedNodeIndex: Map<number, PrunedNodeInfo>
   /** 已剪节点总数（单调累计；A5 起 /argp 用它报数，不受明细淘汰影响）。 */
@@ -139,7 +140,8 @@ export function createSessionRuntimeState(): SessionRuntimeState {
 /**
  * 写入一条已剪节点明细（A5）：明细有上限（{@link DEFAULT_PRUNED_INDEX_CAP}），
  * 但 `prunedNodeTotal` 单调累计真实总数——`/argp` 报数用后者。
- * 幂等：同一 seq 已在 Map 内则不重复计数（重建按 compactionId 去重，正常不会重复）。
+ * 幂等：同一 seq 已在 Map 内则不重复计数（活体入账与账本重建两路共用本函数，
+ * 冷重放撞进活体已入账的 seq 即被此处吞掉；重建另有 compactionId 去重）。
  */
 export function notePrunedNode(
   st: SessionRuntimeState,
@@ -151,8 +153,12 @@ export function notePrunedNode(
   st.prunedNodeIndex.set(seq, info)
   st.prunedNodeTotal += 1
   if (st.prunedNodeIndex.size > cap) {
-    // seq 递增入账 ⇒ 首个键即最旧明细；删明细不动计数。
-    const oldest = st.prunedNodeIndex.keys().next()
-    if (!oldest.done) st.prunedNodeIndex.delete(oldest.value)
+    // 活体入账按面/决策序写入，插入序 ≠ seq 升序（§8-12：面位置区间可倒挂）⇒
+    // 淘汰**按 key 数值最小者**（= 最旧明细），不依赖 Map 的插入序迭代。删明细不动计数。
+    let oldest = Number.POSITIVE_INFINITY
+    for (const k of st.prunedNodeIndex.keys()) {
+      if (k < oldest) oldest = k
+    }
+    st.prunedNodeIndex.delete(oldest)
   }
 }
