@@ -8,6 +8,8 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**直达**：[适合谁](#适合谁--不适合谁) · [30 秒上手](#30-秒上手) · [实测对照](#实测对照) · [它怎么工作](#它怎么工作) · [已知限制](#已知限制) · [安装与宿主兼容](#附录安装与宿主兼容)
+
 **长会话吃满上下文窗口，逐轮 LLM 摘要又贵、又慢、又打碎前缀缓存——而且忘掉的找不回来。** 本插件是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）的上下文压缩插件，换了个压缩方向：只把「过时、被取代、非焦点轮」的工具结果按实体标签**确定性剪掉（0 LLM，同输入同输出、可复算）**，原文恒在 append-only 日志、按标签或关键词逐字取回；对话正文只在压缩事务内做 LLM 摘要，轮间不动前缀。
 
 **对比逐轮 LLM 摘要式压缩：成本 −68%（11.58 → 3.69 元）· 墙钟 −62%（114.7 → 43.3 min）· 前缀缓存命中 97.8%**¹
@@ -64,7 +66,9 @@ post-compaction: 1 refill(s) · 0 repeat miss(es) [this process]
 
 `source=anchored` 表示占用锚定在 provider 回报的真实 usage，`cache` 段读同一份 usage——压缩后首请求 `refill` 是必然代价，同一事务的续作仍 `repeat-miss` 才说明另有抖前缀源。`world` 行是当前实际生效的世界指纹（env 派生值 + 生效时机，排障先看它）。`ARGP inactive` 表示命中 `skipPresets`。
 
-## 实测对照（同一 46 轮工作量，2026-11-14/15，本地 Qwen3.8-Flash-Next，声明窗 262,144）
+## 实测对照
+
+同一 46 轮工作量，2026-11-14/15，本地 Qwen3.8-Flash-Next，声明窗 262,144；每列 n=1：
 
 | | 逐轮 LLM 摘要（v1.11.2） | 宿主原生 | 本插件 2.0 线¹ | 本插件缺省形态¹（2.2.0 起） |
 |---|---|---|---|---|

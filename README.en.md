@@ -8,6 +8,8 @@
 [![npm downloads](https://img.shields.io/npm/dm/dsh-argp)](https://www.npmjs.com/package/dsh-argp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**Jump to**: [Who it is for](#who-it-is-for--who-it-is-not-for) · [30-second start](#30-second-start) · [Measured comparison](#measured-comparison) · [How it works](#how-it-works) · [Known limitations](#known-limitations) · [Install & compatibility](#appendix-install-and-host-compatibility)
+
 **Long sessions fill the context window, and per-turn LLM summaries are expensive, slow, and shred the prefix cache — and what they forget is gone for good.** This plugin for [DeepSeek Harness](https://github.com/deepseek-ai/dsh) (dsh) compacts in a different direction: only stale, superseded, out-of-focus tool results are pruned deterministically by entity label (**0 LLM; same input, same output, recomputable**), their originals always stay in the append-only log and come back verbatim by label or keyword; conversation prose gets its LLM summary only inside compaction transactions, never between turns.
 
 **Vs per-turn LLM summarization: cost −68% (¥11.58 → ¥3.69) · wall clock −62% (114.7 → 43.3 min) · 97.8% prefix cache hit**¹
@@ -64,7 +66,9 @@ post-compaction: 1 refill(s) · 0 repeat miss(es) [this process]
 
 `source=anchored` means occupancy is anchored to provider-reported usage, and the `cache` block reads the same usage — the `refill` on the first request after compaction is unavoidable, while a `repeat-miss` on a later request of the same transaction means something else is still invalidating the prefix. The `world` line is the fingerprint of what is actually in effect (derived env values + when they apply — look here first when debugging). `ARGP inactive` means the session hit `skipPresets`.
 
-## Measured comparison (same 46-turn workload, 2026-11-14/15, local Qwen3.8-Flash-Next, declared window 262,144)
+## Measured comparison
+
+Same 46-turn workload, 2026-11-14/15, local Qwen3.8-Flash-Next, declared window 262,144; n=1 per column:
 
 | | Per-turn LLM summary (v1.11.2) | Host native | This plugin, 2.0 series¹ | This plugin, default shape¹ (since 2.2.0) |
 |---|---|---|---|---|
