@@ -3,7 +3,7 @@
  * 文本侧仅在 args 通道为空时兜底（增量口径）。纯函数——resultText 由引擎经
  * `rawEventText` 注入（嵌套 tool-result content 的展开是引擎侧职责，P0 坑账第 2 条）。
  */
-import { canonicalArgsFp, canonicalPath, labelAllowed } from './tag-canonical.ts'
+import { canonicalPath, labelAllowed } from './tag-canonical.ts'
 import type { ExtractInput, LabelReject, RTags } from './types.ts'
 
 // ---------------------------------------------------------------------------
@@ -137,12 +137,10 @@ export function extractTags(input: ExtractInput): RTags {
 
   const tool = input.tool
   let cwd = input.sessionCwd
-  let cwdSeen = false
 
   if (args !== null) {
     const cwdArg = strOf(args, 'cwd') ?? strOf(args, 'dir')
     if (cwdArg !== null) {
-      cwdSeen = true
       const cp = canonicalPath(cwdArg, input.sessionCwd)
       if (cp !== null) cwd = cp.key
     }
@@ -213,8 +211,6 @@ export function extractTags(input: ExtractInput): RTags {
     errorish,
     failed: input.isError === true,
     writeish: WRITE_TOOLS.has(tool),
-    cwdSeen,
-    argsFp: canonicalArgsFp(input.rawArgs),
     readRange: READ_TOOLS.has(tool) && args !== null ? readRangeOf(args) : null,
     sizeChars: input.resultText.length,
     rejects,

@@ -211,6 +211,36 @@ test('可再生性时序纪律：重放批恒未知，在线新增 R 才采样�
   assert.equal(d2.candidates.get(firstSeq)?.turn, 2, '可再生（①键）压倒一切：焦点内可再生者先剪，焦点非再生者反而留守')
 })
 
+test('可再生性：多文件读逐文件对比自己的基线（全部未变才算可再生产，B3）', async () => {
+  const base = new Map<string, { mtimeMs: number; size: number }>([
+    ['c:/proj/a.ts', { mtimeMs: 500, size: 7 }],
+    ['c:/proj/c.ts', { mtimeMs: 1000, size: 10 }],
+    ['c:/proj/d.ts', { mtimeMs: 1000, size: 10 }],
+  ])
+  const firstTurn = async (id: string, dMtime: number): Promise<number | undefined> => {
+    const current = new Map(base)
+    const { host, factor } = await makeFactorEngine(current)
+    const session = makeSession(id)
+    host.bindSession(session)
+    appendUser(session, '任务')
+    appendGroup(session, 1, 'c1', 'read', READ_ARGS, 'REPLAYED'.repeat(100))
+    factor.decide(session, 10_000) // 首观察=重放批：不采快照（时序纪律）
+    // 在线新增：一次读两个文件（path 数组）。本笔 decide 完成快照采样（c.ts / d.ts 两条）。
+    appendGroup(session, 2, 'c2', 'read', '{"path":["C:/Proj/c.ts","C:/Proj/d.ts"]}', 'MULTI'.repeat(100))
+    factor.decide(session, 10_000)
+    // 采样之后才改文件：这才是"读后已变"的真实形态（基线在观察时已冻结）。
+    current.set('c:/proj/d.ts', { mtimeMs: dMtime, size: 10 })
+    // target=1：只取排序首位 ⇒ 谁先被剪直接暴露再生证明。
+    const d = factor.decide(session, 1)
+    const seq = d.plan.pruneOrder[0]
+    return seq === undefined ? undefined : d.candidates.get(seq)?.turn
+  }
+  assert.equal(await firstTurn('regen-multi-stable', 1000), 2,
+    '★两文件均未变 ⇒ 可再生产 ⇒ 最新轮也先剪（0-再生键压倒轮龄）')
+  assert.equal(await firstTurn('regen-multi-changed', 2000), 1,
+    '★任一文件已变 ⇒ 不可再生 ⇒ 回落到旧者先剪（旧实现两种形态都恒 false）')
+})
+
 test('降级链：目标不可达只报缺口，不拉硬保护入区、不静默', async () => {
   const { host, factor } = await makeFactorEngine()
   const session = makeSession('factor-shortfall')

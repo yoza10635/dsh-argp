@@ -23,9 +23,3 @@ export declare function stripLineRef(raw: string): string;
  *  无 cwd → `rel:` 前缀 + unboundRel（保守不合并）。
  */
 export declare function canonicalPath(raw: string, cwd?: string): CanonicalPath | null;
-/**
- * args → 语义指纹：string 先 JSON.parse（宿主两态，log-access.ts:195-199），对象直用；
- * 键深度排序 + 空白规整 ⇒ `{a:1,b:2}` 与 `{"b":2, "a":1}` 同指纹。
- * 不可解析 → trim 后的原文（仍可比，只是退化为字面）。
- */
-export declare function canonicalArgsFp(raw: unknown): string;

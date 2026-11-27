@@ -710,9 +710,13 @@ export class FactorEngine {
       let regenerable: boolean | undefined
       const snap = st.snapshots.get(a.seq)
       if (snap !== undefined && this.host.fileSnapshot !== undefined && READ_TOOLS.has(input.tool)) {
-        const cur = this.host.fileSnapshot(input.tags.files[0] ?? '')
-        regenerable = cur !== null && cur !== undefined
-          && [...snap.values()].every(s => s.mtimeMs === cur.mtimeMs && s.size === cur.size)
+        // 逐文件对比**自己的**基线：一次读多个文件时，必须全部 mtime+size 未变才算可再生。
+        // 旧实现拿 files[0] 的当前快照去和 snap 的全部条目比，多文件读必然不等 ⇒ 恒 false（B3）。
+        const stat = this.host.fileSnapshot
+        regenerable = snap.size > 0 && [...snap.entries()].every(([key, base]) => {
+          const cur = stat(key)
+          return cur !== null && cur !== undefined && cur.mtimeMs === base.mtimeMs && cur.size === base.size
+        })
       }
       // 硬保护只认**已定型 sticky** 轨；open 轨是词表观察对象——open 也保护会把
       // 文本信号的一切误报升级为硬保护（实测：正常输出挂 ALL_CAPS 候选码即成轨）。

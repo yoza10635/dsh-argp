@@ -11,10 +11,14 @@
 ### Fixed
 - **摘要调用的终态 `finish` 不再被丢弃（失败与取消可分辨）**。宿主 `LlmRuntime.stream()` 把超时、取消、provider 报错统一归一成终态 `finish` chunk 而不抛异常；适配器此前只认 `text-delta`/`usage`，四种性质不同的失败在调用侧全部塌缩成同一条「空摘要」警告，且**外部取消被当成“本轮不处置”返回 `null`**——违反 `compactNow` 的「取消必须向上传播」。现在适配器带回 `finish.reason`（`PeratomLlmResult.finish`），`classifyLlmFinish` 分流：`stop` 正常、`max-tokens` 记截断警告、`tool-calls` 明确「模型吐工具调用、适配器不回收」、`aborted` 在外部 signal 已取消时抛 `AbortError`（仅超时才保原文并明示“超时”）、`error` 带 failure 文案保原文。host 形态同步透传（`callLlmCtx` 曾把 finish 丢掉）。锁 `llm-adapter` 两例（finish 原样带回、五路分流）+ `dispatch-takeover` 两例（provider error 不落事务、外部取消必抛，均带“确实走到 LLM”断言）。
 - **分派器的摘要发送判据改为以 host 形态为准**：发送可行性此前按 legacy A 形态算「可浓缩散文 transcript ×1.1」，而 2.3.0 起摘要实际回放 surface 头到 span 末的全部路由消息 + `tools`——输出预算被系统性高估，摘要请求自己会顶到窗口（被宿主钳成极短 checkpoint，严格端点直接 400）。现在 `roomForOutput = W_eff − C − 指令 − 2%·W_eff（tools/分词面余量）`，`outBudget` 随之收缩；C 贴窗时本轮改走仅剪，等下一轮新前缀热起来再摘。随之撤销「剪不剪工具，摘要请求一样大」的旧论证（host 形态下剪枝确实会缩小摘要请求，但先剪打断热前缀会让摘要掉回全量 prefill，故 `prune-then-summarize` 仍不发射）。锁 `dispatch` 用例：C=63.5K/64K 由「先摘后剪」翻为「仅剪」、三域摘要行与 T42 仍放行、不变量改为 host prompt。
+- **多文件读的可再生性判定改为逐文件对比**：`regenerable` 此前拿 `files[0]` 的当前快照去和该 R 的**全部**文件基线比，一次读多个文件时必然不等 ⇒ 恒判不可再生（该剪的剪不掉，占用虚高）。现在每个文件与自己的基线比 mtime+size，全部未变才算可再生。锁 `factor-engine` 一例：两文件均未变 ⇒ 最新轮也能凭再生证明先剪；任一已变 ⇒ 回落旧者先剪。
 - **CI 提交信息检查真正生效**：`.github/workflows/ci.yml` 的 `${{ github.event_before }}` 不是合法 context（应为 `github.event.before`），展开为空串 ⇒ 范围退化为 `HEAD..HEAD`，`check-commit-msg` 恒过。修正后推送才真正校验提交信息规范。
 
 ### Changed
 - **死代码与过期头注清理**：`tombstone-text.ts` 移除零引用的 `isToolTombstoneText` / `isTombstoneText` / `TOMBSTONE_GRAMMARS` / `seqSpan` / `seqsSpan` / `RETRIEVE_HINT` 与两枚前缀导出（`isMergeableTombstoneText` 保留——它仍是 `prune-tx` 与散文浓缩的活判据），头注重写为「只读识别，不生成文案」；`llm-adapter.ts` 头注删去不存在的 fetch 后端 / `response_format` / 多模型分工，并标明 `serializeWireMessages` 仅测试探针使用；`client/index.ts` 移除 assistantDisplay 过滤器遗留接口与相关注释；`factor/engine.ts` 修正「A 永不入剪枝区间」「剪成空克隆」两处与实现相反的注释；`argp-engine.ts` 修正出口闸缺省态注释（接管=开）。删除两处不可达分支（`planProtocolGroups` 的无 R 非 forced 判定、`prose-condenser` 的 `intervals.length===0`）。
+
+### Removed
+- **死 API 清理**：`HardFlags.protocolUnclosed`（全库无赋值）、`HardFlags.node0`（仅测试赋）、`RTags.argsFp` / `cwdSeen` 及 `canonicalArgsFp`/`canonicalJson` 计算（生产零消费者，"失败-重试配对键"从未实现）。顺带省掉每枚 R 的 args 规范化 CPU。
 
 ## [2.3.0] - 2026-11-27（minor 直发：词表目录迁 `systemPrompt.context`；每请求缓存审计；出处语义收紧为三句话并撤销五态标记；手动压缩摘要改宿主装配（缓存 0 → 98.8%）；缓存告警门限按块粒度修正；1.x 死字段清理；无新增配置面）
 

@@ -28,10 +28,6 @@ export interface RTags {
   failed?: boolean
   /** write 家族成功候选（sticky"修复宣称"原料；errorish 的 write 由调用方按语义排除）。 */
   writeish: boolean
-  /** 本事件在场 cwd（bash cwd/dir 参数）。 */
-  cwdSeen: boolean
-  /** args 语义指纹（键排序/空白规整；失败-重试配对键，§1.3 canonical 纪律）。 */
-  argsFp: string
   /** read 类 R 的读取范围（staleness 覆盖证明原料：旧读范围 ⊆ 新读范围）。 */
   readRange: { offset: number | null; limit: number | null } | null
   sizeChars: number

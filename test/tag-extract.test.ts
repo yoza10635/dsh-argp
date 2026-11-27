@@ -110,13 +110,3 @@ test('对抗: secret 形态路径 → rejects.secret，files 必空', () => {
   assert.deepEqual(t.files, [])
   assert.ok((t.rejects['secret'] ?? 0) >= 1)
 })
-
-// ---------------------------------------------------------------------------
-// 失败-重试配对原料
-// ---------------------------------------------------------------------------
-
-test('argsFp 配对：同语义 args 两态（键序/字符串↔对象）同指纹', () => {
-  const a = extractTags({ tool: 'bash', rawArgs: { command: 'npm test', cwd: 'C:/Work/Proj' }, resultText: 'fail', sessionCwd: CWD })
-  const b = extractTags({ tool: 'bash', rawArgs: '{"cwd":"C:/Work/Proj","command":"npm test"}', resultText: 'ok', sessionCwd: CWD })
-  assert.equal(a.argsFp, b.argsFp, '失败(N)→成功(N+2) 配对的前提')
-})

@@ -1,8 +1,6 @@
 import type { PruneScore, RTags } from './types.ts';
 /** 硬保护判据位（§2.3 第一层；引擎注入，任一 true 即保护）。 */
 export interface HardFlags {
-    /** 协议组未闭合的 A。 */
-    protocolUnclosed?: boolean;
     /** 失败无后继 R。 */
     failureNoFollowR?: boolean;
     /** open/sticky 交集区成员（保护向：open 也算）。 */
@@ -23,8 +21,6 @@ export interface HardFlags {
      * 同因子后续成功 R ⇒ 释放（spike53：29% 组已 superseded）。flat 恒 false（逐枚 sticky 现行为）。
      */
     errSignatureHard?: boolean;
-    /** node 0（宿主保护）。 */
-    node0?: boolean;
 }
 export interface ScoreInput {
     rootSeq: number;

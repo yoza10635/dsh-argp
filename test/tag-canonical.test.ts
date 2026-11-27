@@ -5,14 +5,13 @@
  *  - canonicalPath：反斜杠/`./`/msys/盘符小写/行号剥离/尾斜杠归并；
  *    相对路径**只绑事件时 cwd**（无 cwd → rel: 标记，绝不合并）；
  *  - 大小写纪律：盘符键不区分大小写合并（case-collision 归一），unix/`~/` 保留大小写；
- *  - labelAllowed：fail-closed——secret/JWT/私钥头/控制符/超长一律拒（注入面防线）；
- *  - canonicalArgsFp：语义指纹（键序无关、string/object 两态同指纹、数组顺序敏感）。
+ *  - labelAllowed：fail-closed——secret/JWT/私钥头/控制符/超长一律拒（注入面防线）。
  *
  * 变异纪律：secret 表、小写归一、rel: 分支任一摘除，本文件必须变红。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canonicalArgsFp, canonicalPath, labelAllowed, stripLineRef } from '../src/factor/tag-canonical.ts'
+import { canonicalPath, labelAllowed, stripLineRef } from '../src/factor/tag-canonical.ts'
 
 // ---------------------------------------------------------------------------
 // canonicalPath：形态归一
@@ -78,25 +77,4 @@ test('labelAllowed: 控制符/超长/空 拒收；正常路径放行', () => {
   assert.equal(labelAllowed('x'.repeat(201)), 'long')
   assert.equal(labelAllowed(''), 'empty')
   assert.equal(labelAllowed('c:/work/a/b.ts'), null)
-})
-
-// ---------------------------------------------------------------------------
-// canonicalArgsFp：语义指纹
-// ---------------------------------------------------------------------------
-
-test('canonicalArgsFp: 键序无关；string/object 两态同指纹', () => {
-  const objFp = canonicalArgsFp({ b: 2, a: 1 })
-  const strFp = canonicalArgsFp('{"b": 2,\n "a":1}')
-  assert.equal(objFp, strFp, '失败-重试配对的前提：两态同指纹')
-  assert.equal(objFp, '{"a":1,"b":2}')
-})
-
-test('canonicalArgsFp: 嵌套键序归一，数组顺序敏感', () => {
-  assert.equal(canonicalArgsFp({ x: { d: 1, c: 2 } }), canonicalArgsFp({ x: { c: 2, d: 1 } }))
-  assert.notEqual(canonicalArgsFp({ x: [1, 2] }), canonicalArgsFp({ x: [2, 1] }), '数组是有序语义，不得归并')
-})
-
-test('canonicalArgsFp: 非 JSON 输入退化为 trim 原文；空输入空串', () => {
-  assert.equal(canonicalArgsFp('  hello  '), 'hello')
-  assert.equal(canonicalArgsFp(undefined), '')
 })

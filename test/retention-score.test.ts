@@ -18,7 +18,7 @@ import type { RTags } from '../src/factor/types.ts'
 function mkTags(over: Partial<RTags> = {}): RTags {
   return {
     tool: 'read', files: ['c:/a.ts'], scopes: [], commands: [], errorcodes: [],
-    errorish: false, writeish: false, cwdSeen: false, argsFp: '',
+    errorish: false, writeish: false,
     readRange: null, sizeChars: 100, rejects: {}, ...over,
   }
 }
@@ -109,7 +109,7 @@ test('硬保护成员任何压力下不入 pruneOrder', () => {
   const plan = planPrune([
     mk(1, { hard: { stickyMember: true }, tags: mkTags({ sizeChars: 1000 }) }),
     mk(2, { hard: { attachment: true } }),
-    mk(3, { hard: { node0: true } }),
+    mk(3, { hard: { errSignatureHard: true } }),
     mk(4, { focal: false, regenerable: true }),
   ], { targetReleaseChars: 100000 })
   assert.deepEqual(plan.pruneOrder, [4], '缺口再大也只报 shortfall，不拉硬保护入区')

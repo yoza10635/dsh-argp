@@ -20,7 +20,7 @@ import type { RTags } from '../src/factor/types.ts'
 function mkTags(over: Partial<RTags> = {}): RTags {
   return {
     tool: 'read', files: [], scopes: [], commands: [], errorcodes: [],
-    errorish: false, writeish: false, cwdSeen: false, argsFp: '',
+    errorish: false, writeish: false,
     readRange: null, sizeChars: 10, rejects: {}, ...over,
   }
 }
