@@ -26,7 +26,7 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceede
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
-import { asSeq, canAppendSurfaceReplace, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
+import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
@@ -110,64 +110,6 @@ export interface ArgpConfig {
   compactionThreshold?: Volatile<number> | number
 }
 
-/**
- * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
- * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
- * 2.0 factor 契约已不再要求模型输出 cites；本剥离保留为**残差清扫**（历史会话与
- * 旧契约惯性的输出），幂等且零副作用。
- * 注意（2026-08 修正认知）：Web UI 的人类转录按 dsh 核心设计固定取 append 起源
- * 事件，replace 副本是 model-only（core session surface.ts："replacement copies
- * stay model-only"），因此本剥离**不影响 UI 显示**。
- * 仅改写最后一个 text 块；保留 model/provider/replay 等元数据；将 cites 存入
- * data.argpCites，以便后续 atomize 读侧仍能取到引用（文本已剥离后 extractCites 取不到）。
- * 幂等：已剥离节点（含 argpCites）再次进入时直接跳过，无重入循环。
- */
-export function stripTrailingCitesIfNeeded(session: Session, event: { seq: number; data?: Record<string, unknown> }): void {
-  const data = event.data
-  if (data === undefined) return
-  if (Array.isArray(data.argpCites)) return // 已剥离，跳过
-  const msg = data.message as { content?: unknown[] } | undefined
-  const content = msg?.content
-  if (!Array.isArray(content) || content.length === 0) return
-  let lastIdx = -1
-  for (let i = content.length - 1; i >= 0; i -= 1) {
-    const b = content[i] as { type?: string; text?: string }
-    if (b?.type === 'text') { lastIdx = i; break }
-  }
-  if (lastIdx === -1) return
-  const block = content[lastIdx] as { type: string; text?: string }
-  if (typeof block.text !== 'string') return
-  const { body, cites } = extractCites(block.text)
-  if (body === block.text) return // 无 cites 块，无需改写
-  const newContent = content.slice()
-  newContent[lastIdx] = { ...block, text: body }
-  // 2.2.2 根修（写侧落点守卫）：本 replace 是 assistant/message 形态，宿主 v4 fold 要求
-  // 落点在开放轮 + 开放 step 内且事件 data.turn/step 恰为当前坐标（requireStep）。调用点
-  // 经微任务延迟执行，理论上可能已跨越 step/turn 边界；非法时放弃本轮剥离——这是纯展示
-  // 净化，不能为它写坏存档（与 session-43df801e 案同类的"非 user replace"形态）。
-  const turn = (data as { turn?: unknown }).turn
-  const step = (data as { step?: unknown }).step
-  // 宿主替身/只读快照（strip-cites 纯文本单测用的 stub session 不暴露事件流）无法判定落点
-  // ⇒ 保持旧行为（继续剥离）；真实 Session 恒可判定，判定非法就跳过写回（不能为展示净化
-  // 写坏存档）。红线：真实调用点（微任务内、仍在开放轮 + step）必须照常剥离。
-  let legal = true
-  try {
-    legal = canAppendSurfaceReplace(session, 'assistant/message', { turn, step })
-  } catch { legal = true }
-  if (!legal) return
-  session.append('assistant/message', {
-    ...data,
-    message: { ...(msg as object), content: newContent },
-    argpCites: cites,
-  } as never, {
-    surfaceOp: { op: 'replace', startSeq: asSeq(event.seq), endSeq: asSeq(event.seq) },
-    // 不给 sourceEventSeqs：dsh 0.1.5 起 assistant/message 自带 provider stream，
-    // 类型层为 `sourceEventSeqs?: never`、运行时 assertProvenance 亦直接 throw
-    // （"assistant/message embeds its source stream and cannot carry sourceEventSeqs"）。
-    // 安全性：shadowedSeqsOf 只认 compaction/prune.shadowedSeqs 权威账本，
-    // 不从 replace 事件推断被遮节点，故本处省略不影响剪枝账目。
-  })
-}
 
 /** 默认在这些 preset 下不生效（极简 preset 保留原生态）。 */
 const DEFAULT_SKIP_PRESETS: readonly string[] = ['minimal']
@@ -429,15 +371,6 @@ export class ArgpEngine extends CompactionEngine {
         // 即使工具调用让同一 turn 继续（对齐 compaction-basic 的 overflowAgents 模式）。
         const agent = this.overflowAgents.get(session)
         if (agent !== undefined) this.overflowRetries.delete(agent)
-      }
-      // 流式闭环后立刻剥离尾部 {"cites":[...]} JSON（残差清扫；见函数头注释）。
-      const seq = (event as { seq?: unknown }).seq
-      if (event.type === 'assistant/message' && typeof seq === 'number') {
-        // 延迟到本次事件发射结束后执行，避免在读/写 surface 的中途改写 surface（重入安全）
-        const ev = event as { seq: number; data?: Record<string, unknown> }
-        Promise.resolve().then(() => {
-          try { stripTrailingCitesIfNeeded(session, ev) } catch { /* 不阻断主流程 */ }
-        })
       }
     })
     ctx.on('agent/status', ({ agent, status }) => {

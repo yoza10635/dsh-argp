@@ -68,22 +68,6 @@ export interface ArgpConfig {
     compactionThreshold?: Volatile<number> | number;
 }
 /**
- * 流式中 assistant 消息落盘后，立即剥离尾部 {"cites":[...]}（ARGP 引用协议产物），
- * 使其不残留在**模型可见 surface** 上——下一轮请求不再把协议产物当正文重读。
- * 2.0 factor 契约已不再要求模型输出 cites；本剥离保留为**残差清扫**（历史会话与
- * 旧契约惯性的输出），幂等且零副作用。
- * 注意（2026-08 修正认知）：Web UI 的人类转录按 dsh 核心设计固定取 append 起源
- * 事件，replace 副本是 model-only（core session surface.ts："replacement copies
- * stay model-only"），因此本剥离**不影响 UI 显示**。
- * 仅改写最后一个 text 块；保留 model/provider/replay 等元数据；将 cites 存入
- * data.argpCites，以便后续 atomize 读侧仍能取到引用（文本已剥离后 extractCites 取不到）。
- * 幂等：已剥离节点（含 argpCites）再次进入时直接跳过，无重入循环。
- */
-export declare function stripTrailingCitesIfNeeded(session: Session, event: {
-    seq: number;
-    data?: Record<string, unknown>;
-}): void;
-/**
  * §A：从 400 溢出报文里解析**真实上下文上限**（observedCap）。只在报文带了明确
  * 数字上限时返回；pi-ai 通用文案（"detected context overflow"，无数）返回 undefined
  * ⇒ 调用方保留声明窗（行为不变）。返回的是模型窗（token），取报文里的"上限"侧数字。

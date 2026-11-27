@@ -9,8 +9,8 @@
  *  - 反向（阴性对照）：同样日志里手工补一枚轮间隙的 tool/result replace ⇒ 宿主必须
  *    抛 "tool/result is outside an open turn"（证明 oracle 有判别力，不是纸面锁）。
  *
- * 2.2.2 根修后 ARGP 的 surface replace 只剩 user 检查点；叠加写入侧落点守卫
- * `canAppendSurfaceReplace`（残余 assistant replace 也用同一判据兜底），
+ * 2.2.2 根修后 ARGP 的 surface replace **只剩 user 检查点**（cites 剥离那条残余 assistant replace
+ * 自 2.2.1 起就被宿主写入侧无条件拒收，属从未生效的死路径，2.2.2 已连同落点守卫一并删除），
  * "非 append tool/result 落轮间隙"这一类从结构上不可达。
  */
 import test from 'node:test'
@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { assertReleasedV4Relationships } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { pruneIntervals, type PruneTxHost } from '../src/prune-tx.ts'
-import { canAppendSurfaceReplace, detectOpenStep, sessionEvents } from '../src/log-access.ts'
+import { detectOpenStep, sessionEvents } from '../src/log-access.ts'
 
 function makeHost(): PruneTxHost {
   return {
@@ -155,22 +155,4 @@ test('宿主 oracle 阴性对照：轮间隙手工补一枚 tool/result replace 
     /tool\/result is outside an open turn/,
     '宿主加载侧必须拒载轮间隙 tool/result replace（oracle 判别力自证；2.2.2 根修后 ARGP 不再产生该形态）',
   )
-})
-
-test('写入侧落点守卫 canAppendSurfaceReplace：user 恒合法；tool/result 需开放轮；step 型需轮+步匹配', () => {
-  const gap = Session.create(SessionId('guard-gap'))
-  seedTurn(gap, 100)
-  assert.equal(canAppendSurfaceReplace(gap, 'user/message'), true, 'user replace 与轮无关')
-  assert.equal(canAppendSurfaceReplace(gap, 'tool/result'), false, '轮间隙 tool/result replace 非法')
-  assert.equal(canAppendSurfaceReplace(gap, 'assistant/message', { turn: 1, step: 1 }), false, '轮间隙 assistant replace 非法')
-  assert.equal(detectOpenStep(gap), null, '轮间隙无开放 step')
-
-  const running = Session.create(SessionId('guard-inturn'))
-  const group = seedTurn(running, 100)
-  running.append('turn/start', { turn: 2 } as never)
-  assert.equal(canAppendSurfaceReplace(running, 'tool/result'), true, '轮内 tool/result replace 合法')
-  running.append('step/start', { turn: 2, step: 1 } as never)
-  assert.equal(canAppendSurfaceReplace(running, 'assistant/message', { turn: 2, step: 1 }), true, '坐标匹配即合法')
-  assert.equal(canAppendSurfaceReplace(running, 'assistant/message', { turn: 2, step: 2 }), false, '坐标不匹配非法')
-  void group.aSeq
 })
