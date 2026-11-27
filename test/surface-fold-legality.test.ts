@@ -55,48 +55,49 @@ function assertHostLoadable(session: Session): void {
 }
 
 /** 段 1：合法 v4 会话骨架（system head + user + 一个完整 A/R 协议组 + turn/start·end）。 */
-function seedTurn(session: Session, len: number): { aSeq: number; rSeq: number; rData: Record<string, unknown> } {
-  session.append('turn/start', { turn: 1 } as never)
-  session.append('step/start', { turn: 1, step: 1 } as never)
+function seedTurn(session: Session, len: number, turn = 1): { aSeq: number; rSeq: number; rData: Record<string, unknown> } {
+  const callId = 'c' + turn
+  session.append('turn/start', { turn } as never)
+  session.append('step/start', { turn, step: 1 } as never)
   session.append('system/message', {
-    turn: 1, step: 1,
+    turn, step: 1,
     message: {
       role: 'system',
       content: [{ type: 'text', text: 'persona' }],
       source: { kind: 'system-prompt' },
-      id: 'sys_1',
+      id: 'sys_' + turn,
     },
   } as never, { surfaceOp: 'append' })
   session.append('user/message', {
-    content: [{ type: 'text', text: 'task' }], source: { kind: 'user' }, role: 'user', id: 'u_1',
+    content: [{ type: 'text', text: 'task' }], source: { kind: 'user' }, role: 'user', id: 'u_' + turn,
   } as never, { surfaceOp: 'append' })
   const aSeq = session.append('assistant/message', {
-    turn: 1, step: 1, stream: [],
+    turn, step: 1, stream: [],
     message: {
       role: 'assistant',
       content: [
         { type: 'text', text: 'doing read' },
-        { type: 'tool-call', id: 'c1', name: 'read', arguments: '{}' },
+        { type: 'tool-call', id: callId, name: 'read', arguments: '{}' },
       ],
       source: { kind: 'model', provider: 'test', model: 'test' },
-      id: 'a_1',
+      id: 'a_' + turn,
     },
   } as never, { surfaceOp: 'append' }).seq
-  session.append('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'read', arguments: '{}' } as never)
+  session.append('tool/call', { turn, step: 1, callId, name: 'read', arguments: '{}' } as never)
   const rData = {
-    turn: 1, step: 1,
+    turn, step: 1,
     message: {
       role: 'tool',
-      source: { kind: 'tool', callId: 'c1' },
-      toolCallId: 'c1',
+      source: { kind: 'tool', callId },
+      toolCallId: callId,
       content: [{ type: 'text', text: 'R'.repeat(len) }],
       isError: false,
-      id: 'm_c1',
+      id: 'm_' + callId,
     },
   }
   const rSeq = session.append('tool/result', rData as never, { surfaceOp: 'append' }).seq
-  session.append('step/end', { turn: 1, step: 1 } as never)
-  session.append('turn/end', { turn: 1 } as never)
+  session.append('step/end', { turn, step: 1 } as never)
+  session.append('turn/end', { turn } as never)
   return { aSeq, rSeq, rData }
 }
 
@@ -154,4 +155,76 @@ test('宿主 oracle 阴性对照：轮间隙手工补一枚 tool/result replace 
     /tool\/result is outside an open turn/,
     '宿主加载侧必须拒载轮间隙 tool/result replace（oracle 判别力自证；2.2.2 根修后 ARGP 不再产生该形态）',
   )
+})
+
+test('§8-12 正向：倒挂 claim（start>end）+ 同形 replace 是宿主契约内合法形态，加载链必须接受', () => {
+  // 复刻归并臂（factor/engine.ts reclaimStubRuns）产生倒挂的真实机理：早先事务剪**靠后**
+  // 区段（墓碑 seq 小、落位靠后），晚些事务剪**靠前**区段（墓碑 seq 大、落位靠前）⇒
+  // 面上相邻同文游程序 [大seq, 小seq]，prune-tx 取面序首尾 ⇒ shadowedRange 数值倒挂。
+  // 宿主契约（dsh-compaction types.ts）明文：shadowedRange 是面位置区间，start 可以大于
+  // end。本例钉「宿主今天容忍倒挂」为回归事实——排序式"修复"会打死配对/整档拒载，
+  // 任何人改发射前必须先过这条锁。
+  const session = Session.create(SessionId('fold-inverted-claim'))
+  // 单轮内两个**相邻**协议组（两 step），剪完后两枚墓碑在面上直接相邻。
+  session.append('turn/start', { turn: 1 } as never)
+  session.append('step/start', { turn: 1, step: 1 } as never)
+  session.append('system/message', {
+    turn: 1, step: 1,
+    message: { role: 'system', content: [{ type: 'text', text: 'persona' }], source: { kind: 'system-prompt' }, id: 'sys_1' },
+  } as never, { surfaceOp: 'append' })
+  session.append('user/message', {
+    content: [{ type: 'text', text: 'task' }], source: { kind: 'user' }, role: 'user', id: 'u_1',
+  } as never, { surfaceOp: 'append' })
+  const appendGroup = (step: number, callId: string): { aSeq: number; rSeq: number } => {
+    const aSeq = session.append('assistant/message', {
+      turn: 1, step, stream: [],
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'doing read' }, { type: 'tool-call', id: callId, name: 'read', arguments: '{}' }],
+        source: { kind: 'model', provider: 'test', model: 'test' },
+        id: 'a_' + callId,
+      },
+    } as never, { surfaceOp: 'append' }).seq
+    session.append('tool/call', { turn: 1, step, callId, name: 'read', arguments: '{}' } as never)
+    const rSeq = session.append('tool/result', {
+      turn: 1, step,
+      message: {
+        role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId,
+        content: [{ type: 'text', text: 'R'.repeat(4000) }], isError: false, id: 'm_' + callId,
+      },
+    } as never, { surfaceOp: 'append' }).seq
+    return { aSeq, rSeq }
+  }
+  session.append('step/end', { turn: 1, step: 1 } as never)
+  const g1 = (() => {
+    session.append('step/start', { turn: 1, step: 2 } as never)
+    const g = appendGroup(2, 'c1')
+    session.append('step/end', { turn: 1, step: 2 } as never)
+    return g
+  })()
+  const g2 = (() => {
+    session.append('step/start', { turn: 1, step: 3 } as never)
+    const g = appendGroup(3, 'c2')
+    session.append('step/end', { turn: 1, step: 3 } as never)
+    return g
+  })()
+  session.append('turn/end', { turn: 1 } as never)
+  pruneGroupToCheckpoint(session, g2, 'stub') // 先剪靠后区段 → 低 seq 墓碑落位靠后
+  pruneGroupToCheckpoint(session, g1, 'stub') // 再剪靠前区段 → 高 seq 墓碑落位靠前
+  const surface = [...session.surface.nodes] as unknown as number[]
+  const [front, back] = surface.slice(-2)
+  assert.ok((front as number) > (back as number), '夹具自证：面序首尾数值倒挂 [大seq, 小seq]')
+  const res = pruneIntervals(
+    makeHost(), session,
+    [{ seqs: [front as number, back as number], chars: 100, atoms: [] }],
+    1, false,
+    [{ type: 'user', text: 'stub' }],
+    'tombstone-merge',
+  )
+  assert.notEqual(res, null, '倒挂游程的归并事务必须成功落盘（写入侧不设防倒挂）')
+  const pruneEvs = (sessionEvents(session) as unknown as ({ type?: string; data?: { shadowedRange?: { start: number; end: number } } } | undefined)[])
+    .filter((e): e is { type: string; data: { shadowedRange: { start: number; end: number } } } => e?.type === 'compaction/prune')
+  const lastClaim = pruneEvs[pruneEvs.length - 1]!.data.shadowedRange
+  assert.ok(lastClaim.start > lastClaim.end, '夹具自证：真实发射的 claim 确为倒挂（start>end）')
+  assertHostLoadable(session)
 })

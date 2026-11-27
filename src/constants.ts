@@ -177,7 +177,12 @@ export const FOCUS_QUOTA_BUDGET_RATIO = 0.3
  */
 export const DEFAULT_EGRESS_OUTPUT_RATIO = 0.25
 
-/** §9.37 出口闸提前量：越过 `线 − 声明窗×本比例` 即触发（容 anchored 后增量估值失真）。 */
+/**
+ * §9.37 出口闸提前量（**旧式公式线的组成部分**，非「线上再减一段」）：旧线定义即
+ * `线 = 声明窗 − 输出预算 − round(声明窗×本比例)`（argp-engine.ts 出口闸线，本常量
+ * 唯一消费者），提前量已折进线内；设置项「压缩阈值」派生的比例线（线 = 声明窗×比例）
+ * **不含**本项。用途：容 anchored 后增量估值失真。
+ */
 export const DEFAULT_EGRESS_MARGIN_RATIO = 0.02
 
 /**

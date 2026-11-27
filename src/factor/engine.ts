@@ -1173,6 +1173,10 @@ export class FactorEngine {
    * （避开图臂 '[elided ' 文案漂移坑）；同文 ⇒ 归并零信息损失（交互桩文本含各自
    * keys，异文自然不并，指针语义保留）。**绝不独立发维护事务**——只在 compactIfNeeded
    * 已有事务落地（surface 已换代、换代税已交）后随剪执行；异常只记日志不影响主事务。
+   * 倒挂机理（§8-12）：游程按**面投影位置序**采集——早先事务剪靠后区段（墓碑 seq 小、
+   * 落位靠后），晚些事务剪靠前区段（墓碑 seq 大、落位靠前）⇒ 游程首尾数值倒挂，发出的
+   * shadowedRange `start > end` 是宿主契约内的面位置端点形态（claim↔replace 同形同倒，
+   * 回归锁 surface-fold-legality）；**勿排序**，排序与 replace 折叠几何不相容。
    */
   private reclaimStubRuns(session: Session): void {
     try {

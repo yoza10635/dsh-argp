@@ -131,7 +131,9 @@ test('③ 已位置升序喂入（图臂常态形）：行为零变化（sort �
 type EvLike = { type: string; data?: Record<string, unknown>; surfaceOp?: { op?: string; startSeq?: number; endSeq?: number } }
 const evsOf = (session: Session): EvLike[] => sessionEvents(session) as unknown as EvLike[]
 const pruneEvs = (session: Session): EvLike[] => evsOf(session).filter(e => e.type === 'compaction/prune')
-/** shadow-price 契约：每条 compaction/prune 之后**紧随**的带 surfaceOp 事件必须是同范围 replace。 */
+/** shadow-price 契约：每条 compaction/prune 之后**紧随**的带 surfaceOp 事件必须是同范围 replace。
+ *  对 `start > end` 倒挂**有意不设防**（§8-12）：本断言锁的是 claim↔replace 的数值逐等配对，
+ *  倒挂是宿主契约内的合法形态（面位置端点）；倒挂合法性的回归锁在 surface-fold-legality。 */
 function assertShadowPriceContract(session: Session): void {
   const evs = evsOf(session)
   for (let i = 0; i < evs.length; i += 1) {

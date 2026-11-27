@@ -424,11 +424,20 @@ export function pruneIntervals(
       const start = iv.seqs[0] as number
       const end = iv.seqs[iv.seqs.length - 1] as number
       // Shadow-price 契约（宿主 token-meter foldSurfaceProjection）：compaction/prune 的
-      // shadowedRange 必须与紧随其后的 surface replace 范围**严格相等**，否则重放投影 throw
-      // （2026-09-01 实测：多区间事务发一个总跨度 claim 再逐区间 replace，第一个 replace
-      // 即撞总 claim → resume 报 "no adjacent shadow price"）。故每区间一个 shadow-price
-      // 事件，范围=该单区间，与官方 compaction-tool-result-pruner 同模式；末尾 summary 的
-      // 总范围 claim 被紧随的 off-surface compaction/end 清掉，无契约冲突。
+      // shadowedRange 必须与紧随其后的 surface replace 范围**数值逐等配对**，否则重放投影
+      // throw（2026-09-01 实测：多区间事务发一个总跨度 claim 再逐区间 replace，第一个
+      // replace 即撞总 claim → resume 报 "no adjacent shadow price"）。故每区间一个
+      // shadow-price 事件，范围=该单区间，与官方 compaction-tool-result-pruner 同模式；
+      // 末尾 summary 的总范围 claim 被紧随的 off-surface compaction/end 清掉，无契约冲突。
+      // 端点语义（§8-12 定性收口，2026-11-27）：start/end 取 iv.seqs（**面序**）的首/尾，
+      // 是**面位置端点**，不是 seq 数值区间端点——宿主契约（dsh-compaction types.ts
+      // CompactionResult.shadowedRange 头注）明文允许 `start > end`（"a surface-POSITION
+      // span … start can be GREATER than end"）：早先 replace 把高 seq 检查点落进更旧区间的
+      // 位置后，面上相邻游程天然倒挂/交叉。claim↔replace 永远同形同倒，token-meter 的
+      // 数值配对与加载侧的索引折叠 + shadowedSeqs 逐等全部容忍（surface-fold-legality 锁）。
+      // **勿天真排序**：claim 单独排序即断数值配对（resume 死），连 replace 一起排序则加载侧
+      // 按索引序折叠整档拒载。下游凡假设 start≤end 的消费方（UI 压缩节点、离线读数）以
+      // shadowedSeqs（权威集，面序）为准，不得用端点推算。
       const intervalPrune = session.append('compaction/prune', {
         shadowedRange: { start: asSeq(start), end: asSeq(end) },
         shadowedSeqs: asSeqs(iv.seqs),
