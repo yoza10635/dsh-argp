@@ -120,7 +120,6 @@ test('factor-only：恰好两新工具；老三件套缺席（假通道不挂）
   }
   const fs = await sectionsOf(f.ctx)
   assert.ok(!fs.has('argp-contract'), '2.0.0 起契约不驻 system 前缀（随词表 note 在首次压缩后注入）')
-  assert.ok(!fs.has('argp-cites'), 'cites 契约整段不注册')
 })
 
 test('召回引导三面同教 scope（2026-11-15 裁定：46 轮 P45 Q8 型洞=纯引导缺口，L1/L4 锁）', async () => {

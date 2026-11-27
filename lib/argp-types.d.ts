@@ -1,16 +1,12 @@
 /**
  * ARGP 通用类型叶子模块。
  *
- * 本模块是**叶子**：只含类型定义 + 纯常量，不 import 任何 src 运行时模块。
- * 唯一依赖是 `cites-strip` 的 `ParsedCite`（type-only import，编译期擦除；
- * cites-strip 本身是零依赖叶子），故运行时零依赖、类型图无环。
- *
- * Atom 保留 cites 字段——读侧仍要解析历史 `data.argpCites`（老会话回放）。
+ * 本模块是**叶子**：只含类型定义 + 纯常量，不 import 任何 src 运行时模块，
+ * 运行时零依赖、类型图无环。
  *
  * 留在 hub 的类型：`ArgpConfig`（构造配置面），按「深度依赖则留 hub」原则保留在
  * 引擎侧（它引用引擎的旋钮面，迁入本叶子会形成类型环）。
  */
-import type { ParsedCite } from './cites-strip.js';
 export type AtomType = 'U' | 'A' | 'R' | 'X';
 export interface Atom {
     id: number;
@@ -19,8 +15,6 @@ export interface Atom {
     turn: number;
     text: string;
     toolCallIds: string[];
-    cites: ParsedCite[];
-    citesFailed: boolean;
     /**
      * 仅 U-info 聚合副本有值——原始用户消息的日志 seq。历史 U-info 副本的恢复目标；
      * `sourceSeq !== undefined` 即 U-info 识别判据（dialog 副本与普通 user 消息无此字段）。

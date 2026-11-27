@@ -2,7 +2,7 @@
  * 刀 A 纯函数锁（design-prose-keyword-recall §1.1/§4）：散文扫描带投影+谓词+cap。
  * 事件形=探针档案 session-aacb4606 实测复刻（§6.5）：user 挂 data.source、assistant
  * 挂 data.message.source、replace 副本=顶层 surfaceOp {op:'replace',startSeq,endSeq} 且
- * **无 sourceEventSeqs**（cites-strip 形，宿主禁携带 dsh-session index.js:316）。
+ * **无 sourceEventSeqs**（宿主禁 assistant/message 携带 dsh-session index.js:316）。
  * 变异映射：M34 摘 replace 判据→PS3 红；M35 摘 kind 排除→PS2 红；M36 方向倒转→PS5 红；
  * M37 cap=0 当无限→PS6 红；M38 投影混入 args→PS4 红。
  */
@@ -61,11 +61,11 @@ test('PS2 kind 排除主防线：own(argp/plugin/compact-checkpoint)+宿主 boil
   assert.ok(HOST_BOILERPLATE_SOURCE_KINDS.includes('skill-catalog') && HOST_BOILERPLATE_SOURCE_KINDS.includes('runtime-context'))
 })
 
-test('PS3 replace 副本双计排除：cites-strip 形（顶层 replace、无 sourceEventSeqs）不入面；原文单计', () => {
+test('PS3 replace 副本双计排除：无 sourceEventSeqs 的 replace 副本形（顶层 replace）不入面；原文单计', () => {
   const events: Ev[] = [
     { type: 'session' },
     mkAssistant([{ type: 'text', text: '原文段 kw-CP 正文' }]),
-    mkReplaceCopy('原文段 kw-CP 正文（cites 已剥的 replace 副本）', 1, 1),
+    mkReplaceCopy('原文段 kw-CP 正文（无 sourceEventSeqs 的 replace 副本）', 1, 1),
   ]
   const r = scanProseHits(events, 'kw-cp', 10_000)
   assert.deepEqual(r.hits.map(h => h.seq), [1], '副本入面=双计实锤回归（P1★）')

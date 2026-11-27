@@ -14,7 +14,7 @@ import type { Atom } from '../src/argp-types.ts'
 import { classifyUaAtom, type UaEventProbe } from '../src/factor/ua-input.ts'
 
 function atom(seq: number, type: 'U' | 'A' | 'R' | 'X', turn: number, text: string, toolCallIds: string[] = []): Atom {
-  return { id: seq, seq, type, turn, text, toolCallIds, cites: [], citesFailed: false }
+  return { id: seq, seq, type, turn, text, toolCallIds }
 }
 
 const clean: UaEventProbe = { attachment: false }

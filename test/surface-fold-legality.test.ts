@@ -9,7 +9,7 @@
  *  - 反向（阴性对照）：同样日志里手工补一枚轮间隙的 tool/result replace ⇒ 宿主必须
  *    抛 "tool/result is outside an open turn"（证明 oracle 有判别力，不是纸面锁）。
  *
- * 2.2.2 根修后 ARGP 的 surface replace **只剩 user 检查点**（cites 剥离那条残余 assistant replace
+ * 2.2.2 根修后 ARGP 的 surface replace **只剩 user 检查点**（1.x 引用协议剥离那条残余 assistant replace
  * 自 2.2.1 起就被宿主写入侧无条件拒收，属从未生效的死路径，2.2.2 已连同落点守卫一并删除），
  * "非 append tool/result 落轮间隙"这一类从结构上不可达。
  */

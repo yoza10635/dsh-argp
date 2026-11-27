@@ -3,14 +3,13 @@
  *
  * Two responsibilities:
  *
- * 1. Hides the ARGP citation protocol marker (a trailing `{"cites":[...]}`
- *    JSON block) from assistant chat rendering. The server engine strips the
- *    marker from the model-visible surface only; the human transcript renders
- *    append-origin text verbatim, so the marker would otherwise stay visible in
- *    the Web UI. This bundle registers a display filter on the native
- *    `assistantDisplay` seam that strips the trailing block at render time —
- *    display only, never touching the log, the model surface, or the stored
- *    message.
+ * 1. Registers an assistant display filter on the native `assistantDisplay`
+ *    seam. Historically this filter hid the 1.x citation-protocol marker (a
+ *    trailing JSON block) at render time — display only, never touching the
+ *    log, the model surface, or the stored message. The protocol subsystem was
+ *    removed in 2.2.2; the filter is now an identity passthrough, kept only so
+ *    the registration structure (effect-owned, re-apply safe) stays in place
+ *    as the display-side hook.
  *
  * 2. Contributes a dedicated ARGP card to the Plugins settings page, editing
  *    the single `dsh-argp` knob (2.0.1 roster: compactionThreshold) live.
@@ -26,7 +25,7 @@
  *    slot，配合服务端 `settings.register(ns, schema, { base })`）已随 #4587
  *    `profile-owned-live-configuration` 整体移除；两端 namespace 仍须一致。
  *
- * Graceful degradation: the cites filter probes `assistantDisplay` through
+ * Graceful degradation: the display filter probes `assistantDisplay` through
  * `ctx.get()` (returns undefined for absent services, no throw). The card
  * instead uses a NESTED `ctx.inject([...], ...)` on purpose — the
  * same reason dsh-market documents for its own card. `ctx.get` is an immediate
@@ -47,7 +46,6 @@
  * while leaving the server-side enable state unchanged.
  */
 
-import { stripCitesTail } from '../cites-strip.js'
 import {
   ArgpConfigController,
   ARG_SETTINGS_KEY,
@@ -305,29 +303,6 @@ function registerArgpSettingsCard(ctx: ArgpClientContext): void {
 }
 
 export function apply(ctx: ArgpClientContext): void {
-  const display = ctx.get<AssistantDisplaySeam>('assistantDisplay')
-  if (display?.register !== undefined) {
-    // Effect-wrapped for the same reason as the locale dictionary: a re-apply
-    // that kept the old filter would stack a second one on the render seam.
-    registerDisposable(ctx, () => display.register((blocks) => {
-      // Only the trailing text block can carry the protocol marker.
-      let lastText = -1
-      for (let i = blocks.length - 1; i >= 0; i -= 1) {
-        const block = blocks[i]
-        if (block !== undefined && block.kind === 'text' && typeof block.text === 'string') {
-          lastText = i
-          break
-        }
-      }
-      if (lastText === -1) return blocks
-      const text = blocks[lastText]!.text as string
-      const body = stripCitesTail(text)
-      if (body === text) return blocks
-      const next = blocks.slice()
-      next[lastText] = { ...blocks[lastText], text: body }
-      return next
-    }), 'dsh-argp: cites display filter')
-  }
 
   registerArgpSettingsCard(ctx)
 }

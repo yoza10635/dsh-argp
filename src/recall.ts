@@ -43,7 +43,8 @@ export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> 
     // 权威剪枝账本：只认 compaction/prune 事件（pruneIntervals 每次真剪枝必发，
     // 且 shadowedSeqs 即被剪 surface seq 的权威清单）。不再靠「replace 形态推断」：
     // 旧实现扫 surfaceOp replace 并把 sourceEventSeqs 收进集合，会误吞两类非剪枝写回——
-    //   ① cites 剥离写回（data.argpCites，仅去协议产物）——2026-08-22 已加 argpCites 门控；
+    //   ① 1.x 引用协议尾块剥离写回（仅去协议产物）——当时已加同名数据字段门控；
+    //      该写回路径从未生效，已于 2.2.2 连同落点守卫一并删除；
     //   ② per-atom 原地压缩副本（1.x 三管线产物，start===end、
     //      sourceEventSeqs=[被压原子]、无 compaction/prune 事件）——2026-08-27 定位：
     //      它仍穿透旧门控被当「已剪」，导致 catalog 谎报 "Compression removed N"、

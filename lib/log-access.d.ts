@@ -9,7 +9,7 @@
  *
  * 本模块把 recall 原语从"查 pruned 索引"升级为"按 seq 查 append-only 日志、无视节点状态"，
  * 并携带状态标签（shadowed / live / off-surface），使模型知道取回的内容当前是否可见
- * —— 否则引用契约（cites 该不该带）无法执行。越界 seq 才报错。
+ * —— 否则 1.x 引用协议的带引义务无从执行（2.0 起该状态口径仍服务召回话术）。越界 seq 才报错。
  */
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session';
 /**

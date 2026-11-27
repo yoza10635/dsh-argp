@@ -1,9 +1,8 @@
 /**
  * `./client` 发布级公开入口（src/client/index.ts）契约测试（P3.2）+ 配置值校验（P4.6）：
  *
- *  ① apply() 注册 assistantDisplay 显示过滤器，且过滤器对 DisplayBlock 数组的
- *     末个 text 块做手术剥离尾随 cites JSON 块（裸 JSON / ```json fence）；
- *     无块 / 无变化 → 返回原数组（不产生多余拷贝）；只动末块，其余块共享引用。
+ *  ① 1.x 引用协议尾块剥离子系统已于 2.2.2 整体删除，assistantDisplay 显示过滤器随其
+ *     退位（曾是纯直通注册），现不再注册；服务缺失时的静默降级仍由 ② 锁住；
  *  ② assistantDisplay 服务缺失（或无 register）时静默降级不抛错；
  *     locale 服务存在时以 dsh-argp 命名空间注册卡片文案。
  *  ③ 跨端契约：client 的 ARG_SETTINGS_KEY === server 端 settings.register 的
@@ -165,78 +164,9 @@ function makeLocaleService(): {
 }
 
 // ---------------------------------------------------------------------------
-// ① apply() 注册 assistantDisplay 过滤器：剥离尾随 cites 块
+// ① assistantDisplay 过滤器：2.2.2 起纯直通（原剥离用例组已随子系统删除；
+//    注册由 effect 持有、re-apply 不叠加的契约见 ④）
 // ---------------------------------------------------------------------------
-
-function registeredFilter(): DisplayFilter {
-  let registered: DisplayFilter | undefined
-  let unregister: (() => void) | undefined
-  const ctx = makeCtx({
-    assistantDisplay: {
-      register: (filter: DisplayFilter) => {
-        registered = filter
-        unregister = () => {}
-        return unregister
-      },
-    } satisfies AssistantDisplaySeam,
-  })
-  apply(ctx)
-  assert.equal(typeof registered, 'function', 'apply() must register an assistantDisplay filter')
-  assert.equal(typeof unregister, 'function', 'register must return an unregister function')
-  return registered!
-}
-
-test('① apply() 注册 assistantDisplay 过滤器：剥离末块裸 JSON cites 尾', () => {
-  const filter = registeredFilter()
-  const first: DisplayBlock = { kind: 'text', text: 'body' }
-  const last: DisplayBlock = { kind: 'text', text: 'answer\n{"cites":["alpha"]}' }
-  const input = [first, last]
-  const out = filter(input, { streaming: false })
-  assert.notEqual(out, input, '剥离发生时返回新数组')
-  assert.equal(out.length, 2)
-  assert.equal(out[0], first, '非末块共享引用（只手术末块）')
-  assert.notEqual(out[1], last, '末块被替换')
-  assert.equal(out[1].text, 'answer')
-})
-
-test('① 过滤器：```json fence 尾同样剥离', () => {
-  const filter = registeredFilter()
-  const out = filter([{ kind: 'text', text: 'x\n```json\n{"cites":["a"]}\n```' }], { streaming: false })
-  assert.equal(out[0].text, 'x')
-})
-
-test('① 过滤器：无 cites 块 → 返回原数组（不拷贝）', () => {
-  const filter = registeredFilter()
-  const input: DisplayBlock[] = [{ kind: 'text', text: 'no marker' }]
-  assert.equal(filter(input, { streaming: false }), input)
-})
-
-test('① 过滤器：只手术末个 text 块——更早块的标记不剥', () => {
-  const filter = registeredFilter()
-  const input: DisplayBlock[] = [
-    { kind: 'text', text: 'earlier {"cites":["x"]}' },
-    { kind: 'text', text: 'later' },
-  ]
-  const out = filter(input, { streaming: false })
-  assert.equal(out, input, '末块无标记 → 整体不变')
-  assert.equal(out[0].text, 'earlier {"cites":["x"]}')
-})
-
-test('① 过滤器：畸形 cites 块 → 原文不变', () => {
-  const filter = registeredFilter()
-  const input: DisplayBlock[] = [{ kind: 'text', text: 'tail {"cites": [broken' }]
-  const out = filter(input, { streaming: false })
-  assert.equal(out, input)
-  assert.equal(out[0].text, 'tail {"cites": [broken')
-})
-
-test('① 过滤器：末块非 text / 空数组 → 返回原数组', () => {
-  const filter = registeredFilter()
-  const noText: DisplayBlock[] = [{ kind: 'tool', text: 'whatever {"cites":["x"]}' }]
-  assert.equal(filter(noText, { streaming: false }), noText)
-  const empty: DisplayBlock[] = []
-  assert.equal(filter(empty, { streaming: false }), empty)
-})
 
 // ---------------------------------------------------------------------------
 // ② assistantDisplay 缺失 → 静默降级
@@ -393,14 +323,14 @@ test('P4.6 CardForm：sortMode 非法枚举草稿 → invalid 阻断保存', asy
 // 「插件未能完成同步；服务端的启用状态保持不变」报回。
 // ---------------------------------------------------------------------------
 
-test('④ apply 的两处注册都挂在 effect 上（标签即契约）', () => {
+test('④ apply 的注册挂在 effect 上（标签即契约）', () => {
   const locale = makeLocaleService()
   const ctx = makeCtx({ locale: locale.service, assistantDisplay: { register: () => () => {} } })
   apply(ctx)
   assert.deepEqual(
     ctx.effectLabels(),
-    ['dsh-argp: cites display filter', 'dsh-argp: settings card dictionaries'],
-    '两处注册都必须由 ctx.effect 持有 disposer（否则 re-apply 泄漏/叠加）',
+    ['dsh-argp: settings card dictionaries'],
+    '注册必须由 ctx.effect 持有 disposer（否则 re-apply 泄漏/叠加）；2.2.2 起 assistantDisplay 直通过滤器已随 1.x 引用协议子系统删除，故仅剩这一处',
   )
 })
 
@@ -430,21 +360,6 @@ test('④ 负控：未 dispose 就二次 apply → 忠实镜像的宿主 locale 
     /locale namespace "dsh-argp" already has locale "zh"/,
     '未回收就重注册必须抛 —— 与宿主 dsh-client-locale 行为一致',
   )
-})
-
-test('④ re-apply：assistantDisplay 过滤器不叠加（dispose 后仍只有一个）', () => {
-  let active = 0
-  const ctx = makeCtx({
-    assistantDisplay: {
-      register: () => { active += 1; return () => { active -= 1 } },
-    },
-  })
-  apply(ctx)
-  assert.equal(active, 1, '首次 apply 注册一个过滤器')
-  ctx.disposeEffects()
-  assert.equal(active, 0, 'disposer 必须解除注册')
-  apply(ctx)
-  assert.equal(active, 1, '二次 apply 不得叠加第二个过滤器')
 })
 
 test('④ 无 effect 的退化 ctx：注册照旧发生（无 fiber 可持有 disposer 时不抛）', () => {

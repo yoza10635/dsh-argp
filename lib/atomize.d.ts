@@ -1,8 +1,6 @@
 /**
- * ARGP 原子化模块（2.0 factor-only 收窄）：atomize + cites 提取（extractCites）+
+ * ARGP 原子化模块（2.0 factor-only 收窄）：atomize +
  * user 分类（classifyUserMessage）+ ask 检测（looksAskText）。
- *
- * 读侧保留 `data.argpCites` 的归一化读（历史会话的 A 原子在 atomize 里照旧取用，见下）。
  *
  * 循环 import 规避：本模块**不** import hub 运行时。atomize 接收窄接口
  * {@link GraphBuildHost} 而非具体 class；hub 的 class 以
@@ -11,15 +9,6 @@
  */
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { Atom } from './argp-types.js';
-import type { ParsedCite } from './cites-strip.js';
-/** cites 服从率度量台账（历史 C7-cites 口径；atomize 仍累计，诊断用）。 */
-export interface CiteStats {
-    aAtoms: number;
-    declared: number;
-    resolved: number;
-    ambiguous: number;
-    failed: number;
-}
 /**
  * 原子化访问引擎状态所需的窄接口。
  * 仅列出 atomize 实际读写的字段；hub 的 ArgpEngine 以
@@ -27,7 +16,6 @@ export interface CiteStats {
  */
 export interface GraphBuildHost {
     session: Session | null;
-    citeStats: CiteStats;
 }
 /**
  * A8（问题 10 修订）：ask 检测中英双语纯函数。
@@ -52,19 +40,7 @@ export declare function looksAskText(text: string): boolean;
  */
 export declare function classifyUserMessage(data: unknown): 'U' | 'X';
 /**
- * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
- * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
- * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
- */
-export declare function extractCites(text: string): {
-    body: string;
-    cites: ParsedCite[];
-    attempted: boolean;
-    parseFailed: boolean;
-};
-/**
  * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。
- * cites 统计在 A 原子处累计。
  *
  * switch 认四类 surface 事件：`user/message` / `assistant/message` / `tool/result` /
  * `developer/message`；唯一不产出原子的 surface 类型是 `system/message`——

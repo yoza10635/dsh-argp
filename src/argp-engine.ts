@@ -5,7 +5,7 @@
  * 浓缩闸二）、溢出 400 恢复、手动 `/compact`、`/argp` 只读状态。
  * 事务内核 = factor 引擎（R 贴标剪枝，0-LLM）+ 散文浓缩（唯一 LLM 摘要通路）。
  *
- * 读侧兼容：老墓碑文法、老 `data.argpCites` 忽略读、`prune-tx` 的 tool/result
+ * 读侧兼容：老墓碑文法、`prune-tx` 的 tool/result
  * 克隆配对契约（老会话档案可回放）。
  *
  * 循环 import 规约：引擎是唯一组合根，向下单向依赖各功能模块；各模块经窄接口
@@ -37,10 +37,9 @@ import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OU
 import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
 export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
-// 原子化模块：atomize/extractCites/classifyUserMessage/looksAskText。本地使用 + 转发。
-import { looksAskText, classifyUserMessage, extractCites, atomize, type CiteStats, type GraphBuildHost } from './atomize.js'
-export { looksAskText, classifyUserMessage, extractCites } from './atomize.js'
-export type { CiteStats } from './atomize.js'
+// 原子化模块：atomize/classifyUserMessage/looksAskText。本地使用 + 转发。
+import { looksAskText, classifyUserMessage, atomize, type GraphBuildHost } from './atomize.js'
+export { looksAskText, classifyUserMessage } from './atomize.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/acquireTokenMeter。
 import { resolveScaledBudgets, measureTokens, liveBlendCharsPerToken, type BudgetHost, type TokenMeter } from './budget.js'
 import { countCjkChars, estTokensFromStats } from './cjk.js'
@@ -70,8 +69,7 @@ export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js
  * 老 profile 里的同名键由 normalizeConfig 宽容读 + 告警忽略。构造面保留显式
  * windowTokens/retainTokens（bench/高级部署按 token 直给，不依赖比例旋钮）。
  *
- * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/
- * cites/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
+ * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/引用协议/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
  * normalizeConfig 宽容读 + 告警忽略（老 profile 不炸，但不静默改变预期）。
  */
 export interface ArgpConfig {
@@ -211,7 +209,6 @@ export class ArgpEngine extends CompactionEngine {
   // ---------------------------------------------------------------------
   get records(): GraphPruneRecord[] { return this.rt.records }
   get recallCalls(): { seq: number; hit: boolean; state?: import('./log-access.js').NodeState }[] { return this.rt.recallCalls }
-  get citeStats(): CiteStats { return this.rt.citeStats }
   /** 已剪节点目录（seq -> 元数据），供 /argp 与账目重建。 */
   get prunedNodeIndex(): Map<number, PrunedNodeInfo> { return this.rt.prunedNodeIndex }
   get recallCallsThisTurn(): number { return this.rt.recallCallsThisTurn }

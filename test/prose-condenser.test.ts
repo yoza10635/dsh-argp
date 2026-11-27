@@ -118,7 +118,7 @@ async function boot(): Promise<{ ctx: Context; internals: EngineInternals }> {
 // ---------------------------------------------------------------------------
 
 function atom(seq: number, turn: number, type: Atom['type'], text: string, toolCallIds: string[] = []): Atom {
-  return { id: seq, seq, type, turn, text, toolCallIds, cites: [], citesFailed: false }
+  return { id: seq, seq, type, turn, text, toolCallIds }
 }
 
 const noProbe = new Map<number, ProseEventProbe>()

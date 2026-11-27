@@ -10,9 +10,7 @@ import type { Atom } from './argp-types.js';
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js';
 import { type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js';
 export type { PrunedNodeInfo } from './session-state.js';
-import { type CiteStats } from './atomize.js';
-export { looksAskText, classifyUserMessage, extractCites } from './atomize.js';
-export type { CiteStats } from './atomize.js';
+export { looksAskText, classifyUserMessage } from './atomize.js';
 export { scaleBudgets } from './budget.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 export type { GraphPruneRecord } from './prune-tx.js';
@@ -25,8 +23,7 @@ export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js
  * 老 profile 里的同名键由 normalizeConfig 宽容读 + 告警忽略。构造面保留显式
  * windowTokens/retainTokens（bench/高级部署按 token 直给，不依赖比例旋钮）。
  *
- * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/
- * cites/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
+ * 1.x graph 臂的旋钮（maxPasses/recencyGuard/turnGuard/minSpanChars/sortMode/闭包/引用协议/推断边/peratom…）同样已退位——cordis 非 strict 合并仍会把它们透传进来，
  * normalizeConfig 宽容读 + 告警忽略（老 profile 不炸，但不静默改变预期）。
  */
 export interface ArgpConfig {
@@ -130,7 +127,6 @@ export declare class ArgpEngine extends CompactionEngine {
         hit: boolean;
         state?: import('./log-access.js').NodeState;
     }[];
-    get citeStats(): CiteStats;
     /** 已剪节点目录（seq -> 元数据），供 /argp 与账目重建。 */
     get prunedNodeIndex(): Map<number, PrunedNodeInfo>;
     get recallCallsThisTurn(): number;

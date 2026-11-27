@@ -1,8 +1,6 @@
 /**
- * ARGP 原子化模块（2.0 factor-only 收窄）：atomize + cites 提取（extractCites）+
+ * ARGP 原子化模块（2.0 factor-only 收窄）：atomize +
  * user 分类（classifyUserMessage）+ ask 检测（looksAskText）。
- *
- * 读侧保留 `data.argpCites` 的归一化读（历史会话的 A 原子在 atomize 里照旧取用，见下）。
  *
  * 循环 import 规避：本模块**不** import hub 运行时。atomize 接收窄接口
  * {@link GraphBuildHost} 而非具体 class；hub 的 class 以
@@ -12,12 +10,7 @@
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Atom } from './argp-types.js'
 import { sessionEvents, eventText } from './log-access.js'
-import { matchCitesTail, parseCitesBlock } from './cites-strip.js'
-import type { ParsedCite } from './cites-strip.js'
 import { ARG_NS, isArgpUserInfo, isOwnSourceKind } from './llm/types.js'
-
-/** cites 服从率度量台账（历史 C7-cites 口径；atomize 仍累计，诊断用）。 */
-export interface CiteStats { aAtoms: number; declared: number; resolved: number; ambiguous: number; failed: number }
 
 /**
  * 原子化访问引擎状态所需的窄接口。
@@ -26,7 +19,6 @@ export interface CiteStats { aAtoms: number; declared: number; resolved: number;
  */
 export interface GraphBuildHost {
   session: Session | null
-  citeStats: CiteStats
 }
 
 /**
@@ -63,26 +55,7 @@ export function classifyUserMessage(data: unknown): 'U' | 'X' {
 }
 
 /**
- * 提取 A 文本尾部的 cites JSON（支持裸 JSON 与 ```json 围栏）；返回剥离后正文与引用列表。
- * V6 分级契约：条目可为字符串（视为 supporting）或 {t, l} 对象（l ∈ c|s|x）。
- * 形状不合法（如混入数字/对象缺 t）→ parseFailed 保守保护。
- */
-export function extractCites(text: string): { body: string; cites: ParsedCite[]; attempted: boolean; parseFailed: boolean } {
-  const matched = matchCitesTail(text)
-  const attempted = text.includes('"cites"')
-  if (matched === null) {
-    return { body: text, cites: [], attempted, parseFailed: attempted }
-  }
-  const cites = parseCitesBlock(matched.raw)
-  if (cites === null) {
-    return { body: text, cites: [], attempted: true, parseFailed: true } // JSON 合法但形状不对 → 解析失败，保守保护
-  }
-  return { body: text.slice(0, text.length - matched.span).trimEnd(), cites, attempted: true, parseFailed: false }
-}
-
-/**
  * 原子化（§4.1）：只投影 surface 节点；U/X/R/A 四类（tool/call 不进 surface，无 T 类）。
- * cites 统计在 A 原子处累计。
  *
  * switch 认四类 surface 事件：`user/message` / `assistant/message` / `tool/result` /
  * `developer/message`；唯一不产出原子的 surface 类型是 `system/message`——
@@ -113,49 +86,17 @@ export function atomize(host: GraphBuildHost, session: Session): Atom[] {
       // P4：U-info 投影 sourceSeq（原始用户消息日志 seq）——历史 U-info 副本的恢复目标。
       const uInfoMeta = (data as Record<string, unknown> | undefined)?.[ARG_NS] as { sourceSeq?: unknown } | undefined
       const uSourceSeq = typeof uInfoMeta?.sourceSeq === 'number' ? (uInfoMeta.sourceSeq as number) : undefined
-      const userAtom: Atom = { id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false }
+      const userAtom: Atom = { id: atoms.length, seq, type: kind, turn, text: eventText(session, seq), toolCallIds: [] }
       if (uSourceSeq !== undefined) userAtom.sourceSeq = uSourceSeq
       atoms.push(userAtom)
       continue
     }
     if (event.type === 'assistant/message') {
-      const raw = eventText(session, seq)
-      const stored = (data as { argpCites?: ParsedCite[] | string[] }).argpCites
-      const parsed = extractCites(raw)
-      // 优先用 surface 剥离时存入的 argpCites，保证跨压缩引用图不丢（文本已无 cites）。
-      // ⚠ 归一化兜底（防 shape 漂移）：写回格式是 ParsedCite `{text, level}`，但历史存档
-      // 与契约原文会出现别的形状；判据若只认单一形状，会把对象塞进 text →
-      // 下游 .trim() 抛 TypeError → 压缩静默失败。
-      // 故兼容 ParsedCite[] / string[]（V5 产物）/ graded {t,l}（契约原文）三种形状。
-      let cites: ParsedCite[]
-      if (Array.isArray(stored)) {
-        cites = stored
-          .map(c => {
-            if (typeof c === 'string') return { text: c, level: 'supporting' as const }
-            if (c !== null && typeof c === 'object') {
-              const o = c as { text?: unknown; t?: unknown; level?: unknown; l?: unknown }
-              const text = typeof o.text === 'string' ? o.text : typeof o.t === 'string' ? o.t : ''
-              if (text === '') return null
-              let level: ParsedCite['level'] = 'supporting'
-              const lv = (typeof o.level === 'string' ? o.level : typeof o.l === 'string' ? o.l : '').trim().toLowerCase()
-              if (lv === 'c' || lv === 'critical') level = 'critical'
-              else if (lv === 'x' || lv === 'contextual') level = 'contextual'
-              return { text, level }
-            }
-            return null
-          })
-          .filter((c): c is ParsedCite => c !== null)
-      } else {
-        cites = parsed.cites
-      }
-      const body = parsed.body
+      const text = eventText(session, seq)
       const msg = (data as { message?: { content?: unknown[] } })?.message
       const content = Array.isArray(msg?.content) ? (msg?.content as { type: string; id?: string }[]) : []
       const toolCallIds = content.filter(b => b.type === 'tool-call' && typeof b.id === 'string').map(b => b.id as string)
-      host.citeStats.aAtoms += 1
-      if (cites.length > 0) host.citeStats.declared += cites.length
-      if (parsed.parseFailed) host.citeStats.failed += 1
-      atoms.push({ id: atoms.length, seq, type: 'A', turn, text: body, toolCallIds, cites, citesFailed: parsed.parseFailed })
+      atoms.push({ id: atoms.length, seq, type: 'A', turn, text, toolCallIds })
       continue
     }
     if (event.type === 'tool/result') {
@@ -172,13 +113,13 @@ export function atomize(host: GraphBuildHost, session: Session): Atom[] {
         ?? d?.message?.content?.find(b => b?.toolCallId !== undefined)?.toolCallId
         ?? d?.message?.toolCallId
       const callId = typeof rawCallId === 'string' ? rawCallId : undefined
-      atoms.push({ id: atoms.length, seq, type: 'R', turn, text: eventText(session, seq), toolCallIds: callId === undefined ? [] : [callId], cites: [], citesFailed: false })
+      atoms.push({ id: atoms.length, seq, type: 'R', turn, text: eventText(session, seq), toolCallIds: callId === undefined ? [] : [callId] })
       continue
     }
     if (event.type === 'developer/message') {
       // V4 保留类型（tool-addition / tool-removal；宿主尚未激活生产者/消费者）。
       // 显式 X：与 checkpoint 同档——进台账、永不被剪。
-      atoms.push({ id: atoms.length, seq, type: 'X', turn, text: eventText(session, seq), toolCallIds: [], cites: [], citesFailed: false })
+      atoms.push({ id: atoms.length, seq, type: 'X', turn, text: eventText(session, seq), toolCallIds: [] })
       continue
     }
   }

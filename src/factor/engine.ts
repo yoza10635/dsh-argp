@@ -13,7 +13,7 @@
  * 无法区分"R 读后文件没动"与"R 读后已变又恰好没再变"，一律按未知（不可再生）。
  *
  * 装配侧不变量（argp-engine 构造器执行）：
- *  - engine='factor' ⇒ compressor/declarer/zoom 三管线不挂、cites 通道硬关；
+ *  - engine='factor' ⇒ compressor/declarer/zoom 三管线不挂（1.x 遗留通道整体退位）；
  *  - 本类只剪 R（content-only 最小桩，宿主 assertToolResultRewrite 形态）；
  *    A 永不入剪枝区间（恒留待摘要），协议组互锁因此天然满足。
  */
@@ -1348,7 +1348,7 @@ export class FactorEngine {
     const note = vocabNoteText(text)
     // 裸 replace（无相邻 compaction/prune 配对）合法的前提 = 此刻无 armed claim：
     // token-meter 投影只在 claim 悬着且范围不符时 throw（"no adjacent shadow price"），
-    // 无 claim 的单节点 replace 自折叠（cites-strip / U-info 副本同形态生产先例）。
+    // 无 claim 的单节点 replace 自折叠（U-info 副本同形态生产先例）。
     // 调用点在 pre-step——上一笔剪枝事务以 compaction/end 收口、claim 已 drop。
     await session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: note }],

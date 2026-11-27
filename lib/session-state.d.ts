@@ -1,6 +1,5 @@
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { AtomType } from './argp-types.js';
-import type { CiteStats } from './atomize.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 import type { NodeState } from './log-access.js';
 /**
@@ -30,8 +29,6 @@ export interface SessionRuntimeState {
         hit: boolean;
         state?: NodeState;
     }[];
-    /** 建图统计（cites 声明/解析；atomize 写，诊断用）。 */
-    citeStats: CiteStats;
     /** 已剪节点目录（seq -> 元数据；账本重建写，/argp 报数）。 */
     prunedNodeIndex: Map<number, PrunedNodeInfo>;
     /** 每轮召回调用计数（防循环安全阀）。 */
