@@ -80,5 +80,9 @@ export declare function rangeCovered(old: RTags['readRange'], next: RTags['readR
 /**
  * seq → 是否被后续同文件成功读覆盖。只看 READ 类成功 R；错误读不作覆盖证据。
  * P1-d 保守：issuer 工具名缺失（''）不认 read 类（与 retention-score 的族下限同口径）。
+ *
+ * A6：按文件分桶后只在**同一文件的读序列**里找后续覆盖者（原实现对每对候选都
+ * 跑全量 `files.includes`，是 O(R²·F)）。语义逐条等价：存在 next（同文件 ∧ seq 更大
+ * ∧ 非 errorish ∧ old⊆next 区间）。同文件读序列通常很短，找到即 break。
  */
 export declare function supersededMarks(tagsBySeq: ReadonlyMap<number, RTagInput>): Map<number, boolean>;

@@ -257,11 +257,23 @@ export function rangeCovered(old: RTags['readRange'], next: RTags['readRange']):
 /**
  * seq → 是否被后续同文件成功读覆盖。只看 READ 类成功 R；错误读不作覆盖证据。
  * P1-d 保守：issuer 工具名缺失（''）不认 read 类（与 retention-score 的族下限同口径）。
+ *
+ * A6：按文件分桶后只在**同一文件的读序列**里找后续覆盖者（原实现对每对候选都
+ * 跑全量 `files.includes`，是 O(R²·F)）。语义逐条等价：存在 next（同文件 ∧ seq 更大
+ * ∧ 非 errorish ∧ old⊆next 区间）。同文件读序列通常很短，找到即 break。
  */
 export function supersededMarks(tagsBySeq: ReadonlyMap<number, RTagInput>): Map<number, boolean> {
-  const reads = [...tagsBySeq.values()]
-    .filter(x => x.tool === 'read' || x.tool === 'view')
-    .sort((a, b) => a.seq - b.seq)
+  const reads = [...tagsBySeq.values()].filter(x => x.tool === 'read' || x.tool === 'view')
+  const byFile = new Map<string, RTagInput[]>()
+  for (const r of reads) {
+    for (const f of r.tags.files) {
+      const bucket = byFile.get(f)
+      if (bucket === undefined) byFile.set(f, [r])
+      else bucket.push(r)
+    }
+  }
+  for (const bucket of byFile.values()) bucket.sort((a, b) => a.seq - b.seq)
+
   const out = new Map<number, boolean>()
   for (const old of reads) {
     // 读**失败**（结构化 isError）的 R 不产生可用内容：它的"被覆盖"没有意义，若标
@@ -269,12 +281,23 @@ export function supersededMarks(tagsBySeq: ReadonlyMap<number, RTagInput>): Map<
     // 成功读取的日志内容里出现 ENOENT 也会置真（本测试集 c1 即此形态）。
     if (old.tags.failed === true) continue
     let covered = false
-    for (const next of reads) {
-      if (next.seq <= old.seq || next.tags.errorish) continue
-      if (old.tags.files.some(f => next.tags.files.includes(f)) && rangeCovered(old.tags.readRange, next.tags.readRange)) {
-        covered = true
-        break
+    for (const file of old.tags.files) {
+      const bucket = byFile.get(file)
+      if (bucket === undefined) continue
+      // 首个 seq > old.seq 的位置（bucket 已升序）。
+      let lo = 0
+      let hi = bucket.length
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1
+        if (bucket[mid]!.seq <= old.seq) lo = mid + 1
+        else hi = mid
       }
+      for (let i = lo; i < bucket.length && !covered; i += 1) {
+        const next = bucket[i]!
+        if (next.tags.errorish) continue
+        if (rangeCovered(old.tags.readRange, next.tags.readRange)) covered = true
+      }
+      if (covered) break
     }
     if (covered) out.set(old.seq, true)
   }

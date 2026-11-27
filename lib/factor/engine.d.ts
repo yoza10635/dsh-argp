@@ -278,6 +278,12 @@ export declare class FactorEngine {
     ledgerForRecall(session: Session): FactorLedger;
     private stateOf;
     /**
+     * 被遮蔽 seq 集合（A6）：走 recall.ts 的**增量账本**（游标只扫新追加事件），
+     * 不再每次 `decide` 用 `scanShadowedSeqs` 全日志重扫。口径与 `scanShadowedSeqs`
+     * 相同（只认 compaction/prune，error-end 丢弃声称，L9 双向锁）。
+     */
+    private shadowedSeqs;
+    /**
      * 观察路（sticky 通道 + 被剪账本 + 在线文件快照）。幂等：ledger rootSeq 去重。
      */
     private observe;

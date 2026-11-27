@@ -4,9 +4,9 @@
  * 全链 0 LLM（G7 口径）：本文件无 LLM import；摘要在 prose-condenser（P6-④）。
  *
  * 账本一致性策略：**被剪账本 = shadowed 集合的投影**——发射侧零手动记账，
- * resume 重放与在线新增走同一条观察路（scanShadowedSeqs 引擎无关，
- * §1.5-9 无版本 pin 裁定的落点）。observeR/addPruned 由 ledger 的 rootSeq
- * 去重保证幂等，重复扫描无害——P1-d 正确性优先，增量缓存留给 P3 性能项。
+ * resume 重放与在线新增走同一条观察路（shadowed 取 recall.ts 的增量账本，
+ * 口径与 scanShadowedSeqs 相同；A6 起不再每次 decide 全日志重扫）。
+ * observeR/addPruned 由 ledger 的 rootSeq 去重保证幂等，重复观察无害。
  *
  * 可再生性采样的时序纪律（释放向，I-DIR）：**只在事件首次在线观察到时采样**
  * 文件基线；重放批（引擎挂上前的历史）不采样——启动后才 stat 到的 mtime
@@ -21,7 +21,9 @@ import { appendFileSync } from 'node:fs'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
 import { isCompactCheckpointSource, type CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { detectOpenTurn, eventText, rawEventText, resolveRootSeqs, scanShadowedSeqs, sessionEvents } from '../log-access.ts'
+import { detectOpenTurn, eventText, rawEventText, resolveRootSeqs, sessionEvents } from '../log-access.ts'
+import { shadowedSeqsOf } from '../recall.ts'
+import type { SeqSet } from '../seq-bitset.ts'
 import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACTOR_COMPACTED_MARKER, FACTOR_STUB_RUN_MIN, FOCAL_DOC_HARD_WIDTH_RATIO, FOCUS_GROUP_CAP, FOCUS_QUOTA_BUDGET_RATIO, FOCUS_QUOTA_GROUPS, FOCUS_TURN_SHARE_THRESHOLD, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { proseTextOf } from './prose-scan.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
@@ -586,6 +588,15 @@ export class FactorEngine {
   }
 
   /**
+   * 被遮蔽 seq 集合（A6）：走 recall.ts 的**增量账本**（游标只扫新追加事件），
+   * 不再每次 `decide` 用 `scanShadowedSeqs` 全日志重扫。口径与 `scanShadowedSeqs`
+   * 相同（只认 compaction/prune，error-end 丢弃声称，L9 双向锁）。
+   */
+  private shadowedSeqs(session: Session): SeqSet {
+    return shadowedSeqsOf(this.host, session)
+  }
+
+  /**
    * 观察路（sticky 通道 + 被剪账本 + 在线文件快照）。幂等：ledger rootSeq 去重。
    */
   private observe(session: Session): { atoms: Atom[]; tagsBySeq: Map<number, RTagInput>; cwd: string | undefined } {
@@ -601,7 +612,7 @@ export class FactorEngine {
     // 日志根事件驱动（resume 正解）：被剪 R 的原事件已离场 surface，只有遍历日志
     // + resolveRootSeqs 折链才能重建被剪账本；桩事件排除（tagRsFromLog 内）。
     const tagsBySeq = tagRsFromLog(events, cwd, seq => resolveRootSeqs(events, seq))
-    const shadowed = scanShadowedSeqs(session)
+    const shadowed = this.shadowedSeqs(session)
     for (const [seq, input] of tagsBySeq) {
       ledger.observeR(seq, input.turn, input.tags)
       // preview 随贴标同行（tagRsFromLog 单点提取）——在线/重建同路 ⇒ ZT6 逐字节一致。
@@ -632,7 +643,7 @@ export class FactorEngine {
     const { atoms, tagsBySeq, cwd } = this.observe(session)
     const latestTurn = atoms.reduce((m, a) => Math.max(m, a.turn), 0)
     const openTurn = detectOpenTurn(session)
-    const shadowed = scanShadowedSeqs(session)
+    const shadowed = this.shadowedSeqs(session)
     const focalTurns = this.cfg.focalTurns()
     const protectFromTurn = focalTurns > 0 ? latestTurn - focalTurns + 1 : Number.POSITIVE_INFINITY
     // 焦点尾窗降级（用户 2026-11-13）：只在最新轮自身占比 ≥50% 且组数 >10 时触发；
@@ -990,7 +1001,7 @@ export class FactorEngine {
     //   ② 原生 toolResultPruner 的 head/middle/tail 切片（组剪之后二次收紧产物）。
     // 原文都在 append-only 日志、标签可召回；若把 ② 当 live R，组闭包永远不成立，
     // pruner 切片就会变成永久配重（alpha3 终态 63.5% surface 实证）。
-    const shadowedForStub = scanShadowedSeqs(session)
+    const shadowedForStub = this.shadowedSeqs(session)
     const eventLog = sessionEvents(session)
     const stubSeqs = new Set<number>()
     for (const a of atoms) {
@@ -1118,7 +1129,7 @@ export class FactorEngine {
     if (result !== null) {
       // 发射成功立即入账（词表零轮延迟）；组区间逐个 R 记账，A 不入账。逐条以真实
       // shadowed 复核——未被 shadow 的区间（事务预检剔除等）不得误记。
-      const shadowedNow = scanShadowedSeqs(session)
+      const shadowedNow = this.shadowedSeqs(session)
       for (const iv of intervals) {
         for (const seq of iv.seqs) {
           if (!shadowedNow.has(seq)) continue

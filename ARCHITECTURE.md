@@ -337,7 +337,7 @@ in the pass remain durable`）。因此 surface 上只要残留一枚组剪当�
 | `argp-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
 | `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, atomize, telemetry, constants, budget, prune-tx |
 | `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重；A5 起 `shadowedSet` 为位图、`prunedNodeIndex` 明细有上限（`notePrunedNode`） | constants, seq-bitset, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
-| `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表快照/note 回退 | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
+| `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表快照/note 回退；被遮蔽 seq 走 `recall` 增量账本 | log-access, recall, seq-bitset(type), constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
 | `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, llm/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` defineTool + 会话解析/防循环阀/`resolveQueryLabels` 单点 | log-access, telemetry, factor-ledger, factor/engine |
 | `factor/search-history.ts` | `search_history` defineTool：内容发现（被剪 R ∪ 散文）+ 分层预览 + 临时索引单槽 + 分布直方图 | log-access, budget, cjk, prose-scan, recall-labels, recall-tools, factor/engine |
