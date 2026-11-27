@@ -8,8 +8,11 @@
  *  ④缺省关：无 env ⇒ egress 不挂、浓缩闸照旧（EG-6b，M4 锁；2026-11-15 用户裁定对照臂
  *    形态=缺省(本套钉 off 世界)，贴墙交 400 兜底网；'1' 为显式开档；接管世界缺省开见 EG-7（2026-11-25 翻转）。
  *
- * 变异台账（摘除必红，cp 快照回滚）：
- *  M1 摘 anchored 守卫 ⇒ EG-3 红；M2 声明窗未知退默认大窗 ⇒ EG-5 红；
+ * 变异台账（摘除必红；`npm run mutate` 复核 · 最后复核 2026-11-27——M1、M2、
+ * EG-14 剪后二次校验三条已入仓内台账，其余 M3–M12 的「必红」声称系 2026-11-13
+ * cp 快照回滚的历史人工执行记录，未入台账）：
+ *  M1 摘 anchored 守卫 ⇒ EG-3 红；M2 声明窗未知退小窗（必然过线；退大窗在 EG-5 夹具
+ *  5k 占用下不可判别，台账取判别形态）⇒ EG-5 红；摘剪后二次校验 ⇒ EG-14 红；
  *  M3 摘 `!egressPruned` ⇒ EG-6 红；M4 摘 egressEnabled 门 ⇒ EG-6b 红；
  *  M5 输出预算忽略 requestMaxTokens ⇒ EG-4 红；M6 摘 options.maxTokens 档 ⇒ EG-8 红；
  *  M7 摘 modelDefaultMaxTokens 探测档 ⇒ EG-9 红；M8 摘浓缩闸二补检 ⇒ EG-12 红；
@@ -299,7 +302,7 @@ test('EG-12b 越过 0.8×窗：浓缩照旧跟发（闸二不是禁浓缩，是�
 
 test('EG-5 声明窗未知 ⇒ 宁缺勿错不驱动（M2 锁）', async () => {
   const { internals, factor } = await bootFactor()
-  const session = heavyAnchoredSession('eg-nowindow', 5000) // 若退默认大窗必过线
+  const session = heavyAnchoredSession('eg-nowindow', 5000) // 若退小窗必过线（退大窗在 5k 占用下不可判别——变异台账取退小窗形态）
   internals.bindSession(session) // 不桥 request/context ⇒ WeakMap 无值
   const spy = spyCompact(factor)
   const fired = await internals.egressGate(makeAgent(session), sig(), 0)

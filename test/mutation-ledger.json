@@ -1,0 +1,67 @@
+[
+  {
+    "id": "EG-M2 摘「声明窗未知⇒不驱动」守卫（退小窗=必然过线）",
+    "file": "src/argp-engine.ts",
+    "from": "if (declaredWindow <= 0) return false // 声明窗未知：宁缺勿错，交给 400 兜底网",
+    "to": "if (declaredWindow <= 0) declaredWindow = 100 // MUT",
+    "expectTest": "test/factor-egress-gate.test.ts",
+    "expectCase": "EG-5 声明窗未知"
+  },
+  {
+    "id": "GC 协议组发射门 some→every",
+    "file": "src/factor/engine.ts",
+    "from": "if (!defined.some(r => selected.has(r.seq) || isStub(r))) continue",
+    "to": "if (!defined.every(r => selected.has(r.seq) || isStub(r))) continue",
+    "expectTest": "test/group-closure.test.ts",
+    "expectCase": "① 闭包"
+  },
+  {
+    "id": "EV1 摘「在轮 recall 不进剪序」守卫（等价变异登记，论证见 factor-eviction-p6iii 头注）",
+    "file": "src/factor/engine.ts",
+    "from": "if (inOpenTurn && isRecallTool(input.tool)) continue",
+    "to": "if (false && inOpenTurn && isRecallTool(input.tool)) continue",
+    "expectTest": "test/factor-eviction-p6iii.test.ts",
+    "expectCase": "T1 召回对轮闭合后进剪序",
+    "expectKill": false
+  },
+  {
+    "id": "RR 同文桩游程归并门槛 2⇒99999",
+    "file": "src/constants.ts",
+    "from": "FACTOR_STUB_RUN_MIN = 2",
+    "to": "FACTOR_STUB_RUN_MIN = 99999",
+    "expectTest": "test/stub-run-reclaim.test.ts",
+    "expectCase": "RR1 跨事务同文游程随剪归并"
+  },
+  {
+    "id": "EG-14 摘剪后二次校验（after≥窗仍放行）",
+    "file": "src/argp-engine.ts",
+    "from": "    if (after >= declaredWindow) {",
+    "to": "    if (false && after >= declaredWindow) {",
+    "expectTest": "test/factor-egress-gate.test.ts",
+    "expectCase": "EG-14 剪后仍 ≥ 窗"
+  },
+  {
+    "id": "EG-M1 摘断锚禁改写（非 anchored 也驱动）",
+    "file": "src/argp-engine.ts",
+    "from": "    if (measurement.source !== 'anchored') return false",
+    "to": "    if (false && measurement.source !== 'anchored') return false",
+    "expectTest": "test/factor-egress-gate.test.ts",
+    "expectCase": "EG-3 断锚"
+  },
+  {
+    "id": "EV2 强制先行段摘除（forcedFirstSeqs 不喂）",
+    "file": "src/factor/engine.ts",
+    "from": "      forcedFirstSeqs: forcedFirst,",
+    "to": "      forcedFirstSeqs: [],",
+    "expectTest": "test/factor-eviction-p6iii.test.ts",
+    "expectCase": "T2 中断轮半截 A 强制驱逐"
+  },
+  {
+    "id": "EV3 半截 A 的已应答 R 不同行",
+    "file": "src/factor/engine.ts",
+    "from": "        pushForced(a.seq)\n        for (const cid of a.toolCallIds) {\n          const r = rByCall.get(cid)\n          if (r !== undefined) pushForced(r.seq)\n        }",
+    "to": "        pushForced(a.seq)",
+    "expectTest": "test/factor-eviction-p6iii.test.ts",
+    "expectCase": "T4 半截 A 的已应答 R 同行驱逐"
+  }
+]
