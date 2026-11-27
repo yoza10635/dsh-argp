@@ -6,7 +6,7 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
-## [Unreleased]
+## [2.2.2] - 2026-11-27（stable 直发：两起"落盘静默成功、重启整档拒载"封堵；三代理独立审查修复批；压缩统计口径与用户文案重做；1.x 遗留清理；无新增配置面）
 
 ### Removed
 - **1.x 遗留物清理（图引擎退役后的死码与死文案）**。扫描口径 = 导出符号在 src+test 的零消费者 + 1.x 词汇在活代码中的残留。删：① `toolTombstone` / `toolTombstoneSummary` / `factorAssistantTombstone` 三个生成器（全仓零消费者；`compactClipArm` 那枚死 import 一并删）；② `retrieve()` 与 `seqRangeTombstone()` —— 它们是 `recall_pruned(<seq>)` 的**最后两个生产者**，而 2.x 只注册 `recall_history` / `list_labels` / `search_history`，即模型可见文案在点名一个**不存在的工具**（比不留指针更糟：模型会去调一条没有的通道并自信失败）；`pruneIntervals` 的 `tombstones` 参数同时改**必填**，缺省回退分支连同这一类文案结构性消失；③ `semanticEdges` 形参与 `GraphPruneRecord.semanticEdges` 字段（四个调用方恒传 0，是 1.x 引用图的边数记账）；④ 测试夹具里的幽灵配置键 `tombstoneMergeMinRun: 8`（`PruneTxHost` 既不声明也不读取，活缺省是常量 `FACTOR_STUB_RUN_MIN = 2`，留着纯属误导）。**保留**：历史墓碑文法正则与 `RETIRED_GRAPH_KEYS` 键名——存量档案逐字识别 / 老 profile 宽容告警所需，不是活路径。新增锁 **⑩ 词表纪律**（事务写出的 surface 文本含 `recall_pruned` / `list_pruned` 即红；变异自证：注入退役名 ⇒ ⑩ 立即红）。全量 390 例（388 通过、2 跳过、0 失败），行为逐字不变。
