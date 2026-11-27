@@ -279,10 +279,19 @@ ARGP 需要读会话事件日志，但宿主 API 在 dsh 版本间有 breaking �
 |---|---|
 | rc.2（0.1.1） | `session.events`（getter，返回全日志数组） |
 | alpha.4（0.1.2+）～0.1.3 | `session.snapshotEvents(from?, toExcl?)`（`events` getter 已移除） |
-| **0.1.5+（当前支持基线）** | `snapshotEvents()`；`events` 已彻底不存在 |
+| **0.1.5+（当前支持基线 0.2.x）** | `snapshotEvents()`；`events` 已彻底不存在 |
 
 `log-access.ts` 的 `sessionEvents(session)` 是**全代码库唯一允许碰事件日志的入口**。
-所有 `.length` 读取改用 `session.seq`（branded 类型，seq/offset 分离）。
+判别集中在 `logBackendOf(session)`（`LogBackend` 接口：`snapshotEvents` 与 legacy
+`events` 两个实现，按 session 弱缓存），`sessionEvents` / `eventAt` / boot 探针
+`inspectLogAccess` 共用同一后端对象；需要「日志长度」的同步调用方优先用
+`session.seq`（branded 类型，seq/offset 分离）。
+
+宿主 0.2.x 已把 `eventAt` / `snapshotEvents` / `ownEvents` 标为
+`@deprecated … new calls are prohibited`：ARGP 是同步引擎（`decide()` 不能 await），
+只能继续沿用，迁移面收敛在 `log-access.ts`（加一个异步实现即可）。升级宿主后先跑
+`node scripts/doctor.mjs --dsh <根>`——它探测宿主声明文件里同步读 API 是否仍在，
+三者皆无时退出码 3。
 
 ### 7.2 `SurfaceOp` 键名（`startSeq`/`endSeq`）
 
