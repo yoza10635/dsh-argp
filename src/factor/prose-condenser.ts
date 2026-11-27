@@ -29,11 +29,11 @@ import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { eventAt, eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
+import { eventAt, eventText, sessionEvents } from '../log-access.ts'
 import { pruneIntervals, type CompactionSummaryMeta, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
-import { classifyUaAtom, HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS, type HostReinjectedMode, type SummaryInputClass, type UaEventProbe } from './ua-input.ts'
+import { classifyUaAtom, HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS, type HostReinjectedMode, type SummaryInputClass } from './ua-input.ts'
 import { hasAttachmentBlocks, STUB_PREFIX } from './factor-atoms.ts'
 import { DEFAULT_FOCAL_TURNS, FACTOR_COMPACTED_MARKER, VOCAB_NOTE_MARKER } from '../constants.ts'
 import { liveBlendCharsPerToken } from '../budget.js'
@@ -271,11 +271,12 @@ export function planProseEviction(
   const partialSeqs: number[] = []
   let evicted = 0
   let spanProse = 0
-  let stopped = false
   for (const run of runs) {
-    if (holePos >= 0 && run.startPos > holePos && (spanSeqs.length > 0 || partialSeqs.length > 0)) { stopped = true; break }
-    if (options.openTurnFromPos !== null && run.startPos >= options.openTurnFromPos) { stopped = true; break }
-    if (run.turn >= options.protectFromTurn) { stopped = true; break }
+    // 三条早停边界（洞后不再起段 / 开放轮不碰 / 保护区不碰）：控制流只靠 break，
+    // 停因由循环后的 stopReason 从结果状态推导，不在循环里另记一份旗标。
+    if (holePos >= 0 && run.startPos > holePos && (spanSeqs.length > 0 || partialSeqs.length > 0)) break
+    if (options.openTurnFromPos !== null && run.startPos >= options.openTurnFromPos) break
+    if (run.turn >= options.protectFromTurn) break
     // 整轮可驱逐判定：段内无 barrier、无不可吞 excluded、无 U-info 副本（excluded-X 可吞例外）。
     let whole = true
     let runProse = 0
@@ -290,7 +291,7 @@ export function planProseEviction(
       spanSeqs.push(...run.seqs)
       evicted += runProse
       spanProse += runProse
-      if (evicted >= options.needChars) { stopped = true; break }
+      if (evicted >= options.needChars) break
       continue
     }
     if (whole && runProse === 0) {
@@ -308,10 +309,9 @@ export function planProseEviction(
       partialSeqs.push(seq)
       evicted += proseOf(atom, cls)
     }
-    stopped = true
     break
   }
-  // stopped=false 且未达需释放量 = 候选耗尽，仍返回计划（能驱尽驱，方向安全）。
+  // 循环自然耗尽（未走任何 break）且未达需释放量 = 候选耗尽，仍返回计划（能驱尽驱，方向安全）。
   const stopReason: ProseEvictPlan['stopReason'] =
     spanSeqs.length === 0 && partialSeqs.length === 0 ? 'no-candidate'
       : evicted >= options.needChars ? 'need-met' : 'exhausted'

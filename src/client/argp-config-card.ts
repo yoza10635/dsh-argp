@@ -214,41 +214,6 @@ function TextField(props: {
   )
 }
 
-/** A boolean field rendered as a checkbox. */
-function BoolField(props: {
-  id: string
-  label: string
-  hint: string
-  state: CardFieldState
-  t: T
-  onEdit: (text: string) => void
-  onReset: () => void
-}): React.ReactElement {
-  const { id, label, hint, state, t, onEdit, onReset } = props
-  return h('div', { style: fieldStyle },
-    h('div', { style: fieldHeadStyle },
-      h('label', { htmlFor: id, style: labelStyle }, label),
-      state.overridden
-        ? h('span', { style: badgeStyle }, t('overridden'),
-            ' ',
-            h('button', {
-              type: 'button',
-              style: resetStyle,
-              disabled: false,
-              onClick: onReset,
-            }, t('reset')))
-        : null,
-    ),
-    h('input', {
-      id,
-      type: 'checkbox',
-      checked: state.text === 'true',
-      onChange: (e: any) => { onEdit(e.target.checked ? 'true' : 'false') },
-    }),
-    h('p', { style: hintStyle }, hint),
-  )
-}
-
 /**
  * Render the ARGP card.
  * @param props - locale copy, the card snapshot, and its form actions.

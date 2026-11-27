@@ -26,12 +26,12 @@ import { CONTEXT_WINDOW_EXCEEDED_CODE, createUserMessage, isContextWindowExceede
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
 import type { CommandId } from '@deepseek-ai/dsh-commands'
-import { asSeq, detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
+import { detectOpenTurn, sessionEvents, turnOf } from './log-access.js'
 export type { NodeState } from './log-access.js'
 // eventText 转发自 log-access，维持既有公共 API 与测试 import。
 export { eventText } from './log-access.js'
-// 通用类型在叶子 argp-types：本地使用 + 转发维持公共 API。
-import type { Atom, ArgpUserSettings } from './argp-types.js'
+// 通用类型在叶子 argp-types：Atom 本地使用；ArgpUserSettings 仅下行转发维持公共 API。
+import type { Atom } from './argp-types.js'
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js'
 import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OUTPUT_RATIO, DEFAULT_FOCAL_TURNS, DEFAULT_RETAIN_RATIO, DEFAULT_VOCAB_TOP_N, DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
@@ -41,8 +41,8 @@ import { pushBounded } from './telemetry.js'
 import { describeWorld, type WorldFingerprint } from './env-world.js'
 // 每请求缓存审计：压缩是否打断前缀缓存的直接读数（纯观测，不参与决策）。
 import { buildRequestCacheSample, classifyCacheSample, isLowCacheHit } from './cache-audit.js'
-// 原子化模块：atomize/classifyUserMessage/looksAskText。本地使用 + 转发。
-import { looksAskText, classifyUserMessage, atomize, type GraphBuildHost } from './atomize.js'
+// 原子化模块：atomize 本地使用；classifyUserMessage/looksAskText 仅下行转发。
+import { atomize, type GraphBuildHost } from './atomize.js'
 export { looksAskText, classifyUserMessage } from './atomize.js'
 // 预算/度量模块：scaleBudgets/resolveScaledBudgets/measureTokens/acquireTokenMeter。
 import { resolveScaledBudgets, measureTokens, liveBlendCharsPerToken, type BudgetHost, type TokenMeter } from './budget.js'
@@ -62,8 +62,8 @@ export type { GraphPruneRecord } from './prune-tx.js'
 // /argp 只读状态命令：经嵌套 ctx.inject(['commands']) 注册，宿主无命令服务时静默不注册。
 import { registerArgpCommand, type ArgpStatusHost } from './argp-command.js'
 // 会话生命周期 + 构造期装配：normalizeConfig/registerSettings/bindSession/rebuildLedgerFromLog。
-// 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）在 session-lifecycle，此处转发维持公共 API。
-import { normalizeConfig, registerSettings, bindSession, rebuildLedgerFromLog, ARG_SETTINGS_KEY, ArgpUserSettingsSchema, type LifecycleHost } from './session-lifecycle.js'
+// 设置页常量（ARG_SETTINGS_KEY/ArgpUserSettingsSchema）在 session-lifecycle，下行 export 转发维持公共 API。
+import { normalizeConfig, registerSettings, bindSession, rebuildLedgerFromLog, type LifecycleHost } from './session-lifecycle.js'
 export { ARG_SETTINGS_KEY, ArgpUserSettingsSchema } from './session-lifecycle.js'
 
 /**

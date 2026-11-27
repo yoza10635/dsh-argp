@@ -12,7 +12,6 @@
  * —— 否则 1.x 引用协议的带引义务无从执行（2.0 起该状态口径仍服务召回话术）。越界 seq 才报错。
  */
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session'
-import { isArgpUserInfo, isOwnSourceKind } from './llm/types.js'
 
 /**
  * 同步读日志的后端抽象（A1：全部日志读取的唯一可替换接缝）。

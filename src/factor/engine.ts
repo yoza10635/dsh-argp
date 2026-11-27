@@ -28,7 +28,7 @@ import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_FOCAL_TURNS, DEFAULT_VOCAB_TOP_N, FACT
 import { proseTextOf } from './prose-scan.ts'
 import { pruneIntervals, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
-import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, STUB_PREFIX, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
+import { focalCommandLabels, focalLabels, hasAttachmentBlocks, sessionCwdFromEvents, supersededMarks, tagRsFromLog, type AtomLike, type EventLike, type RTagInput } from './factor-atoms.ts'
 import { isRecallTool } from './recall-tools.ts'
 import { resolveDispatchMode, resolveDispatchShadowLogPath } from './dispatch.ts'
 import { HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS } from './ua-input.ts'

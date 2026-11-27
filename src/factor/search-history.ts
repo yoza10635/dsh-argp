@@ -21,7 +21,6 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { Session } from '@deepseek-ai/dsh-session'
 import { nodeStateOf, rawEventText, sessionEvents } from '../log-access.ts'
 import { recallBudgetState } from '../recall.ts'
 import { liveBlendCharsPerToken } from '../budget.ts'
