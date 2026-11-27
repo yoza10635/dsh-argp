@@ -39,10 +39,11 @@
  *     「refill 一次 ⇒ 续作 93–99%」的正向恢复（`spike/52` 同口径复算，审计文档 §7.3
  *     复算段）——本层绿仍不代替该结论，「十万级保留段」的靶未打。
  *
- * 分层现状：原进程内端到端层（`integration-loop.test.ts`，脚本化 LlmAdapter）已随
- * `a20cd10` 退役未补位（测试体系审计报告 T1）；其时序/桶隔离/信号语义暂散在各单测
- * 锁面。本层只在真实字节与真实账单上跑，**不**脚本化 agent 轮——被测面就是请求前缀
- * 与 usage 账单，脚本化会把它们抹平。
+ * 分层现状：原进程内端到端层（`integration-loop.test.ts`，脚本化 LlmAdapter）曾随
+ * `a20cd10` 退役（测试体系审计报告 T1），现由 `test/tier-a-prime.test.ts` 补位
+ * （真 AgentLoop + 脚本化 LlmAdapter/脚本化工具 + 宿主加载校验，零网络）。本层只在
+ * 真实字节与真实账单上跑，**不**脚本化 agent 轮——被测面就是请求前缀与 usage 账单，
+ * 脚本化会把它们抹平；两层互补不互相替代。
  *
  * 门控：`ARGP_ITEST_LLM`（OpenAI 兼容 base）+ `/models` 可达性探测；未设置或不可达
  * ⇒ 整文件 skip，`npm test`（CI / 发布门）保持零网络、确定性。`npm run test:live`
