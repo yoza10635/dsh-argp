@@ -21,6 +21,8 @@ import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpEngine } from '../src/argp-engine.ts'
 import { ArgpUserSettingsSchema } from '../src/session-lifecycle.ts'
 import type { FactorEngine } from '../src/factor/engine.ts'
+import { describeWorld } from '../src/env-world.ts'
+import { renderArgpStatus, type ArgpStatusHost } from '../src/argp-command.ts'
 import { execTool, toolText } from './tool-execute-shape.ts'
 
 function appendUser(session: Session, text: string): void {
@@ -183,4 +185,66 @@ test('ZK4 旧 graph 键与 engine 判别式：仍告警忽略（宽容读不炸�
   const graphWarn = gWarns.find(w => w.includes('[argp-factor]') && w.includes('engine='))
   assert.ok(graphWarn !== undefined, 'engine=graph ⇒ 明确告警（不再静默换引擎）')
   assert.ok(graphWarn.includes('1.11.2'), '告警指认老方案冻结点')
+})
+
+// ---------------------------------------------------------------------------
+// A2：世界指纹（env 派生档 + 生效时机，/argp 一行打印）
+// ---------------------------------------------------------------------------
+
+test('A2 describeWorld：缺省世界 = takeover / egress 开（旧公式线）/ 各臂关，且时机标注正确', () => {
+  const w = describeWorld({}, 0)
+  const fact = (name: string): { value: string; timing: string } | undefined => w.facts.find(f => f.name === name)
+  assert.equal(fact('dispatch')?.value, 'takeover')
+  assert.equal(fact('dispatch')?.timing, 'live', '分派每请求活读')
+  assert.equal(fact('egress')?.value, 'on(old-line)', '接管世界缺省开，线 = 窗−输出预算−2%')
+  assert.equal(fact('tiered')?.value, 'flat')
+  assert.equal(fact('tiered')?.timing, 'boot', 'tiered 是构造期快照')
+  for (const name of ['clip', 'qscore', 'pressure', 'shadow', 'peratomDebug']) {
+    assert.equal(fact(name)?.value, 'off', name + ' 缺省关')
+  }
+  assert.deepEqual(w.overrides, [], '无 env ⇒ 无覆盖回显')
+})
+
+test('A2 describeWorld：显式 env 按派生档显示（非法值显示缺省，不原样照抄）', () => {
+  const w = describeWorld({
+    ARGP_FACTOR_TIER: 'tiered',
+    ARGP_FACTOR_DISPATCH: '0',
+    ARGP_FACTOR_CLIP: '1',
+    ARGP_FACTOR_EGRESS: '0',
+    ARGP_FACTOR_SHADOW: 'yes', // 非法：resolveShadowEnabled 只认 '1' ⇒ off
+  }, 0)
+  const fact = (name: string): string | undefined => w.facts.find(f => f.name === name)?.value
+  assert.equal(fact('tiered'), 'tiered')
+  assert.equal(fact('dispatch'), 'off')
+  assert.equal(fact('clip'), 'on')
+  assert.equal(fact('egress'), 'off', 'ARGP_FACTOR_EGRESS=0 硬关')
+  assert.equal(fact('shadow'), 'off', '非法值 ⇒ 缺省关（不照抄 yes）')
+  assert.deepEqual(w.overrides.map(o => o.key), [
+    'ARGP_FACTOR_CLIP', 'ARGP_FACTOR_DISPATCH', 'ARGP_FACTOR_EGRESS', 'ARGP_FACTOR_SHADOW', 'ARGP_FACTOR_TIER',
+  ], '显式 env 原样回显（含 0 值）')
+})
+
+test('A2 describeWorld：设置「压缩阈值」>0 压过分派缺省（线 = 比例）', () => {
+  const w = describeWorld({ ARGP_FACTOR_EGRESS: '0' }, 0)
+  assert.equal(w.facts.find(f => f.name === 'egress')?.value, 'off', '显式 0 硬关优先')
+  assert.equal(describeWorld({}, 0.6).facts.find(f => f.name === 'egress')?.value, 'on(0.6)')
+})
+
+test('A2 /argp：世界行随指纹打印（含 @boot/@live 与显式 env）', async () => {
+  const prev = process.env['ARGP_FACTOR_TIER']
+  process.env['ARGP_FACTOR_TIER'] = 'flat'
+  try {
+    const { ctx } = await bootFactor({})
+    const engine = ctx.compaction as ArgpEngine
+    const session = Session.create(SessionId('world-card'))
+    const res = renderArgpStatus(engine as unknown as ArgpStatusHost, { agent: { session } } as never, 'zh')
+    const text = res.text ?? ''
+    assert.ok(text.includes('世界：'), '世界行在场')
+    assert.ok(text.includes('dispatch=takeover@live'), '派生档 + 活读时机')
+    assert.ok(text.includes('tiered=flat@boot'), '构造快照时机')
+    assert.ok(text.includes('ARGP_FACTOR_TIER=flat'), '显式 env 回显')
+  } finally {
+    if (prev === undefined) delete process.env['ARGP_FACTOR_TIER']
+    else process.env['ARGP_FACTOR_TIER'] = prev
+  }
 })

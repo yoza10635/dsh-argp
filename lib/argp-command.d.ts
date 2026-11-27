@@ -30,6 +30,7 @@ import type { Session } from '@deepseek-ai/dsh-session';
 import type { SessionRuntimeState } from './session-state.js';
 import type { BudgetHost } from './budget.js';
 import { type UiLocale } from './ui-locale.js';
+import type { WorldFingerprint } from './env-world.js';
 /**
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
@@ -75,6 +76,11 @@ export interface ArgpStatusHost extends BudgetHost {
      * charsPerToken 常数密度（测试宿主/旧宿主行为不变）。
      */
     liveCharsPerToken?: (session: Session) => number;
+    /**
+     * A2：当前世界指纹（env 派生档 + 生效时机 + 显式 env）。可选成员：测试宿主可
+     * 不实现（缺省 = 卡面不显示世界行）。
+     */
+    worldFingerprint?: () => WorldFingerprint;
 }
 /**
  * 注册 `/argp`（幂等、可降级）。

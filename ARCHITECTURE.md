@@ -361,6 +361,7 @@ in the pass remain durable`）。因此 surface 上只要残留一枚组剪当�
 | `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, llm/types |
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
 | `cache-audit.ts` | 每请求缓存审计：usage 三分量→命中率，压缩后首请求/续作分类（纯观测，零决策） | — |
+| `env-world.ts` | 世界指纹（A2）：env 派生档 + 生效时机（boot/live）+ 显式 env 回显；`/argp` 消费 | factor/engine, factor/dispatch |
 | `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
 | `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale, cache-audit |
 | `client/*` | 聊天渲染的 cites 尾清扫 + 设置卡（2.0.1 单旋钮「压缩阈值」；configForms 0.1.7+ 契约） | cites-strip |

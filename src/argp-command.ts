@@ -34,6 +34,7 @@ import { sessionEvents } from './log-access.js'
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { resolveUiLocale, type UiLocale } from './ui-locale.js'
 import { classifyCacheSample, isLowCacheHit } from './cache-audit.js'
+import type { WorldFingerprint } from './env-world.js'
 
 /**
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
@@ -78,6 +79,11 @@ export interface ArgpStatusHost extends BudgetHost {
    * charsPerToken 常数密度（测试宿主/旧宿主行为不变）。
    */
   liveCharsPerToken?: (session: Session) => number
+  /**
+   * A2：当前世界指纹（env 派生档 + 生效时机 + 显式 env）。可选成员：测试宿主可
+   * 不实现（缺省 = 卡面不显示世界行）。
+   */
+  worldFingerprint?: () => WorldFingerprint
 }
 
 /** 宿主命令服务的窄接口（避免 import 运行时实现，只触达 register）。 */
@@ -155,6 +161,7 @@ interface StatusCopy {
   cacheSummary(refills: number, repeats: number): string
   cacheNone(): string
   b6Risk(nonPrunable: string, pct: string, line: string): string
+  world(facts: string, overrides: string): string
 }
 
 const enCopy: StatusCopy = {
@@ -181,6 +188,7 @@ const enCopy: StatusCopy = {
   b6Risk: (nonPrunable, pct, line) => '⚠ B-6 blind zone: non-prunable live ≈ ' + nonPrunable
     + ' tok (' + pct + '% of declared window, risk line ' + line + ') — after pruning everything prunable the request still nears the window;'
     + ' the host assembler truncates oldest live nodes silently (README known limitations) [approximate]',
+  world: (facts, overrides) => 'world: ' + facts + (overrides === '' ? '' : ' · env ' + overrides),
 }
 
 const zhCopy: StatusCopy = {
@@ -206,6 +214,7 @@ const zhCopy: StatusCopy = {
   cacheNone: () => '缓存：尚未观测到模型请求',
   b6Risk: (nonPrunable, pct, line) => '⚠ B-6 盲区风险：不可剪 live ≈ ' + nonPrunable + ' tok（占声明窗 ' + pct
     + '%，风险线 ' + line + '）——可剪面全剪后请求仍逼近声明窗，宿主会把输出预算钳到「窗 − prompt」（轮次趋零空转；严格端点则 400 拒收），非无痕截断（2026-11-19 勘误）；出口闸接管下缺省已开，可设「压缩阈值」前移触发（README 已知限制）[近似]',
+  world: (facts, overrides) => '世界：' + facts + (overrides === '' ? '' : ' · env ' + overrides),
 }
 
 /**
@@ -231,6 +240,14 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
     head += T.preset(preset ?? 'unknown', skipped)
   }
   lines.push(head)
+
+  // 段 1.5（A2）：世界指纹——env 派生档 + 生效时机（@boot=构造快照，改 env 须重挂；
+  // @live=每请求活读）+ 显式 env 回显。排障时先看这一行，不再猜当前跑的是哪个世界。
+  const world = host.worldFingerprint?.()
+  if (world !== undefined) {
+    const facts = world.facts.map(f => f.name + '=' + f.value + '@' + f.timing).join(' ')
+    lines.push(T.world(facts, world.overrides.map(o => o.key + '=' + o.value).join(' ')))
+  }
 
   // 段 2：预算 + 当前占用（D2 桶化：trigger 读**发起命令的会话**的桶，不再读焦点/共享字段；
   // 批次 3-2：retain 口径与引擎一致——显式值走 capRetain 绝对上界（截断时标注），比例值

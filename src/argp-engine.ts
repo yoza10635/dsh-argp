@@ -37,6 +37,8 @@ import { DEFAULT_CHARS_PER_TOKEN, DEFAULT_EGRESS_MARGIN_RATIO, DEFAULT_EGRESS_OU
 import { createSessionRuntimeState, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
 export type { PrunedNodeInfo } from './session-state.js'
 import { pushBounded } from './telemetry.js'
+// A2 世界指纹：env 派生档聚合（/argp 一行打印；不改名、不新增 env）。
+import { describeWorld, type WorldFingerprint } from './env-world.js'
 // 每请求缓存审计：压缩是否打断前缀缓存的直接读数（纯观测，不参与决策）。
 import { buildRequestCacheSample, classifyCacheSample, isLowCacheHit } from './cache-audit.js'
 // 原子化模块：atomize/classifyUserMessage/looksAskText。本地使用 + 转发。
@@ -237,6 +239,13 @@ export class ArgpEngine extends CompactionEngine {
   get recallCalls(): { seq: number; hit: boolean; state?: import('./log-access.js').NodeState }[] { return this.rt.recallCalls }
   /** 已剪节点目录（seq -> 元数据），供 /argp 与账目重建。 */
   get prunedNodeIndex(): Map<number, PrunedNodeInfo> { return this.rt.prunedNodeIndex }
+  /**
+   * A2：当前世界指纹（env 派生档 + 生效时机 + 显式 env 回显）。`/argp` 直接打印；
+   * 出口闸线取本引擎当前「压缩阈值」（设置页活读），故与真实发射判据同源。
+   */
+  worldFingerprint(): WorldFingerprint {
+    return describeWorld(process.env, this.compactionThreshold)
+  }
   get recallCallsThisTurn(): number { return this.rt.recallCallsThisTurn }
   get recallCharsUsed(): number { return this.rt.recallCharsUsed }
   /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */

@@ -10,6 +10,7 @@ import type { Atom } from './argp-types.js';
 export type { Atom, AtomType, ArgpUserSettings } from './argp-types.js';
 import { type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js';
 export type { PrunedNodeInfo } from './session-state.js';
+import { type WorldFingerprint } from './env-world.js';
 export { looksAskText, classifyUserMessage } from './atomize.js';
 export { scaleBudgets } from './budget.js';
 import type { GraphPruneRecord } from './prune-tx.js';
@@ -138,6 +139,11 @@ export declare class ArgpEngine extends CompactionEngine {
     }[];
     /** 已剪节点目录（seq -> 元数据），供 /argp 与账目重建。 */
     get prunedNodeIndex(): Map<number, PrunedNodeInfo>;
+    /**
+     * A2：当前世界指纹（env 派生档 + 生效时机 + 显式 env 回显）。`/argp` 直接打印；
+     * 出口闸线取本引擎当前「压缩阈值」（设置页活读），故与真实发射判据同源。
+     */
+    worldFingerprint(): WorldFingerprint;
     get recallCallsThisTurn(): number;
     get recallCharsUsed(): number;
     /** context-overflow 恢复：每个 agent 的重试计数（assistant/message 成功或 idle 时重置）。 */
