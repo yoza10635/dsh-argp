@@ -53,6 +53,7 @@ import { ProseCondenser, summarySendTokens, summaryMaxTokensOut } from './factor
 import { planForm, resolveDispatchMode, resolveDispatchShadowLogPath, CHURN_MIN_RELEASE_TOKENS, CHURN_RELEASE_FLOOR_RATIO, type DispatchDecision } from './factor/dispatch.ts'
 // 召回模块（2.0 只留共享语义）：shadowed 增量账本 + 召回字符预算。本地使用。
 import { shadowedSeqsOf, budgetRecallText, type RecallHost } from './recall.js'
+import type { SeqSet } from './seq-bitset.js'
 // 剪枝事务模块：prune-tx 事务骨架（factor 参数化复用）+ 台账记录类型。
 import type { GraphPruneRecord, PruneTxHost } from './prune-tx.js'
 export type { GraphPruneRecord } from './prune-tx.js'
@@ -689,9 +690,9 @@ export class ArgpEngine extends CompactionEngine {
   }
 
   /**
-   * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts）。
+   * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts；A5 起为位图）。
    */
-  private shadowedSeqsOf(session: Session): Set<number> {
+  private shadowedSeqsOf(session: Session): SeqSet {
     return shadowedSeqsOf(this as unknown as RecallHost, session)
   }
 

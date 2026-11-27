@@ -242,7 +242,7 @@ export declare class ArgpEngine extends CompactionEngine {
      */
     private seedBucketFromDeclared;
     /**
-     * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts）。
+     * 增量维护被遮蔽 surface seq 集合（账本语义见 recall.ts；A5 起为位图）。
      */
     private shadowedSeqsOf;
     /**

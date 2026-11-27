@@ -220,3 +220,58 @@ test('词表行内线索：last tool/verdict + err-sig 计数；errorish 只计�
   l2.addPruned({ rootSeq: 1, turn: 1, tags: mkTags({ tool: 'bash', files: ['c:/b.ts'], failed: true, errorish: true }) })
   assert.ok(renderVocabulary({ ledger: l2 }).text.includes('last: bash failed @t1'), '宿主结构化失败才标 failed')
 })
+
+// ---------------------------------------------------------------------------
+// A5：长会话内存结构有界化
+//   observed → 位图存储（1 bit/seq，不截断，去重语义不变）；
+//   sticky   → 轨道数上限（优先淘汰闭集，其次最旧）；
+//   entries  → **不截断**（按标签取回的承诺覆盖全部被剪原子，截断即静默失忆）。
+// ---------------------------------------------------------------------------
+
+const failAt = (file: string): RTags => mkTags({ tool: 'bash', files: [file], errorcodes: ['ERESOLVE'], errorish: true })
+
+test('A5 observed：位图化不去语义——同 seq 全量重放只计一次失败', () => {
+  const l = new FactorLedger()
+  const tags = failAt('c:/replay.ts')
+  l.observeR(1, 1, tags)
+  l.observeR(1, 1, tags) // 每轮 decide 的全量重放
+  assert.equal(l.observedCount, 1, '位图与 Set 同义去重')
+  assert.equal(l.stickyActive()[0]?.failCount, 1, '重放不得双计（A6 前的正确性下限）')
+})
+
+test('A5 sticky 超限：优先淘汰已闭集轨道，窗内 open 轨道保留', () => {
+  const l = new FactorLedger(2)
+  // f1 走完 sticky → closed：失败、修复宣称、复发、窗内零复发。
+  l.observeR(1, 1, failAt('c:/1.ts'))
+  l.observeR(2, 2, mkTags({ tool: 'write', files: ['c:/1.ts'], writeish: true }))
+  l.observeR(3, 3, failAt('c:/1.ts'))
+  assert.equal(l.stickyActive()[0]?.state, 'sticky')
+  l.sweepClosed(20, 5)
+  assert.equal(l.stickyActive().length, 0, '闭集后不在保护视图')
+  // 再进两条新轨道 ⇒ 超限：闭集 f1 先走，两条 open 都保留。
+  l.observeR(4, 20, failAt('c:/2.ts'))
+  l.observeR(5, 21, failAt('c:/3.ts'))
+  assert.deepEqual(l.stickyActive().map(t => t.file).sort(), ['c:/2.ts', 'c:/3.ts'])
+})
+
+test('A5 sticky 全未闭合：淘汰 lastFailTurn 最旧轨道（保护面向近期）', () => {
+  const l = new FactorLedger(2)
+  l.observeR(1, 1, failAt('c:/a.ts'))
+  l.observeR(2, 2, failAt('c:/b.ts'))
+  l.observeR(3, 3, failAt('c:/c.ts'))
+  assert.deepEqual(l.stickyActive().map(t => t.file).sort(), ['c:/b.ts', 'c:/c.ts'])
+})
+
+test('A5 长会话 20k 条：去重位图 ~N/8 字节，账本条目不被截断', () => {
+  const l = new FactorLedger()
+  const N = 20_000
+  for (let i = 0; i < N; i += 1) {
+    const tags = mkTags({ tool: 'read', files: ['c:/f' + (i % 50) + '.ts'] })
+    l.observeR(i, i, tags)
+    l.addPruned({ rootSeq: i, turn: i, tags })
+  }
+  assert.equal(l.observedCount, N, '去重集覆盖全部 seq（不截断）')
+  assert.ok(l.observedBytes <= (N / 8) * 3, '位图约 N/8 字节（容忍倍增留白），远小于 Set 的 ~30–40 B/seq')
+  assert.equal(l.prunedCount, N, 'entries 不设上限——按标签取回覆盖全部被剪原子')
+  assert.equal(l.stat('document:c:/f0.ts')?.count, N / 50, '倒排索引完整性不受压缩存储影响')
+})

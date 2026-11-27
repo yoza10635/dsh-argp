@@ -19,7 +19,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { Session } from '@deepseek-ai/dsh-session';
 import z from '@deepseek-ai/schemastery';
 import type { ArgpUserSettings } from './argp-types.js';
-import type { PrunedNodeInfo } from './session-state.js';
+import { type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js';
 import { type TokenMeter } from './budget.js';
 import type { GraphPruneRecord } from './prune-tx.js';
 import type { ArgpConfig } from './argp-engine.js';
@@ -63,6 +63,7 @@ export interface LifecycleHost {
         error: (msg: string) => void;
     };
     session: Session | null;
+    stateOf: (session: Session) => SessionRuntimeState;
     rebuiltCompactionIds: Set<string>;
     auditWarnings: string[];
     records: GraphPruneRecord[];

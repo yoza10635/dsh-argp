@@ -336,26 +336,27 @@ in the pass remain durable`）。因此 surface 上只要残留一枚组剪当�
 |---|---|---|
 | `argp-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
 | `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, atomize, telemetry, constants, budget, prune-tx |
-| `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
+| `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重；A5 起 `shadowedSet` 为位图、`prunedNodeIndex` 明细有上限（`notePrunedNode`） | constants, seq-bitset, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
 | `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表快照/note 回退 | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
 | `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, llm/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` defineTool + 会话解析/防循环阀/`resolveQueryLabels` 单点 | log-access, telemetry, factor-ledger, factor/engine |
 | `factor/search-history.ts` | `search_history` defineTool：内容发现（被剪 R ∪ 散文）+ 分层预览 + 临时索引单槽 + 分布直方图 | log-access, budget, cjk, prose-scan, recall-labels, recall-tools, factor/engine |
 | `factor/recall-tools.ts` | 召回面工具名单单一事实源（P6-③ 裁定 2 剪枝识别 + 召回副本可见性裁决谓词，叶子模块） | — |
 | `factor/prose-scan.ts` | 散文扫描带纯函数面：仅 text 块投影 + kind/replace 谓词 + 从旧到新 cap | llm/types |
-| `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary`；查询层统一裁决召回副本可见性 | tag-canonical, recall-tools |
+| `factor/factor-ledger.ts` | 被剪账本：索引/epoch/`queryPruned`/`vocabularyRows`/`renderVocabulary`；查询层统一裁决召回副本可见性；A5 起观察去重为位图、sticky 轨道有上限 | tag-canonical, recall-tools, constants, seq-bitset |
 | `factor/factor-atoms.ts` | R 原子投影：标签、焦点、sticky、cites/命令/路径抽取辅助 | tag-extract, tag-canonical |
 | `factor/retention-score.ts` | 保留打分与 `planPrune`（焦点带/sticky/过期/宽度熔断/夹剪归位） | factor/types, factor-atoms |
 | `factor/tag-extract.ts` | 工具参数/输出 → 实体标签（四 facet） | tag-canonical |
 | `factor/clip-shape.ts` | C10 夹剪层语义（三态保留与文本形） | — |
 | `atomize.ts` | `atomize` / `extractCites` / `classifyUserMessage` / `looksAskText` | argp-types, log-access, cites-strip, llm/types |
 | `budget.ts` | `visibleChars` / `resolveScaledBudgets` / `measureTokens` / `scaleBudgets` / `acquireTokenMeter` | constants, log-access |
-| `recall.ts` | `shadowedSeqsOf`（权威账本）+ `budgetRecallText`（字符预算） | log-access, session-state(type) |
+| `recall.ts` | `shadowedSeqsOf`（权威账本；A5 起位图存储）+ `budgetRecallText`（字符预算） | log-access, session-state(type), seq-bitset |
 | `prune-tx.ts` | 事务骨架：`pruneIntervals` / `consolidateTombstones` / 手动区间函数 / `buildTombstoneRedirect` | argp-types, log-access, atomize |
-| `tombstone-text.ts` | 墓碑文案与老文法识别（读侧兼容） | — |
+| `tombstone-text.ts` | 墓碑**读侧**识别（`isFactorTombstoneText` / `isMergeableTombstoneText`；不生成文案） | — |
 | `cites-strip.ts` | cites 尾块匹配/剥离（残差清扫；纯函数，零依赖） | — |
-| `llm/llm-adapter.ts` | LLM 调用后端（dsh-llm 生产 / fetch 本地 / `autoDshLlmSpec` 宿主路由兜底） | dsh-llm |
+| `llm/llm-adapter.ts` | LLM 调用后端：`dsh-llm` `LlmRuntime.stream()` 唯一生产路径（finish 分流）；`serializeWireMessages` 仅测试探针 | dsh-llm |
 | `llm/types.ts` | 来源判定叶子（ARG_NS / isArgpUserInfo / isOwnSourceKind） | — |
+| `seq-bitset.ts` | seq 去重位图（A5：1 bit/seq，替代 `Set<number>`；不截断） | — |
 | `argp-types.ts` | Atom / AtomType / ArgpUserSettings（叶子） | cites-strip(type-only) |
 | `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, llm/types |
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |

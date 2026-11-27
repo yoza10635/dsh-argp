@@ -27,7 +27,7 @@ import { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
 import { asSeq, asSeqs, scanShadowedSeqs, sessionEvents } from '../src/log-access.ts'
-import { createSessionRuntimeState } from '../src/session-state.ts'
+import { createSessionRuntimeState, notePrunedNode } from '../src/session-state.ts'
 import { shadowedSeqsOf } from '../src/recall.ts'
 import { ArgpEngine } from '../src/argp-engine.ts'
 import { DEFAULT_WINDOW_RATIO, DEFAULT_WINDOW_TOKENS } from '../src/constants.ts'
@@ -314,4 +314,17 @@ test('L7 冷恢复声明窗→桶播种：出口闸关+零解析进程里 16,384
   exp.append('request/context', { contextWindow: 262144 } as never)
   ex.bindSession(exp)
   assert.equal(ex.stateOf(exp).resolvedWindowTokens, DEFAULT_WINDOW_TOKENS, '显式窗世界不播种')
+})
+
+test('L11 已剪节点明细有界、计数不失真（A5）', () => {
+  const st = createSessionRuntimeState()
+  const info = (seq: number): { seq: number; type: 'R'; turn: number; firstLine: string; citedBySeq: number[]; eff: number } =>
+    ({ seq, type: 'R', turn: seq, firstLine: 'rebuilt seq=' + seq, citedBySeq: [], eff: 0 })
+  for (let i = 0; i < 10; i += 1) notePrunedNode(st, i, info(i), 4)
+  assert.equal(st.prunedNodeIndex.size, 4, '明细只保留最近 cap 条（内存有界）')
+  assert.equal(st.prunedNodeTotal, 10, '计数单调累计——/argp 报数不得被明细淘汰影响')
+  assert.equal(st.prunedNodeIndex.has(9), true, '最新明细在')
+  assert.equal(st.prunedNodeIndex.has(0), false, '最旧明细被淘汰')
+  notePrunedNode(st, 9, info(9), 4)
+  assert.equal(st.prunedNodeTotal, 10, '同一 seq 重复写不重复计数')
 })

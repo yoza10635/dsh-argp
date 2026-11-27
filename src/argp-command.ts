@@ -284,7 +284,7 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
       const beforeTok = Math.round(last.charsBefore / cpt)
       const afterTok = Math.round(last.charsAfter / cpt)
       lines.push(T.prunesLedger(records.length, last.intervals.length, last.shadowedSeqs.length,
-        fmtTokens(beforeTok), fmtTokens(afterTok), last.forced ? T.forced() : '', st?.prunedNodeIndex.size ?? 0))
+        fmtTokens(beforeTok), fmtTokens(afterTok), last.forced ? T.forced() : '', st?.prunedNodeTotal ?? 0))
     }
   }
   if (st !== null && st.auditWarnings.length > 0) {

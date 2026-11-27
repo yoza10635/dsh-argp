@@ -19,7 +19,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
 import type { ArgpUserSettings } from './argp-types.js'
-import type { PrunedNodeInfo } from './session-state.js'
+import { notePrunedNode, type PrunedNodeInfo, type SessionRuntimeState } from './session-state.js'
 import { inspectLogAccess, sessionEvents, turnOf } from './log-access.js'
 import { classifyUserMessage } from './atomize.js'
 import { pushBounded, DEFAULT_TELEMETRY_CAP } from './telemetry.js'
@@ -95,6 +95,7 @@ export interface LifecycleHost {
   log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void }
   // 运行时字段（bindSession / rebuildLedgerFromLog 读写）
   session: Session | null
+  stateOf: (session: Session) => SessionRuntimeState
   rebuiltCompactionIds: Set<string>
   auditWarnings: string[]
   records: GraphPruneRecord[]
@@ -390,9 +391,10 @@ export function rebuildLedgerFromLog(host: LifecycleHost): void {
       forced: false,
       ...(isErrorEnd ? { error: end.error } : {}),
     }, host.telemetryCap)
-    for (const seq of intervalSeqs) {
-      if (!host.prunedNodeIndex.has(seq)) {
-        host.prunedNodeIndex.set(seq, {
+    const sessionState = host.session === null ? null : host.stateOf(host.session)
+    if (sessionState !== null) {
+      for (const seq of intervalSeqs) {
+        notePrunedNode(sessionState, seq, {
           seq,
           type: typeOfSeq(seq), // 问题 8：真实类型反查（R/U 不再一律 'A'）
           turn: turnOfSeq(seq),

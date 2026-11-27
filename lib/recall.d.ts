@@ -12,6 +12,7 @@
  */
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { SessionRuntimeState } from './session-state.js';
+import { type SeqSet } from './seq-bitset.js';
 /**
  * 召回侧模块函数访问引擎状态所需的窄接口。
  * 会话态经 `stateOf(session)` 分桶访问；
@@ -24,8 +25,10 @@ export interface RecallHost {
 /**
  * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
  * 避免每次召回/剪枝都 O(事件总量) 重扫。session 切换时重置。
+ * 集合本身是位图（A5：seq 稠密，1 bit/seq）；不截断——丢一枚就会把已剪节点
+ * 谎报成 live。
  */
-export declare function shadowedSeqsOf(host: RecallHost, session: Session): Set<number>;
+export declare function shadowedSeqsOf(host: RecallHost, session: Session): SeqSet;
 /**
  * recall 预算：单次结果与累计结果都按窗口比例截断（窗口取最近解析的有效预算）。
  *

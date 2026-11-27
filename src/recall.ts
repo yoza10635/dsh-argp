@@ -14,6 +14,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionRuntimeState } from './session-state.js'
 import { liveBlendCharsPerToken } from './budget.js'
 import { sessionEvents } from './log-access.js'
+import { SeqBitset, type SeqSet } from './seq-bitset.js'
 
 /**
  * 召回侧模块函数访问引擎状态所需的窄接口。
@@ -28,12 +29,14 @@ export interface RecallHost {
 /**
  * 增量维护被遮蔽 surface seq 集合：事件日志只追加，游标从上次扫描处继续，
  * 避免每次召回/剪枝都 O(事件总量) 重扫。session 切换时重置。
+ * 集合本身是位图（A5：seq 稠密，1 bit/seq）；不截断——丢一枚就会把已剪节点
+ * 谎报成 live。
  */
-export function shadowedSeqsOf(host: RecallHost, session: Session): Set<number> {
+export function shadowedSeqsOf(host: RecallHost, session: Session): SeqSet {
   const st = host.stateOf(session)
   if (st.shadowedSession !== session) {
     st.shadowedSession = session
-    st.shadowedSet = new Set()
+    st.shadowedSet = new SeqBitset()
     st.shadowedScanned = 0
     st.shadowedPending = null
   }

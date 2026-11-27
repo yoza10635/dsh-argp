@@ -17,6 +17,8 @@ import { labelAllowed } from './tag-canonical.ts'
 import { isRecallTool, namesRecallFamilyKey } from './recall-tools.ts'
 import type { PreviewBits } from './interactive.ts'
 import type { Facet, RTags, StickyState } from './types.ts'
+import { DEFAULT_STICKY_TRACK_CAP } from '../constants.js'
+import { SeqBitset } from '../seq-bitset.js'
 
 // ---------------------------------------------------------------------------
 // 索引键形：`<facet>:<label>`；document/scope/errorcode 加前缀，command 族
@@ -147,10 +149,19 @@ export interface PrunedQueryResult {
 export class FactorLedger {
   private entries = new Map<number, LedgerEntry>()
   private inverted = new Map<string, Set<number>>()
-  /** sticky 通道独立去重：观察流含存活 R，与剪枝通道互不污染。 */
-  private observed = new Set<number>()
+  /**
+   * sticky 通道独立去重：观察流含存活 R，与剪枝通道互不污染。
+   * A5：seq 稠密 ⇒ 用位图（1 bit/seq）替代 `Set<number>`（≈30–40 B/seq）。
+   * **不设条数上限**：丢一枚去重 ⇒ 该 R 重放时会被再计一次失败。
+   */
+  private observed = new SeqBitset()
   private sticky = new Map<string, StickyTrack>()
   private _epoch = 0
+  private readonly stickyCap: number
+
+  constructor(stickyCap: number = DEFAULT_STICKY_TRACK_CAP) {
+    this.stickyCap = stickyCap
+  }
 
   get epoch(): number {
     return this._epoch
@@ -158,6 +169,16 @@ export class FactorLedger {
 
   get prunedCount(): number {
     return this.entries.size
+  }
+
+  /** 观察去重集的已登记数量（诊断/内存回归用；真实条数不受位图容量影响）。 */
+  get observedCount(): number {
+    return this.observed.size
+  }
+
+  /** 观察去重位图占用字节数（内存回归用）。 */
+  get observedBytes(): number {
+    return this.observed.byteLength
   }
 
   /**
@@ -203,6 +224,7 @@ export class FactorLedger {
               firstFailTurn: turn, lastFailTurn: turn, fixClaimedBetween: false,
               toolClasses: new Set([tags.tool]),
             })
+            this.evictStickyOverCap()
           } else {
             // 复发夹修复宣称 ⇒ sticky（保护向：宣称不实、错误再现）。
             // closed 非终态：同键复发必须复活重观察（闭集判据重新起算）。
@@ -226,6 +248,29 @@ export class FactorLedger {
         }
       }
     }
+  }
+
+  /**
+   * sticky 轨道上限（A5）：超限时淘汰一条——优先已闭集（不再提供保护）中
+   * lastFailTurn 最旧者；全未闭合则淘汰 lastFailTurn 最旧者。O(轨道数)，只在
+   * 新建轨道时越过上限才触发。仍在观察窗内的近期轨道不动（窗内保护语义保持）。
+   */
+  private evictStickyOverCap(): void {
+    if (this.sticky.size <= this.stickyCap) return
+    let victim: string | null = null
+    let victimClosed = false
+    let victimTurn = Number.POSITIVE_INFINITY
+    for (const [key, t] of this.sticky) {
+      const closed = t.state === 'closed'
+      // 闭集优先：只要存在闭集，未闭合轨道绝不成为候选。
+      if (victim !== null && victimClosed && !closed) continue
+      if (victim === null || (closed && !victimClosed) || (closed === victimClosed && t.lastFailTurn < victimTurn)) {
+        victim = key
+        victimClosed = closed
+        victimTurn = t.lastFailTurn
+      }
+    }
+    if (victim !== null) this.sticky.delete(victim)
   }
 
   /**

@@ -1,3 +1,4 @@
+import { type SeqSet } from './seq-bitset.js';
 import type { Session } from '@deepseek-ai/dsh-session';
 import type { AtomType } from './argp-types.js';
 import type { GraphPruneRecord } from './prune-tx.js';
@@ -28,8 +29,11 @@ export interface SessionRuntimeState {
         hit: boolean;
         state?: NodeState;
     }[];
-    /** 已剪节点目录（seq -> 元数据；账本重建写，/argp 报数）。 */
+    /** 已剪节点目录（seq -> 元数据；账本重建写，/argp 报数）。A5：明细有上限，
+     *  计数走 {@link prunedNodeTotal}（Map 长度会因淘汰而小于真实值）。 */
     prunedNodeIndex: Map<number, PrunedNodeInfo>;
+    /** 已剪节点总数（单调累计；A5 起 /argp 用它报数，不受明细淘汰影响）。 */
+    prunedNodeTotal: number;
     /** 每轮召回调用计数（防循环安全阀）。 */
     recallCallsThisTurn: number;
     /** 计数对应的 turn/start 轮号（-1=尚未同步；轮变即归零，不依赖事件投递）。 */
@@ -52,9 +56,11 @@ export interface SessionRuntimeState {
     auditWarnings: string[];
     /** A7 已重建过的 compactionId（本会话幂等去重）。 */
     rebuiltCompactionIds: Set<string>;
-    /** shadowed 增量游标三件套（shadowedSeqsOf 维护；per-session 后切换无需重置）。 */
+    /** shadowed 增量游标三件套（shadowedSeqsOf 维护；per-session 后切换无需重置）。
+     *  A5：`shadowedSet` 用位图（seq 稠密，1 bit/seq）而非 `Set<number>`；
+     *  截断会破坏「已剪/存活」判定，故只压缩存储、不设条数上限。 */
     shadowedSession: Session | null;
-    shadowedSet: Set<number>;
+    shadowedSet: SeqSet;
     shadowedScanned: number;
     /** 进行中事务的 prune 声称（compaction/start→end 之间；end 成功才入 shadowedSet）。 */
     shadowedPending: number[] | null;
@@ -89,3 +95,9 @@ export interface SessionRuntimeState {
     compactionAwaitingReply: boolean;
 }
 export declare function createSessionRuntimeState(): SessionRuntimeState;
+/**
+ * 写入一条已剪节点明细（A5）：明细有上限（{@link DEFAULT_PRUNED_INDEX_CAP}），
+ * 但 `prunedNodeTotal` 单调累计真实总数——`/argp` 报数用后者。
+ * 幂等：同一 seq 已在 Map 内则不重复计数（重建按 compactionId 去重，正常不会重复）。
+ */
+export declare function notePrunedNode(st: SessionRuntimeState, seq: number, info: PrunedNodeInfo, cap?: number): void;

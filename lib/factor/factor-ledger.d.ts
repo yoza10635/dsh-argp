@@ -91,12 +91,22 @@ export interface PrunedQueryResult {
 export declare class FactorLedger {
     private entries;
     private inverted;
-    /** sticky 通道独立去重：观察流含存活 R，与剪枝通道互不污染。 */
+    /**
+     * sticky 通道独立去重：观察流含存活 R，与剪枝通道互不污染。
+     * A5：seq 稠密 ⇒ 用位图（1 bit/seq）替代 `Set<number>`（≈30–40 B/seq）。
+     * **不设条数上限**：丢一枚去重 ⇒ 该 R 重放时会被再计一次失败。
+     */
     private observed;
     private sticky;
     private _epoch;
+    private readonly stickyCap;
+    constructor(stickyCap?: number);
     get epoch(): number;
     get prunedCount(): number;
+    /** 观察去重集的已登记数量（诊断/内存回归用；真实条数不受位图容量影响）。 */
+    get observedCount(): number;
+    /** 观察去重位图占用字节数（内存回归用）。 */
+    get observedBytes(): number;
     /**
      * 剪枝入账。rootSeq 重复（replace 链 / 重放双计）⇒ 返回 false，绝不双计。
      * 不合文法的标签照单入索引（§1.3：留索引），出口渲染处拦截。
@@ -108,6 +118,12 @@ export declare class FactorLedger {
      * rootSeq 去重与 addPruned 独立。
      */
     observeR(rootSeq: number, turn: number, tags: RTags): void;
+    /**
+     * sticky 轨道上限（A5）：超限时淘汰一条——优先已闭集（不再提供保护）中
+     * lastFailTurn 最旧者；全未闭合则淘汰 lastFailTurn 最旧者。O(轨道数)，只在
+     * 新建轨道时越过上限才触发。仍在观察窗内的近期轨道不动（窗内保护语义保持）。
+     */
+    private evictStickyOverCap;
     /**
      * 闭集扫描（引擎每轮调用）。I-DIR 严口径：窗内**任何** tool 类复发都重置
      * 观察窗（三条件交集版更松，弃用）；只有 sticky 且窗内零复发才 closed。

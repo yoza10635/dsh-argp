@@ -131,6 +131,23 @@ export const FACTOR_STUB_RUN_MIN = 2
  */
 export const FOCUS_GROUP_CAP = 10
 
+/**
+ * sticky 轨道上限（A5，长会话内存有界化）：每个 `file|errorcode` 组合一条轨道，
+ * 超限时优先淘汰**已闭集**（不再提供保护）的、其次 lastFailTurn 最旧的一条。
+ * sticky 本来就是观察窗语义（`stickyWindowTurns` 内才有效），丢掉最旧闭集轨道
+ * 不改变仍在窗内的保护；不设上限时，遍历过大量失败文件的长会话会让该 Map 随
+ * 「不同文件数 × 错误码数」增长。
+ */
+export const DEFAULT_STICKY_TRACK_CAP = 1024
+
+/**
+ * 已剪节点目录（`prunedNodeIndex`）明细上限（A5）：该 Map 只在冷 resume 的
+ * 账本重建里一次性材质化（不逐轮增长），每条明细含 firstLine 字符串。超限淘汰
+ * 最旧 seq 的明细；**计数不受影响**——`prunedNodeTotal` 单调累计，`/argp` 报数
+ * 用它，而不是 Map 的当前长度。
+ */
+export const DEFAULT_PRUNED_INDEX_CAP = 4096
+
 /** 焦点尾窗降级的触发线：最新轮 A/R 字节占全部 A/R 字节的比例。 */
 export const FOCUS_TURN_SHARE_THRESHOLD = 0.5
 
