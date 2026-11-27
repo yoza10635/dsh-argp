@@ -84,22 +84,30 @@ function contextTextOf(assembly: { contexts: { name: string; text?: string }[] }
   return assembly.contexts.find(c => c.name === 'argp:vocabulary')?.text
 }
 
-test('同一请求：pre-step 前装配 → 事务收尾刷新 → refreshContext 可见', async () => {
+test('同一请求：pre-step 前装配 → 事务收尾刷新 → refreshContext 可见', async (t) => {
   const { ctx, internals } = await boot()
   const session = makeSession('vocab-context-refresh')
   internals.bindSession(session)
   const sp = (ctx as unknown as {
     systemPrompt: {
       assemble(context: unknown): Promise<{ contexts: { name: string; text?: string }[] }>
-      refreshContext(assembly: unknown, context: unknown): { contexts: { name: string; text?: string }[] }
+      refreshContext?: (assembly: unknown, context: unknown) => { contexts: { name: string; text?: string }[] }
     }
   }).systemPrompt
+  // 本锁面锁的是宿主**新增**的 systemPrompt.refreshContext API（peer 地板 0.2.0-rc.1 没有）。
+  // 生产侧不调用它、按服务存在性降级（无服务走 note 通道，factor-vocab.test.ts 锁旧通道），
+  // 故旧宿主上这是不存在的契约——能力探测缺席即跳过，不是回归。
+  if (typeof sp.refreshContext !== 'function') {
+    t.skip('宿主无 systemPrompt.refreshContext（0.2.0-rc.1 线）：该契约不存在，生产降级路径由 note 通道锁覆盖')
+    return
+  }
   // 模拟宿主 pre-step：先装配旧 assembly，再在钩子里做压缩事务。
   const before = await sp.assemble({ agent: { session } })
   assert.equal(contextTextOf(before) ?? '', '', '压缩前无目录')
   prunedReadPair(session, internals.factor)
   await internals.refreshFactorNoteSafe({ session })
   // 宿主 step() 的真实路径：对旧 assembly 重新求值 context。
+  // 必须以方法形态调用（服务实现依赖 this），不能摘成自由函数。
   const refreshed = sp.refreshContext(before, { agent: { session } })
   const text = contextTextOf(refreshed)
   assert.ok(text !== undefined && text.includes('document:c:/proj/ctx-a.ts'), '同一次请求的 refreshContext 必须看到新目录')
