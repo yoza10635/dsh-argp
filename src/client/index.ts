@@ -1,18 +1,11 @@
 /**
  * dsh-argp client half.
  *
- * Two responsibilities:
- *
- * 1. Registers an assistant display filter on the native `assistantDisplay`
- *    seam. Historically this filter hid the 1.x citation-protocol marker (a
- *    trailing JSON block) at render time — display only, never touching the
- *    log, the model surface, or the stored message. The protocol subsystem was
- *    removed in 2.2.2; the filter is now an identity passthrough, kept only so
- *    the registration structure (effect-owned, re-apply safe) stays in place
- *    as the display-side hook.
- *
- * 2. Contributes a dedicated ARGP card to the Plugins settings page, editing
- *    the single `dsh-argp` knob (2.0.1 roster: compactionThreshold) live.
+ * One responsibility: contributes a dedicated ARGP card to the Plugins settings
+ * page, editing the single `dsh-argp` knob (2.0.1 roster: compactionThreshold)
+ * live. The 1.x `assistantDisplay` filter (it hid the citation-protocol marker)
+ * was removed in 2.2.2 together with that protocol — do not reintroduce a
+ * display-side hook without a real payload to filter.
  *
  *    dsh 0.1.7+ 的接线方式：服务端在插件上声明 `static Config`（§3.4 名册的旋钮标
  *    `.volatile()`；engine 判别式刻意非 volatile——宿主 volatile form 不携带非
@@ -25,19 +18,17 @@
  *    slot，配合服务端 `settings.register(ns, schema, { base })`）已随 #4587
  *    `profile-owned-live-configuration` 整体移除；两端 namespace 仍须一致。
  *
- * Graceful degradation: the display filter probes `assistantDisplay` through
- * `ctx.get()` (returns undefined for absent services, no throw). The card
- * instead uses a NESTED `ctx.inject([...], ...)` on purpose — the
- * same reason dsh-market documents for its own card. `ctx.get` is an immediate
- * read: a service not yet composed at that instant reads as absent, and the
- * card would silently never register depending on nothing but plugin load
- * order. `inject` waits for the dependency, and on a host that lacks the
+ * Graceful degradation: the card uses a NESTED `ctx.inject([...], ...)` on
+ * purpose — the same reason dsh-market documents for its own card. `ctx.get` is
+ * an immediate read: a service not yet composed at that instant reads as absent,
+ * and the card would silently never register depending on nothing but plugin
+ * load order. `inject` waits for the dependency, and on a host that lacks the
  * plugin-configuration page entirely the callback simply never runs, so the
  * rest of this bundle keeps working. A third-party bundle carries zero
  * cross-plugin value imports (client bundle purity gate) — collaboration
  * happens through the cordis service, the sanctioned cross-plugin channel.
  *
- * Re-apply safety: both registrations this bundle makes are effect-owned
+ * Re-apply safety: the registration this bundle makes is effect-owned
  * (`registerDisposable`), because the host retracts a plugin by disposing its
  * fiber and applying the client half afresh — the settings page's enable-state
  * sync, an HMR reload, and a version bump all take that path. A leaked locale
@@ -56,28 +47,6 @@ import {
   type SettingsScopeSnapshot,
 } from './argp-config-controller.js'
 import { ArgpConfigCard } from './argp-config-card.js'
-
-/** Structural shape of the assistant blocks the chat renders. */
-interface DisplayBlock {
-  readonly kind: string
-  readonly text?: unknown
-  readonly [key: string]: unknown
-}
-
-/** Structural face of the native assistantDisplay seam (ui-conversation). */
-interface AssistantDisplaySeam {
-  register(
-    filter: (
-      blocks: readonly DisplayBlock[],
-      info: { readonly streaming: boolean },
-    ) => readonly DisplayBlock[],
-  ): () => void
-}
-
-/** The bound settings scope the ARGP card's controller consumes. */
-interface SettingsScopeService {
-  bind(namespace: { namespace: string }): SettingsScopeLike<ArgpUserSettings>
-}
 
 /**
  * dsh 0.1.7+ 的配置表单（取代已移除的 `settingsScope`）。
@@ -199,13 +168,12 @@ interface InjectableContext {
  * Required for re-apply safety. The host retracts a plugin by disposing its
  * fiber and applying the (possibly new) client half afresh — the enable-state
  * sync on the settings page, an HMR reload, and a version bump all take that
- * path. Two of our registrations are single-shot by contract:
+ * path. The locale registration is single-shot by contract:
  *
  * - `locale.register(ns, dict)` throws on a namespace+locale it already holds,
  *   so a leaked dictionary turns every later apply into
  *   `locale namespace "dsh-argp" already has locale "zh"` and the page reports
  *   a failed sync instead of activating the plugin.
- * - `assistantDisplay.register(filter)` would silently stack a second filter.
  *
  * Every stock client plugin wraps its registration the same way
  * (`ctx.effect(() => ctx.locale.register(NS, {...}))`), which is what makes
@@ -234,8 +202,7 @@ function registerDisposable(ctx: ArgpClientContext, execute: () => unknown, labe
  *
  * `configForms` is deliberately NOT named here (it replaced the `settingsScope`
  * service removed in 0.1.7 #4587): a host without the plugin configuration
- * page would otherwise refuse to mount the whole bundle, which would also drop
- * the assistant-display marker filter below. The card instead nests
+ * page would otherwise refuse to mount the whole bundle. The card instead nests
  * `ctx.inject(['configForms', 'locale', 'slots'], ...)`, so on such a host the
  * card simply never appears and the rest of this bundle keeps working.
  */
@@ -303,6 +270,5 @@ function registerArgpSettingsCard(ctx: ArgpClientContext): void {
 }
 
 export function apply(ctx: ArgpClientContext): void {
-
   registerArgpSettingsCard(ctx)
 }

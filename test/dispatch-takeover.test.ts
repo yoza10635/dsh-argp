@@ -467,6 +467,58 @@ test("§G form:'host' 不借 approved：宿主装配 + header 路由 + tools 透
   assert.equal(summ?.llmStreamCall, true)
 })
 
+test("§G form:'host' 摘要 provider error ⇒ 保原文（null），且不落任何压缩事件", async () => {
+  const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+  let hits = 0
+  const llmStub = {
+    stream: () => {
+      hits += 1
+      return (async function* () {
+        // 宿主契约：provider 报错归一为终态 finish，不抛异常。
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'provider 429' } } }
+      })()
+    },
+  }
+  const shimCtx = { logger: ctx.logger, get: (n: string) => n === 'llm' ? llmStub : undefined } as never
+  const session = Session.create(SessionId('ctx-host-form-error'))
+  session.append('system/message', { message: { role: 'system', content: [{ type: 'text', text: 'persona prefix' }] } } as never, { surfaceOp: 'append' })
+  ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+  for (let t = 1; t <= 3; t++) appendUser(session, '轮次 ' + t + ' 的散文内容 ' + 'x'.repeat(400), t)
+  const prose = new ProseCondenser(shimCtx, engine as never, { focalTurns: 1 })
+  const result = await prose.condense(session, { provider: 'agent-p', model: 'agent-m' }, 100, undefined, 100, { form: 'host' })
+  assert.equal(hits, 1, '本用例必须真的走到 LLM 调用（否则 null 无意义）')
+  assert.equal(result, null, '★provider error 要保原文，不得把半截/空摘要写成检查点')
+  const events = sessionEvents(session) as unknown as Array<{ type: string }>
+  assert.equal(events.some(e => e.type === 'compaction/start'), false, '失败路径不得开启压缩事务')
+})
+
+test("§G form:'host' 外部取消 + aborted finish ⇒ 抛 AbortError（取消必须向上传播）", async () => {
+  const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+  let abortedHits = 0
+  const llmStub = {
+    stream: () => {
+      abortedHits += 1
+      return (async function* () {
+        yield { type: 'finish', reason: { kind: 'aborted' } }
+      })()
+    },
+  }
+  const shimCtx = { logger: ctx.logger, get: (n: string) => n === 'llm' ? llmStub : undefined } as never
+  const session = Session.create(SessionId('ctx-host-form-abort'))
+  session.append('system/message', { message: { role: 'system', content: [{ type: 'text', text: 'persona prefix' }] } } as never, { surfaceOp: 'append' })
+  ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+  for (let t = 1; t <= 3; t++) appendUser(session, '轮次 ' + t + ' 的散文内容 ' + 'x'.repeat(400), t)
+  const prose = new ProseCondenser(shimCtx, engine as never, { focalTurns: 1 })
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(
+    () => prose.condense(session, { provider: 'agent-p', model: 'agent-m' }, 100, controller.signal, 100, { form: 'host' }),
+    (e: unknown) => e instanceof Error && e.name === 'AbortError',
+    '★外部取消不得被当成“本轮不处置”吞掉',
+  )
+  assert.equal(abortedHits, 1, '本用例必须真的走到 LLM 调用')
+})
+
 test("§G form:'host' 不绕过散文闸一（未过线仍不浓缩、零 LLM）", async () => {
   const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
   const captured: Record<string, unknown>[] = []

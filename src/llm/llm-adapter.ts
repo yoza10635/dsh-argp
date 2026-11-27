@@ -1,19 +1,22 @@
 /**
- * Per-atom 引擎 LLM 调用后端（dsh-llm 生产适配器）。
+ * 散文浓缩的 LLM 调用后端（dsh-llm 宿主适配器）。
  *
- * 两个后端：
- *  - 'dsh-llm'：走宿主 `ctx.llm`（LlmRuntime.stream）——生产形态。`purpose: 'compaction'`
- *    归类为辅助模型调用（GenerateOptions 词表原生支持）；注意 GenerateOptions 无
- *    response_format——schema 约束解码仅在 fetch 后端可用，此路径依赖 extractJson 兜底。
- *  - 'fetch'：OpenAI 兼容直连（response_format schema 强制 + 被拒降级重试）——
- *    本地实验与无 dsh-llm 宿主的向后兼容形态。
+ * 2.0 起只有一条生产通路：`ctx.llm.stream()`（LlmRuntime，`purpose: 'compaction'`
+ * 归类为辅助调用）。1.x 的 fetch/OpenAI 兼容直连、`response_format` 强约束与
+ * compressor/declarer 多模型分工随图引擎一并退役——不要再按旧头注去找它们。
  *
- * 多模型分工：compressor / cite-declarer 各自 config 的 `llm` 可指向不同 provider/model
- *（compressor 跑 lite 档省成本；lite 服从率未实测，不作为默认）。
- * 后端判定：`config.llm`（dsh-llm）优先于 endpoint/apiKey（fetch）；两者皆缺省时
- * 按 fetch 环境变量口径解析；环境变量也缺席时走**宿主路由自动兜底**
- *（`autoDshLlmSpec`：真会话里从 `agent.options` 取 provider/model + 宿主 `ctx.llm`）。
- * 三条路都解不出才让组件 disabled（零网络）。
+ * 后端解析（`autoDshLlmSpec`）：真会话里从 `agent.options` 取 provider/model + 宿主
+ * `ctx.llm`，两者齐备才解析；缺一即组件 disabled（零网络）。
+ *
+ * 终态语义（宿主契约 `llm/llm/src/types.ts`）：适配器抛错、超时、取消、provider 报错
+ * 都由 `LlmRuntime.stream()` 归一成**终态 `finish` chunk**，不向调用方抛异常。本适配器
+ * 把 `finish.reason` 原样带回（`PeratomLlmResult.finish`），由调用方区分
+ * stop / max-tokens / tool-calls / error / aborted；丢掉它等于把这几种情形塌缩成同一条
+ * “空摘要”警告。
+ *
+ * `serializeWireMessages`：**仅测试/探针**的 wire 等价性 oracle（生产零调用点），用于把
+ * 宿主 agent-loop 的渲染与本地序列化逐字节对齐；`ARGP_PERATOM_A2_DEBUG` 门控的 dump
+ * 也只存在于该 oracle 内。
  */
 import { writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -34,9 +37,18 @@ export interface PeratomLlmUsage {
   cacheReadTokens?: number
 }
 
+/** 宿主终态 `finish` 的结构化视图（`FinishReason.kind` 可被适配器扩展）。 */
+export interface PeratomLlmFinish {
+  kind: string
+  /** error/aborted 的失败描述（宿主 `LlmFailure.message`，可能缺省）。 */
+  failure?: string
+}
+
 export interface PeratomLlmResult {
   text: string
   usage?: PeratomLlmUsage
+  /** 终态 finish；旧宿主/测试替身不产生时缺省（按可用处理）。 */
+  finish?: PeratomLlmFinish
 }
 
 /** 宿主 llm 服务的结构化最小视图（便于测试替身；真身 = LlmRuntime）。 */
@@ -55,7 +67,13 @@ interface LlmRuntimeView {
      * radiance 在流式 + reasoning_effort=null 下不复用深前缀（只读 system 块），
      * 摘要必须与 agent 上一发同档（2026-11-25 wire diff + 生产尺度变体实锤）。 */
     reasoningEffort?: string
-  }): AsyncIterable<{ type: string; text?: string; usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number } }>
+  }): AsyncIterable<{
+    type: string
+    text?: string
+    usage?: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number }
+    /** 终态 chunk（宿主契约：错误/取消/超时也走这里，不抛异常）。 */
+    reason?: { kind?: string; failure?: { message?: string } }
+  }>
 }
 
 /** 解析宿主 llm 服务。真宿主 cordis 对属性访问做 inject 检查（2026-08-28 联调实测：
@@ -113,6 +131,7 @@ export async function completeViaDshLlm(
   })
   let text = ''
   let usage: PeratomLlmUsage | undefined
+  let finish: PeratomLlmFinish | undefined
   let chunks = 0
   try {
     for await (const chunk of stream) {
@@ -124,12 +143,43 @@ export async function completeViaDshLlm(
           completionTokens: chunk.usage.outputTokens ?? 0,
           ...(chunk.usage.cacheReadTokens !== undefined ? { cacheReadTokens: chunk.usage.cacheReadTokens } : {}),
         }
+      } else if (chunk.type === 'finish') {
+        const kind = chunk.reason?.kind
+        if (typeof kind === 'string' && kind !== '') {
+          const message = chunk.reason?.failure?.message
+          finish = { kind, ...(typeof message === 'string' && message !== '' ? { failure: message } : {}) }
+        }
       }
     }
   } finally {
-    ctx.logger.info(`[argp-peratom] dsh-llm done: chunks=${chunks} text=${text.length} chars usage=${usage !== undefined ? 'yes' : 'no'}`)
+    ctx.logger.info(`[argp-peratom] dsh-llm done: chunks=${chunks} text=${text.length} chars`
+      + ` usage=${usage !== undefined ? 'yes' : 'no'} finish=${finish?.kind ?? '-'}`)
   }
-  return { text, usage }
+  return { text, usage, ...(finish !== undefined ? { finish } : {}) }
+}
+
+/** 终态 finish 的调用侧分类（纯函数；`undefined` = 旧宿主/测试替身不产 finish）。 */
+export type LlmFinishVerdict =
+  | { kind: 'ok' }
+  | { kind: 'truncated' }
+  | { kind: 'tool-calls' }
+  | { kind: 'aborted'; failure?: string }
+  | { kind: 'error'; failure?: string }
+
+export function classifyLlmFinish(finish: PeratomLlmFinish | undefined): LlmFinishVerdict {
+  if (finish === undefined) return { kind: 'ok' }
+  const withFailure = (kind: 'aborted' | 'error'): LlmFinishVerdict =>
+    finish.failure !== undefined ? { kind, failure: finish.failure } : { kind }
+  switch (finish.kind) {
+    case 'stop': return { kind: 'ok' }
+    case 'max-tokens': return { kind: 'truncated' }
+    case 'tool-calls': return { kind: 'tool-calls' }
+    case 'aborted': return withFailure('aborted')
+    case 'error': return withFailure('error')
+    // merge-extensible：适配器可扩展 kind。未知 kind 不判死——若同时没有正文，
+    // 由调用方的空输出闸兜底并留下计数，而不是在这里假装成功或假装失败。
+    default: return { kind: 'ok' }
+  }
 }
 
 /** agent 路由提示：AgentContext.options 的结构最小视图（provider/model）。 */

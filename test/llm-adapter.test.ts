@@ -1,12 +1,14 @@
 /**
  * dsh-llm 生产适配器契约（P5 后债务清算；2.0 factor-only 收窄）。
  *
- * 锁定四件事（1.x 时与 peratom compressor/declarer 的接线测试同文件，那些类随图臂
+ * 锁定五件事（1.x 时与 peratom compressor/declarer 的接线测试同文件，那些类随图臂
  * 退役后本文件只留适配器本体）：
  *  ① completeViaDshLlm：text-delta 拼装、usage 记账、purpose='compaction' 归类、
  *    宿主无 llm 服务时明确报错（不静默）；
  *  ② autoDshLlmSpec：路由齐备 + 宿主有 llm 才解析，缺一即 null；
- *  ③ A-2 wire dump：默认脱敏（无正文），FULL 才落完整 wire（数据责任 1.5.1 回归）。
+ *  ③ A-2 wire dump：默认脱敏（无正文），FULL 才落完整 wire（数据责任 1.5.1 回归）；
+ *  ④ 终态 finish 原样带回（error/aborted 不塌缩成空文本）；
+ *  ⑤ classifyLlmFinish 分流（stop/max-tokens/tool-calls/aborted/error + 未知 kind）。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -14,7 +16,7 @@ import { readFileSync, readdirSync, rmSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { completeViaDshLlm, autoDshLlmSpec, serializeWireMessages } from '../src/llm/llm-adapter.ts'
+import { completeViaDshLlm, autoDshLlmSpec, classifyLlmFinish, serializeWireMessages } from '../src/llm/llm-adapter.ts'
 import type { Message } from '@deepseek-ai/dsh-llm'
 
 // ---------------------------------------------------------------------------
@@ -23,7 +25,11 @@ import type { Message } from '@deepseek-ai/dsh-llm'
 
 interface FakeStreamCall { provider: string; model: string; purpose?: string; messageCount: number }
 
-function fakeLlm(responses: Array<{ text?: string; usage?: { inputTokens: number; outputTokens: number } }>): {
+function fakeLlm(responses: Array<{
+  text?: string
+  usage?: { inputTokens: number; outputTokens: number }
+  finish?: { kind: string; failure?: { message: string } }
+}>): {
   service: unknown
   calls: FakeStreamCall[]
 } {
@@ -44,6 +50,7 @@ function fakeLlm(responses: Array<{ text?: string; usage?: { inputTokens: number
       yield { type: 'text-delta', text: text.slice(0, mid) }
       yield { type: 'text-delta', text: text.slice(mid) }
       if (r.usage !== undefined) yield { type: 'usage', usage: r.usage }
+      if (r.finish !== undefined) yield { type: 'finish', reason: r.finish }
     },
   }
   return { service, calls }
@@ -74,6 +81,33 @@ test('completeViaDshLlm：宿主无 llm 服务 → 明确报错（不静默）',
     () => completeViaDshLlm(new Context(), { provider: 'p', model: 'm' }, 'PROMPT', 1000),
     /no llm service/,
   )
+})
+
+test('completeViaDshLlm：终态 finish 原样带回（error/aborted 不再塌缩成空文本）', async () => {
+  const { service } = fakeLlm([
+    { text: '', finish: { kind: 'error', failure: { message: 'provider 429' } } },
+    { text: '', finish: { kind: 'aborted' } },
+    { text: 'ok', finish: { kind: 'stop' } },
+  ])
+  const ctx = ctxWithLlm(service)
+  const spec = { provider: 'p', model: 'm' }
+  const err = await completeViaDshLlm(ctx, spec, 'P', 1000)
+  assert.equal(err.text, '')
+  assert.deepEqual(err.finish, { kind: 'error', failure: 'provider 429' }, '★provider 报错要带 failure 文案')
+  const aborted = await completeViaDshLlm(ctx, spec, 'P', 1000)
+  assert.deepEqual(aborted.finish, { kind: 'aborted' })
+  const ok = await completeViaDshLlm(ctx, spec, 'P', 1000)
+  assert.deepEqual(ok.finish, { kind: 'stop' })
+})
+
+test('classifyLlmFinish：可用态 / 截断 / tool-calls / aborted / error 分流', () => {
+  assert.deepEqual(classifyLlmFinish(undefined), { kind: 'ok' }, '旧宿主/测试替身不产 finish ⇒ 按可用处理')
+  assert.deepEqual(classifyLlmFinish({ kind: 'stop' }), { kind: 'ok' })
+  assert.deepEqual(classifyLlmFinish({ kind: 'max-tokens' }), { kind: 'truncated' })
+  assert.deepEqual(classifyLlmFinish({ kind: 'tool-calls' }), { kind: 'tool-calls' })
+  assert.deepEqual(classifyLlmFinish({ kind: 'aborted', failure: 'timeout' }), { kind: 'aborted', failure: 'timeout' })
+  assert.deepEqual(classifyLlmFinish({ kind: 'error', failure: 'boom' }), { kind: 'error', failure: 'boom' })
+  assert.deepEqual(classifyLlmFinish({ kind: 'future-kind' }), { kind: 'ok' }, 'merge-extensible：未知 kind 不判死')
 })
 
 test('autoDshLlmSpec：路由齐备 + 宿主有 llm 才解析，缺一即 null', () => {

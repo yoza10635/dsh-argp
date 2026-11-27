@@ -42,7 +42,7 @@ jobs:
       - name: Check commit message conventions (push only)
         if: github.event_name == 'push'
         run: |
-          BASE="${{ github.event_before }}"
+          BASE="${{ github.event.before }}"
           if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             echo "first push; skip commit message check"
             exit 0

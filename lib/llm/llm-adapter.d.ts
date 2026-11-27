@@ -11,9 +11,17 @@ export interface PeratomLlmUsage {
     /** §G 缓存验收关键量：命中缓存的前缀 token 数（宿主 usage 块透传）。 */
     cacheReadTokens?: number;
 }
+/** 宿主终态 `finish` 的结构化视图（`FinishReason.kind` 可被适配器扩展）。 */
+export interface PeratomLlmFinish {
+    kind: string;
+    /** error/aborted 的失败描述（宿主 `LlmFailure.message`，可能缺省）。 */
+    failure?: string;
+}
 export interface PeratomLlmResult {
     text: string;
     usage?: PeratomLlmUsage;
+    /** 终态 finish；旧宿主/测试替身不产生时缺省（按可用处理）。 */
+    finish?: PeratomLlmFinish;
 }
 /**
  * 经宿主 dsh-llm 完成一次补全（hand-built 请求，不带 agent-loop 标记）。
@@ -25,6 +33,21 @@ export interface PeratomLlmResult {
  * preserve_thinking:true，见 serializeWireMessages 头注）。
  */
 export declare function completeViaDshLlm(ctx: Context, spec: DshLlmSpec, prompt: string, timeoutMs: number, contextMessages?: readonly Message[], contextTools?: readonly ToolSchema[], signal?: AbortSignal, maxTokens?: number, reasoningEffort?: string): Promise<PeratomLlmResult>;
+/** 终态 finish 的调用侧分类（纯函数；`undefined` = 旧宿主/测试替身不产 finish）。 */
+export type LlmFinishVerdict = {
+    kind: 'ok';
+} | {
+    kind: 'truncated';
+} | {
+    kind: 'tool-calls';
+} | {
+    kind: 'aborted';
+    failure?: string;
+} | {
+    kind: 'error';
+    failure?: string;
+};
+export declare function classifyLlmFinish(finish: PeratomLlmFinish | undefined): LlmFinishVerdict;
 /** agent 路由提示：AgentContext.options 的结构最小视图（provider/model）。 */
 export interface AgentRouteHint {
     provider?: string;

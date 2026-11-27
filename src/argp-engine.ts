@@ -341,8 +341,9 @@ export class ArgpEngine extends CompactionEngine {
     this.registerVocabularyContext(ctx)
     // 触发收敛逃生口：构造期快照 env（档位语义同 resolveFocalTiered——策略切换须重挂引擎）。
     this.pressureTriggerEnabled = resolvePressureTriggerEnabled()
-    // §9.37 出口闸：缺省关（2026-11-15 用户裁定：对照臂形态=缺省，贴墙交 400 兜底网）。
-    // 开启面 = 设置「压缩阈值」(compactionThreshold>0，volatile 实时读) 或 env=1（评测/对照），
+    // §9.37 出口闸：缺省面随 dispatch 世界——接管=开（死亡带唯一防线），off/shadow=关
+    // （旧世界行为不变，见 resolveEgress）。2026-11-25 翻转；2026-11-15 的"缺省关"已作废。
+    // 另外两枚覆盖：设置「压缩阈值」(compactionThreshold>0，volatile 实时读) 或 env 显式档。
     // 每次 pre-step 经 resolveEgress 实时解析（设置页改动免重挂生效）。
     // 召回面 = recall_history / list_labels（标签制）+ search_history（内容发现，2.1.0）。
     registerRecallLabels(ctx, this.factor, this as unknown as RecallLabelsHost)
