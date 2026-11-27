@@ -31,6 +31,11 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # 覆盖率棘轮（T3）：src/** 行覆盖 ≥90% 硬线（现 ~95%）。只进本 job——
+      # --test-coverage-lines 在 Node 22.x 可用性未实证，矩阵不背。
+      - name: Coverage gate (lines ≥90)
+        run: npm run test:cov
+
       - name: Build lib/
         run: npm run build
 
