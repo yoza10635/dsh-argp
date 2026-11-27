@@ -13,17 +13,41 @@
  */
 import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session';
 /**
- * 跨宿主版本兼容的事件日志读取（升级阻断修复）。
+ * 同步读日志的后端抽象（A1：全部日志读取的唯一可替换接缝）。
  *
  * dsh 0.1.2-alpha.4 的 breaking 重构 `27bf1039db refactor(session)!: distinguish
  * event seqs from log offsets` 移除了 `Session.events` getter（运行时 `undefined`），
  * 替代为 `snapshotEvents()`（frozen 全日志快照）/ `eventAt(seq)`。rc.2 仍有 `events`
- * getter。为同时兼容两个宿主，本 helper 运行时探测：
+ * getter。两个形态的**判别集中在本模块**（{@link logBackendOf}），`sessionEvents()`、
+ * `eventAt()` 与 boot 探针都复用同一后端对象——判别漂移只可能发生在一处。
+ *
+ * **宿主已把这三枚同步读 API 标注 `@deprecated … new calls are prohibited`**
+ * （`eventAt` / `snapshotEvents` / `ownEvents`，dsh 0.2.x 基线）——现有逻辑允许保留，
+ * 但禁止新增调用。ARGP 是同步引擎（`decide()` 不能 await），当前只能继续使用；
+ * 若宿主未来移除同步读，迁移面 = 给 {@link LogBackend} 加一个异步实现（读取 + 引擎侧
+ * 镜像），而不是散落各处的调用点。升级宿主后先跑 `node scripts/doctor.mjs --dsh <根>`：
+ * 它检查宿主声明文件里 `snapshotEvents(` 是否仍在。
+ */
+export type LogReadBackend = 'snapshotEvents' | 'events';
+/** 日志读取后端：当前只有同步快照实现；异步迁移另加实现，调用点不变。 */
+export interface LogBackend {
+    readonly kind: LogReadBackend;
+    /** 全日志只读快照（frozen、与后续 append 解耦）。 */
+    snapshot(): readonly SessionEvent[];
+    /** 按 seq 取单个事件；越界返回 undefined（与宿主同义）。 */
+    at(seq: number): SessionEvent | undefined;
+}
+/** 取（并缓存）该 session 的日志后端；无同步读 API 时抛可行动的版本不兼容错误。 */
+export declare function logBackendOf(session: Session): LogBackend;
+/** 后端判别（诊断用）；两者皆无返回 null。 */
+export declare function detectLogReadBackend(session: Session): LogReadBackend | null;
+/**
+ * 跨宿主版本兼容的事件日志读取（升级阻断修复）。
  *
  *   - 宿主 Session 提供 `snapshotEvents`（alpha.4+）→ 调 `snapshotEvents()`
  *   - 否则回退到 legacy `session.events`（rc.2）
  *
- * **当前支持基线 0.1.5-rc.1**：该版本 `events` getter 已彻底
+ * **当前支持基线 0.2.0-rc.1**：该版本 `events` getter 已彻底
  * 移除、`snapshotEvents()` 是唯一真实路径，故 legacy 分支在受支持范围内**不可达**，
  * 仅作为宿主形态回退的防御保留（由 stub 用例覆盖，见
  * test/session-events-compat.test.ts「legacy 分支回退 events getter」）。将来若要
@@ -31,9 +55,30 @@ import type { Session, SessionEvent, SessionSeq } from '@deepseek-ai/dsh-session
  *
  * 两个路径都返回 frozen 数组，语义完全一致（不可变、与后续 append 解耦）。
  * 本 helper 是 ARGP 全代码库唯一允许直接触碰"事件日志"的入口——任何新增
- * `session.events[...]` / `for ... of session.events` 都视为违规。
+ * `session.events[...]` / `session.snapshotEvents()` / `session.eventAt()` 都视为违规。
  */
 export declare function sessionEvents(session: Session): readonly SessionEvent[];
+/**
+ * 按 seq 取单个事件（日志读取入口的按位形态）。
+ *
+ * 宿主契约：`session.seq` 恒为日志长度、seq 连续，故 seq 与快照下标同一。
+ * 调用方一律走这里，不直接调宿主 `session.eventAt()`（`@deprecated`，且它是本模块要
+ * 替换的那一层）；越界返回 undefined，与宿主同义。
+ */
+export declare function eventAt(session: Session, seq: number): SessionEvent | undefined;
+/**
+ * boot 探针（只读，不改变读取路径）：报告实际后端与日志长度。
+ *
+ * 用途是**升级后第一现场可诊断**——后端判别失败时错误在 bindSession 处带宿主契约说明，
+ * 而不是在某个深层调用点炸成 undefined 级联。长度取自同一次快照，不另调宿主 `seq`
+ * （保持本模块对宿主面只有一个接触点）。
+ */
+export interface LogAccessReport {
+    backend: LogReadBackend;
+    /** 绑定当时的日志长度（事件数）。 */
+    length: number;
+}
+export declare function inspectLogAccess(session: Session): LogAccessReport;
 /**
  * 事件 turn 号类型化访问器。
  *

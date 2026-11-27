@@ -93,12 +93,6 @@ export declare function normalizeConfig(ctx: Context, host: LifecycleHost, confi
  * 那套"注册后把基线与 scope.get() 二选一"的回退逻辑是为被移除的 register API 服务的。
  */
 export declare function registerSettings(ctx: Context, _host: LifecycleHost, _config: ArgpConfig): void;
-/**
- * A7（问题 3 修订）：session 绑定统一入口——setSession / agent/pre-step / compactIfNeeded
- * 首次绑定都走这里。绑定后若 records 为空且日志含 compaction/start 事件（resume 场景：
- * 账目丢失仅日志在），懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds
- * 去重保证。
- */
 export declare function bindSession(host: LifecycleHost, session: Session): void;
 /**
  * A7 事务账目重建：resume 时从 append-only 日志扫描 compaction/start、compaction/prune、

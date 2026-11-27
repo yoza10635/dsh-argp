@@ -29,7 +29,7 @@ import type { Message, ToolSchema } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { CompactionResult } from '@deepseek-ai/dsh-compaction'
-import { eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
+import { eventAt, eventText, rawEventFaces, sessionEvents } from '../log-access.ts'
 import { pruneIntervals, type CompactionSummaryMeta, type PruneTxHost } from '../prune-tx.ts'
 import type { Atom } from '../argp-types.ts'
 import { isFactorTombstoneText, isMergeableTombstoneText } from '../tombstone-text.js'
@@ -774,7 +774,7 @@ export class ProseCondenser {
     // 前缀退化为可用子集——语义与缓存双双降级但不炸调用）。
     const deriveSafe = (seq: number): Message | null => {
       try {
-        const ev = session.eventAt(seq as never)
+        const ev = eventAt(session, seq)
         if (ev === undefined) return null
         return session.deriveEventMessage(ev) as Message | null
       } catch { return null }

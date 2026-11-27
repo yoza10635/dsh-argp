@@ -82,7 +82,7 @@ function usage() {
     '  --manifest <path>   要检查的 dsh-argp package.json（缺省 = 本仓库的）。',
     '  --profile <name>    补救命令里的 --profile（仅影响提示文案）。',
     '',
-    '退出码: 0 = 准入；1 = 将被跳过；2 = 用法/环境错误。',
+    '退出码: 0 = 准入；1 = 将被跳过；2 = 用法/环境错误；3 = 宿主缺少 ARGP 依赖的同步读日志 API。',
   ].join('\n')
 }
 
@@ -120,6 +120,41 @@ function findSemver(dshRoot) {
     if (best === null || semver.gt(version, best.version)) best = { semver, path: dir, version }
   }
   return best
+}
+
+// ---------------------------------------------------------------------------
+// A1 探针：宿主是否仍提供同步事件日志读取
+//   宿主 0.2.x 把 eventAt / snapshotEvents / ownEvents 标为
+//   `@deprecated … new calls are prohibited`：现有逻辑可留、禁止新增调用。
+//   ARGP 是同步引擎（decide() 不能 await），全部日志读取收口在 src/log-access.ts；
+//   这条探针在升级宿主后回答「这个唯一接缝还能不能用」。只读宿主声明文件，不加载代码。
+// ---------------------------------------------------------------------------
+const LOG_READ_DECL_CANDIDATES = [
+  'packages/session/src/index.ts',
+  'packages/session/lib/types/index.d.ts',
+  'node_modules/@deepseek-ai/dsh-session/lib/types/index.d.ts',
+  'node_modules/@deepseek-ai/dsh-session/lib/index.d.ts',
+  'node_modules/@deepseek-ai/dsh-session/dist/index.d.ts',
+]
+
+function probeLogReadApi(dshRoot) {
+  for (const rel of LOG_READ_DECL_CANDIDATES) {
+    const file = join(dshRoot, rel)
+    if (!existsSync(file)) continue
+    let text
+    try { text = readFileSync(file, 'utf8') } catch { continue }
+    // 只认真正声明 Session 的文件，避免误读无关 index
+    if (!/snapshotEvents\s*[(:]|eventAt\s*\(|\bclass Session\b/.test(text)) continue
+    return {
+      file,
+      snapshotEvents: /snapshotEvents\s*[(:]/.test(text),
+      eventAt: /eventAt\s*\(/.test(text),
+      ownEvents: /ownEvents\s*\(/.test(text),
+      legacyEvents: /get events\(|\bevents:\s*readonly SessionEvent\[\]/.test(text),
+      deprecated: /new calls are prohibited/.test(text),
+    }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +283,9 @@ function main() {
     console.log('')
   }
 
+  // 2.6) A1 探针：同步读日志 API 是否仍在（ARGP 的唯一单点依赖）
+  const logRead = probeLogReadApi(dshRoot)
+
   // 3) 读取要检查的 dsh-argp manifest
   const manifestPath = args.manifest
     ? resolve(isAbsolute(args.manifest) ? args.manifest : process.cwd(), args.manifest)
@@ -288,7 +326,28 @@ function main() {
     console.log(`  判定依据   : ${via}`)
   }
   console.log(`  dsh peers  : ${peerCount} 个 @deepseek-ai/dsh* peer（宿主 >=0.2.1-rc.1 且声明 engines.dsh 时不参与判定）`)
+  if (logRead === null) {
+    console.log(`  log read   : (未找到宿主 session 声明，跳过 A1 探针)`)
+  } else {
+    const marks = [
+      logRead.snapshotEvents ? 'snapshotEvents ✓' : 'snapshotEvents ✗',
+      logRead.eventAt ? 'eventAt ✓' : 'eventAt ✗',
+      logRead.ownEvents ? 'ownEvents ✓' : 'ownEvents ✗',
+      logRead.legacyEvents ? 'events getter ✓' : 'events getter ✗',
+    ].join('  ')
+    console.log(`  log read   : ${marks}${logRead.deprecated ? '  (declared @deprecated: new calls prohibited)' : ''}`)
+    console.log(`               源: ${logRead.file}`)
+  }
   console.log('')
+
+  if (logRead !== null && !logRead.snapshotEvents && !logRead.eventAt && !logRead.legacyEvents) {
+    console.log(`❌ 宿主缺少同步读日志 API：dsh ${runtimeVersion} 的 Session 既不暴露 snapshotEvents/eventAt，`)
+    console.log(`   也没有 legacy events getter。`)
+    console.log(`   dsh-argp 的召回面、账本重建、观察路全部依赖它（src/log-access.ts 是唯一入口），`)
+    console.log(`   此时压缩会在首次读取日志时失败——先确认 --dsh 指向完整安装；`)
+    console.log(`   若宿主确实移除了同步读，需把 log-access 迁移到异步读取后端再升级。`)
+    return 3
+  }
 
   if (Object.keys(peers).length === 0) {
     console.log(`✅ 准入：${key} 与 dsh ${runtimeVersion} 兼容（依据：${via}）。`)

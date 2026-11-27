@@ -16,6 +16,7 @@
 - **CI 提交信息检查真正生效**：`.github/workflows/ci.yml` 的 `${{ github.event_before }}` 不是合法 context（应为 `github.event.before`），展开为空串 ⇒ 范围退化为 `HEAD..HEAD`，`check-commit-msg` 恒过。修正后推送才真正校验提交信息规范。
 
 ### Changed
+- **日志读取后端收口为可替换接缝，并对宿主弃用面加探针**：宿主把 `eventAt` / `snapshotEvents` / `ownEvents` 标为 `@deprecated … new calls are prohibited`，而 ARGP 是同步引擎（`decide()` 不能 await）——依赖无法消除，但迁移面收敛到一处。`log-access` 新增 `LogBackend` 接口（`snapshotEvents` 与 legacy `events` 两个同步实现，按 session 弱缓存），`sessionEvents`、新增的按位读取 `eventAt` 与 boot 探针 `inspectLogAccess` 共用同一后端对象；`prose-condenser` 的 `buildCtxInput` 不再直接调宿主 `session.eventAt()`。`bindSession` 首次绑定打印一行 `[argp] log-access backend=… length=…`；`scripts/doctor.mjs` 增加宿主声明文件探针（`snapshotEvents`/`eventAt`/`events getter` 是否仍在），三者皆无时退出码 3 并给出迁移提示。锁 `session-events-compat` 三例（后端判别 / 按位读取与越界 / 探针报告与报错）。
 - **死代码与过期头注清理**：`tombstone-text.ts` 移除零引用的 `isToolTombstoneText` / `isTombstoneText` / `TOMBSTONE_GRAMMARS` / `seqSpan` / `seqsSpan` / `RETRIEVE_HINT` 与两枚前缀导出（`isMergeableTombstoneText` 保留——它仍是 `prune-tx` 与散文浓缩的活判据），头注重写为「只读识别，不生成文案」；`llm-adapter.ts` 头注删去不存在的 fetch 后端 / `response_format` / 多模型分工，并标明 `serializeWireMessages` 仅测试探针使用；`client/index.ts` 移除 assistantDisplay 过滤器遗留接口与相关注释；`factor/engine.ts` 修正「A 永不入剪枝区间」「剪成空克隆」两处与实现相反的注释；`argp-engine.ts` 修正出口闸缺省态注释（接管=开）。删除两处不可达分支（`planProtocolGroups` 的无 R 非 forced 判定、`prose-condenser` 的 `intervals.length===0`）。
 
 ### Removed

@@ -3,25 +3,28 @@
  *
  * 背景：dsh 0.1.2-alpha.4 的 breaking 重构 `27bf1039db refactor(session)!`
  * 移除了 `Session.events` getter（运行时 undefined），替代为 `snapshotEvents()`。
- * rc.2 仍有 `events` getter；**1.1.0 起支持基线上移到 0.1.5-rc.1**，`events` 已彻底
- * 消失、`snapshotEvents()` 是唯一真实路径。`sessionEvents()`（src/log-access.ts）是
- * ARGP 全代码库唯一允许触碰事件日志的入口——全部调用点都经由它。本测试把各条
- * dispatch 路径固化进 CI，任何宿主升级（新增/移除事件 API）都会在这里炸响：
+ * rc.2 仍有 `events` getter；**1.1.0 起支持基线上移到 0.1.5-rc.1（现为 0.2.x）**，
+ * `events` 已彻底消失、`snapshotEvents()` 是唯一真实路径。`sessionEvents()`（src/log-access.ts）是
+ * ARGP 全代码库唯一允许触碰事件日志的入口——全部调用点都经由它（A1：后端判别也收口在
+ * 同文件的 `detectLogReadBackend`，`scripts/doctor.mjs` 另做宿主声明文件探针）。
+ * 本测试把各条 dispatch 路径固化进 CI，任何宿主升级（新增/移除事件 API）都会在这里炸响：
  *
  *   1) modern 分支：宿主提供 `snapshotEvents` → 调它（且 `this` 绑定必须正确）
  *   2) modern 优先：两个 API 同时存在时必须走 `snapshotEvents`（防未来宿主
  *      保留 `events` 别名时静默走错分支）
- *   3) 当前基线实证：0.1.5 真 Session 只暴露 `snapshotEvents`、不暴露 `events`
+ *   3) 当前基线实证：0.2.x 真 Session 只暴露 `snapshotEvents`、不暴露 `events`
  *      （2026-09-10 由 rc.2「回归 events getter」改写——前提已反转，见下）
  *   4) legacy 分支：无 `snapshotEvents` → 回退 `events` getter。该分支在受支持的
  *      基线上已不可达，用 stub 而非真 Session 覆盖（真 Session 不再有 events）
  *   5) 两者皆无 → throw（明确的版本不兼容报错，而非 undefined 级联崩溃）
+ *   6) 后端判别 / 按位读取 / boot 探针（A1）：判别只有一处，`eventAt` 与 `sessionEvents`
+ *      读同一快照，缺 API 时的报错点名契约与 doctor 补救
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { sessionEvents } from '../src/log-access.ts'
+import { detectLogReadBackend, eventAt, inspectLogAccess, sessionEvents } from '../src/log-access.ts'
 
 test('sessionEvents: modern 分支调用 snapshotEvents 且 this 绑定正确', () => {
   // mock alpha.4 形态宿主：snapshotEvents 从 this 私有日志读快照——
@@ -55,14 +58,14 @@ test('sessionEvents: 两 API 并存时 modern 分支优先（防 legacy 别名�
   assert.deepEqual([...events], ['modern'], 'snapshotEvents must win when both APIs exist')
 })
 
-test('sessionEvents: 0.1.5 真 Session 走 modern 分支（当前基线实证）', () => {
-  // 1.1.0 起基线是 0.1.5-rc.1：真 Session 只暴露 snapshotEvents，events getter 已移除。
+test('sessionEvents: 0.2.x 真 Session 走 modern 分支（当前基线实证）', () => {
+  // 基线是 0.2.x：真 Session 只暴露 snapshotEvents，events getter 已移除。
   // 这条同时是"宿主再次改名/移除 snapshotEvents"的哨兵——届时本测试先炸。
   const session = Session.create(SessionId('session-events-compat'))
   assert.equal(typeof session.snapshotEvents, 'function',
-    'precondition: 0.1.5 Session exposes snapshotEvents')
+    'precondition: 0.2.x Session exposes snapshotEvents')
   assert.equal(typeof (session as { events?: unknown }).events, 'undefined',
-    'precondition: 0.1.5 Session no longer exposes the legacy events getter')
+    'precondition: 0.2.x Session no longer exposes the legacy events getter')
   session.append('turn/start', { turn: 1 })
   session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'who ate the cookie?' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
 
@@ -100,5 +103,38 @@ test('sessionEvents: 两 API 皆无 → throw 明确的版本兼容错误', () =
     () => sessionEvents(orphan),
     /neither events nor snapshotEvents/,
     'must fail loudly with an actionable version-compatibility error, not cascade from undefined',
+  )
+})
+
+test('detectLogReadBackend: 判别集中在一处（modern / legacy / 皆无）', () => {
+  const real = Session.create(SessionId('log-read-backend'))
+  assert.equal(detectLogReadBackend(real), 'snapshotEvents', 'real Session must be detected as modern')
+
+  const legacy = { seq: 0, events: Object.freeze([]) } as unknown as Session
+  assert.equal(detectLogReadBackend(legacy), 'events', 'legacy stub must be detected through the events getter')
+
+  assert.equal(detectLogReadBackend({} as unknown as Session), null, 'neither API must report null')
+})
+
+test('eventAt: 按 seq 取事件，越界返回 undefined（与宿主同义）', () => {
+  const session = Session.create(SessionId('log-read-event-at'))
+  session.append('turn/start', { turn: 1 })
+  session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+
+  assert.equal(eventAt(session, 0)?.type, 'turn/start')
+  assert.equal(eventAt(session, 1)?.type, 'user/message')
+  assert.equal(eventAt(session, 2), undefined, 'out-of-range seq must return undefined, not throw')
+  assert.equal(eventAt(session, 0), sessionEvents(session)[0], 'eventAt must read the same single snapshot')
+})
+
+test('inspectLogAccess: boot 探针报告后端与日志长度；缺 API 时报可行动错误', () => {
+  const session = Session.create(SessionId('log-read-inspect'))
+  session.append('turn/start', { turn: 1 })
+  assert.deepEqual(inspectLogAccess(session), { backend: 'snapshotEvents', length: 1 })
+
+  assert.throws(
+    () => inspectLogAccess({} as unknown as Session),
+    /requires synchronous session reads/,
+    'probe must name the missing contract and the doctor remedy',
   )
 })

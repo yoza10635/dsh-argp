@@ -20,7 +20,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import z from '@deepseek-ai/schemastery'
 import type { ArgpUserSettings } from './argp-types.js'
 import type { PrunedNodeInfo } from './session-state.js'
-import { sessionEvents, turnOf } from './log-access.js'
+import { inspectLogAccess, sessionEvents, turnOf } from './log-access.js'
 import { classifyUserMessage } from './atomize.js'
 import { pushBounded, DEFAULT_TELEMETRY_CAP } from './telemetry.js'
 import { DEFAULT_RETAIN_TOKENS, DEFAULT_WINDOW_TOKENS } from './constants.js'
@@ -254,9 +254,24 @@ export function registerSettings(ctx: Context, _host: LifecycleHost, _config: Ar
  * 账目丢失仅日志在），懒触发 rebuildLedgerFromLog() 自动重建；幂等由 rebuiltCompactionIds
  * 去重保证。
  */
+/** A1 探针只报一次：同一进程内会话切换不重复刷屏；宿主升级后重启进程会重新报。 */
+let logAccessReported = false
+
 export function bindSession(host: LifecycleHost, session: Session): void {
   if (host.session === session) return
   host.session = session
+  if (!logAccessReported) {
+    // A1：同步读后端是宿主 @deprecated 面上的单点依赖——首次绑定就把「实际走哪条」
+    // 写进日志，宿主升级移除同步读时这里先给出可行动的结论（而不是深层 undefined 级联）。
+    logAccessReported = true
+    try {
+      const cap = inspectLogAccess(session)
+      host.log.info('[argp] log-access backend=' + cap.backend + ' length=' + cap.length
+        + '（宿主同步读 API 标 @deprecated，ARGP 读取面收口于 log-access；升级宿主后先跑 scripts/doctor.mjs）')
+    } catch (error) {
+      host.log.error('[argp] log-access unavailable: ' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
   host.bindRuntimeState(session) // 1-1：焦点桶换装为该会话的 SessionRuntimeState（台账/预算/锚点全部随桶切换）
   // 不 clear rebuiltCompactionIds：桶本身按会话隔离（1-1），切回同一会话时
   // 去重集必须保留——clear 会触发整段日志重放，records 每次焦点切回都追加一遍。
