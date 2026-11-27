@@ -275,3 +275,16 @@ test('SH16 keyword offset 扫描翻页：页脚 next 指针续翻到后页命中
   const fetched = toolText(await execTool(ctx, { name: 'search_history', callId: 'pg3', agentSession: session, args: { hit: seq2[0] } }))
   assert.ok(fetched.includes('关键料 kw-PG'), '后页地址二跳逐字回取打通')
 })
+
+test('SH17 冷启动对齐：新引擎实例首查也走日志重放，工具带不空（B4）', async () => {
+  // 老引擎已完成剪枝并写日志；新引擎实例的进程内账本是空的（冷 resume 形态）。
+  const { session } = await bootFixture()
+  const ctx2 = new Context()
+  await mountAgentLoopTestDependencies(ctx2, { systemPrompt: { personaPrefix: 'search persona' } })
+  await ctx2.plugin(ArgpEngine, { engine: 'factor', windowTokens: 100, retainTokens: 50, recencyGuard: 0 })
+  const out = toolText(await execTool(ctx2, {
+    name: 'search_history', callId: 'q-cold', agentSession: session, args: { keyword: 'kw-SH' },
+  }))
+  assert.match(out, /tool×1/, '★冷启动首查必须先补日志重放（ledgerOf 会让工具带恒零候选）')
+  assert.ok(out.includes('labels=document:c:/proj/sh.ts'), '重放后的工具带仍带全形标签')
+})
