@@ -8,13 +8,15 @@
  *
  * 2.2.1 规则A 口径改（design-2.2.x §1.2/§1.3）：判据②③ = **aged（span 可驱逐口径）散文
  * ≥ 开单地板 max(1536, 5%·W_eff)**（存在性判据，非释放量预测）∧ 份额闸 工具面/C < 0.5
- * （θ 固化）；①缺口地板与④transcript（total 口径）不变。三域地面真值形态不动
- * （aged 缺省回退 total），新增 46 轮账本判决级行见文末。
+ * （θ 固化）；①缺口地板不变。2.3.0 后④发送可行性改为 **host 形态**（摘要请求 ≈ C + 指令
+ * + 面余量，旧 transcript 口径只作对照）——C 贴窗时本轮仅剪，摘要等下轮新前缀热起来再发。
+ * 三域地面真值形态不动（aged 缺省回退 total），新增 46 轮账本判决级行见文末。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { planForm, resolveDispatchMode, resolveDispatchShadowEnabled, resolveDispatchShadowLogPath,
-  DEFAULT_PROSE_MIN_TOKENS, DEFAULT_GAP_FLOOR_RATIO, TRANSCRIPT_SAFETY_RATIO, DEFAULT_INSTRUCTION_TOKENS, DEFAULT_MIN_SUMMARY_OUT_TOKENS,
+  DEFAULT_PROSE_MIN_TOKENS, DEFAULT_GAP_FLOOR_RATIO, DEFAULT_INSTRUCTION_TOKENS, DEFAULT_MIN_SUMMARY_OUT_TOKENS,
+  SEND_FACE_MARGIN_RATIO,
   type DispatchSnapshot } from '../src/factor/dispatch.ts'
 
 const base: DispatchSnapshot = {
@@ -90,14 +92,14 @@ test('3b sub-K 散文不起摘要（③下限，非判据）', () => {
 test('4 先摘后剪：摘要值得做且直发可行、有可剪面（散文域真值形态）', () => {
   const d = planForm(snap({ floorTokens: 50_000, prunableTokens: 10_000, condensableProseTokens: 48_000 }))
   assert.equal(d.form, 'summarize-then-prune')
-  // 轮2 实机快照（disp2 prose 19:14:16）：gap 15321 > 地板 6554、prose 19092 ≥ gap、
-  // transcript 21002 装得下 32768 → 先摘后剪（轮1 同场景被 C+send 判据误判先剪后摘）。
+  // 轮2 实机快照（disp2 prose 19:14:16）：gap 15321 > 地板 6554，host prompt ≤ C 26898
+  // 在 32768 窗内留得出输出预算 → 先摘后剪。
   const live = planForm(snap({
     contextTokens: 26_898, retainTokens: 5_242, windowEff: 32_768,
     floorTokens: 20_563, prunableTokens: 6_335, condensableProseTokens: 19_092, summarySendTokens: 6_553,
   }))
   assert.equal(live.form, 'summarize-then-prune')
-  assert.match(live.reason, /transcript/)
+  assert.match(live.reason, /host prompt/)
 })
 
 test('4b 仅摘：直发可行但无可剪供给', () => {
@@ -106,19 +108,20 @@ test('4b 仅摘：直发可行但无可剪供给', () => {
   assert.equal(d.form, 'summarize-only')
 })
 
-test('5 先剪后摘不可达（代码+档案双实锤）：摘要请求尺寸=transcript，剪工具不影响它', () => {
-  // 旧判据（C+send>W_eff ∧ F+send≤W_eff）必判先剪后摘的参数组合，新判据下仍是
-  // 先摘后剪——摘要请求自 buildProseMessages 起就不含工具原子（prose-condenser.ts:541），
-  // 剪不剪它都一样大，「独有一次大 miss」的前提在本架构不成立。
+test('5 host 前缀装不下 ⇒ 本轮仅剪；先剪后摘两形态都不发射', () => {
+  // C 63.5K / W 64K：host 形态摘要请求 ≈ C + 指令 + 面余量，留不出 1K 输出 ⇒ 仅剪。
+  // 注：host 形态下剪工具**确实**会缩小摘要请求（旧「剪不剪一样大」的论证已失效），
+  // 但先剪会打断热前缀、摘要掉回全量 prefill，所以仍不做 prune-then-summarize——
+  // 正确动作是等下一轮新前缀热起来再摘。
   const d = planForm(snap({
     contextTokens: 63_500, floorTokens: 30_000, prunableTokens: 33_500,
     condensableProseTokens: 25_000, summarySendTokens: 15_000,
   }))
-  assert.equal(d.form, 'summarize-then-prune')
-  assert.match(d.reason, /transcript/)
+  assert.equal(d.form, 'prune-only')
+  assert.match(d.reason, /热前缀装不下/)
 })
 
-test('5b transcript 超窗摘不出：仅剪求生，不空转', () => {
+test('5b host prompt 贴窗：摘不出像样 checkpoint，仅剪求生', () => {
   const d = planForm(snap({
     contextTokens: 63_500, floorTokens: 52_000, prunableTokens: 11_500,
     condensableProseTokens: 63_000, summarySendTokens: 15_000,
@@ -127,7 +130,7 @@ test('5b transcript 超窗摘不出：仅剪求生，不空转', () => {
   assert.match(d.reason, /仅剪求生/)
 })
 
-test('不变量：形态守恒——摘要形态只在 transcript 装得下 W_eff 时出现；先剪后摘永不出；terminal 只在 F>W_eff', () => {
+test('不变量：形态守恒——摘要形态只在 host prompt 装得下 W_eff 时出现；先剪后摘永不出；terminal 只在 F>W_eff', () => {
   // 粗网格扫参数组合，验证形态与判据的蕴含关系（纯函数确定性顺带覆盖）。
   for (const C of [10_000, 60_000, 63_500]) {
     for (const F of [5_000, 30_000, 52_000, 65_000]) {
@@ -142,10 +145,10 @@ test('不变量：形态守恒——摘要形态只在 transcript 装得下 W_ef
             assert.ok(F > s.retainTokens, '摘要形态蕴含判据① F>R')
             assert.ok(F - s.retainTokens > Math.max(DEFAULT_PROSE_MIN_TOKENS, DEFAULT_GAP_FLOOR_RATIO * s.windowEff),
               '摘要形态蕴含缺口地板 F−R > max(proseMin, ρ·W_eff)（软目标超调不值一次 miss）')
-            // 发送判据按 transcript（可浓缩散文 ×1.1 + 指令 + 输出地板），与 C 无关。
-            const transcript = Math.ceil(prose * TRANSCRIPT_SAFETY_RATIO)
-            assert.ok(transcript + DEFAULT_INSTRUCTION_TOKENS + DEFAULT_MIN_SUMMARY_OUT_TOKENS <= s.windowEff,
-              '摘要形态 ⇒ transcript 装得下 W_eff（留得出指令+输出地板）')
+            // 发送判据按 host 形态的请求体：C + 指令 + 面余量 + 输出地板 ≤ W_eff。
+            const margin = Math.round(s.windowEff * SEND_FACE_MARGIN_RATIO)
+            assert.ok(s.contextTokens + DEFAULT_INSTRUCTION_TOKENS + margin + DEFAULT_MIN_SUMMARY_OUT_TOKENS <= s.windowEff,
+              '摘要形态 ⇒ host prompt（上界 C）+ 指令 + 面余量 装得下 W_eff（留得出输出地板）')
           }
         }
       }
@@ -165,7 +168,7 @@ test('T42 翻转：aged ≥ 开单地板但 total 补不上缺口 ⇒ 旧缺口�
   })
   const d = planForm(s)
   assert.equal(d.form, 'summarize-then-prune', '新 aged 口径必须放行摘要（翻转为绿）')
-  assert.match(d.reason, /transcript/)
+  assert.match(d.reason, /host prompt/)
   // 变异锁（git 回滚验红）：判据② 回退旧「total < gap」缺口释放预测 ⇒ total 111.1K <
   // gap 118K ⇒ prune-only，本条红。aged 字段缺省回退只护旧快照，不恢复缺口比较。
 })
@@ -183,14 +186,14 @@ test('barrier 断供：aged < 开单地板但 total 足 ⇒ 仅剪（焦点/barr
 
 test('份额闸：工具面/C ≥ θ(0.5) ⇒ 仅剪（剪扛杠杆）；toolFaceTokens 缺省 0 ⇒ 旧全测不触发（兼容锚）', () => {
   const s = snap({
-    contextTokens: 100_000, retainTokens: 12_800, windowEff: 100_000,
+    contextTokens: 100_000, retainTokens: 12_800, windowEff: 200_000,
     floorTokens: 80_000, prunableTokens: 20_000,
     condensableProseTokens: 18_000, condensableProseAgedTokens: 18_000, toolFaceTokens: 60_000,
   })
   const d = planForm(s)
   assert.equal(d.form, 'prune-only', '工具面 60% ≥ θ ⇒ 份额闸关闭摘要')
   assert.match(d.reason, /工具面仍主导/)
-  // 同参去掉 toolFaceTokens ⇒ 份额闸不触发，回落到 transcript 判据放行摘要（兼容性锚）。
+  // 同参去掉 toolFaceTokens ⇒ 份额闸不触发，回落到 host prompt 判据放行摘要（兼容性锚）。
   assert.equal(planForm(snap({ ...s, toolFaceTokens: undefined })).form, 'summarize-then-prune',
     'toolFaceTokens 缺省 ⇒ 份额闸恒不触发（旧快照行为不变）')
 })

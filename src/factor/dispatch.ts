@@ -14,13 +14,14 @@
  *  - F = 剪光全部可剪面后的下限（b6RiskSummary 口径：非 R 原子 + 未闭合轮 R）。
  *  - 摘要有意义 ⟺ ①F−R ≥ max(proseMin, ρ·W_eff)（保留位是软目标：地板高出几个
  *    K 属可容忍超调，下一轮再剪即可——轮2 工具域实锤，ρ 缺省 0.2）∧ ②可浓缩散文
- *    ≥ F−R（浓缩器真能驱逐的 U+textA 补得上缺口）∧ ③散文量 ≥ proseMin。
- *  - 「先剪后摘」在本架构**不可达**（代码+档案双实锤 2026-11-25）：浓缩链摘要请求
- *    只回放被驱逐 span 里的 textA（U+finalA，prose-condenser.ts buildProseMessages），
- *    工具原子从不入请求——剪不剪工具，摘要请求一样大，不存在「剪后上下文的独有
- *    一次大 miss」。四形态实际塌缩为三形态（先摘后剪/仅摘/仅剪 + 两终态）；
- *    能否直发按 transcript 尺寸（可浓缩散文）而非全上下文 C 判。若未来摘要通路
- *    改为全上下文摘要（compaction-basic 式），先剪后摘才重新有意义——保留枚举位。
+ *    ≥ F−R（浓缩器真能驱逐的 U+textA 补得上缺口）∧ ③散文量 ≥ proseMin ∧ ④发送可行。
+ *  - **④ 发送可行性以 host 形态为准**（2.3.0 起唯一发射形态；2026-11-27 修正）：摘要请求
+ *    回放 **surface 头到 span 末的全部路由消息 + tools 声明 + 尾部指令**
+ *    （prose-condenser buildCtxInput），其规模上界就是当前上下文 C。旧口径按 legacy
+ *    A 形态只算可浓缩散文 transcript，会把输出预算高估到越界——摘要请求自己撞窗
+ *    （B2）。因此「剪不剪工具，摘要请求一样大」的旧论证同时失效。
+ *  - 「先剪后摘」仍**不发射**：先剪会打断热前缀，摘要从 ~98% 命中掉回全量 prefill；
+ *    热前缀装不下时的正确动作是本轮仅剪，等下一轮新前缀热起来再摘。枚举位保留。
  */
 
 /** 四形态 + 两终态。`prune-then-summarize` 保留枚举位但本架构不可达（见文件头），
@@ -48,13 +49,12 @@ export interface DispatchSnapshot {
   /** P：理想可剪供给 = C − F（含硬保护位；硬保护在排序层生效，不在形态层）。 */
   prunableTokens: number
   /** 可浓缩散文：浓缩器真能驱逐的 U+textA（钉死指令/note/焦点/附件/宿主再注入不计）。
-   *  摘要请求的 transcript 基底——发送可行性按它判，不按全上下文 C。 */
+   *  **不再用于发送可行性**（2.3.0 起按 host 形态的 C 判）；仍作 aged 缺省回退与散文供给口径。 */
   condensableProseTokens: number
   /** 三桶 aged 口径：span 实际可驱逐的 textA（barrier/洞截断段、partial 散点、焦点窗
    *  之后的 run 一律不计）。**可选**——缺省回退 condensableProseTokens（total）：
-   *  回退只保证**口径输入**不变（判据④ transcript 亦 total 口径）；规则A 的存在性
-   *  地板本体对旧快照同样生效——旧 fixture 的判形可能与 2.2.0 不同（T42 型翻转即
-   *  预期，勿在旧快照上锁决策级字节兼容断言）。 */
+   *  回退只保证**口径输入**不变（判据④ 也已是 host 口径）；旧 fixture 的判形可能与
+   *  2.2.0 不同（T42 型翻转即预期），勿在旧快照上锁决策级字节兼容断言。 */
   condensableProseAgedTokens?: number
   /** 摘要指令 + 摘要输出预留（标准预算；空间不足时决策内部收缩输出分量）。 */
   summarySendTokens: number
@@ -68,7 +68,7 @@ export interface DispatchSnapshot {
    *  toolCallA 含 final-A 散文=高估，两向偏差入档 design-2.2.x §1.3）。
    *  **可选**——缺省 0 ⇒ 份额闸永不触发，旧快照/旧 fixture 字节不变。 */
   toolFaceTokens?: number
-  /** 摘要指令 token（transcript 发送判据独立用；缺省 512 与 prose-condenser 同源）。 */
+  /** 摘要指令 token（发送判据用；缺省 512 与 prose-condenser 同源）。 */
   instructionTokens?: number
   /** 摘要输出地板：低于此值摘了也放不下像样的 checkpoint（缺省 1024）。 */
   minSummaryOutTokens?: number
@@ -77,7 +77,7 @@ export interface DispatchSnapshot {
 export interface DispatchDecision {
   form: CompactForm
   reason: string
-  /** 摘要形态专用：W_eff − transcript − 指令 的剩余输出预算（发射时覆盖标准 0.2×W）。 */
+  /** 摘要形态专用：W_eff − host prompt(C) − 指令 − 面余量 的剩余输出预算（发射时覆盖标准 0.2×W）。 */
   outBudget?: number
 }
 
@@ -90,8 +90,8 @@ export const DEFAULT_GAP_FLOOR_RATIO = 0.2
 export const DEFAULT_AGED_FLOOR_RATIO = 0.05
 /** 份额闸 θ（2.2.1，固化不进设置）：工具面/C ≥ θ ⇒ 摘要通道本轮关闭（剪扛杠杆）。 */
 export const DEFAULT_TOOLFACE_SHARE_THETA = 0.5
-/** transcript 安全垫：U:/A: 前缀 + 分词误差（可浓缩散文 ×1.1）。 */
-export const TRANSCRIPT_SAFETY_RATIO = 1.1
+/** host 形态的固定面余量：tools 声明 + 消息框架 + 分词误差，按 W_eff 的 2% 预留。 */
+export const SEND_FACE_MARGIN_RATIO = 0.02
 export const DEFAULT_INSTRUCTION_TOKENS = 512
 export const DEFAULT_MIN_SUMMARY_OUT_TOKENS = 1024
 /** §F churn 保护地板：prune-only 连发且净释放 < max(此值, ratio×W_eff) 视为贴保护线的
@@ -114,11 +114,11 @@ export const CHURN_RELEASE_FLOOR_RATIO = 0.05
  *     不过 → 仅剪到下限求生（B-6 良性/焦点域/barrier 断供：残余摘不掉）。
  *  3.5 份额闸：工具面（toolCallA+rPair）/C ≥ θ(0.5) → 仅剪（剪扛杠杆，摘要等
  *     主导权交替；饥饿侧由序 3 前提 F>R 结构保证，纯工具稳态循环归观察哨）。
- *  4. 摘要值得做：发送判据按 **transcript**（摘要请求只含散文，工具不在其中）：
- *     transcript×1.1 + 指令 ≤ W_eff − 输出地板(1024) 即「摘得出去」（输出预算不足
- *     时按剩余空间收缩，§B-2 落地）→ 先摘后剪（有可剪面）/ 仅摘（无）。
- *  5. transcript 大到连收缩后的输出都放不下 → 不摘，仅剪求生（防卸;实测罕见：
- *     transcript ≤ C ≤ W_eff 量级）。
+ *  4. 摘要值得做：发送判据按 **host 形态的请求体**（surface 头到 span 末的路由消息 +
+ *     tools + 指令，规模上界 = C）：C + 指令 + 2%·W_eff 面余量 ≤ W_eff − 输出地板(1024)
+ *     即「摘得出去」（输出预算不足时按剩余空间收缩，§B-2 落地）→ 先摘后剪（有可剪面）/
+ *     仅摘（无）。
+ *  5. host prompt 贴窗、留不出像样输出 → 不摘，仅剪求生；下一轮新前缀热起来再判。
  */
 export function planForm(s: DispatchSnapshot): DispatchDecision {
   const alpha = s.supplyMargin ?? DEFAULT_SUPPLY_MARGIN
@@ -172,22 +172,25 @@ export function planForm(s: DispatchSnapshot): DispatchDecision {
       reason: `工具面仍主导 ${(toolShare * 100).toFixed(1)}% ≥ θ ${DEFAULT_TOOLFACE_SHARE_THETA}：剪扛杠杆，摘要等主导权交替`,
     }
   }
-  // 发送可行性按摘要**请求体**判：它只回放被驱逐 span 的 textA（散文 transcript），
-  // 工具原子从不入请求 ⇒ 剪枝不改变请求尺寸 ⇒ 「先剪后摘」不可达。transcript 装得下
-  // （留得出指令 + 最低输出）就摘，否则不摘（仅剪求生）。
-  const transcript = Math.ceil(s.condensableProseTokens * TRANSCRIPT_SAFETY_RATIO)
+  // 发送可行性按 **host 形态的请求体**判（2.3.0 起唯一发射形态）：摘要请求回放
+  // surface 头到 span 末的全部路由消息 + tools 声明 + 尾部指令。其规模上界就是当前
+  // 上下文 C（含焦点/开轮尾部与未提交输入——实际 span 末更短，判据因此偏保守）。
+  // 旧口径只算可浓缩散文 transcript（legacy A 形态），会把输出预算高估到越界（B2）。
   const instruction = s.instructionTokens ?? DEFAULT_INSTRUCTION_TOKENS
   const minOut = s.minSummaryOutTokens ?? DEFAULT_MIN_SUMMARY_OUT_TOKENS
-  const roomForOutput = s.windowEff - transcript - instruction
+  const faceMargin = Math.round(s.windowEff * SEND_FACE_MARGIN_RATIO)
+  const sendPrompt = s.contextTokens
+  const roomForOutput = s.windowEff - sendPrompt - instruction - faceMargin
   if (roomForOutput >= minOut) {
     const shrunk = roomForOutput < s.summarySendTokens - instruction
+    const budget = `host prompt ≤ ${sendPrompt}+指令 ${instruction}+面余量 ${faceMargin}（输出预算 ${roomForOutput}${shrunk ? ' < 标准 ' + (s.summarySendTokens - instruction) + '→收缩' : ''}）`
     return s.prunableTokens > 0
-      ? { form: 'summarize-then-prune', outBudget: roomForOutput, reason: `transcript ${transcript}+指令 装得下 W_eff ${s.windowEff}（输出预算 ${roomForOutput}${shrunk ? ' < 标准 ' + (s.summarySendTokens - instruction) + '→收缩' : ''}）：先摘后剪（摘后复测仍有 deficit 才补剪）` }
-      : { form: 'summarize-only', outBudget: roomForOutput, reason: `transcript ${transcript} 装得下且无可剪供给：仅摘（输出预算 ${roomForOutput}）` }
+      ? { form: 'summarize-then-prune', outBudget: roomForOutput, reason: `${budget}：先摘后剪（摘后复测仍有 deficit 才补剪）` }
+      : { form: 'summarize-only', outBudget: roomForOutput, reason: `${budget}且无可剪供给：仅摘` }
   }
   return {
     form: 'prune-only',
-    reason: `transcript ${transcript}+指令 ${instruction} 逼近 W_eff ${s.windowEff}（输出仅剩 ${roomForOutput} < ${minOut} 地板）：摘不出像样 checkpoint，仅剪求生`,
+    reason: `host prompt ≤ ${sendPrompt}+指令 ${instruction}+面余量 ${faceMargin} 顶到 W_eff ${s.windowEff}（输出仅剩 ${roomForOutput} < ${minOut} 地板）：热前缀装不下摘要，仅剪求生（下轮新前缀热起来再摘）`,
   }
 }
 
