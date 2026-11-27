@@ -43,8 +43,11 @@ test('② /argp 段 3 剪除索引=会话桶真值；auditWarnings 露出并 120
   const { ctx, host, session } = await bootHost('cmd-locks')
   try {
     const st = host.stateOf(session)
-    const text = (locale: 'zh' | 'en'): string =>
-      renderArgpStatus(host, { agent: { session } } as never, locale).text
+    const text = (locale: 'zh' | 'en'): string => {
+      const r = renderArgpStatus(host, { agent: { session } } as never, locale)
+      assert.equal(r.kind, 'success')
+      return r.text ?? ''
+    }
     // 无告警 ⇒ 审计行不发（缺省面）
     assert.ok(!text('en').includes('audit:'), '零告警不得虚报审计行')
 
