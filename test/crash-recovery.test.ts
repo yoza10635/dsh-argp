@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { CompactionEngine, CompactionId } from '@deepseek-ai/dsh-compaction'
+import { CompactionId } from '@deepseek-ai/dsh-compaction'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { asSeq, asSeqs } from '../src/log-access.ts'
 import { ArgpEngine } from '../src/argp-engine.ts'
@@ -47,7 +47,6 @@ function pushTransaction(session: Session, id: string): { startSeq: number; prun
     shadowedSeqs: asSeqs(shadowedSeqs),
     shadowedTokenCount: 10,
   })
-  const tombstoneSeq = session.snapshotEvents().length
   session.append('user/message', createUserMessage({
     content: [{ type: 'text', text: '[elided seq=' + u1 + '..' + a1 + ']' }],
     source: { kind: 'argp' },

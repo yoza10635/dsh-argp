@@ -70,24 +70,6 @@ const { ARG_SETTINGS_KEY: serverKey } = await import('../src/argp-engine.ts')
 
 // ── 结构化 ctx stub（镜像 src/client/index.ts 的结构化接口）────────────────
 
-/** 聊天渲染的 assistant 块（结构化形状）。 */
-interface DisplayBlock {
-  readonly kind: string
-  readonly text?: unknown
-  readonly [key: string]: unknown
-}
-
-/** assistantDisplay 显示过滤器。 */
-type DisplayFilter = (
-  blocks: readonly DisplayBlock[],
-  info: { readonly streaming: boolean },
-) => readonly DisplayBlock[]
-
-/** assistantDisplay 服务面。 */
-interface AssistantDisplaySeam {
-  register(filter: DisplayFilter): () => void
-}
-
 /** locale 服务面（register 返回移除本次登记的 disposer）。 */
 interface LocaleService {
   register(namespace: string, dictionary: { readonly zh: Record<string, string>; readonly en: Record<string, string> }): () => void

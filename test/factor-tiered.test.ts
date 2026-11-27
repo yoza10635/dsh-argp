@@ -17,7 +17,6 @@ import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpEngine } from '../src/argp-engine.ts'
 import { FactorEngine, resolveFocalTiered, type FactorEngineHost } from '../src/factor/engine.ts'
-import { sessionEvents } from '../src/log-access.ts'
 
 async function makeTiered(tiered: 'flat' | 'tiered'): Promise<{ host: FactorEngineHost; factor: FactorEngine }> {
   const ctx = new Context()

@@ -24,7 +24,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { ArgpEngine } from '../src/argp-engine.ts'
-import { eventText, sessionEvents } from '../src/log-access.ts'
+import { sessionEvents } from '../src/log-access.ts'
 
 const MARKER = '[... tool result middle pruned ...]'
 

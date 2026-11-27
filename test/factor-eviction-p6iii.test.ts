@@ -129,7 +129,7 @@ function devCount(session: Session): number {
 }
 
 test('T1 召回对轮闭合后进剪序；在轮 recall R 轮内保护（EV1+EV1b 锁，2026-11-17 P1 修订）', async () => {
-  const { ctx, internals } = await boot()
+  const { internals } = await boot()
   const session = makeSession('p6iii-recall')
   internals.bindSession(session)
   // 旧轮（closed）：正常 bash R + recall_history R（裁定 2：闭合轮召回对无条件进剪序——
@@ -159,7 +159,7 @@ test('T1 召回对轮闭合后进剪序；在轮 recall R 轮内保护（EV1+EV1
 })
 
 test('T2 中断轮半截 A 强制驱逐，user 消息保留（EV2 锁）', async () => {
-  const { ctx, internals } = await boot()
+  const { internals } = await boot()
   const session = makeSession('p6iii-halfa')
   internals.bindSession(session)
   appendUser(session, '中断轮任务', 2)
@@ -177,7 +177,7 @@ test('T2 中断轮半截 A 强制驱逐，user 消息保留（EV2 锁）', async
 })
 
 test('T3 孤儿 R 强制驱逐（EV2 锁）', async () => {
-  const { ctx, internals } = await boot()
+  const { internals } = await boot()
   const session = makeSession('p6iii-orphan')
   internals.bindSession(session)
   appendUser(session, '孤儿轮', 2)
@@ -194,7 +194,7 @@ test('T3 孤儿 R 强制驱逐（EV2 锁）', async () => {
 })
 
 test('T4 半截 A 的已应答 R 同行驱逐（EV3 锁：不同行即孤儿化）', async () => {
-  const { ctx, internals } = await boot()
+  const { internals } = await boot()
   const session = makeSession('p6iii-companion')
   internals.bindSession(session)
   // 半截 A 与其已应答 R 同在焦点轮（closed）：R 是 focalNonRegenerable 硬保护成员——

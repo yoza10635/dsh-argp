@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { assertReleasedV4Relationships } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { pruneIntervals, type PruneTxHost } from '../src/prune-tx.ts'
-import { detectOpenStep, sessionEvents } from '../src/log-access.ts'
+import { sessionEvents } from '../src/log-access.ts'
 
 function makeHost(): PruneTxHost {
   return {

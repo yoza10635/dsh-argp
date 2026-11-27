@@ -100,7 +100,7 @@ function resultOf(session: Session, callId: string): { text: string; seq: number
 }
 
 test('G1 A+R 组整组离场 → 压缩检查点（中性标记、无指针）', async () => {
-  const { ctx, internals } = await boot()
+  const { internals } = await boot()
   const session = makeSession('group-basic')
   internals.bindSession(session)
   appendUser(session, '任务', 1)

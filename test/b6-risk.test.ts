@@ -87,7 +87,7 @@ test('B6 负控二：大量可剪 R 面（正常压缩场景）不计入不可�
 })
 
 test('B6 声明窗未知 ⇒ 零告警（宁缺勿错，交 400 兜底网口径）', async () => {
-  const { ctx, engine } = await bootFactor()
+  const { engine } = await bootFactor()
   const s = makeSession('b6-undeclared')
   appendUser(s, 1, BIG)
   const r = engine.b6RiskSummary(s)
