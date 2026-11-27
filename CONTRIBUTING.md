@@ -10,13 +10,15 @@ dsh-argp 是个人维护的开源项目。本项目遵循 **trunk-based 直推 `
 | Smoke | `npm run smoke` | 纯模块加载检查，无模型依赖 |
 | 单元测试 | `npm test` | `node --test test/*.test.ts`，testkit mock，无模型依赖 |
 | Build | `npm run build` | 产出 `lib/` |
-| **产物一致性** | `git diff --exit-code lib/` | `lib/` 提交进 git（市场扫描直接 clone 使用），**改 `src/` 必须同步 build 并提交 `lib/`**，否则 CI 红 |
+| **产物一致性** | `git diff --exit-code lib/` | `lib/` 提交进 git（市场扫描直接 clone 使用），**改 `src/` 必须同步 build 并提交 `lib/`**；本地 `npm run check` 末尾即拦（build 后 diff），CI 与发布门再兜底 |
+| **死代码棘轮** | `npm run ratchet` | 临时开 `noUnusedLocals/noUnusedParameters` 跑 build 作用域 tsc，unused 告警**基线 8 只许减不许增**（存量见 `scripts/tsc-ratchet.mjs`，清零后开常设旗删脚本）；已串入 `check` |
 
 > 模型实验（`spike/*deepseek*`、`spike/08a-production-synthetic.ts`）需要模型与密钥，**不进入 CI**，在本地按需运行。
 
 ## 专项回归与上游哨兵
 
-- **一键门禁**：`npm run check`（typecheck + spike typecheck + smoke + 单测 + 构建）。`lib/` 产物一致性**由 CI 的 `git diff --exit-code lib/` 把关**（本地 check 末尾的 build 会重生成 lib，提交前自查即上表那条）。改 `src/` 不发 check 全绿不提交。
+- **一键门禁**：`npm run check`（typecheck + spike typecheck + smoke + 单测 + 构建 + lib 一致性 diff + tsc 死代码棘轮）。改 `src/` 不发 check 全绿不提交。
+- **变异台账**：`npm run mutate`（`test/mutation-ledger.json` + `scripts/mutate.mjs`）——「摘锁必红」声称的唯一复放机制：锚点漂移=ANCHOR-MISS、红不对地方=MISSING-CASE、已论证的等价变异显式登记 `expectKill:false`；串入 `prerelease:check`（发布节奏门禁，不进 push CI）。往测试头注写「EV-x 已执行」前先入台账。
 - **出口闸矩阵（EG-）**：`test/factor-egress-gate.test.ts` 覆盖 EG- 全组（含压缩阈值比例线 / env 优先级），随全量测试运行；动 `resolveEgress`/egressGate 语义先跑 `node --import ./scripts/ts-import-rewrite-loader.mjs --test test/factor-egress-gate.test.ts` 定向回归（裸 `node --test` 缺 loader 会 `ERR_MODULE_NOT_FOUND`），再补变异验证。
 - **preset 漂移哨兵（独立 workflow `preset-drift`，每日）**：`cordis.patch.yml` 尾部 GENERATED 段是宿主 shipped preset 的**整段替换快照**（宿主 patch 层对 preset 无局部手术语义），漂移发生在**上游**、我们仓库没动静时 push CI 看不见——故独立 workflow + schedule。哨兵从宿主仓库 sparse 拉 `packages/bundle/web-app/presets`，基线 = npm `@deepseek-ai/dsh` 的 `dist-tags.latest` 对应 tag `dsh-v<version>`（**稳定频道用户手里的宿主**；peer 包版本线与宿主不同步，勿拿 `@deepseek-ai/dsh-agent` 当基线），用 `scripts/generate-preset-overrides.ts --check`（只比对不写盘）与包内快照比对。**红灯处置**：人工重跑 `node --import ./scripts/ts-import-rewrite-loader.mjs scripts/generate-preset-overrides.ts <presetsDir>` 重生成并提交——先过目宿主 diff（issue #4 教训：幽灵键被非 strict zod 静默剥离、失效三轮才被发现）。本地 `test/preset-patch-entries.test.ts` 只锁 patch 自身不变量（毒子路径/幽灵键），锁不住宿主漂移，两者互补、都不可省。前瞻未发布宿主线（master / alpha tag）用 workflow_dispatch 的 `ref` 输入，不占红灯。
 - **1.x 退役基线**：graph 引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）；对照老行为从该 tag 检出，不在 main 上维护。
@@ -62,8 +64,13 @@ git config core.hooksPath .githooks
 ## 分支与协作
 
 - 单分支 `main`，直接推送；**CI 通过是唯一放行条件**。
+- **当日必推**：trunk 提交当天推出去，不过夜。CI 与 oldest 臂只覆盖「已推送的 main」——本地攒提交会让「main 恒绿」的前提被推送滞后击穿（oldest 臂事故根因：修复停在本地，远端 main 继续红着接新提交）。
 - 若提交破坏了 `main`（CI 红）：优先 `git revert` 最近提交，而非 force-push。
 - 未来引入协作者时再启用 PR 流程与分支保护。
+
+## 锁宿主新 API 的测试：能力守卫范式
+
+测试用到**只在部分宿主线存在**的 API（如 `systemPrompt.refreshContext`）时，必须运行时能力守卫：`typeof` 探测缺席即 `t.skip`，在场走全契约；**调用保持方法形态**（`svc.method()`，不解构）——服务实现依赖 `this`。范本 `test/vocab-context.test.ts`（peer 地板装树上该契约不存在 ⇒ skip；生产侧同样按服务存在性降级，非回归）。裸调会让 oldest 矩阵格红在「树上根本没有该 API」上，把能力探测伪装成产品回归。
 
 ## 发布流程
 

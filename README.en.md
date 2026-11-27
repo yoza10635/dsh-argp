@@ -160,7 +160,7 @@ The 1.x graph engine is retired: the old scheme is frozen at npm **`1.11.2`** (t
 
 ## Development
 
-One-shot quality gate: `npm run check` (typecheck + spike typecheck + smoke + unit tests + build); `lib/` artifact consistency is enforced in CI via `git diff --exit-code lib/`. Gate matrix and targeted regressions: [CONTRIBUTING.md](CONTRIBUTING.md); transaction protocol and design baseline: [ARCHITECTURE.md](ARCHITECTURE.md).
+One-shot quality gate: `npm run check` (typecheck + spike typecheck + smoke + unit tests + build + `lib/` consistency diff + tsc dead-code ratchet); artifact consistency and the ratchet fire locally at the end of `check`, with CI as backstop. Gate matrix and targeted regressions: [CONTRIBUTING.md](CONTRIBUTING.md); transaction protocol and design baseline: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Feedback
 

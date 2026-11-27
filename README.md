@@ -160,7 +160,7 @@ post-compaction: 1 refill(s) · 0 repeat miss(es) [this process]
 
 ## 开发
 
-全门禁一键：`npm run check`（typecheck + spike typecheck + smoke + 单测 + 构建）；`lib/` 产物一致性由 CI 的 `git diff --exit-code lib/` 把关。门禁矩阵与专项回归见 [CONTRIBUTING.md](CONTRIBUTING.md)；事务协议与设计基准见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+全门禁一键：`npm run check`（typecheck + spike typecheck + smoke + 单测 + 构建 + `lib/` 一致性 diff + tsc 死代码棘轮）；`lib/` 产物一致性与棘轮在本地 check 即拦，CI 兜底。门禁矩阵与专项回归见 [CONTRIBUTING.md](CONTRIBUTING.md)；事务协议与设计基准见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 问题反馈
 
