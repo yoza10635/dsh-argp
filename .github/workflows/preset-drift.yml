@@ -44,9 +44,12 @@ jobs:
         run: |
           REF="${{ github.event.inputs.ref }}"
           if [ -z "$REF" ]; then
-            # 2.2.0 班车临时钉（2026-11-26）：快照= dsh-v0.2.3-alpha.2 快照（stable 直发裁决）。
-            # TODO 摘钉：宿主 npm latest 进入与 alpha.2 preset 一致正式版（≥0.2.3 stable）后，
-            # 恢复下行 npm latest→dsh-v$V 两行解析并删本钉。
+            # 钉位是**接受状态**，不是待摘的临时补丁：快照 = dsh-v0.2.3-alpha.2 的 shipped presets。
+            # 依据：alpha.2 快照对 npm latest（0.2.2-rc.5）向下兼容（既有测试结论；本次未重新
+            # 比对两个 tag 的 presets 目录）。故 latest 用户拿到的 override 与 alpha.2 一致。
+            # 仍保留 TODO：宿主发 ≥0.2.3 stable 且其 presets 与 alpha.2 不一致时，改钉新 tag
+            # 并重跑 generate-preset-overrides.ts；若 latest 已稳定在 ≥0.2.3，可恢复下行
+            # npm latest→dsh-v$V 两行解析并删本钉。
             REF="dsh-v0.2.3-alpha.2"
           fi
           echo "host ref: $REF"
