@@ -33,7 +33,6 @@ import { HOST_REINJECTED_FORMS, HOST_REINJECTED_KINDS } from './ua-input.ts'
 import { CLIP_MARK, clipFamilyOf, clipReserveChars, clipText } from './clip-shape.ts'
 import { FactorLedger, indexKeys, renderVocabulary, type RenderVocabularyResult } from './factor-ledger.ts'
 import { computeScore, planPrune, type PrunePlan, type ScoreInput, type ScoredEntry } from './retention-score.ts'
-import { factorAssistantTombstone } from '../tombstone-text.js'
 import { READ_TOOLS } from './tag-extract.ts'
 import { INTERACTIVE_PREVIEW_TOOLS, interactiveCheckpointText, isInteractiveToolKey } from './interactive.ts'
 import type { FileSnapshot } from './types.ts'
@@ -1107,7 +1106,7 @@ export class FactorEngine {
       }
       return null
     }
-    const result = pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+    const result = pruneIntervals(this.host, session, intervals, intervals.length, false, tombstones, 'factor-prune')
     if (result !== null) {
       // 发射成功立即入账（词表零轮延迟）；组区间逐个 R 记账，A 不入账。逐条以真实
       // shadowed 复核——未被 shadow 的区间（事务预检剔除等）不得误记。
@@ -1185,7 +1184,7 @@ export class FactorEngine {
       if (runs.length === 0) return
       const intervals = runs.map(r => ({ seqs: r.seqs, chars: r.seqs.length * r.text.length, atoms: [] as never[] }))
       const tombstones = runs.map(r => ({ type: 'user' as const, text: r.text }))
-      const res = pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'tombstone-merge')
+      const res = pruneIntervals(this.host, session, intervals, intervals.length, false, tombstones, 'tombstone-merge')
       if (res !== null) {
         this.host.log.info('[argp-factor] 桩游程随剪归并 ' + runs.length + ' 段 / '
           + runs.reduce((n, r) => n + r.seqs.length, 0) + ' 桩 → ' + runs.length + ' 占位')
@@ -1232,7 +1231,7 @@ export class FactorEngine {
       }
     }
     if (intervals.length === 0) return null
-    const result = pruneIntervals(this.host, session, intervals, 0, intervals.length, false, tombstones, 'injection-dedupe')
+    const result = pruneIntervals(this.host, session, intervals, intervals.length, false, tombstones, 'injection-dedupe')
     if (result !== null) {
       this.host.log.info('[argp-factor-dedup] 驱逐过期再注入副本 ' + intervals.length + ' 枚 / '
         + intervals.reduce((n, iv) => n + iv.chars, 0) + ' chars')

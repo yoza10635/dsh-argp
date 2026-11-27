@@ -48,7 +48,6 @@ export interface GraphPruneRecord {
         type: AtomType;
         seq: number;
     }[];
-    semanticEdges: number;
     candidates: number;
     charsBefore: number;
     charsAfter: number;
@@ -133,7 +132,7 @@ export declare function pruneIntervals(host: PruneTxHost, session: Session, inte
     seqs: number[];
     chars: number;
     atoms: Atom[];
-}[], semanticEdges: number, candidateCount: number, forced: boolean, tombstones?: readonly ({
+}[], candidateCount: number, forced: boolean, tombstones: readonly ({
     type: 'user';
     text: string;
 })[], summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune' | 'injection-dedupe', 

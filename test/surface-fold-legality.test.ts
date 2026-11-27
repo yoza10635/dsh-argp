@@ -106,7 +106,6 @@ function pruneGroupToCheckpoint(session: Session, group: { aSeq: number; rSeq: n
     makeHost(),
     session,
     [{ seqs: [group.aSeq, group.rSeq], chars: 900, atoms: [] }],
-    0,
     1,
     false,
     [{ type: 'user', text }],

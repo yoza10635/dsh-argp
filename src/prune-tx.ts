@@ -24,7 +24,7 @@ import { visibleChars, visibleCharStats } from './budget.js'
 import { estTokensFromStats } from './cjk.js'
 import { shadowedTokensOf } from './constants.js'
 import { pushBounded } from './telemetry.js'
-import { isMergeableTombstoneText, seqRangeTombstone } from './tombstone-text.js'
+import { isMergeableTombstoneText } from './tombstone-text.js'
 import { estimateHiddenHistory } from './factor/history-estimate.js'
 import { compactionDebugLine, compactionSummaryText, estimateSurfaceRelease, type ReportKind } from './compaction-report.js'
 
@@ -65,7 +65,6 @@ export interface GraphPruneRecord {
   endEventSeq: number
   shadowedSeqs: number[]
   prunedAtoms: { id: number; type: AtomType; seq: number }[]
-  semanticEdges: number
   candidates: number
   charsBefore: number
   charsAfter: number
@@ -155,10 +154,9 @@ export function pruneIntervals(
   host: PruneTxHost,
   session: Session,
   intervals: { seqs: number[]; chars: number; atoms: Atom[] }[],
-  semanticEdges: number,
   candidateCount: number,
   forced: boolean,
-  tombstones?: readonly ({ type: 'user'; text: string })[],
+  tombstones: readonly ({ type: 'user'; text: string })[],
   summaryKind?: 'graph-prune' | 'tombstone-merge' | 'factor-prose' | 'factor-prune' | 'injection-dedupe',
   /** §G2：LLM 摘要调用的真实账单/信封回填 compaction/summary（宿主字段词典；0-LLM 事务不传）。 */
   summaryMeta?: CompactionSummaryMeta,
@@ -225,7 +223,7 @@ export function pruneIntervals(
     const order = useIntervals.map((_iv, i) => i)
     order.sort((a, b) => txPosOf(useIntervals[a] as { seqs: number[] }) - txPosOf(useIntervals[b] as { seqs: number[] }))
     const sortedIntervals = order.map(i => useIntervals[i] as { seqs: number[]; chars: number; atoms: Atom[] })
-    if (useTombstones !== undefined && useTombstones.length === useIntervals.length) {
+    if (useTombstones.length === useIntervals.length) {
       const srcTs = useTombstones
       useTombstones = order.map(i => srcTs[i] as typeof srcTs[number])
     }
@@ -255,17 +253,11 @@ export function pruneIntervals(
   // ⇒ 归并零信息损失；交互/夹剪检查点文本含各自 keys/预览 ⇒ 不并（指针与信息语义保留）。
   // 2.2.2 根修后墓碑只剩 user 一种形态（tool/developer 结构桩整类删除）。
   // P1-5 数量校验随 resolved 计算上移到 start 事件之前：错配更早拒发，不再留 start+summary 死括号。
-  if (useTombstones !== undefined && useTombstones.length !== useIntervals.length) {
+  if (useTombstones.length !== useIntervals.length) {
     // 审查 P1-5：绝不能静默回退到 seq 指针墓碑（零指针纪律）；数量错配 = 调用方 bug。
     throw new Error('prune-tx: tombstone count mismatch (' + useTombstones.length + ' vs ' + useIntervals.length + '); refusing pointer fallback')
   }
-  let resolvedTombstones: readonly { type: 'user'; text: string }[] =
-    useTombstones !== undefined && useTombstones.length === useIntervals.length
-      ? useTombstones
-      : useIntervals.map(iv => ({
-          type: 'user' as const,
-          text: seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number),
-        }))
+  let resolvedTombstones: readonly { type: 'user'; text: string }[] = useTombstones
   if (useIntervals.length > 1) {
     const txPosMap = new Map<number, number>()
     for (let i = 0; i < txSurfaceNodes.length; i += 1) txPosMap.set(txSurfaceNodes[i] as number, i)
@@ -414,9 +406,7 @@ export function pruneIntervals(
       const ts = resolvedTombstones[i]
       // 2.2.2 根修：surface replace 只有 user 检查点一种合法形态（tool/developer 分支已整类
       // 删除）。文本来源：调用方给定（普通/交互/夹剪预览检查点），缺省为 seq 区间墓碑。
-      const text = ts !== undefined
-        ? ts.text
-        : seqRangeTombstone(iv.seqs[0] as number, iv.seqs[iv.seqs.length - 1] as number)
+      const text = ts.text
       const tombstone = session.append('user/message', createUserMessage({
         content: [{ type: 'text', text }],
         // checkpoint 的 source.sourceCommandId 必须与 start 一致（宿主 invariant
@@ -473,7 +463,6 @@ export function pruneIntervals(
       endEventSeq: endEvent.seq,
       shadowedSeqs: allSeqs,
       prunedAtoms: useIntervals.flatMap(iv => iv.atoms.map(a => ({ id: a.id, type: a.type, seq: a.seq }))),
-      semanticEdges,
       candidates: candidateCount,
       charsBefore,
       charsAfter,

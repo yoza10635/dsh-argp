@@ -47,31 +47,9 @@
 export declare const TOMBSTONE_PREFIX = "[elided";
 /** tool 占位墓碑前缀（冒号形态）——`isMergeableTombstoneText` 的"不可合并"判别子。 */
 export declare const TOOL_TOMBSTONE_PREFIX = "[elided:";
-/**
- * tool 占位墓碑（剪 R 而保留 issuer A 时使用）。
- *
- * 保留 `callId` 配对是**协议硬要求**（`assertToolResultRewrite` 只允许改 inner text），
- * 故文案本身不改结构，只补 seq —— issuer A 的 tool-call 就在紧邻位置（实测 346/364
- * 距离 ≤ 2），模型据此即可判断"这是哪次调用"，缺的只是**取回指针**。
- */
-export declare function toolTombstone(originalSeq: number): string;
-/** 单节点/区间 user 墓碑（`start === end` 时退化为单节点形态）。 */
-export declare function seqRangeTombstone(start: number, end: number): string;
-/**
- * factor 臂中断轮半截 A 的 user 墓碑（P6-③ 裁定 3）。不引 `recall_pruned`——factor 臂
- * 无该通道（假通道纪律同 factor 桩"禁引退役工具名"）；原文在 append-only 日志按 seq 检索。
- * 非可并族（无 recall_pruned 指引）——罕见的协议残渣节点，不值得为它们扩可并文法。
- */
-export declare function factorAssistantTombstone(seq: number): string;
+/** 取回指引（`recall_pruned(<seq>) for detail`）。 */
 /** factor 指针墓碑（A 半截/孤儿 R）：不带取回工具名——2.0 只有标签召回，A 无标签。 */
 export declare function isFactorTombstoneText(text: string): boolean;
-/**
- * `CompactionResult.summary` 里的 tool 墓碑渲染文本。
- *
- * 不进 prompt（`compaction/summary` 是 off-surface 日志事件，UI 展示用），故不带 seq
- * ——summary 是轮级汇总，写出某个具体 seq 会误导。
- */
-export declare function toolTombstoneSummary(): string;
 /** 是否为 tool 占位墓碑文本（`[elided:` 冒号族）。 */
 export declare function isToolTombstoneText(text: string): boolean;
 /**

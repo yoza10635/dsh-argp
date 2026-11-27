@@ -87,7 +87,7 @@ test('① 倒挂多区间事务：优先序喂入（尾…首）必须成功落�
   const s3 = appendUser(session, 4, 'r3:' + 'C'.repeat(400))
   // 决策优先序 = 新者优先（retention 倒序）：区间尾 < 区间首 = 病灶形
   const intervals = [s3, s2, s1].map(seq => ({ seqs: [seq], chars: 400, atoms: [] }))
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, undefined, 'factor-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, intervals.map((_iv, i) => ({ type: 'user' as const, text: 'CP-' + i })), 'factor-prune')
   assert.notEqual(result, null, '倒挂优先序喂入不得再撞守卫拒发（修复前此路 throw）')
   assert.equal(result!.shadowedRange.start, s1 as never, '位置序排序后 first=最前位（s1）')
   assert.equal(result!.shadowedRange.end, s3 as never, 'last=最后位（s3）')
@@ -106,7 +106,7 @@ test('② 倒挂 + 整组 user 检查点：排序必须与墓碑原子换位（�
   const desc = [g3, g2, g1]
   const intervals = desc.map(g => ({ seqs: [g.aSeq, g.rSeq], chars: 400, atoms: [] }))
   const tombstones = desc.map(g => ({ type: 'user' as const, text: 'CHECK-' + g.callId }))
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, tombstones, 'factor-prune')
   assert.notEqual(result, null, '倒挂优先序喂入不得撞守卫拒发（排序与墓碑必须原子换位）')
   // surface 序上检查点文本必须 c1→c3 升序（replace 循环按排序后区间走）
   const events = sessionEvents(session)
@@ -122,7 +122,7 @@ test('③ 已位置升序喂入（图臂常态形）：行为零变化（sort �
   const s1 = appendUser(session, 2, 'r1:' + 'A'.repeat(400))
   const s2 = appendUser(session, 3, 'r2:' + 'B'.repeat(400))
   const intervals = [s1, s2].map(seq => ({ seqs: [seq], chars: 400, atoms: [] }))
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, undefined, 'graph-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, intervals.map((_iv, i) => ({ type: 'user' as const, text: 'CP-' + i })), 'graph-prune')
   assert.notEqual(result, null, '升序喂入修复前后都必成功')
   assert.equal(result!.shadowedRange.start, s1 as never)
   assert.equal(result!.shadowedRange.end, s2 as never)
@@ -160,7 +160,7 @@ test('④ 相邻同文 user 墓碑归并：3 连同文并 1 条 + 异文 1 条 �
   const SAME = '归并测试同文桩'
   const intervals = [s1, s2, s3, s4].map(seq => ({ seqs: [seq], chars: 300, atoms: [] }))
   const tombstones = [SAME, SAME, SAME, '异文桩'].map(text => ({ type: 'user' as const, text }))
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, tombstones, 'factor-prune')
   assert.notEqual(result, null, '归并后事务必须成功落盘')
   const prunes = pruneEvs(session)
   assert.equal(prunes.length, 2, '三连同文并成 1 区间 + 异文独立 1 区间')
@@ -183,7 +183,7 @@ test('⑤ 邻接门：同文被活体夹断不并；同文邻接对倒序喂入�
   const x2 = appendUser(gap, 4, 'q'.repeat(300))
   const r1 = pruneIntervals(makeHost(), gap,
     [{ seqs: [x1], chars: 300, atoms: [] }, { seqs: [x2], chars: 300, atoms: [] }],
-    0, 2, false, [{ type: 'user', text: SAME }, { type: 'user', text: SAME }], 'factor-prune')
+    2, false, [{ type: 'user', text: SAME }, { type: 'user', text: SAME }], 'factor-prune')
   assert.notEqual(r1, null)
   assert.equal(pruneEvs(gap).length, 2, '活体夹断 ⇒ 同文两区间不并（surface 位置邻接判据）')
   assert.equal(surfaceNeedleCount(gap, SAME), 2)
@@ -196,7 +196,7 @@ test('⑤ 邻接门：同文被活体夹断不并；同文邻接对倒序喂入�
   const y2 = appendUser(desc, 3, 'n'.repeat(300))
   const r2 = pruneIntervals(makeHost(), desc,
     [{ seqs: [y2], chars: 300, atoms: [] }, { seqs: [y1], chars: 300, atoms: [] }],
-    0, 2, false, [{ type: 'user', text: SAME }, { type: 'user', text: SAME }], 'factor-prune')
+    2, false, [{ type: 'user', text: SAME }, { type: 'user', text: SAME }], 'factor-prune')
   assert.notEqual(r2, null)
   const prunes = pruneEvs(desc)
   assert.equal(prunes.length, 1, '倒序喂入经排序后邻接同文 ⇒ 并成一条')
@@ -211,7 +211,7 @@ test('⑥ 结构锁：tool/developer 形态墓碑整类废除（prune-tx 只发 
   const intervals = [{ seqs: [u], chars: 300, atoms: [] }]
   assert.throws(
     () => pruneIntervals(
-      makeHost(), session, intervals, 0, 1, false,
+      makeHost(), session, intervals, 1, false,
       [{ type: 'tool', seq: u, callId: 'c1', text: '毒桩' }] as never,
       'factor-prune',
     ),
@@ -237,7 +237,7 @@ test('⑦ 轮间隙锁：无开放轮时 user 检查点事务照常落盘，全�
     { type: 'user' as const, text: '间隙检查点A' },
     { type: 'user' as const, text: '间隙检查点B' },
   ]
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, tombstones, 'factor-prune')
   assert.equal(detectOpenTurn(session), null, '前置：事务确在轮间隙')
   assert.notEqual(result, null, 'user 检查点不受轮约束，事务照常落盘')
   assert.equal(pruneEvs(session).length, 2)
@@ -269,7 +269,7 @@ test('⑧ 缓存断点锁：一笔压缩事务的 surface replace 数恰等于�
     { type: 'user' as const, text: 'cp-two' },
     { type: 'user' as const, text: 'cp-three' },
   ]
-  const result = pruneIntervals(makeHost(), session, intervals, 0, intervals.length, false, tombstones, 'factor-prune')
+  const result = pruneIntervals(makeHost(), session, intervals, intervals.length, false, tombstones, 'factor-prune')
   assert.notEqual(result, null, '事务应落盘')
   const evs = evsOf(session)
   const isReplace = (e: EvLike): boolean => typeof (e as { surfaceOp?: unknown }).surfaceOp === 'object'
@@ -310,7 +310,7 @@ test('⑨ 落点重导：外来 surface 替换落在 span 中段 ⇒ 事务成�
     sourceEventSeqs: [n2] as never,
   })
   const liveBefore = [...session.surface.nodes].map(Number)
-  const result = pruneIntervals(makeHost(), session, intervals, 0, 1, false, undefined, 'factor-prose')
+  const result = pruneIntervals(makeHost(), session, intervals, 1, false, [{ type: 'user' as const, text: 'CP' }], 'factor-prose')
   assert.notEqual(result, null, '中段被换掉不得整笔蒸发（修复前此路留毒 prune 落盘）')
   const claimed = pruneEvs(session).flatMap(e => e.data!.shadowedSeqs as number[])
   assert.ok(claimed.every(q => liveBefore.includes(q)),
@@ -318,4 +318,29 @@ test('⑨ 落点重导：外来 surface 替换落在 span 中段 ⇒ 事务成�
   assert.ok(!claimed.includes(n2), '已离面的 n2 不得再进声明（这就是旧版毒 prune 的成因）')
   assert.equal(claimed.length, 3, '重导后声明 = 现读连续切片（外来替换被正常吞入本 span）')
   assertShadowPriceContract(session)
+})
+
+test('⑩ 词表纪律：压缩事务写出的模型可见文本不得点名已退役工具', () => {
+  // 2.x 的取回通道只有 recall_history / list_labels / search_history。1.x 的墓碑生成器
+  // （retrieve / toolTombstone / seqRangeTombstone）会写出 `recall_pruned(<seq>)` —— 那是一个
+  // **不存在的工具**，比"不留指针"更糟：模型会去调一个没有的通道并自信地失败。
+  // 生成器已整体删除、`tombstones` 也已改必填（缺省回退分支同时消失）。本锁保证任何新文案
+  // 不能再把退役工具名写回模型可见面。
+  const session = makeSession('tx-retired-tool-name')
+  appendUser(session, 1, 'task')
+  const u1 = appendUser(session, 2, 'old ' + 'A'.repeat(400))
+  const u2 = appendUser(session, 3, 'old ' + 'B'.repeat(400))
+  const result = pruneIntervals(makeHost(), session,
+    [{ seqs: [u1], chars: 400, atoms: [] }, { seqs: [u2], chars: 400, atoms: [] }],
+    2, false,
+    [{ type: 'user', text: '已压缩剪枝次要原子' }, { type: 'user', text: '已压缩剪枝次要原子' }],
+    'factor-prune')
+  assert.notEqual(result, null, '事务应成功落盘')
+  const evs = evsOf(session)
+  const visible = [...session.surface.nodes]
+    .map(sq => JSON.stringify((evs[sq as number] as { data?: unknown } | undefined)?.data ?? '')).join('\n')
+  for (const dead of ['recall_pruned', 'list_pruned']) {
+    assert.ok(!visible.includes(dead), `模型可见 surface 出现已退役工具名 ${dead}`)
+  }
+  assert.ok(!JSON.stringify(evs).includes('recall_pruned('), '事务不得写出 recall_pruned(...) 形态文本')
 })

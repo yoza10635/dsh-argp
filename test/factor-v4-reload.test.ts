@@ -146,7 +146,7 @@ test('① 单节点区间：pruneIntervals 发射的日志经宿主完整加载�
   // 压缩事务发生在下一轮已开启时——与真实压缩同构（被剪轮已闭、requireTurn 需开放轮）。
   session.append('turn/start', { turn: 2 })
 
-  const result = pruneIntervals(makeTxHost(), session, [{ seqs: [uSeq], chars: 800, atoms: [] }], 0, 1, false)
+  const result = pruneIntervals(makeTxHost(), session, [{ seqs: [uSeq], chars: 800, atoms: [] }], 1, false, [{ type: 'user' as const, text: 'CP' }])
   assert.ok(result !== null, '事务必须成功落地')
 
   reloadThroughHostLoadChain(session)
@@ -161,7 +161,8 @@ test('② 多区间（跨两轮）：summary 总跨度 span + 逐区间 shadow-p
   const result = pruneIntervals(
     makeTxHost(), session,
     [{ seqs: [t1.uSeq], chars: 800, atoms: [] }, { seqs: [t2.uSeq], chars: 800, atoms: [] }],
-    0, 2, false,
+    2, false,
+    [{ type: 'user' as const, text: 'CP-0' }, { type: 'user' as const, text: 'CP-1' }],
   )
   assert.ok(result !== null, '事务必须成功落地')
 
@@ -178,7 +179,8 @@ test('③ 整轮区间 [u..r]：单条 checkpoint 墓碑整段 replace（factor 
   const result = pruneIntervals(
     makeTxHost(), session,
     [{ seqs: [uSeq, aSeq, rSeq], chars: 4000, atoms: [] }],
-    0, 1, false,
+    1, false,
+    [{ type: 'user' as const, text: 'CP' }],
   )
   assert.ok(result !== null, '事务必须成功落地')
 

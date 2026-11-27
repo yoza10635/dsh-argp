@@ -100,7 +100,7 @@ test('① pruneIntervals：成功 end 之后的语句抛出 ⇒ 恰好一条 end
   const intervals = [{ seqs, chars: 800, atoms: [] }]
 
   assert.throws(
-    () => pruneIntervals(host, session, intervals, 0, intervals.length, false),
+    () => pruneIntervals(host, session, intervals, intervals.length, false, intervals.map((_iv, i) => ({ type: 'user' as const, text: 'CP-' + i }))),
     '成功 end 之后的 pushBounded(host.records = undefined) 必须抛出（本用例的注入点）',
   )
 
@@ -124,7 +124,7 @@ test('② pruneIntervals：区间首尾已离面 ⇒ **任何 append 之前**拒
   const intervals = [{ seqs: [0, ...seqs], chars: 800, atoms: [] }]
 
   assert.throws(
-    () => pruneIntervals(host, session, intervals, 0, intervals.length, false),
+    () => pruneIntervals(host, session, intervals, intervals.length, false, intervals.map((_iv, i) => ({ type: 'user' as const, text: 'CP-' + i }))),
     /not a current surface slice/,
     '陈旧区间必须在任何 append 之前 throw',
   )
@@ -152,7 +152,7 @@ test('②b 成功 end 之前 throw（受保护 system head 守卫）⇒ 仍须�
   // 区间从 surface[0]（受保护 system 头）起：落点重导**通过**（是当前的连续切片），
   // 由受保护头守卫在 start 之后拒发 ⇒ 必须补一条带 error 的 end，不留未配对 start。
   assert.throws(
-    () => pruneIntervals(host, session, [{ seqs: [0, ...seqs], chars: 800, atoms: [] }], 0, 1, false),
+    () => pruneIntervals(host, session, [{ seqs: [0, ...seqs], chars: 800, atoms: [] }], 1, false, [{ type: 'user' as const, text: 'CP' }]),
     /protected system head/,
     '覆盖受保护 system 头必须 throw',
   )
