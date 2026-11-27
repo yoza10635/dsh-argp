@@ -231,11 +231,16 @@ interface SessionFactorState {
 export { VOCAB_NOTE_MARKER }
 
 /**
- * 词表 note 的模型侧引导（2.0.0 起替代 system 前缀常驻契约）：
- * 只在**首次压缩事务后**随词表 note 出现——压缩前没有被剪内容，无需指引；
- * note 本就随 epoch 重写，不额外制造前缀缓存断点。
+ * 词表引导（2.2.3 起同时供 systemPrompt.context 快照与旧 note 回退使用）：
+ * 只在**首次压缩事务后**出现——压缩前没有被剪内容，无需指引；目录内容由事务
+ * 成功收尾时的会话快照冻结，不在每次请求重新从 live ledger 生成。
+ *
+ * 2.2.3 补一句**置信语义**（元认知复盘）：证据被剪既不证明结论为真、也不证明为假。
+ * 缺了工具结果的结论最容易被后续模型读成"置信度下降"，于是重做一遍或悄悄降级表述；
+ * 正确动作是召回原文核对。与 `prose-condenser` 的 provenance 规则互补：那边管
+ * "写摘要时别升级"，这边管"读历史时别因为看不见证据就改判"。
  */
-const VOCAB_NOTE_GUIDE = 'Pruned atoms remain in the append-only log. If an answer depends on content no longer visible, recall it with recall_history using the labels below — never reconstruct from memory. If no document label matches, shell-read content may carry command:<family> labels, and directory-level scope:<dir> addresses may also exist — list_labels(category:\'command\' or \'scope\') enumerates them (not listed below). For conversation prose that was condensed away (it has no label), search_history(keyword=...) greps the log verbatim. Replies must be self-contained: restate facts, do not point at earlier context.'
+const VOCAB_NOTE_GUIDE = 'Pruned atoms remain in the append-only log. If an answer depends on content no longer visible, recall it with recall_history using the labels below — never reconstruct from memory. Elision is not a verdict: a tool result being gone neither confirms nor refutes the conclusion it supported, so do not silently restate an earlier conclusion as more or less certain — recall the original and re-check before relying on it. If no document label matches, shell-read content may carry command:<family> labels, and directory-level scope:<dir> addresses may also exist — list_labels(category:\'command\' or \'scope\') enumerates them (not listed below). For conversation prose that was condensed away (it has no label), search_history(keyword=...) greps the log verbatim. Replies must be self-contained: restate facts, do not point at earlier context.'
 
 const vocabNoteText = (labels: string): string => VOCAB_NOTE_MARKER + '\n' + VOCAB_NOTE_GUIDE + '\n' + labels
 
@@ -1305,8 +1310,27 @@ export class FactorEngine {
   }
 
   /**
+   * 系统级动态目录快照（2.2.3；systemPrompt.context 的单一数据源）。
+   *
+   * 与 `refreshVocabularyNote` 的区别：note 是**事务流**里的历史通知，可能因
+   * steer/替换/吞并而不可见；快照是**宿主每次装配请求时**读取的模型侧上下文，
+   * 只在压缩事务成功收尾时更新。调用方必须把返回对象的 `text` 冻结到会话状态，
+   * 不得让 provider 每次请求重新从 live ledger 渲染——否则“目录变化”会脱离
+   * “压缩事务”这个唯一的缓存断点时机。
+   */
+  vocabularySnapshot(session: Session): { text: string; epoch: number } {
+    const { text } = this.vocabulary(session)
+    return {
+      text: text === '' ? '' : VOCAB_NOTE_GUIDE + '\n' + text,
+      epoch: this.ledgerOf(session).epoch,
+    }
+  }
+
+  /**
    * 词表 note 的单一可见副本维护（§1.4 注入位定稿：**不进 system 前缀**——每轮变动
    * = 跨轮前缀缓存全断，`6d252cf` 教训；note 常驻剪枝区带、内容随 epoch 重写）。
+   * 2.2.3 起有 `systemPrompt.context` 时由 `ArgpEngine` 停用本路径（context 快照
+   * 承担目录）；本方法仅作为无该服务时的降级通道保留。
    *
    * 通路 = pre-step 的 steer/replace（auto-continue 同款 notice 先例）：
    *  - 首注：steer 一条 notice（source.kind='argp'，宿主归 X：进请求、不参剪、UI 按

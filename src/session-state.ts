@@ -22,6 +22,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { AtomType } from './argp-types.js'
 import type { GraphPruneRecord } from './prune-tx.js'
 import type { NodeState } from './log-access.js'
+import type { RequestCacheSample } from './cache-audit.js'
 
 /**
  * 已剪节点目录条目（seq -> 元数据）。账本重建与 /argp 仍读它。
@@ -34,8 +35,6 @@ export interface PrunedNodeInfo {
   citedBySeq: number[]
   /** 被剪瞬间的有效重要性（历史图臂口径；2.0 不消费，保留字段形状供旧日志回放）。 */
   eff: number
-  /** 版本链重定向（2026-08-23）：被剪旧快照 recall 时指向同路径最新存活版本的 seq。 */
-  latestOfPath?: number
 }
 
 /**
@@ -87,6 +86,18 @@ export interface SessionRuntimeState {
   lastPruneRelease: number
   /** §F churn 状态：最近一次 prune-only 处置（发射或被抑制）的入场 contextTokens（0=无）。 */
   lastPruneEntryCtx: number
+  /**
+   * 每请求缓存审计样本（有界；2.2.3）。压缩是否打断前缀缓存的**直接读数**来自
+   * provider usage，不再靠首字延迟反推（见 cache-audit.ts）。
+   */
+  cacheSamples: RequestCacheSample[]
+  /** 最近一次成功压缩事务（`compaction/end` 无 error）——后续请求都归属它。 */
+  lastCompaction: { id: string; at: number; turn: number | null } | null
+  /**
+   * 该事务后尚无带 usage 的模型应答：下一条即"压缩后首请求"。
+   * 只有首请求的低命中是压缩的**必然代价**；之后的低命中说明还有别的抖前缀源。
+   */
+  compactionAwaitingReply: boolean
 }
 
 export function createSessionRuntimeState(): SessionRuntimeState {
@@ -112,5 +123,8 @@ export function createSessionRuntimeState(): SessionRuntimeState {
     b6Streak: 0,
     lastPruneRelease: -1,
     lastPruneEntryCtx: 0,
+    cacheSamples: [],
+    lastCompaction: null,
+    compactionAwaitingReply: false,
   }
 }

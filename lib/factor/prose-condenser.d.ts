@@ -40,10 +40,22 @@ export interface ProseEventProbe {
  * 判据」核准浓缩，闸一双闸主权移交分派器。`maxOutputTokens`=W_eff−transcript−指令
  * 的剩余空间（可能小于 H5 标准 0.2×声明窗），发射时覆盖浓缩输出预算。缺省（未授权）
  * ⇒ 现网双闸字节不变。
+ *
+ * `form` 与 `approved` **正交**（2026-11-27 实测：手动 `/compact` 的摘要请求
+ * 118K prompt / cached=0 / 33.3s）：
+ *  - 输入形态决定前缀缓存能否复用。旧 A 形态（`buildProseMessages`）重建一份
+ *    `U:/A:` transcript，**没有 system 头、正文带行内角色标记** —— 与主对话请求从
+ *    第 0 个 token 就不同，必然全量未命中；
+ *  - `form:'host'` 走 `buildCtxInput`（宿主同款路由装配 + 尾部指令），前缀与上一发
+ *    主对话逐字节一致 ⇒ 命中到指令前（自动路径实测 ~97%）。
+ * 手动压缩只需要"换输入形态"，不需要借用 `approved`（那会连带绕过散文闸一、
+ * 改变淘汰口径），故单列此开关。
  */
 export interface CondenseDispatch {
-    approved: true;
-    maxOutputTokens: number;
+    approved?: true;
+    form?: 'host';
+    /** 仅 approved 时有意义：分派器核定的输出预算。 */
+    maxOutputTokens?: number;
 }
 /** 轮级贪心计划（纯函数输出；发射在 ProseCondenser.condense）。 */
 export interface ProseEvictPlan {

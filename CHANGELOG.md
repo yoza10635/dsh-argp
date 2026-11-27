@@ -6,6 +6,28 @@
 
 > **2.0.0 说明**：1.x 图引擎已退役，老方案冻结在 npm `1.11.2`（tag `v1.11.2`）。2.x 只维护 factor 引擎；老 profile 的 graph 旋钮宽容读 + 告警忽略。
 
+## [Unreleased]
+
+## [2.3.0] - 2026-11-27（minor 直发：词表目录迁 `systemPrompt.context`；每请求缓存审计；出处语义收紧为三句话并撤销五态标记；手动压缩摘要改宿主装配（缓存 0 → 98.8%）；缓存告警门限按块粒度修正；1.x 死字段清理；无新增配置面）
+
+### Added
+- **每请求缓存审计（`/argp` 段 5 + 日志）**：压缩是否打断前缀缓存，此前只能靠首字延迟反推（混入排队/采样噪声）；现在直接读 provider usage——`inputTokens`（未命中，必须真 prefill）与 `cacheReadTokens`（复用前缀）互斥，`prompt = 未命中 + 命中 + 写缓存`。每次带 usage 的应答落一条会话桶采样（有界），归因到最近一次**成功**收尾的压缩事务（`compaction/end` 无 error；失败事务不置游标），并区分四类：压缩后**首请求**低命中 = 保留段整条重灌（必然代价，info）、同一次压缩后的**续作**仍低命中 = 另有抖前缀源（warn）、首请求高命中 = 追加式续作、无事务低命中 = 冷启。小 prompt 的低命中不报异常（门限按块粒度取 8192 token，理由见 Fixed），避免冷启噪声淹没真信号。`/argp` 露出最近 3 条 `prompt/cached/命中率` 与「重灌 / 续作失配」计数。锁 `test/cache-audit.test.ts` 十一例（互斥求和、四类判定、失败事务不置游标、跨轮陈旧标记、状态卡行文）。
+
+### Changed
+- **证据被剪 ≠ 结论改判（摘要与检查点的出处语义，最终形态：三句话）**。病灶不是幻觉而是**出处丢失**：剪枝删掉工具结果后，助手结论仍以散文留在面上，摘要再把它压成检查点；原检查点框架语 "Treat the captured context as established background" 单独存在时，等于把整份摘要（含未经确认的推断）都读作既定事实——结论可能仍然正确，但模型看到的是高置信、无出处的断言。最终只落三句话（写侧）+ 一句读法（读侧），不引入任何标记：① 写侧摘要指令——承重结论要说出来源（工具输出 / 用户原话 / 自己的推断），判不清就如实说、**不许编来源**；支撑证据可能已被压走，**它既不确认也不反驳结论**，不得据此把结论写得更确定或更不确定，要给读者指召回而不是替他猜；纠正双边可见（`X (was corrected by Y)`，不删被纠正项），未决项写明"什么观察能定案"、猜测不得冒充决定。② 读侧：`CHECKPOINT_PREAMBLE` 与宿主基线**故意分叉**——"既定背景"限定为**连续性**，并补"证据可能已被压走 ⇒ 既不确认也不反驳，要证据就召回"；词表引导（`systemPrompt.context`）同位一条 **Elision is not a verdict**。③ **撤销一度引入的五态标记**（`[observed]` / `[user]` / `[inferred]` / `[observed, evidence elided]` / `[provenance unknown]`）：摘要发生在剪枝**之后**，摘要器看不到原始证据，标记只能靠它自述——标错比不标更有害（读者会把它当出处权威），且每份检查点常驻 ~65 token、每次摘要 ~250 token。锁 `test/provenance-contract.test.ts` 五例，其中一条是**反向锁**：写侧/读侧重新出现上述标记即红。
+- **动态词表目录迁到 `systemPrompt.context`（会话快照）**：压缩事务成功收尾时冻结本会话目录（账本 epoch + 渲染文本），provider 只读快照、不读 live ledger；两次事务之间字节稳定。宿主在 `pre-step` 之后、发请求前 `refreshContext` 会重新求值 context，故本次压缩请求即可看到新目录，而 system section 保持稳定；无 `systemPrompt` 服务的宿主继续走原词表 note 回退，注册成功后不再写 note 目录，避免双份目录与 steer 失败导致地址不可见。
+
+### Fixed
+- **缓存审计的告警门槛按块粒度修正（1000 → 8192 token）**。实测（`spike/51-cache-refill-probe.ts`，真端点）：provider 前缀缓存按**块**命中，所有 `cached_tokens` 都是 2048 的倍数；一次把 19 万字符压到 3.2K 的压缩之后，请求 prompt 只剩 1,011 token、cached=0——按旧门槛（≥1000）会被判成「压缩后续作又失配」并 warn，实际是"块粒度未达"。门槛改 8K（≈4 块），`/argp` 的 `refill`/`repeat-miss` 标记与两枚计数同用这一道门，避免卡面自造噪声。
+- **手动 `/compact` 的摘要调用改走宿主同款装配（缓存命中 0 → 98.8%）**。旧路径 `callLlm` 重建 `U:/A:` transcript：**没有 system 头、正文带行内角色标记**，与主对话请求从第 0 个 token 就不同 ⇒ 前缀缓存必然全量未命中。实测（真端点）：一次 118,135 token prompt / `cached=0` / 33.3s。改为 `CondenseDispatch.form:'host'`（与 `approved` **正交**：只换输入形态，不继承分派器的闸一豁免与淘汰口径）后，同一请求 `cached=116,736`（98.8%）/ 14.0s；host 形态也回填 `compaction/summary.usage`，手动压缩的缓存命中从此可核。锁 `dispatch-takeover` 两例（host 形态取 header 路由 + tools 透传 + usage 回填；未过闸一仍零 LLM）。
+- **旧 A 形态摘要调用的账单可见**：`callLlm` 现在把 `completeViaDshLlm` 的 usage 带回，压缩收尾落一行 `摘要调用 usage: prompt=… cached=…(…%) [legacy A-form]`（仅无 `form:'host'` 的旧宿主/对照臂会走到）。不改其行为（legacy 不写 usage meta 的既有契约保持），只让成本可见。
+
+### Removed
+- **`PrunedNodeInfo.latestOfPath`（1.x 版本链死字段）**：注释写"被剪旧快照 recall 时指向同路径最新存活版本的 seq"，实际全仓零写入零读取——它许诺的能力从未实现。也不实现：`recall_history(labels, view:'outline')` 已逐行列出同一标签的全部版本（`item=<seq> · turn=<n>`），且 `order:"fresh"` 按新到旧排序；更晚的同类观察若仍 live 则本就在可见面上。再加一层"新旧指针"只是重复列表信息，还会诱导模型把"这版旧"推论成"结论错"。
+
+### Docs
+- **对外口径按实测收窄**：README 两条卖点改写——「遗忘可撤销」补上约束（逐字取回受召回字符预算限制，被剪节点不回原位："撤销的是读不到，不是没剪过"）；「不打碎前缀缓存」改为「缓存断点只在压缩时机」（一次事务必然让保留段在压缩后首请求重灌一次，97.8% 是跨轮稳态口径）。已知限制新增「压缩后首个请求必然重灌」（附实测 239.5K prompt / ≈0.2K 命中 / 47s 首字，并指向 `/argp` 的 `cache` 段区分 refill 与 repeat-miss）。ARCHITECTURE §3.3 改写为 **「出处语义（证据被剪 ≠ 结论改判）」**（写侧三句指令、读侧框架语、刻意不做的标记体系及其理由、锁面）。
+
 ## [2.2.2] - 2026-11-27（stable 直发：两起"落盘静默成功、重启整档拒载"封堵；三代理独立审查修复批；压缩统计口径与用户文案重做；1.x 遗留清理；无新增配置面）
 
 ### Removed

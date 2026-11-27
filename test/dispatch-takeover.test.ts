@@ -429,3 +429,61 @@ test('§G 未授权路径形状不变：重建 transcript（U: 前缀）+ 无 to
   const summ = events.filter(e => e.type === 'compaction/summary').pop()?.data
   assert.ok(summ?.usage === undefined && summ?.llmStreamCall === undefined, 'legacy 不写 usage meta')
 })
+
+// ── form:'host'（2026-11-27）：手动压缩换输入形态，不借授权 ─────────────────────
+test("§G form:'host' 不借 approved：宿主装配 + header 路由 + tools 透传 + usage 回填", async () => {
+  const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+  const captured: Record<string, unknown>[] = []
+  const llmStub = {
+    stream: (opts: Record<string, unknown>) => {
+      captured.push(opts)
+      return (async function* () {
+        yield { type: 'usage', usage: { inputTokens: 900, outputTokens: 100, cacheReadTokens: 800 } }
+        yield { type: 'text-delta', text: '## Primary Request and Intent\n- host form' }
+      })()
+    },
+  }
+  const shimCtx = { logger: ctx.logger, get: (n: string) => n === 'llm' ? llmStub : undefined } as never
+  const session = Session.create(SessionId('ctx-host-form'))
+  session.append('system/message', { message: { role: 'system', content: [{ type: 'text', text: 'persona prefix' }] } } as never, { surfaceOp: 'append' })
+  ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+  session.append('request/header', {
+    header: { config: { provider: 'hdr-p', model: 'hdr-m' }, tools: [{ name: 'read', description: 'd', parameters: {} }] },
+  } as never)
+  for (let t = 1; t <= 3; t++) appendUser(session, '轮次 ' + t + ' 的散文内容 ' + 'x'.repeat(400), t)
+  const prose = new ProseCondenser(shimCtx, engine as never, { focalTurns: 1 })
+  const result = await prose.condense(session, { provider: 'agent-p', model: 'agent-m' }, 100, undefined, 100, { form: 'host' })
+  assert.ok(result !== null, '手动 host 形态浓缩必须发射')
+  const opts = captured[0] as { provider: string; tools?: unknown[]; maxTokens?: number; messages: Array<{ role?: string; content?: Array<{ text?: string }> }> }
+  assert.equal(opts.provider, 'hdr-p', '★host 形态取 header 路由（与主对话同路由=前缀复用前提）')
+  assert.ok(Array.isArray(opts.tools) && opts.tools.length === 1, 'tools 与主对话逐字节一致')
+  assert.equal(opts.messages[0]?.role, 'system', '★messages[0]=system 头（旧 A 形态首条是 U: 文本，缓存从第 0 token 就不同）')
+  const lastText = (opts.messages[opts.messages.length - 1]?.content ?? []).map(b => b.text ?? '').join('')
+  assert.ok(lastText.includes('INCLUDING tool calls'), '尾部指令=CTX 形头')
+  const events = sessionEvents(session) as unknown as Array<{ type: string; data?: Record<string, unknown> }>
+  const summ = events.filter(e => e.type === 'compaction/summary').pop()?.data
+  assert.deepEqual(summ?.usage, { inputTokens: 900, outputTokens: 100, cacheReadTokens: 800 },
+    '★host 形态也回填真实账单（手动压缩的缓存命中从此可核）')
+  assert.equal(summ?.llmStreamCall, true)
+})
+
+test("§G form:'host' 不绕过散文闸一（未过线仍不浓缩、零 LLM）", async () => {
+  const { ctx, engine } = await boot({ windowTokens: 100_000, retainTokens: 50 })
+  const captured: Record<string, unknown>[] = []
+  const llmStub = {
+    stream: (opts: Record<string, unknown>) => {
+      captured.push(opts)
+      return (async function* () { yield { type: 'text-delta', text: 'x' } })()
+    },
+  }
+  const shimCtx = { logger: ctx.logger, get: (n: string) => n === 'llm' ? llmStub : undefined } as never
+  const session = Session.create(SessionId('ctx-host-form-gate'))
+  session.append('system/message', { message: { role: 'system', content: [{ type: 'text', text: 'persona prefix' }] } } as never, { surfaceOp: 'append' })
+  ;(engine as unknown as { bindSession: (s: Session) => void }).bindSession(session)
+  for (let t = 1; t <= 3; t++) appendUser(session, '轮次 ' + t + ' 的散文内容 ' + 'x'.repeat(200), t)
+  const prose = new ProseCondenser(shimCtx, engine as never, { focalTurns: 1 })
+  // 声明窗极大 ⇒ 散文字符远低于 50% 线 ⇒ 闸一不通过。
+  const result = await prose.condense(session, { provider: 'agent-p', model: 'agent-m' }, 100, undefined, 10_000_000, { form: 'host' })
+  assert.equal(result, null, '★form 只换输入形态，不继承 approved 的闸一豁免')
+  assert.equal(captured.length, 0, '未过闸一不得发生任何 LLM 调用')
+})

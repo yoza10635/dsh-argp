@@ -6,7 +6,8 @@
  *
  * 变异纪律（每条摘除必须变红）：
  *  - deficit≤0 门槛摘除 ⇒ 无压力也调 compactIfNeeded（测1）；
- *  - 词表 note 吞错隔离摘除 ⇒ steer 抛错连带掐死压力剪（测2）。
+ *  - systemPrompt.context 生效时仍强依赖 steer ⇒ steer 抛错连带掐死压力剪（测2；
+ *    2.2.3 起目录走 context，steer 只在无该服务时是 note 回退）。
  *  （UA 兜底三锁随 factor-ua 退役一并删除——该通路已不存在，缺口兜底语义由
  *   prose-condenser 承担，见 test/prose-condenser.test.ts。）
  */
@@ -104,16 +105,16 @@ test('deficit>0 ⇒ 按 deficit×charsPerToken 调 compactIfNeeded 并真发射'
   spy.restore()
 })
 
-test('词表 note steer 抛错 ⇒ 吞错隔离，同钩子压力剪照常执行', async () => {
+test('systemPrompt.context 生效时 steer 抛错不得影响压力剪（2.2.3 目录迁移锁）', async () => {
   const { internals, factor } = await bootFactor()
   const session = heavySession('steer-boom')
   internals.bindSession(session)
-  // 先剪一笔造出词表脏态（epoch 变 ⇒ refresh 必调 steer）
+  // context 路径下目录由事务快照承担，steer 不再是必需依赖；boomAgent 也不得阻断压力剪。
   factor.compactIfNeeded(session, 1000)
   const spy = spyCompact(factor)
   const boomAgent = makeAgent(session, () => { throw new Error('steer boom') })
   await internals.factorPressure(boomAgent, 0) // 不得 reject
-  assert.ok(spy.targets.length >= 1, 'steer 抛错不得掐死压力剪（丢的只是提示）')
+  assert.ok(spy.targets.length >= 1, 'steer 抛错不得掐死压力剪（目录已由 context 快照承担）')
   spy.restore()
 })
 

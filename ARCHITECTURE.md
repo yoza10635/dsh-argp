@@ -9,7 +9,8 @@
 
 因子引擎把对话拆成**原子**（U/A/R/X 四类 surface 事件）。压缩时**只剪 R**（工具结果）：
 按实体标签与过期判据判定、排队 → `prune-tx` 事务逐区间成对发射 `compaction/prune` + `replace`
-（最小桩）→ 散文浓缩（唯一 LLM 通路，事务内双闸）→ 词表 note 收尾。**剪枝决策 0 LLM**；
+（最小桩）→ 散文浓缩（唯一 LLM 通路，事务内双闸）→ 事务成功后冻结词表目录快照
+（`systemPrompt.context`；无该服务时以词表 note 回退）。**剪枝决策 0 LLM**；
 被剪原文留在 append-only 日志，`recall_history(label)` 按字节取回；已离场散文（含浓缩原文）由 `search_history(keyword=...)` 按内容逐字取回。
 
 ```
@@ -152,11 +153,52 @@ factor 组剪逐组落压缩检查点桩（`user/message` + `source.kind=compact
 "一段游程一枚桩"即上限。1.x 旋钮 `tombstoneMergeMinRun` 已随 2.0 零旋钮退役，不复活。
 锁面：prune-tx-order ④⑤⑥（事务内）+ stub-run-reclaim RR1–RR3（随剪/不独立/纪律门）。
 
+### 3.3 出处语义（2.2.3：证据被剪 ≠ 结论改判）
+
+剪枝只删工具结果，助手结论以散文留在面上；散文浓缩（唯一 LLM 通路）再把散文压成
+检查点。于是出现一种**非幻觉的失真**：结论可能仍然正确，但支撑它的工具证据已不可见，
+模型看到的是一条**高置信、无出处**的断言——不是"记错了"，是"记得却不知道凭什么"。
+
+契约分两侧，都是**文本约定**（不改存储、不新增召回面）：
+
+1. **写侧**（摘要指令，三句话）：① 承重结论要说出来源（工具输出 / 用户原话 / 自己的推断），
+   判不清就如实说，**不许编来源**；② 支撑证据可能已被压走——**它既不确认也不反驳结论**，
+   不得据此把结论写得更确定或更不确定，要给读者指召回而不是替他猜；③ 纠正双边可见
+   （`X (was corrected by Y)`，不删被纠正项），未决项写明"什么观察能定案"，猜测不得冒充决定。
+2. **读侧**（检查点框架语 + 词表引导）：`CHECKPOINT_PREAMBLE` 与宿主基线**故意分叉**——原句
+   "Treat the captured context as established background" 单独存在等于把整份摘要升级为
+   既定事实；现改为"仅作连续性背景"，并补一句"证据可能已被压走 ⇒ 既不确认也不反驳，
+   别改确定性，要证据就召回"。词表引导（`systemPrompt.context` 快照，压缩事务后才出现）
+   同理一条 **Elision is not a verdict**。
+
+**刻意不做的标记体系（2026-11-27 二次裁定）**：一度引入
+`[observed] / [user] / [inferred] / [observed, evidence elided] / [provenance unknown]`
+五态标注，已撤销。理由：摘要发生在剪枝**之后**，摘要器看不到原始证据，标记只能靠它
+自述——**标错比不标更有害**（读者会把它当出处权威）；且每份检查点常驻 ~65 token、
+每次摘要 ~250 token。改为"把行为讲清"的一句话，不承诺任何逐条出处。`[conflicting]`
+与"保留纠正"两件事改为自然语言要求（不依赖记号）。锁 `test/provenance-contract.test.ts`
+五例，其中一条**反向锁**：写侧/读侧重新出现上述标记即红。
+
+边界如实记录：这一层只影响**文本怎么写、怎么读**，不能保证结论为真，也不能恢复被剪
+证据本身（那要 `recall_history` / `search_history`），更无法阻止模型自行重做一遍——
+只能让"证据不见了"不再被当成"结论不可信/已核实"的理由。
+
+**不做的事（2026-11-27 裁定，避免重复设计）**：不给召回结果加 `newer:` 新旧指针。
+取证路径已经闭合——`recall_history(labels, view:'outline')` 逐行列出**同一标签的全部
+版本**（`item=<seq> · turn=<n>`），且 `order:"fresh"` 直接按新到旧排序；更晚的同类
+观察若仍 live，本来就在模型可见面上。插件的职责是给坐标，不是替模型判断"这版过期了"
+（那是语义判断，且会诱导它连结论一起改判）。配套删掉 `PrunedNodeInfo.latestOfPath`
+——1.x 版本链残留的死字段，注释许诺了一个从未实现的行为。
+
 ## 4. 触发与两道闸
 
 ### 4.1 两条确定性信号
 
 1. **手动 `/compact`**（宿主 `command-compact` → `compactNow`）：全量剪 + 散文浓缩；
+   **摘要调用走宿主同款装配**（`form:'host'`，2026-11-27 实测修正：旧 A 形态重建
+   `U:/A:` transcript，无 system 头、正文带行内角色标记 ⇒ 与主对话热前缀从第 0 个
+   token 就不同，118K prompt 全量未命中 / 33.3s；改 host 形态后 116,736/118,135 命中、
+   14.0s）。`form` 与 `approved` 正交：手动只换输入形态，不继承分派器的闸一豁免。
 2. **provider 400 `CONTEXT_WINDOW_EXCEEDED`**：`compactIfNeeded('context-overflow')`
    强制剪一次后重试（`maxOverflowRetries` 缺省 1）。
 
@@ -212,8 +254,11 @@ pre-step 位：`source==='anchored'` 且 `contextTokens ≥ windowRatio×声明�
 - 分页：`cursor/epoch` 续读，epoch 漂移显式告警（不假装稳定分页）；
 - 预算：单次 5% / 累计 10% 窗口，耗尽/截断都带余额说明；
 - 防循环：每轮 20 次调用上限（安全阀，非内容限制）；
-- 模型侧引导：**不驻 system 前缀**，随词表 note 在首次压缩事务后注入
-  （`VOCAB_NOTE_GUIDE`）——压缩前无被剪内容，无需提示；引导含 command+scope 双逃生通道
+- 模型侧引导：2.2.3 起动态目录走 **`systemPrompt.context` 会话快照**（`argp:vocabulary`，
+  runtime context；模型每轮可见），压缩事务成功收尾时冻结，`step()` 的
+  `refreshContext` 在本次请求即可读到新目录。快照只跟事务刷新，provider 不读 live
+  ledger；两次事务之间字节稳定。宿主无 `systemPrompt` 服务时退回旧的词表 note
+  （`VOCAB_NOTE_GUIDE`，首次压缩事务后 steer/replace）。引导含 command+scope 双逃生通道
   （document 未中时：shell 读入内容只挂 command 族标签、目录级触达只有 scope 地址；
   2026-11-15 真实端点野测双实锤——P45 补召回经 `command:$a=Get-Content` 族标签收回 3 题）。
 
@@ -283,7 +328,7 @@ in the pass remain durable`）。因此 surface 上只要残留一枚组剪当�
 | `argp-engine.ts` | 组合根：构造装配、pre-step 三通道、溢出恢复、手动压缩、/argp 注册；持有宿主面字段 | 全部下方模块 |
 | `session-lifecycle.ts` | normalizeConfig / registerSettings / bindSession / rebuildLedgerFromLog；设置 schema | argp-types, log-access, atomize, telemetry, constants, budget, prune-tx |
 | `session-state.ts` | 会话运行时状态（WeakMap 分桶）：台账/剪枝索引/召回预算/usage 锚点/账本重建去重 | constants, argp-types(type), atomize(type), prune-tx(type), log-access(type) |
-| `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表/note | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
+| `factor/engine.ts` | 因子引擎：贴标 → 排序 → `PrunePlan` → prune-tx 成对发射；账本/词表快照/note 回退 | log-access, constants, prune-tx, factor-atoms, factor-ledger, retention-score, tag-extract, clip-shape |
 | `factor/prose-condenser.ts` | 散文浓缩：闸一、span 选择、LLM 调用、清扫式 replace | prune-tx, llm/llm-adapter |
 | `factor/recall-labels.ts` | `recall_history` / `list_labels` defineTool + 会话解析/防循环阀/`resolveQueryLabels` 单点 | log-access, telemetry, factor-ledger, factor/engine |
 | `factor/search-history.ts` | `search_history` defineTool：内容发现（被剪 R ∪ 散文）+ 分层预览 + 临时索引单槽 + 分布直方图 | log-access, budget, cjk, prose-scan, recall-labels, recall-tools, factor/engine |
@@ -305,8 +350,9 @@ in the pass remain durable`）。因此 surface 上只要残留一枚组剪当�
 | `argp-types.ts` | Atom / AtomType / ArgpUserSettings（叶子） | cites-strip(type-only) |
 | `log-access.ts` | 事件日志唯一入口 + 日志原语（eventText / rawEventText / turnOf / detectOpenTurn） | dsh-session, llm/types |
 | `constants.ts` / `telemetry.ts` / `ui-locale.ts` | 常量 / 有界缓冲 / 服务端多语言 | — |
+| `cache-audit.ts` | 每请求缓存审计：usage 三分量→命中率，压缩后首请求/续作分类（纯观测，零决策） | — |
 | `preset-cleaner.ts` | preset 净化器（override-only；build 脚本烘焙进 `cordis.patch.yml`） | —（纯文本函数） |
-| `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale |
+| `argp-command.ts` | `/argp` 只读状态命令 | budget, log-access, ui-locale, cache-audit |
 | `client/*` | 聊天渲染的 cites 尾清扫 + 设置卡（2.0.1 单旋钮「压缩阈值」；configForms 0.1.7+ 契约） | cites-strip |
 
 ## 9. 关键不变式清单

@@ -88,6 +88,15 @@ export declare class ArgpEngine extends CompactionEngine {
     private readonly factor;
     /** P6-④ 散文浓缩链（factor 唯一 LLM 摘要通路，只在压缩事务内被调；见 prose-condenser.ts）。 */
     private readonly prose;
+    /**
+     * 每会话的词表快照（systemPrompt.context 的模型可见目录）。
+     *
+     * 只在压缩事务成功收尾时刷新；两次事务之间即使 provider 被重复调用也返回同一
+     * 字节串。用 WeakMap 而非引擎字段，避免多会话目录串台。
+     */
+    private readonly vocabSnapshots;
+    /** 是否已成功注册 systemPrompt.context（注册后 note 只作为无该服务时的回退）。 */
+    private vocabContextRegistered;
     /** P6-④ 触发收敛逃生口（构造期快照，ARGP_FACTOR_TIER 同款纪律）：env 置 1 恢复旧估算驱动压力剪。 */
     private readonly pressureTriggerEnabled;
     /** 原始构造 config（压缩阈值 volatile 读实时值的取数面）。 */
@@ -410,8 +419,52 @@ export declare class ArgpEngine extends CompactionEngine {
     compactNow(agent: ManualCompactAgentContext, signal: AbortSignal, sourceCommandId?: CommandId): Promise<CompactionResult | null>;
     compactRegion(_start: number, _end: number, _agent: CompactionAgentContext, _signal?: AbortSignal): Promise<CompactionResult>;
     /**
+     * 注册动态词表目录（宿主 `systemPrompt.context`）。
+     *
+     * 关键时序（2026-11-27 宿主源码核对）：`agent/pre-step` 的 system prompt
+     * **在本钩子之前**已 assemble；但 `step()` 在发请求前会再调用
+     * `systemPrompt.refreshContext()`，context provider 会重新求值。因此：
+     *  - `systemPrompt.section` 在这里更新只会下一次请求可见，并可能额外打穿前缀缓存；
+     *  - `systemPrompt.context` 可在本次压缩请求的 refreshContext 中看到事务收尾快照。
+     *
+     * 服务缺失（旧宿主/测试最小组合）时不注册，保留 refreshFactorNoteSafe 的
+     * note 降级路径；注册成功后 note 不再承担目录，避免双份目录。
+     */
+    private registerVocabularyContext;
+    /**
+     * 读取 systemPrompt.context 的会话快照。首次访问时从当前账本拍一次快照
+     * （冷 resume/测试直挂场景）；之后只读快照，不在 provider 内重复 observe。
+     */
+    private vocabularyContextText;
+    /** 事务成功收尾：冻结本会话的目录快照；失败/空事务不得调用。 */
+    private refreshVocabularySnapshot;
+    /**
+     * 记录一次成功的压缩事务收尾（`compaction/end` 无 error）。
+     *
+     * 只有成功收尾才置游标：失败/中断的 end 带 `error`，其后的请求并没有经历
+     * "历史被改写"这件事，算成压缩后重灌会把失败压缩的代价记到成功账上。
+     */
+    private noteCompactionEnd;
+    /**
+     * 每请求缓存采样（2.2.3，见 cache-audit.ts）。
+     *
+     * 观测点选在 `assistant/message` 的 usage 上：`cacheReadTokens` 与 `inputTokens`
+     * 互斥，前者=复用前缀、后者=必须真 prefill。压缩改动早期上下文后，保留段在
+     * 首请求里必然 miss 一次；**同一次压缩后的续作仍低命中**才是异常（另有抖前缀源）。
+     *
+     * 「首请求」用事务游标判定而不是时间窗：`compaction/end` 无 error 置位，
+     * 下一条带 usage 的应答消费之。若事务后跨了轮次才有应答（请求被中止/报错，
+     * 根本没发出去），视为陈旧标记——不把它算作「压缩后首请求」，否则正常冷启会被
+     * 误报成重灌。
+     */
+    private recordCacheSample;
+    /**
      * 词表 note 迁入压缩事务收尾（P6-② 违规点整改，note 前缀炸弹案施工①）：note 变化时机
      * = 压缩时机——"缓存断点频率=压缩频率"不变量的 note 特化（T-3 定量证实每步一改一炸）。
+     *
+     * 2.2.3 起有 `systemPrompt.context` 时**不再写 note 目录**：目录由 context 快照承担；
+     * note 仅作为无 systemPrompt 服务的降级路径（测试最小宿主/旧宿主）。
+     *
      * steer 仅首注需要（更新走单节点 replace，指针以标记回溯为准）；本入口拿不到 steer
      * （CompactionAgentContext 无该成员）时首注跳过——下个有 steer 的压缩机会自然重试。
      */

@@ -351,8 +351,23 @@ export declare class FactorEngine {
     /** 词表段（渲染出口；注入通路见 refreshVocabularyNote）。 */
     vocabulary(session: Session): RenderVocabularyResult;
     /**
+     * 系统级动态目录快照（2.2.3；systemPrompt.context 的单一数据源）。
+     *
+     * 与 `refreshVocabularyNote` 的区别：note 是**事务流**里的历史通知，可能因
+     * steer/替换/吞并而不可见；快照是**宿主每次装配请求时**读取的模型侧上下文，
+     * 只在压缩事务成功收尾时更新。调用方必须把返回对象的 `text` 冻结到会话状态，
+     * 不得让 provider 每次请求重新从 live ledger 渲染——否则“目录变化”会脱离
+     * “压缩事务”这个唯一的缓存断点时机。
+     */
+    vocabularySnapshot(session: Session): {
+        text: string;
+        epoch: number;
+    };
+    /**
      * 词表 note 的单一可见副本维护（§1.4 注入位定稿：**不进 system 前缀**——每轮变动
      * = 跨轮前缀缓存全断，`6d252cf` 教训；note 常驻剪枝区带、内容随 epoch 重写）。
+     * 2.2.3 起有 `systemPrompt.context` 时由 `ArgpEngine` 停用本路径（context 快照
+     * 承担目录）；本方法仅作为无该服务时的降级通道保留。
      *
      * 通路 = pre-step 的 steer/replace（auto-continue 同款 notice 先例）：
      *  - 首注：steer 一条 notice（source.kind='argp'，宿主归 X：进请求、不参剪、UI 按

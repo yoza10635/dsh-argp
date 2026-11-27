@@ -33,12 +33,13 @@ import { measureTokens, capRetain } from './budget.js'
 import { sessionEvents } from './log-access.js'
 import { DEFAULT_WINDOW_TOKENS } from './constants.js'
 import { resolveUiLocale, type UiLocale } from './ui-locale.js'
+import { classifyCacheSample, isLowCacheHit } from './cache-audit.js'
 
 /**
  * 状态行首展示的版本号。**必须与 `package.json` 的 `version` 一致**——
  * `scripts/prerelease-check.mjs` 有断言守着（发版时忘改会直接卡住发布）。
  */
-export const ARGP_STATUS_VERSION = '2.2.2'
+export const ARGP_STATUS_VERSION = '2.3.0'
 
 /** 命令名（不带斜杠）。UI 发现列表按此展示。 */
 export const ARGP_COMMAND_NAME = 'argp'
@@ -126,6 +127,12 @@ function fmtPct(hit: number, total: number): string {
   return Math.round((hit / total) * 100) + '%'
 }
 
+/** 事务 id 短形态：状态卡只给可对账的后缀（完整 id 在日志与 /argp 之外的可观测面）。 */
+function shortTx(id: string | null): string {
+  if (id === null) return ''
+  return ' [tx ' + (id.length > 12 ? '…' + id.slice(-8) : id) + ']'
+}
+
 /**
  * 状态卡文案表（服务端多语言）。语言取自宿主设置 `locale.preference`
  * （见 ui-locale.ts）；两份实现以同一接口互为完整性校验（缺键 = 编译错）。
@@ -143,6 +150,10 @@ interface StatusCopy {
   forced(): string
   audit(count: number, latest: string): string
   recall(calls: number, hits: number, pct: string): string
+  cacheHeader(): string
+  cacheRow(turn: string, step: string, prompt: string, cached: string, hit: string, tag: string): string
+  cacheSummary(refills: number, repeats: number): string
+  cacheNone(): string
   b6Risk(nonPrunable: string, pct: string, line: string): string
 }
 
@@ -161,6 +172,12 @@ const enCopy: StatusCopy = {
   forced: () => ' (forced)',
   audit: (count, latest) => 'audit: ' + count + ' warning(s) · latest: ' + latest,
   recall: (calls, hits, pct) => 'recall: ' + calls + ' calls · ' + hits + ' hits (' + pct + ') [this process]',
+  cacheHeader: () => 'cache (provider usage; per-request prefix reuse):',
+  cacheRow: (turn, step, prompt, cached, hit, tag) => '  · turn ' + turn + ' step ' + step
+    + ' · prompt ' + prompt + ' / cached ' + cached + ' (' + hit + ')' + (tag === '' ? '' : ' · ' + tag),
+  cacheSummary: (refills, repeats) => 'post-compaction: ' + refills + ' refill(s) · '
+    + repeats + ' repeat miss(es) [this process]',
+  cacheNone: () => 'cache: no model request observed yet',
   b6Risk: (nonPrunable, pct, line) => '⚠ B-6 blind zone: non-prunable live ≈ ' + nonPrunable
     + ' tok (' + pct + '% of declared window, risk line ' + line + ') — after pruning everything prunable the request still nears the window;'
     + ' the host assembler truncates oldest live nodes silently (README known limitations) [approximate]',
@@ -181,6 +198,12 @@ const zhCopy: StatusCopy = {
   forced: () => '（强制）',
   audit: (count, latest) => '审计：' + count + ' 条警告 · 最近：' + latest,
   recall: (calls, hits, pct) => '召回：' + calls + ' 次调用 · ' + hits + ' 次命中（' + pct + '）[本进程]',
+  cacheHeader: () => '缓存（provider usage；逐请求前缀复用）：',
+  cacheRow: (turn, step, prompt, cached, hit, tag) => '  · 轮 ' + turn + ' 步 ' + step
+    + ' · prompt ' + prompt + ' / cached ' + cached + '（' + hit + '）' + (tag === '' ? '' : ' · ' + tag),
+  cacheSummary: (refills, repeats) => '压缩后：保留段重灌 ' + refills + ' 次 · 续作仍失配 '
+    + repeats + ' 次 [本进程]',
+  cacheNone: () => '缓存：尚未观测到模型请求',
   b6Risk: (nonPrunable, pct, line) => '⚠ B-6 盲区风险：不可剪 live ≈ ' + nonPrunable + ' tok（占声明窗 ' + pct
     + '%，风险线 ' + line + '）——可剪面全剪后请求仍逼近声明窗，宿主会把输出预算钳到「窗 − prompt」（轮次趋零空转；严格端点则 400 拒收），非无痕截断（2026-11-19 勘误）；出口闸接管下缺省已开，可设「压缩阈值」前移触发（README 已知限制）[近似]',
 }
@@ -274,6 +297,42 @@ export function renderArgpStatus(host: ArgpStatusHost, invocation: Pick<CommandI
   const calls = recallCalls.length
   const hits = recallCalls.reduce((n, r) => n + (r.hit ? 1 : 0), 0)
   lines.push(T.recall(calls, hits, fmtPct(hits, calls)))
+
+  // 段 5：每请求缓存审计（2.2.3）——provider usage 的直接读数，替代"首字延迟反推"。
+  // 只展示最近 3 条：足够看出「压缩后首请求重灌→续作恢复命中」的形状，也不刷屏。
+  const samples = st?.cacheSamples ?? []
+  if (samples.length === 0) {
+    lines.push(T.cacheNone())
+  } else {
+    lines.push(T.cacheHeader())
+    for (const s of samples.slice(-3)) {
+      const verdict = classifyCacheSample(s)
+      // 小 prompt 的低命中不算失配：缓存按块命中（实测 2048 一块），块粒度未达时
+      // 结构上不可能报缓存——标记与计数同用一道门，避免卡面自己骗自己。
+      const actionable = isLowCacheHit(s)
+      let tag = ''
+      if (verdict === 'post-compaction-refill' && actionable) tag = 'refill' + shortTx(s.compactionId)
+      else if (verdict === 'unexpected-refill' && actionable) tag = 'repeat-miss' + shortTx(s.compactionId)
+      else if (verdict === 'post-compaction-cached') tag = 'cached' + shortTx(s.compactionId)
+      lines.push(T.cacheRow(
+        s.turn === null ? '?' : String(s.turn),
+        s.step === null ? '?' : String(s.step),
+        fmtTokens(s.promptTokens),
+        fmtTokens(s.cachedTokens),
+        Math.round(s.hitRatio * 100) + '%',
+        tag,
+      ))
+    }
+    let refills = 0
+    let repeats = 0
+    for (const s of samples) {
+      if (!isLowCacheHit(s)) continue
+      const verdict = classifyCacheSample(s)
+      if (verdict === 'post-compaction-refill') refills += 1
+      else if (verdict === 'unexpected-refill') repeats += 1
+    }
+    lines.push(T.cacheSummary(refills, repeats))
+  }
 
   return { kind: 'success', text: lines.join('\n') }
 }
